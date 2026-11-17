@@ -68,14 +68,14 @@ typedef enum
 
 typedef struct image_s {
     list_t          entry;
-    char            name[MAX_QPATH]; // game path
+    char            name[MAX_IMAGE_PATH]; // game path (refresh.h)
     int             baselen; // without extension
     imagetype_t     type;
     imageflags_t    flags;
     int             width, height; // source image
     int             upload_width, upload_height; // after power of two and picmip
     int             registration_sequence; // 0 = free
-	char            filepath[MAX_QPATH]; // actual path loaded, with correct format extension
+	char            filepath[MAX_IMAGE_PATH]; // actual path loaded, with correct format extension
 	int             is_srgb;
 	uint64_t        last_modified;
 #if REF_GL
@@ -93,6 +93,9 @@ typedef struct image_s {
 	// set once an alpha-masked emissive map has been folded into its RGB;
 	// guards against multiplying twice on re-registration
 	bool            emissive_alpha_folded;
+	// a Quake III alpha-test mask (vkpt_alpha_mask_texture) with no pixel that
+	// passes: Quake III never drew the surface
+	bool            alpha_mask_empty;
 #else
     byte            *pixels[4]; // mip levels
 #endif
@@ -126,6 +129,8 @@ extern uint32_t d_8to24table[256];
 // these are implemented in src/refresh/images.c
 void IMG_ReloadAll(void);
 image_t *IMG_Find(const char *name, imagetype_t type, imageflags_t flags);
+// exactly this file, not an image of the same name from another format (foo.jpg for foo.png)
+image_t *IMG_FindFile(const char *name, imagetype_t type, imageflags_t flags);
 image_t *IMG_FindExisting(const char *name, imagetype_t type);
 image_t *IMG_Clone(image_t *image, const char* new_name);
 void IMG_FreeUnused(void);

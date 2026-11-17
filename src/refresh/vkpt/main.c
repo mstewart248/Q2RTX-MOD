@@ -31,10 +31,13 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "refresh/models.h"
 #include "system/hunk.h"
 #include "common/cpuprof.h"	// CPUPROF_WAITED: the profiler's CPU frame time
+#include "common/q3shader.h"	// a Quake III map's sky, see q3_sky_faces
 #include "vkpt.h"
 #include "jobs.h"	// vkpt_parallel_threads: the CPU workers started at map load
 #include "material.h"
 #include "fog.h"
+#include "q3stages.h"	// a Quake III sky's moving clouds and sun
+#include "q3deform.h"	// Quake III surfaces that move, drawn as models
 #include "cameras.h"
 #include "physical_sky.h"
 #include "conversion.h"
@@ -279,6 +282,21 @@ VkptInit_t vkpt_initialization[] = {
 	{ "flow",       vkpt_flow_initialize,               vkpt_flow_destroy,                  VKPT_INIT_DEFAULT,             0 },
 	{ "flow|",      vkpt_flow_create_pipelines,         vkpt_flow_destroy_pipelines,        VKPT_INIT_RELOAD_SHADER,       0 },
 };
+
+// spec_q3 (vkpt.h): 0 until a frame has Quake III content - see update_q3_shaders
+uint32_t vkpt_spec_q3 = 0;
+
+const VkSpecializationInfo *vkpt_spec_q3_info(void)
+{
+	static const VkSpecializationMapEntry entry = {
+		.constantID = SPEC_Q3_CONSTANT_ID, .offset = 0, .size = sizeof(uint32_t),
+	};
+	static VkSpecializationInfo info = {
+		.mapEntryCount = 1, .pMapEntries = &entry, .dataSize = sizeof(uint32_t),
+	};
+	info.pData = &vkpt_spec_q3;
+	return &info;
+}
 
 VkImage GetDLSSImage();
 VkExtent2D GetDLSSExtent();
@@ -3711,6 +3729,14 @@ static bool wall_lamp_color(const entity_t* entity, const model_t* model, vec3_t
 	return true;
 }
 
+// A quad entity on a Quake III map (RF_Q3_QUAD, client entities.c) wears Quake
+// III's powerups/quad lightning instead of the blue shell - once its image is
+// in memory; until then, or without the shader, the blue stays.
+static bool q3_quad_look(const entity_t* entity)
+{
+	return (entity->flags & RF_Q3_QUAD) && vkpt_q3_quad_ready();
+}
+
 static uint32_t compute_mesh_material_flags(const entity_t* entity, const model_t* model,
 	const maliasmesh_t* mesh, bool is_viewer_weapon, bool is_double_sided, float alpha)
 {
@@ -3730,8 +3756,24 @@ static uint32_t compute_mesh_material_flags(const entity_t* entity, const model_
 	if (MAT_IsKind(material_id, MATERIAL_KIND_CHROME))
 		material_id = MAT_SetKind(material_id, MATERIAL_KIND_CHROME_MODEL);
 
-	if (MAT_IsKind(material_id, MATERIAL_KIND_TRANSPARENT) || (MAT_IsKind(material_id, MATERIAL_KIND_REGULAR) && (alpha < 1.0f)))
+	/* A Quake III see-through shader on a model - an effect that only adds light,
+	   like q3dm0's xray skeleton, or a layered program that leaves some of what
+	   is behind it showing - stays kind TRANSPARENT, the path its world faces
+	   take: the program's per-pixel alpha (path_tracer_rgen.h q3_surface_alpha)
+	   and the pass-through-with-glow at alpha 0 (primary_rays.rgen) both key on
+	   that kind, and TRANSP_MODEL is a dead end (see primary_rays.rgen). */
+	const bool q3_see_through = MAT_IsKind(material_id, MATERIAL_KIND_TRANSPARENT)
+		&& (material->q3_program || material->q3_additive);
+
+	if ((MAT_IsKind(material_id, MATERIAL_KIND_TRANSPARENT) && !q3_see_through)
+		|| (MAT_IsKind(material_id, MATERIAL_KIND_REGULAR) && (alpha < 1.0f)))
 		material_id = MAT_SetKind(material_id, MATERIAL_KIND_TRANSP_MODEL);
+
+	// The invisibility powerup (RF_CLOAK, client entities.c): kind WATER for now
+	// (Matt, 2026-11-17), whatever the skin's own kind. fill_model_instance's
+	// TEXTURE_FLAG_CLOAK keeps it water all over, and lets light straight through.
+	if (entity->flags & RF_CLOAK)
+		material_id = MAT_SetKind(material_id, MATERIAL_KIND_WATER);
 
 	if (model->model_class == MCLASS_EXPLOSION)
 	{
@@ -3767,16 +3809,25 @@ static uint32_t compute_mesh_material_flags(const entity_t* entity, const model_
 			material_id |= MATERIAL_FLAG_SHELL_RED;
 		if (entity->flags & RF_SHELL_GREEN)
 			material_id |= MATERIAL_FLAG_SHELL_GREEN;
-		if (entity->flags & RF_SHELL_BLUE)
+		// on a Quake III map the quad's blue is Quake III's lightning instead
+		// (fill_model_instance's TEXTURE_FLAG_Q3_QUAD)
+		if ((entity->flags & RF_SHELL_BLUE) && !q3_quad_look(entity))
 			material_id |= MATERIAL_FLAG_SHELL_BLUE;
 	}
 
 	return material_id;
 }
 
+// An entity's alpha as the path tracer takes it: a cloaked one (RF_CLOAK) is
+// water, which is see-through by refracting, not by fading
+static float model_entity_alpha(const entity_t* entity)
+{
+	return ((entity->flags & RF_TRANSLUCENT) && !(entity->flags & RF_CLOAK)) ? entity->alpha : 1.f;
+}
+
 uint32_t vkpt_mesh_material_id(const entity_t* entity, const model_t* model, const maliasmesh_t* mesh, bool is_viewer_weapon)
 {
-	float alpha = (entity->flags & RF_TRANSLUCENT) ? entity->alpha : 1.f;
+	float alpha = model_entity_alpha(entity);
 	return compute_mesh_material_flags(entity, model, mesh, is_viewer_weapon, false, alpha);
 }
 
@@ -3784,7 +3835,12 @@ static void fill_model_instance(ModelInstance* instance, const entity_t* entity,
 	const float* transform, uint32_t material_id, int instance_index, int iqm_matrix_index)
 {
 	int cluster = -1;
-	if (vkpt_refdef.fd && (vkpt_refdef.fd->rdflags & RDF_NOWORLDMODEL))
+	if (vkpt_q3_deform_mesh_cluster(model, mesh, &cluster))
+	{
+		// a moving Quake III surface (q3deform.c): its origin is the world's, and
+		// each of its meshes lies in one known cluster
+	}
+	else if (vkpt_refdef.fd && (vkpt_refdef.fd->rdflags & RDF_NOWORLDMODEL))
 	{
 		// No world (the player setup menu): the scene's one light list, list 0,
 		// holds its dlights. Looking the menu's origin up in whatever map happens
@@ -3833,7 +3889,17 @@ static void fill_model_instance(ModelInstance* instance, const entity_t* entity,
 	instance->iqm_matrix_offset_curr_frame = iqm_matrix_index;
 	instance->iqm_matrix_offset_prev_frame = instance->iqm_matrix_offset_curr_frame;
 	instance->frame = 0;
-	instance->alpha = (entity->flags & RF_TRANSLUCENT) ? entity->alpha : 1.0f;
+	instance->alpha = model_entity_alpha(entity);
+
+	// A Quake III effect that only adds light, with no stage program to say so
+	// per pixel: nothing of the surface shows, only its glow over what is behind
+	// it - alpha 0, as bsp_mesh.c create_poly gives the same shader's world faces
+	{
+		pbr_material_t const* mesh_material = get_mesh_material(entity, model, mesh);
+		if (mesh_material && mesh_material->q3_additive && MAT_IsKind(material_id, MATERIAL_KIND_TRANSPARENT))
+			instance->alpha = 0.f;
+	}
+
 	instance->render_buffer_idx = 0; // to be filled later
 	instance->render_prim_offset = 0;
 
@@ -3844,6 +3910,15 @@ static void fill_model_instance(ModelInstance* instance, const entity_t* entity,
 	instance->blood_r = blood_color[0];
 	instance->blood_g = blood_color[1];
 	instance->blood_b = blood_color[2];
+
+	// Quake III's quad lightning over this mesh (compute_mesh_material_flags left
+	// the blue shell off) - not on glass, which takes no shell either
+	instance->texture_flags = (q3_quad_look(entity) && !MAT_IsKind(material_id, MATERIAL_KIND_GLASS))
+		? TEXTURE_FLAG_Q3_QUAD : 0;
+	// the invisibility powerup: water all over (compute_mesh_material_flags)
+	if (entity->flags & RF_CLOAK)
+		instance->texture_flags |= TEXTURE_FLAG_CLOAK;
+	instance->instance_pad0 = instance->instance_pad1 = instance->instance_pad2 = 0;
 
 	// If this is a static wall light model, the renderer creates a custom set of light polys
 	// for this model. Mark the material with the light flag to avoid double contribution and noise
@@ -3986,6 +4061,13 @@ static void instance_model_lights(int num_light_polys, const light_poly_t* light
 		dst_light->style = src_light->style;
 		dst_light->type = DYNLIGHT_POLYGON;
 		dst_light->volumetric_scale = src_light->volumetric_scale;
+		// a Quake III program's glow on a door or a lift: copy_light works its
+		// colour out from these, as for the world's
+		dst_light->emissive_factor = src_light->emissive_factor;
+		dst_light->q3_glow = src_light->q3_glow;
+		dst_light->q3_samples = src_light->q3_samples;
+		memcpy(dst_light->q3_uv, src_light->q3_uv, sizeof(dst_light->q3_uv));
+		dst_light->q3_glow_key = 0;     // a copy made every frame: nothing kept
 
 		hash.mesh = nlight; //More a light index than a mesh
 		light_entity_ids[entity_frame_num][num_model_lights] = *(uint32_t*)&hash;
@@ -4074,7 +4156,9 @@ static void process_bsp_entity(const entity_t* entity, int* instance_count)
 	mi->render_prim_offset = model->geometry.prim_offsets[0];
 	mi->blood_skin = 0;
 	mi->blood_r = mi->blood_g = mi->blood_b = 0.f;
-	
+	mi->texture_flags = 0;
+	mi->instance_pad0 = mi->instance_pad1 = mi->instance_pad2 = 0;
+
 	instance_model_lights(model->num_light_polys, model->light_polys, transform, hash);
 
 	if (vkpt_model_geometry_has_blas(&model->geometry))
@@ -4144,9 +4228,13 @@ static void process_regular_entity(
 		*iqm_matrix_offset += (int)model->iqmData->num_poses;
 	}
 
-	float alpha = (entity->flags & RF_TRANSLUCENT) ? entity->alpha : 1.f;
+	float alpha = model_entity_alpha(entity);
 
-	bool use_static_blas = vkpt_model_is_static(model) && (mesh_filter != MESH_FILTER_ALL);
+	// A cloaked model (RF_CLOAK) is water whatever its materials, and a static
+	// model's BLASes are split by those - none of them holds it as transparent -
+	// so it takes the animated path, which goes by the kind given here.
+	const bool cloak = (entity->flags & RF_CLOAK) != 0;
+	bool use_static_blas = vkpt_model_is_static(model) && (mesh_filter != MESH_FILTER_ALL) && !cloak;
 
 	const model_vbo_t* vbo = vkpt_get_model_vbo(model);
 
@@ -4220,7 +4308,19 @@ static void process_regular_entity(
 		if (!material_id)
 			continue;
 
-		if (MAT_IsMasked(material_id))
+		/* The pass a mesh goes in - and so which of a static model's BLASes is
+		   instanced for it - has to agree with how vkpt_model_vbo_layout split
+		   the model into those BLASes when it was uploaded, and that tests for a
+		   see-through KIND before a mask. A see-through material that is also
+		   double-sided, which MAT_IsMasked says yes to (Quake III "cull disable":
+		   q3dm0's xray skeleton), came here to the masked pass, whose BLAS holds
+		   none of its triangles, while the transparent BLAS that does was never
+		   instanced - so it was drawn nowhere. The entity's own alpha is not part
+		   of that test: a masked mesh on a fading entity stays masked, as before. */
+		pbr_material_t const* layout_material = use_static_blas ? mesh->materials[0] : get_mesh_material(entity, model, mesh);
+		const bool transparent_kind = cloak || (layout_material && MAT_IsTransparent(layout_material->flags));
+
+		if (MAT_IsMasked(material_id) && !transparent_kind)
 		{
 			if (contains_masked)
 				*contains_masked = true;
@@ -4758,8 +4858,8 @@ process_render_feedback(ref_feedback_t *feedback, mleaf_t* viewleaf, bool* sun_v
 				vkpt_refdef.bsp_mesh_world.prim_instance_hash[readback.primitive];
 		}
 
-		strcpy(feedback->view_material, view_material);
-		strcpy(feedback->view_material_override, view_material_override);
+		Q_strlcpy(feedback->view_material, view_material, sizeof(feedback->view_material));
+		Q_strlcpy(feedback->view_material_override, view_material_override, sizeof(feedback->view_material_override));
 
 		feedback->lookatcluster = readback.cluster;
 		feedback->num_light_polys = 0;
@@ -5653,8 +5753,13 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 	if (pt_field_offset_prev == 0)
 		pt_field_offset_prev = vkpt_pt_field_width();   // first frame - no history yet
 
+	// Not half-res in photo mode (Matt, 2026-11-17: "photo mode should never have
+	// denoising or TAA"): a row a frame skips is filled from the row beside it, and
+	// accumulated that is a two-row vertical blur over every glass and water pixel
+	// of the reference. Both layers are traced on every row; the images are the
+	// same size either way (PT_FIELD_ROW_TRACED is the only reader).
 	ubo->pt_fullres_fields = DLSSSplitFieldsEnabled()
-		? (DLSSFieldHalfRes() ? PT_FIELDS_HALFRES : PT_FIELDS_FULLRES)
+		? ((DLSSFieldHalfRes() && !ref_mode->enable_accumulation) ? PT_FIELDS_HALFRES : PT_FIELDS_FULLRES)
 		: PT_FIELDS_CHECKERBOARD;
 	ubo->pt_field_offset = (int)vkpt_pt_field_width();
 	ubo->pt_prev_field_offset = (int)pt_field_offset_prev;
@@ -5810,6 +5915,31 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 			ubo->fog_color_layers     = mf.color_layers;
 			ubo->fog_mode       = mf.mode;
 			ubo->fog_vol_density_ratio = 1.0f;   // retired; see FOG_LOCAL_DENSITY
+
+			/* A MAP'S HAZE IS THE COLOUR OF ITS SKY. A map with no fog of its
+			   own - every Quake III map (their fog brushes are volumes, fog.c),
+			   most Quake II ones - got CL_GetMapFog's flat WHITE medium, and
+			   white haze lit by q3dm1's nearly white q3map_sun (1 .77 .77,
+			   intensity 80) washed its blood-red sky out to pink-white (Matt,
+			   2026-11-16: "The fog should be red on this map to match the sky
+			   color", then "I know I told you to put a regular white medium on
+			   every level but maybe it should match the sky color"). The
+			   medium's colour is the map's skybox average instead, its brightest
+			   channel at 1: the hue, not the brightness, so a red sky makes red
+			   haze at the same strength - as id did by hand, fog_color 0.91 0.61
+			   0.27 for the unit1_ sky. tim_hell's clouds average 1 .10 .02. Only
+			   under the map's own sky: getFogColorMap keeps the physical sky's
+			   medium white whatever this says. pt_fog_sky_color 0 = the white
+			   medium, for an A/B. */
+			static cvar_t *cvar_pt_fog_sky_color;
+			if (!cvar_pt_fog_sky_color)
+				cvar_pt_fog_sky_color = Cvar_Get("pt_fog_sky_color", "1", CVAR_ARCHIVE);
+			const float sky_peak = max(avg_envmap_color[0], max(avg_envmap_color[1], avg_envmap_color[2]));
+			if (cvar_pt_fog_sky_color->integer && mf.no_map_fog && sky_peak > 1e-3f) {
+				ubo->fog_color_r = avg_envmap_color[0] / sky_peak;
+				ubo->fog_color_g = avg_envmap_color[1] / sky_peak;
+				ubo->fog_color_b = avg_envmap_color[2] / sky_peak;
+			}
 		} else {
 			ubo->fog_enable = 0;
 			ubo->fog_mode   = 0;
@@ -6115,6 +6245,12 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 	UBO_CVAR_LIST
 #undef UBO_CVAR_DO
 
+	// A Quake III sun lights the haze as brightly as at pt_q3_sun_scale 0.1 (Matt liked
+	// q3dm1's fog; only the light on the ground was too bright). Skybox mode only: that
+	// is where the map's own sun is used (vkpt_evaluate_sun_light).
+	if (vkpt_physical_sky_uses_skybox())
+		ubo->pt_fog_scale_sun *= vkpt_q3_sun_fog_ratio();
+
 	// pt_dlss_particle_layer: Ray Reconstruction composites the layer, so it exists only
 	// while RR denoises a live frame, and only with full-resolution fields, where field 0's
 	// pixel is the output pixel the shaders write it at. Anything else - A-SVGF, photo-mode
@@ -6328,7 +6464,11 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 	{
 		for (int n = 0; n < wm->num_cameras; n++)
 		{
-			prepare_camera(wm->cameras[n].pos, wm->cameras[n].dir, *ubo->security_camera_data[n]);
+			// a Quake III portal: a transform of the ray, not a picture (cameras.c)
+			if (wm->cameras[n].portal && wm->cameras[n].placed)
+				vkpt_cameras_q3_transform(wm, n, vkpt_refdef.fd ? vkpt_refdef.fd->time : 0.f, *ubo->security_camera_data[n]);
+			else
+				prepare_camera(wm->cameras[n].pos, wm->cameras[n].dir, *ubo->security_camera_data[n]);
 		}
 	}
 	else
@@ -6448,6 +6588,42 @@ static void vulkan_upload_envmap(int w, int h, byte *data)
 	vkpt_textures_upload_envmap(w, h, data);
 }
 
+/* pt_q3_shaders (update_q3_shaders): the pipelines that read spec_q3 made again
+   with the new value - a shader reload of just these three entries. Called from
+   vkpt_prepare_frame, before this frame records anything that uses them; the GPU
+   idles first, so nothing in flight still holds the old ones. */
+static bool vulkan_set_q3_shaders(bool on)
+{
+	static const char *const entries[] = { "pt|", "godrays|", "flow|" };
+	const unsigned start = Sys_Milliseconds();
+
+	vkpt_device_wait_idle();
+	vkpt_spec_q3 = on ? 1 : 0;
+
+	for (int i = LENGTH(vkpt_initialization) - 1; i >= 0; i--) {
+		VkptInit_t *init = vkpt_initialization + i;
+		for (int e = 0; e < LENGTH(entries); e++) {
+			if (strcmp(init->name, entries[e]) || !init->is_initialized)
+				continue;
+			init->is_initialized = init->destroy ? !(init->destroy() == VK_SUCCESS) : 0;
+		}
+	}
+	for (int i = 0; i < LENGTH(vkpt_initialization); i++) {
+		VkptInit_t *init = vkpt_initialization + i;
+		for (int e = 0; e < LENGTH(entries); e++) {
+			if (strcmp(init->name, entries[e]) || init->is_initialized)
+				continue;
+			init->is_initialized = init->initialize ? (init->initialize() == VK_SUCCESS) : 1;
+			if (!init->is_initialized)
+				Com_Error(ERR_FATAL, "Couldn't initialize %s.\n", init->name);
+		}
+	}
+
+	Com_DPrintf("Quake III shader code %s: pipelines made in %u ms\n", on ? "in" : "out",
+		Sys_Milliseconds() - start);
+	return true;
+}
+
 static const vkpt_prep_backend_t vulkan_prep_backend = {
 	.map_staging = vulkan_map_staging,
 	.unmap_staging = vulkan_unmap_staging,
@@ -6456,9 +6632,63 @@ static const vkpt_prep_backend_t vulkan_prep_backend = {
 	.upload_envmap = vulkan_upload_envmap,
 	.load_world = vulkan_load_world,
 	.reserve_blood_staging = vkpt_blood_reserve_vk_staging,
+	.set_q3_shaders = vulkan_set_q3_shaders,
 };
 
 const vkpt_prep_backend_t *vkpt_prep_backend = &vulkan_prep_backend;
+
+/* QUAKE III SHADER CODE ON DEMAND, pt_q3_shaders: 1 = auto (default), 0 = never,
+   2 = always.
+
+   The Quake III features - q3_stages.glsl's shader programs, q3_sky.glsl's cloud
+   layers, fog_q3.glsl's fog brushes, the map's own sun (q3map_sun), portals, the
+   quad shell, alpha_glass and glass caustics - cost registers in the heavy passes
+   even where a branch skips them: the compiler keeps room for the code a wave
+   might run, so a Quake II map paid for them in occupancy (q3_program_material in
+   the indirect and reflect bounces, the caustic code in direct lighting, the fog
+   brushes in the god rays and froxel passes). Each shader now tests spec_q3, a
+   specialization constant (shader/global_ubo.h); made with 0, the code is not in
+   the pipeline at all.
+
+   Decided from the frame: the world is a Quake III map, or the UBO or the material
+   table has any of those features (a Quake II map can borrow glass caustics through
+   a .mat, so the materials count wherever they are). A different answer switches the
+   backend: Vulkan makes the path tracer's, the fog's and Flow's pipelines again (the
+   GPU idles, as for reload_shader); D3D12 swaps to its other set of PSOs, made the
+   first time it is wanted. Everything it looks at is fixed for a map, so it switches
+   on the first frame of a map of the other kind, a `mat` edit, or this cvar. The
+   pipelines start at 0, so Quake II maps never switch. 0 is for an A/B on a Quake III
+   map: its sky clouds, fog brushes, sun, programs and portals are gone, the rest of
+   the picture is right. */
+static bool q3_content_present(const QVKUniformBuffer_t *ubo)
+{
+	const bsp_mesh_t *wm = &vkpt_refdef.bsp_mesh_world;
+
+	if (wm->q3 || vkpt_q3_materials_in_use)
+		return true;
+	if (ubo->q3_sky_num_layers > 0 || ubo->map_sun_active || ubo->q3_quad_active)
+		return true;
+	for (int i = 0; i < MAX_FOG_VOLUMES && ubo->fog_volumes[i].is_active; i++)
+		if (ubo->fog_volumes[i].is_active == 2)     // fog.c: a Quake III fog brush
+			return true;
+	for (int i = 0; i < wm->num_cameras; i++)
+		if (wm->cameras[i].portal)
+			return true;
+	return false;
+}
+
+static void update_q3_shaders(const QVKUniformBuffer_t *ubo)
+{
+	static cvar_t *cvar_pt_q3_shaders = NULL;
+	if (!cvar_pt_q3_shaders)
+		cvar_pt_q3_shaders = Cvar_Get("pt_q3_shaders", "1", 0);
+
+	const int mode = cvar_pt_q3_shaders->integer;
+	const bool want = mode >= 2 || (mode == 1 && q3_content_present(ubo));
+	if ((vkpt_spec_q3 != 0) == want || !vkpt_prep_backend->set_q3_shaders)
+		return;
+	vkpt_prep_backend->set_q3_shaders(want);
+}
 
 /* THE FRAME'S CPU HALF, shared with the D3D12 renderer: everything
    R_RenderFrame_RTX did before its first command buffer, except what is
@@ -6473,6 +6703,19 @@ vkpt_prepare_frame(refdef_t *fd, int waterLevel, vkpt_frame_prep_t *prep)
 	vkpt_refdef.fd = fd;
 	bool render_world = (fd->rdflags & RDF_NOWORLDMODEL) == 0;
 	prep->render_world = render_world;
+
+	// Quake III surfaces that move (q3deform.c) are entities of their own, added
+	// to the client's list for this frame - the client sets it afresh every frame
+	if (render_world)
+	{
+		int num_entities = fd->num_entities;
+		const entity_t *entities = vkpt_q3_deform_entities(fd->entities, &num_entities, fd->time);
+		if (entities != fd->entities)
+		{
+			fd->entities = (entity_t *)entities;
+			fd->num_entities = num_entities;
+		}
+	}
 
 	static float previous_time = -1.f;
 
@@ -6742,6 +6985,8 @@ vkpt_prepare_frame(refdef_t *fd, int waterLevel, vkpt_frame_prep_t *prep)
 	ubo->weapon_left_handed = upload_info.weapon_left_handed;
 
 	vkpt_physical_sky_update_ubo(ubo, &sun_light, render_world);
+	vkpt_q3_sky_upload(ubo, fd->time);
+	vkpt_q3_quad_upload(ubo, fd->time);
 	vkpt_bloom_update(ubo, frame_time, ubo->medium != MEDIUM_NONE, qvk.frame_menu_mode, qvk.frame_ui_blur);
 	vkpt_motion_blur_update(frame_time);
 
@@ -6777,6 +7022,8 @@ vkpt_prepare_frame(refdef_t *fd, int waterLevel, vkpt_frame_prep_t *prep)
 			prev_adapted_luminance, readback_sun_luminance, readback_sky_luminance, ubo);
 
 	bool god_rays_enabled = vkpt_god_rays_enabled(&sun_light) && render_world;
+	// the filter's Quake III fog brushes, which reflect_refract's later bounces continue
+	ubo->fog_filter_active = god_rays_enabled ? 1 : 0;
 
 	// Photo mode fog (fog_accum_march in global_ubo.h): the march runs at
 	// full resolution and the filter reads it per pixel, so the froxel grid
@@ -6791,7 +7038,7 @@ vkpt_prepare_frame(refdef_t *fd, int waterLevel, vkpt_frame_prep_t *prep)
 
 	   god_rays_filter.comp throws the march away (`result = grid`) for EVERY
 	   pixel when the map's fog is on, the grid is on, the march is not carrying
-	   the sun (fog_sun_in_march: physical sky only), photo mode is not marching
+	   the sun (fog_sun_in_march: physical sky or a map's own sun), photo mode is not marching
 	   per pixel, and pt_fog_froxel_reflect is not 1 (the only mode that keeps the
 	   march for reflection pixels). That is every skybox map with fog, and both
 	   march passes were still dispatched there: ~0.3 ms for an image the filter
@@ -6807,7 +7054,13 @@ vkpt_prepare_frame(refdef_t *fd, int waterLevel, vkpt_frame_prep_t *prep)
 		&& ubo->pt_fog_froxel > 0.f
 		&& (int)ubo->pt_fog_froxel_reflect != 1
 		&& !(ubo->temporal_blend_factor > 0.f && ubo->pt_fog_accum_march != 0.f)
-		&& ubo->environment_type != ENVIRONMENT_DYNAMIC;
+		&& ubo->environment_type != ENVIRONMENT_DYNAMIC
+		&& !ubo->map_sun_active;   // a Quake III map's sun: the march carries it too
+
+	// the pipelines with or without the Quake III code, from what this frame has
+	// (after the material table, the sky, the sun and the fog brushes are in)
+	if (render_world)
+		update_q3_shaders(ubo);
 
 	prep->frame_time = frame_time;
 	prep->frame_wallclock_time = frame_wallclock_time;
@@ -8332,6 +8585,9 @@ R_EndFrame_RTX(void)
 		vkpt_draw_clear_stretch_pics();
 		return;
 	}
+
+	// 'mat print's picture of the material, over the console
+	MAT_DrawPreview();
 
 	if (cvar_profiler->integer) {
 		VkCommandBuffer cmd_buf = vkpt_begin_command_buffer(&qvk.cmd_buffers_transfer);
@@ -10194,6 +10450,267 @@ IMG_ReadPixelsHDR_RTX(int *width, int *height)
 	return pixels;
 }
 
+/*
+==============================================================================
+
+QUAKE III SKIES
+
+A Quake III map's sky is its sky shader (CL_SetSky passes "*<shader name>"):
+an optional far box - six images, as a Quake II sky - and over it the cloud
+layers, scrolling images that Quake III wraps round a dome "cloud height"
+units above the eye. Most of its maps have only the clouds. The path tracer
+takes a cube map, so the dome is baked into one here, once per map: for each
+texel of each face, Quake III's own R_InitSkyTexCoords gives where its ray
+meets the dome and so which point of each layer it shows, and the layers are
+blended as their blendFuncs say. The clouds stand still - scroll is left out.
+
+That bake is what the sky's average colour and the CPU path tracer are taken
+from. What the GPU draws, unless pt_q3_sky_clouds is 0, is the far box alone:
+the layers go to q3stages.c and are drawn per ray, moving (shader/q3_sky.glsl).
+
+==============================================================================
+*/
+
+#define Q3_SKY_FACE_SIZE    512
+#define Q3_SKY_RADIUS       4096.f  // R_InitSkyTexCoords' radiusWorld
+
+// Quake II's (and Quake III's) sky box: the direction of each face's s/t, by
+// the GL sky's axis index - see MakeSkyVec in refresh/gl/sky.c
+static const int q3_sky_st_to_vec[6][3] = {
+	{ 3, -1, 2 }, { -3, 1, 2 }, { 1, 3, 2 }, { -1, -3, 2 }, { -2, -1, 3 }, { 2, -1, -3 }
+};
+
+static inline float q3_sky_clamp(float x, float lo, float hi)
+{
+	return x < lo ? lo : x > hi ? hi : x;
+}
+
+typedef struct {
+	image_t     *image;
+	const byte  *pix;
+	int         w, h;
+} q3_sky_layer_t;
+
+static image_t *q3_sky_load(const char *path)
+{
+	char found[MAX_QPATH];
+
+	if (!Q3Shader_ResolveImage(path, found, sizeof(found)))
+		return NULL;
+	image_t *img = IMG_Find(found, IT_SKY, IF_EXACT);
+	return (img == R_NOTEXTURE || !img->pix_data) ? NULL : img;
+}
+
+// as R_SetSky_RTX does with its faces: the pixels are copied out, the image
+// is not wanted after
+static void q3_sky_unload(image_t *img)
+{
+	if (!img)
+		return;
+	List_Remove(&img->entry);
+	IMG_Unload(img);
+	memset(img, 0, sizeof(*img));
+}
+
+// each image the bake loaded, once: a shader can name the same one in two
+// stages (hellsky2's dimclouds), and IMG_Find hands back the same image_t
+static void q3_sky_unload_all(image_t *const box[6], const q3_sky_layer_t *layers, int num_layers)
+{
+	image_t *all[6 + Q3S_MAX_STAGES];
+	int n = 0;
+
+	for (int f = 0; f < 6; f++)
+		all[n++] = box[f];
+	for (int l = 0; l < num_layers; l++)
+		all[n++] = layers[l].image;
+
+	for (int i = 0; i < n; i++) {
+		if (!all[i])
+			continue;
+		for (int j = i + 1; j < n; j++)
+			if (all[j] == all[i])
+				all[j] = NULL;
+		q3_sky_unload(all[i]);
+	}
+}
+
+// bilinear, wrapping, 0..1
+static void q3_sky_sample(const q3_sky_layer_t *L, float s, float t, float out[4])
+{
+	float x = s * L->w - 0.5f, y = t * L->h - 0.5f;
+	float fx = floorf(x), fy = floorf(y);
+	float ax = x - fx, ay = y - fy;
+	int x0 = (int)fx % L->w, y0 = (int)fy % L->h;
+
+	if (x0 < 0) x0 += L->w;
+	if (y0 < 0) y0 += L->h;
+	int x1 = (x0 + 1) % L->w, y1 = (y0 + 1) % L->h;
+
+	const byte *p00 = L->pix + 4 * (y0 * L->w + x0);
+	const byte *p10 = L->pix + 4 * (y0 * L->w + x1);
+	const byte *p01 = L->pix + 4 * (y1 * L->w + x0);
+	const byte *p11 = L->pix + 4 * (y1 * L->w + x1);
+
+	for (int c = 0; c < 4; c++) {
+		float top = p00[c] + (p10[c] - p00[c]) * ax;
+		float bot = p01[c] + (p11[c] - p01[c]) * ax;
+		out[c] = (top + (bot - top) * ay) * (1.f / 255.f);
+	}
+}
+
+/*
+=================
+q3_sky_faces
+
+The cube map of a Quake III sky shader, as six RGBA faces in R_SetSky_RTX's
+face order. NULL if the shader has nothing to show.
+=================
+*/
+static byte *q3_sky_faces(const char *shader_name, const char *const suf[6], int *out_w, int *out_h,
+                          byte **out_box)
+{
+	// the GL sky's axis index of each face R_SetSky_RTX loads, in its order
+	static const char *const gl_faces[6] = { "rt", "lf", "bk", "ft", "up", "dn" };
+	const q3shader_t *sh;
+	q3_sky_layer_t  layers[Q3S_MAX_STAGES];
+	const q3stage_t *stages[Q3S_MAX_STAGES];
+	image_t         *box[6] = { NULL };
+	int             num_layers = 0, size = Q3_SKY_FACE_SIZE;
+	bool            have_box = false;
+
+	*out_box = NULL;
+
+	Q3Shader_Load();
+	sh = Q3Shader_Find(shader_name);
+	if (!sh || !sh->sky) {
+		Com_WPrintf("Quake III sky shader %s not found\n", shader_name);
+		return NULL;
+	}
+
+	// the moving layers and the sun, for the GPU
+	const bool gpu_clouds = vkpt_q3_sky_set(sh);
+
+	// the far box, at its own size, when it has all six faces
+	if (sh->sky_farbox[0]) {
+		char path[MAX_QPATH];
+
+		have_box = true;
+		for (int f = 0; f < 6; f++) {
+			Q_concat(path, sizeof(path), sh->sky_farbox, "_", suf[f], ".tga");
+			box[f] = q3_sky_load(path);
+			// square and all one size: the faces are copied as size x size
+			if (!box[f] || box[f]->upload_width != box[0]->upload_width ||
+				box[f]->upload_height != box[0]->upload_width) {
+				have_box = false;
+				break;
+			}
+		}
+		if (have_box)
+			size = box[0]->upload_width;
+	}
+
+	// the cloud layers
+	for (int i = 0; i < sh->num_stages; i++) {
+		const q3stage_t *st = &sh->stages[i];
+		image_t *img;
+
+		if (st->lightmap || st->white || st->video || !st->map[0])
+			continue;
+		img = q3_sky_load(st->map);
+		if (!img)
+			continue;
+		layers[num_layers].image = img;
+		layers[num_layers].pix = img->pix_data;
+		layers[num_layers].w = img->upload_width;
+		layers[num_layers].h = img->upload_height;
+		stages[num_layers] = st;
+		num_layers++;
+	}
+
+	if (!have_box && !num_layers) {
+		q3_sky_unload_all(box, layers, 0);
+		Com_WPrintf("Quake III sky shader %s: no far box or cloud layer to show\n", shader_name);
+		return NULL;
+	}
+
+	size_t face_bytes = (size_t)size * size * 4;
+	byte *data = Z_Malloc(face_bytes * 6);
+	byte *box_data = gpu_clouds ? Z_Malloc(face_bytes * 6) : NULL;
+	float height = sh->sky_cloud_height > 0 ? sh->sky_cloud_height : 512.f;
+	float R = Q3_SKY_RADIUS;
+
+	for (int f = 0; f < 6; f++) {
+		int axis = 0;
+		byte *out = data + face_bytes * f;
+
+		for (int a = 0; a < 6; a++)
+			if (!strcmp(gl_faces[a], suf[f]))
+				axis = a;
+
+		if (have_box)
+			memcpy(out, box[f]->pix_data, face_bytes);
+		else
+			memset(out, 0, face_bytes);
+
+		if (box_data)
+			memcpy(box_data + face_bytes * f, out, face_bytes);
+
+		if (!num_layers)
+			continue;
+
+		for (int y = 0; y < size; y++) {
+			for (int x = 0; x < size; x++) {
+				// the texel's direction, as the GL sky draws this face
+				float b[3] = { 2.f * (x + 0.5f) / size - 1.f, 1.f - 2.f * (y + 0.5f) / size, 1.f };
+				vec3_t d, v;
+
+				for (int j = 0; j < 3; j++) {
+					int k = q3_sky_st_to_vec[axis][j];
+					d[j] = k < 0 ? -b[-k - 1] : b[k - 1];
+				}
+				VectorNormalize(d);
+
+				// R_InitSkyTexCoords: where the ray meets the dome, and the
+				// angles of that point from the dome's centre
+				float p = -d[2] * R + sqrtf(d[2] * d[2] * R * R + 2 * R * height + height * height);
+				VectorScale(d, p, v);
+				v[2] += R;
+				VectorNormalize(v);
+				float s = acosf(q3_sky_clamp(v[0], -1, 1));
+				float t = acosf(q3_sky_clamp(v[1], -1, 1));
+
+				byte *px = out + 4 * (y * size + x);
+				float acc[3] = { px[0] / 255.f, px[1] / 255.f, px[2] / 255.f };
+
+				for (int l = 0; l < num_layers; l++) {
+					const q3stage_t *st = stages[l];
+					float c[4];
+
+					q3_sky_sample(&layers[l], s * st->scale[0], t * st->scale[1], c);
+					for (int ch = 0; ch < 3; ch++) {
+						switch (st->blend) {
+						case Q3BLEND_OPAQUE: acc[ch] = c[ch]; break;
+						case Q3BLEND_ADD:    acc[ch] += c[ch]; break;
+						case Q3BLEND_FILTER: acc[ch] *= c[ch]; break;
+						default:             acc[ch] += (c[ch] - acc[ch]) * c[3]; break;
+						}
+					}
+				}
+
+				for (int ch = 0; ch < 3; ch++)
+					px[ch] = (byte)(q3_sky_clamp(acc[ch], 0, 1) * 255.f + 0.5f);
+				px[3] = 255;
+			}
+		}
+	}
+
+	q3_sky_unload_all(box, layers, num_layers);
+
+	*out_w = *out_h = size;
+	*out_box = box_data;
+	return data;
+}
+
 void
 R_SetSky_RTX(const char *name, float rotate, int autorotate, const vec3_t axis)
 {
@@ -10212,7 +10729,32 @@ R_SetSky_RTX(const char *name, float rotate, int autorotate, const vec3_t axis)
 
 	int avg_color[3] = { 0 };
 	int w_prev = 1, h_prev = 1;
-	for (i = 0; complete && i < 6; i++) {
+	// a Quake III sky whose clouds the GPU draws: the cube map it is given
+	byte *q3_box = NULL;
+
+	// none unless this is a Quake III sky
+	vkpt_q3_sky_set(NULL);
+
+	// a Quake III map's sky shader, baked into the six faces
+	if (name[0] == '*') {
+		data = q3_sky_faces(name + 1, suf, &w_prev, &h_prev, &q3_box);
+		complete = data != NULL;
+		if (!data)
+			vkpt_q3_sky_set(NULL);
+		if (data) {
+			const uint32_t *pix = (const uint32_t *)data;
+			for (size_t p = 0; p < (size_t)w_prev * h_prev * 6; p++) {
+				avg_color[0] += pix[p] & 0xff;
+				avg_color[1] += (pix[p] >> 8) & 0xff;
+				avg_color[2] += (pix[p] >> 16) & 0xff;
+			}
+		}
+		i = 6;
+	} else {
+		i = 0;
+	}
+
+	for (; complete && i < 6; i++) {
 		Q_concat(pathname, sizeof(pathname), "env/", name, suf[i], ".tga");
 		FS_NormalizePath(pathname);
 		image_t *img = IMG_Find(pathname, IT_SKY, IF_NONE);
@@ -10273,19 +10815,49 @@ R_SetSky_RTX(const char *name, float rotate, int autorotate, const vec3_t axis)
 		(float)avg_color[2] * inv_num_pixels / 255.f
 	);
 
+	// a Quake III sun takes on some of its sky's colour (pt_q3_sun_sky_tint)
+	if (name[0] == '*' && complete)
+		vkpt_q3_sky_tint(avg_envmap_color);
+
 	vkpt_cpu_trace_set_envmap(complete ? w_prev : 0, h_prev, complete ? data : NULL);
 	// through vkpt_prep_backend: the D3D12 renderer runs this function too
-	vkpt_prep_backend->upload_envmap(w_prev, h_prev, data);
+	vkpt_prep_backend->upload_envmap(w_prev, h_prev, (complete && q3_box) ? q3_box : data);
 	Z_Free(data);
+	if (q3_box)
+		Z_Free(q3_box);
 
 	// Let the sky renderer know whether this map brought a skybox of its own,
-	// and which game it came from - see sky_use_map_skybox.
+	// and which game it came from - see sky_use_map_skybox. A Quake III map's
+	// sky shader is as much a part of the map as a rerelease skybox, and is
+	// shown under the same setting whatever game directory is running.
 	vkpt_physical_sky_set_map_skybox(!complete ? MAP_SKYBOX_NONE :
-		(Q_stricmp(cl.gamedir, "rerelease") == 0 ? MAP_SKYBOX_RERELEASE : MAP_SKYBOX_OTHER));
+		(Q_stricmp(cl.gamedir, "rerelease") == 0 || name[0] == '*') ? MAP_SKYBOX_RERELEASE : MAP_SKYBOX_OTHER);
 }
 
 void R_AddDecal_RTX(decal_t *d)
 { }
+
+/* Whether maps/<name>.bsp is a Quake III Arena map (IBSP version 46), told from
+   its header: the map's cfgs run BEFORE BSP_Load, so bsp_t's q3 flag is not set
+   yet when they are chosen. */
+static bool map_is_quake3(const char *name)
+{
+	char path[MAX_QPATH];
+	if (Q_concat(path, sizeof(path), "maps/", name, ".bsp") >= sizeof(path))
+		return false;
+
+	qhandle_t f = 0;
+	int64_t len = FS_OpenFile(path, &f, FS_MODE_READ);
+	if (!f)
+		return false;
+
+	uint32_t header[2] = { 0, 0 };
+	bool q3 = len >= (int64_t)sizeof(header) &&
+		FS_Read(header, sizeof(header), f) == (int)sizeof(header) &&
+		LittleLong(header[0]) == IDBSPHEADER && LittleLong(header[1]) == 46;   // Q3_BSPVERSION
+	FS_CloseFile(f);
+	return q3;
+}
 
 void
 vkpt_begin_registration(const char *name)
@@ -10330,7 +10902,18 @@ vkpt_begin_registration(const char *name)
 		Com_Printf("spawnpoint \"%s\"\n", spawnpoint);
 
 	Com_AddConfigFile("maps/default.cfg", 0);
+	// Every Quake III map's settings (baseq3/maps/quake3.cfg), before the map's
+	// own cfg so that can still override them. Not in default.cfg: the
+	// rerelease ships its own, which a baseq3 one would be shadowed by.
+	const bool quake3 = map_is_quake3(name);
+	if (quake3) {
+		vkpt_q3_sky_register();		// so the cfgs can mapcvar pt_q3_sun_scale etc.
+		Com_AddConfigFile("maps/quake3.cfg", 0);
+	}
 	Com_AddConfigFile(va("maps/%s.cfg", name), 0);
+
+	// Quake III's quad damage look (powerups/quad) for this map, or none
+	vkpt_q3_quad_register(quake3);
 
 	if(vkpt_refdef.bsp_mesh_world_loaded) {
 		vkpt_vertex_buffer_cleanup_bsp_mesh(&vkpt_refdef.bsp_mesh_world);
@@ -10341,6 +10924,7 @@ vkpt_begin_registration(const char *name)
 	if(bsp_world_model) {
 		BSP_Free(bsp_world_model);
 		bsp_world_model = NULL;
+		vkpt_fog_set_world(NULL);
 	}
 
 	char bsp_path[MAX_QPATH];
@@ -10356,6 +10940,7 @@ vkpt_begin_registration(const char *name)
 		Com_Error(ERR_DROP, "BSP not vis'd; this is required for Q2RTX.");
 	}
 	bsp_world_model = bsp;
+	vkpt_fog_set_world(bsp);  // a Quake III map's fog brushes
 	// Map load: the map's cfgs and BSP file, its textures (read and decoded on
 	// this thread), its mesh and light lists, then the renderer's GPU side
 	Com_LoadMark("BSP");
@@ -10426,6 +11011,8 @@ R_EndRegistration_RTX(void)
 void
 vkpt_unload_world(void)
 {
+	vkpt_q3_deform_reset();
+
 	if (vkpt_refdef.bsp_mesh_world_loaded) {
 		vkpt_vertex_buffer_cleanup_bsp_mesh(&vkpt_refdef.bsp_mesh_world);
 		bsp_mesh_destroy(&vkpt_refdef.bsp_mesh_world);
@@ -10435,6 +11022,7 @@ vkpt_unload_world(void)
 	if (bsp_world_model) {
 		BSP_Free(bsp_world_model);
 		bsp_world_model = NULL;
+		vkpt_fog_set_world(NULL);
 	}
 }
 

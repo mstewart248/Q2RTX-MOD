@@ -400,6 +400,9 @@ void Think_Weapon(edict_t *ent)
         // CTF's Time Accel: the weapon thinks twice, as the quadfire does
         if (CTF_HasHaste(ent))
             is_quadfire = true;
+        // Quake III's Haste: 1.3 times as fast, so every third frame or so
+        if (!is_quadfire && Q3_HasteExtraThink(ent))
+            is_quadfire = true;
         if (ent->client->silencer_shots)
             is_silenced = MZ_SILENCED;
         else
@@ -604,7 +607,7 @@ static void Weapon_Generic1(edict_t *ent, int FRAME_ACTIVATE_LAST, int FRAME_FIR
         for (n = 0; fire_frames[n]; n++) {
             if (ent->client->ps.gunframe == fire_frames[n]) {
                 if (ent->client->quad_framenum > level.framenum)
-                    gi.sound(ent, CHAN_ITEM, gi.soundindex("items/damage3.wav"), 1, ATTN_NORM, 0);
+                    gi.sound(ent, CHAN_ITEM, Q3_QuadFireSound(), 1, ATTN_NORM, 0);
 
                 fire(ent);
                 break;

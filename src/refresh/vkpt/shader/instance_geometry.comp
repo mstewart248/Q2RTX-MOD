@@ -204,6 +204,7 @@ main()
 
 		t.cluster = mi.cluster;
 		t.alpha *= mi.alpha;
+		t.texture_flags |= mi.texture_flags;	// the entity's own (TEXTURE_FLAG_Q3_QUAD)
 		t.instance_index = instance_index;
 		if (mi.material != 0)
 			t.material_id = mi.material;

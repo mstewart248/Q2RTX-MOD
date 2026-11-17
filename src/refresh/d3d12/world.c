@@ -264,14 +264,21 @@ static struct {
     ID3D12CommandSignature *tile_dispatch;
 
     // vkpt's pipelines (path_tracer.c, asvgf.c, tone_mapping.c), one per
-    // passes.c pass
+    // passes.c pass: pass_pso's, as vkpt_spec_q3 picks them (select_pass_set)
     ID3D12PipelineState *passes[D3D12_NUM_PASSES];
-    // SER (pt_ser): indirect lighting as ray generation shaders, [0 without the reorder
-    // (pt_ser 2), 1 with it (pt_ser 1), 2 with it before the triangle fetch (pt_ser 3)]
-    // [first bounce, later], made when first asked for; their raygen records, one
-    // 64-byte slot each, in an upload buffer
-    ID3D12StateObject   *ser[3][2];
-    bool                ser_failed[3];
+    // THE PASS SETS (pt_q3_shaders, main.c's update_q3_shaders): [spec_q3][pass].
+    // [1] is every pass as passes.c names it, the Quake III code in; [0] only the
+    // passes with a q2_shader, built without it - the others are [1]'s in both.
+    // The set a frame wants is made the first time it is wanted and kept; a set
+    // that failed is not tried again before the next d3d12_world_init.
+    ID3D12PipelineState *pass_pso[2][D3D12_NUM_PASSES];
+    bool                pass_set_failed[2];
+    // SER (pt_ser): indirect lighting as ray generation shaders, [spec_q3][0 without the
+    // reorder (pt_ser 2), 1 with it (pt_ser 1), 2 with it before the triangle fetch
+    // (pt_ser 3)][first bounce, later], made when first asked for; their raygen records,
+    // one 64-byte slot each, in an upload buffer
+    ID3D12StateObject   *ser[2][3][2];
+    bool                ser_failed[2][3];
     ID3D12Resource      *ser_table;
     uint8_t             *ser_table_map;
     ID3D12PipelineState *blit[2];       // [d3d.hdr]: film_grain.frag into the frame target's format
@@ -388,9 +395,10 @@ static ID3D12PipelineState *compute_pso(d3d12_pipeline_layout_id_t layout, const
     return pso;
 }
 
-// the passes' pipelines, made across threads (d3d12_world_init): each pass's DXIL,
+// the passes' pipelines, made across threads (make_pass_set): each pass's DXIL,
 // read on the main thread, and what make_pass_pso made of it
 typedef struct {
+    const char              *name[D3D12_NUM_PASSES];    // NULL = not wanted
     void                    *code[D3D12_NUM_PASSES];
     size_t                  size[D3D12_NUM_PASSES];
     ID3D12PipelineState     *pso[D3D12_NUM_PASSES];
@@ -404,7 +412,77 @@ static void make_pass_pso(void *ctx, int i)
         return;
     pp->pso[i] = d3d12_create_compute_pso(d3d12_pass_info[i].layout, pp->code[i], pp->size[i], NULL);
     if (pp->pso[i])
-        d3d12_set_name((ID3D12Object *)pp->pso[i], d3d12_pass_info[i].shader);
+        d3d12_set_name((ID3D12Object *)pp->pso[i], pp->name[i]);
+}
+
+// pass i's slot in pass_pso for spec_q3 `q3`: [1] for a pass with no Quake III code
+static int pass_slot(int i, int q3)
+{
+    return d3d12_pass_info[i].q2_shader ? q3 : 1;
+}
+
+/* The pipelines spec_q3 `q3` uses that pass_pso does not have yet, made across
+   threads. False when one could not be: what was made is kept (released with the
+   rest), the set is not used. */
+static bool make_pass_set(int q3)
+{
+    bool ok = true;
+    int wanted = 0;
+    const unsigned start = Sys_Milliseconds();
+    pass_psos_t *pp = Z_Mallocz(sizeof(*pp));
+    for (int i = 0; i < D3D12_NUM_PASSES; i++) {
+        if (w.pass_pso[pass_slot(i, q3)][i])
+            continue;
+        pp->name[i] = q3 ? d3d12_pass_info[i].shader : (d3d12_pass_info[i].q2_shader ? d3d12_pass_info[i].q2_shader
+                                                                                     : d3d12_pass_info[i].shader);
+        pp->code[i] = d3d12_load_shader(pp->name[i], &pp->size[i]);
+        wanted++;
+    }
+    const int threads = wanted ? d3d12_parallel_for(D3D12_NUM_PASSES, make_pass_pso, pp, 0) : 0;
+    for (int i = 0; i < D3D12_NUM_PASSES; i++) {
+        if (!pp->name[i])
+            continue;
+        if (pp->code[i])
+            FS_FreeFile(pp->code[i]);
+        w.pass_pso[pass_slot(i, q3)][i] = pp->pso[i];
+        if (!pp->pso[i]) {
+            ok = false;
+            if (pp->code[i])
+                Com_EPrintf("D3D12: no pipeline for %s against the %s layout\n", pp->name[i],
+                            d3d12_pipeline_layouts[d3d12_pass_info[i].layout].name);
+        }
+    }
+    Z_Free(pp);
+    if (wanted)
+        Com_Printf("D3D12: %d pipelines made in %u ms (%d threads), Quake III code %s\n", wanted,
+                   Sys_Milliseconds() - start, threads, q3 ? "in" : "out");
+    return ok;
+}
+
+// the frame's pipelines: spec_q3 `q3`'s set, which make_pass_set has made
+static void select_pass_set(int q3)
+{
+    for (int i = 0; i < D3D12_NUM_PASSES; i++)
+        w.passes[i] = w.pass_pso[pass_slot(i, q3)][i];
+}
+
+/* vkpt_prep_backend's set_q3_shaders (pt_q3_shaders, main.c's update_q3_shaders):
+   spec_q3 `on`'s set from the next pass recorded on. The frames in flight keep the
+   pipelines they were recorded with - both sets live until d3d12_world_shutdown. */
+bool d3d12_world_set_q3_shaders(bool on)
+{
+    const int q3 = on ? 1 : 0;
+    if (!w.initialized || w.pass_set_failed[q3])
+        return false;
+    if (!make_pass_set(q3)) {
+        w.pass_set_failed[q3] = true;
+        Com_WPrintf("D3D12: the pipelines with the Quake III code %s are missing - keeping the others\n",
+                    q3 ? "in" : "out");
+        return false;
+    }
+    select_pass_set(q3);
+    vkpt_spec_q3 = (uint32_t)q3;
+    return true;
 }
 
 /* SHADER EXECUTION REORDERING (pt_ser), Matt's A/B: the indirect lighting bounces built
@@ -429,12 +507,26 @@ static int ser_variant(int mode)
     return mode == 1 ? 1 : mode == 3 ? 2 : 0;
 }
 
+// its record's slot in w.ser_table: [spec_q3][variant][bounce]
+static int ser_record(int q3, int v, int k)
+{
+    return (q3 * 3 + v) * 2 + k;
+}
+
 static bool ser_ready(int mode)
 {
-    static const char *const suffix[3][2] = {
-        { ".raygen", ".spec_0_1.raygen" },
-        { ".ser", ".spec_0_1.ser" },
-        { ".spec_1_1.ser", ".spec_0_1_1_1.ser" },
+    // [spec_q3]: the Quake III code out (pt_q3_shaders), in
+    static const char *const suffix[2][3][2] = {
+        {
+            { ".spec_7_0.raygen", ".spec_0_1_7_0.raygen" },
+            { ".spec_7_0.ser", ".spec_0_1_7_0.ser" },
+            { ".spec_1_1_7_0.ser", ".spec_0_1_1_1_7_0.ser" },
+        },
+        {
+            { ".raygen", ".spec_0_1.raygen" },
+            { ".ser", ".spec_0_1.ser" },
+            { ".spec_1_1.ser", ".spec_0_1_1_1.ser" },
+        },
     };
     static const char *const what[3] = {
         "without the reorder",
@@ -442,11 +534,12 @@ static bool ser_ready(int mode)
         "with MaybeReorderThread by material, before the triangle fetch",
     };
     const int v = ser_variant(mode);
-    if (w.ser[v][0])
+    const int q3 = vkpt_spec_q3 ? 1 : 0;
+    if (w.ser[q3][v][0])
         return true;
-    if (w.ser_failed[v])
+    if (w.ser_failed[q3][v])
         return false;
-    w.ser_failed[v] = true;     // until made
+    w.ser_failed[q3][v] = true;     // until made
 
     if (d3d.caps.shader_model < D3D_SHADER_MODEL_6_9) {
         Com_WPrintf("D3D12: pt_ser needs shader model 6.9 - the Agility SDK runtime (this device has %d.%d)\n",
@@ -454,8 +547,8 @@ static bool ser_ready(int mode)
         return false;
     }
     if (!w.ser_table) {
-        // six records, 64 bytes apart (D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT)
-        w.ser_table = d3d12_create_buffer(6 * D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT, D3D12_HEAP_TYPE_UPLOAD,
+        // twelve records (ser_record), 64 bytes apart (D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT)
+        w.ser_table = d3d12_create_buffer(12 * D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT, D3D12_HEAP_TYPE_UPLOAD,
                                           D3D12_RESOURCE_FLAG_NONE, "SER raygen records");
         D3D12_RANGE none = { 0, 0 };
         void *map = NULL;
@@ -467,24 +560,25 @@ static bool ser_ready(int mode)
     }
 
     for (int k = 0; k < 2; k++) {
-        const char *name = va("indirect_lighting.rgen.query%s", suffix[v][k]);
+        const char *name = va("indirect_lighting.rgen.query%s", suffix[q3][v][k]);
         size_t size = 0;
         void *dxil = d3d12_load_shader(name, &size);
         if (!dxil)
             return false;
         wchar_t wname[64];
         swprintf(wname, 64, L"%hs", name);
-        w.ser[v][k] = d3d12_create_raygen_object(D3D12_PL_PATH_TRACER, dxil, size,
-                                                 w.ser_table_map + (v * 2 + k) * D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT,
-                                                 wname);
+        w.ser[q3][v][k] = d3d12_create_raygen_object(D3D12_PL_PATH_TRACER, dxil, size,
+                                                     w.ser_table_map + ser_record(q3, v, k) *
+                                                                           D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT,
+                                                     wname);
         FS_FreeFile(dxil);
-        if (!w.ser[v][k]) {
+        if (!w.ser[q3][v][k]) {
             Com_EPrintf("D3D12: pt_ser %d: no ray generation state object for %s\n", mode, name);
-            D3D12_RELEASE(w.ser[v][0]);
+            D3D12_RELEASE(w.ser[q3][v][0]);
             return false;
         }
     }
-    w.ser_failed[v] = false;
+    w.ser_failed[q3][v] = false;
     Com_Printf("D3D12: pt_ser %d - indirect lighting as a ray generation shader, %s\n", mode, what[v]);
     return true;
 }
@@ -496,10 +590,11 @@ static void ser_select(d3d12_passes_t *p)
     if (mode < 1 || mode > 3 || !ser_ready(mode))
         return;
     const int v = ser_variant(mode);
+    const int q3 = vkpt_spec_q3 ? 1 : 0;
     const D3D12_GPU_VIRTUAL_ADDRESS table = ID3D12Resource_GetGPUVirtualAddress(w.ser_table);
     for (int k = 0; k < 2; k++) {
-        p->raygen[k] = w.ser[v][k];
-        p->raygen_records[k] = table + (uint64_t)(v * 2 + k) * D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT;
+        p->raygen[k] = w.ser[q3][v][k];
+        p->raygen_records[k] = table + (uint64_t)ser_record(q3, v, k) * D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT;
     }
 }
 
@@ -1883,26 +1978,26 @@ bool d3d12_world_init(void)
        thread, each the driver's compile of its DXIL - or its shader cache's copy,
        after the first run. ID3D12Device is free-threaded: the files are read here
        (the filesystem is not), the pipelines made on every logical processor. */
-    bool psos = true;
-    const unsigned pso_start = Sys_Milliseconds();
-    pass_psos_t *pp = Z_Mallocz(sizeof(*pp));
-    for (int i = 0; i < D3D12_NUM_PASSES; i++)
-        pp->code[i] = d3d12_load_shader(d3d12_pass_info[i].shader, &pp->size[i]);
-    const int pso_threads = d3d12_parallel_for(D3D12_NUM_PASSES, make_pass_pso, pp, 0);
-    for (int i = 0; i < D3D12_NUM_PASSES; i++) {
-        if (pp->code[i])
-            FS_FreeFile(pp->code[i]);
-        w.passes[i] = pp->pso[i];
-        if (!w.passes[i]) {
-            psos = false;
-            if (pp->code[i])
-                Com_EPrintf("D3D12: no pipeline for %s against the %s layout\n", d3d12_pass_info[i].shader,
-                            d3d12_pipeline_layouts[d3d12_pass_info[i].layout].name);
+    /* Only the set vkpt_spec_q3 asks for (0 at start: no Quake III code), so a start
+       makes as many as it did before the sets; the other is made by
+       d3d12_world_set_q3_shaders on the first frame that wants it. A shader folder
+       without the spec_q3 0 builds falls back to the full set. */
+    int q3 = vkpt_spec_q3 ? 1 : 0;
+    bool psos = make_pass_set(q3);
+    if (!psos && !q3) {
+        bool only_q2_builds = true;     // every pass with no Quake III code was made
+        for (int i = 0; i < D3D12_NUM_PASSES; i++)
+            if (!d3d12_pass_info[i].q2_shader && !w.pass_pso[1][i])
+                only_q2_builds = false;
+        if (only_q2_builds) {
+            w.pass_set_failed[0] = true;
+            Com_WPrintf("D3D12: the pipelines without the Quake III code are missing - using the full ones\n");
+            q3 = 1;
+            psos = make_pass_set(q3);
         }
     }
-    Z_Free(pp);
-    Com_Printf("D3D12: %d pipelines made in %u ms (%d threads)\n", D3D12_NUM_PASSES, Sys_Milliseconds() - pso_start,
-               pso_threads);
+    vkpt_spec_q3 = (uint32_t)q3;
+    select_pass_set(q3);
     // [d3d.hdr]: the frame target's sRGB view, or the scRGB target (vid_hdr)
     w.blit[0] = blit_pso("final_blit.vert", "film_grain.frag", D3D12_FRAME_TARGET_RTV_FORMAT);
     w.blit[1] = blit_pso("final_blit.vert", "film_grain.frag", D3D12_HDR_FORMAT);
@@ -1932,9 +2027,10 @@ bool d3d12_world_init(void)
 void d3d12_world_shutdown(void)
 {
     // the GPU is idle here
-    for (int v = 0; v < 3; v++)
-        for (int k = 0; k < 2; k++)
-            D3D12_RELEASE(w.ser[v][k]);
+    for (int q3 = 0; q3 < 2; q3++)
+        for (int v = 0; v < 3; v++)
+            for (int k = 0; k < 2; k++)
+                D3D12_RELEASE(w.ser[q3][v][k]);
     D3D12_RELEASE(w.ser_table);
     w.ser_table_map = NULL;
     destroy_images();
@@ -1986,8 +2082,12 @@ void d3d12_world_shutdown(void)
     D3D12_RELEASE(w.tile_args);
     D3D12_RELEASE(w.tile_dispatch);
     w.blue_noise = NULL;    // textures.c's
-    for (int i = 0; i < D3D12_NUM_PASSES; i++)
-        D3D12_RELEASE(w.passes[i]);
+    // w.passes only points into the sets
+    for (int i = 0; i < D3D12_NUM_PASSES; i++) {
+        D3D12_RELEASE(w.pass_pso[0][i]);
+        D3D12_RELEASE(w.pass_pso[1][i]);
+        w.passes[i] = NULL;
+    }
     D3D12_RELEASE(w.blit[0]);
     D3D12_RELEASE(w.blit[1]);
     D3D12_RELEASE(w.blit_crt[0]);
@@ -2699,6 +2799,8 @@ bool d3d12_world_render(ID3D12GraphicsCommandList4 *cmd, const d3d12_world_frame
     const uint32_t num_instances = min(frame->num_instances, (uint32_t)MAX_TLAS_INSTANCES);
     QVKUniformBuffer_t *gpu_ubo = (QVKUniformBuffer_t *)(fr->upload_map + UPLOAD_UBO_OFFSET);
     memcpy(gpu_ubo, ubo, sizeof(QVKUniformBuffer_t));
+    // whether god_rays_filter runs - the condition passes.c records it under
+    gpu_ubo->fog_filter_active = fog ? 1 : 0;
     // the radiance cache: vkpt_prepare_frame zeroed pt_sharc when its update
     // does not run; here also when its buffers could not be made
     const bool sharc = frame->sharc_active && w.sharc[0];
@@ -3009,6 +3111,7 @@ bool d3d12_world_render(ID3D12GraphicsCommandList4 *cmd, const d3d12_world_frame
         .output_width = frame->extents.unscaled_width,
         .output_height = frame->extents.unscaled_height,
         .taa_folded = frame->taa_folded,
+        .accumulating = frame->accumulating,
         .god_rays = fog,
         .god_rays_march = frame->god_rays_march,
         .fog_accum_march = frame->fog_accum_march,

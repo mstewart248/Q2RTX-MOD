@@ -147,6 +147,17 @@ typedef struct {
     char        filename[1];
 } pack_t;
 
+// searchpath_t mode bit, kept clear of FS_PATH_MASK: this path holds Quake III
+// Arena data (add_quake3_paths). A name starting "baseq3/" is looked up in
+// these paths only, with the prefix removed - how Quake III's own copy of a
+// file Quake II also has (sound/items/protect.wav, sound/world/electro.wav...)
+// is asked for, since the Quake II one wins an ordinary lookup.
+#define FS_SEARCH_QUAKE3    0x00010000
+
+// 1 when <basedir>/baseq3 had Quake III data (add_quake3_paths); a write to
+// "baseq3/<path>" then goes there (open_file_write)
+static cvar_t *fs_quake3;
+
 typedef struct searchpath_s {
     struct searchpath_s *next;
     pack_t      *pack;        // only one of filename / pack will be used
@@ -892,7 +903,12 @@ static int64_t open_file_write(file_t *file, const char *name)
     }
 
     // expand the path
-    if ((file->mode & FS_PATH_MASK) == FS_PATH_BASE) {
+    if (!Q_strncasecmp(normalized, "baseq3/", 7) && fs_quake3 && fs_quake3->integer) {
+        // Quake III Arena's own directory, as "baseq3/" reads from it (see
+        // open_file_read): the light editor and the material tools save a
+        // Quake III map's files beside its data, not in the game directory
+        len = Q_concat(fullpath, sizeof(fullpath), sys_basedir->string, "/", normalized);
+    } else if ((file->mode & FS_PATH_MASK) == FS_PATH_BASE) {
         if (sys_homedir->string[0]) {
             len = Q_concat(fullpath, sizeof(fullpath),
                            sys_homedir->string, "/" BASEGAME "/", normalized);
@@ -1390,6 +1406,88 @@ int FS_LastModified(char const * file, uint64_t * last_modified)
     return Q_ERR_INVALID_PATH;
 }
 
+/*
+================
+FS_RealPath
+
+The file a read of (path) would open, found without opening it: the first
+match along the search path, in the order open_file_read takes. (flags)'s
+FS_PATH_* bits narrow the search as they do for a read, and a "baseq3/"
+prefix searches Quake III's paths only, as there.
+
+FS_REALPATH_DISK: (out) is the file's full OS path.
+FS_REALPATH_PACK: the first match is inside a pack - (out) names the pack -
+                  so there is no file on disk to write back to.
+FS_REALPATH_NONE: nothing has it.
+
+For a tool that edits a file in place, where it was read from ('mat save'
+with no file name). The write paths cannot say: they always write to the
+game directory, or to baseq2/ or baseq3/ when asked, whichever file a read
+would have found.
+================
+*/
+int FS_RealPath(const char *path, unsigned flags, char *out, size_t size)
+{
+    char            normalized[MAX_OSPATH], fullpath[MAX_OSPATH];
+    const char      *name = normalized;
+    searchpath_t    *search;
+    size_t          namelen;
+    unsigned        hash;
+    bool            quake3_only = false;
+    int             valid = PATH_NOT_CHECKED;
+
+    if (out && size)
+        out[0] = 0;
+
+    namelen = FS_NormalizePathBuffer(normalized, path, sizeof(normalized));
+    if (namelen == 0 || namelen >= sizeof(normalized))
+        return FS_REALPATH_NONE;
+
+    if (namelen > 7 && !Q_strncasecmp(name, "baseq3/", 7)) {
+        name += 7;
+        namelen -= 7;
+        quake3_only = true;
+    }
+
+    hash = FS_HashPath(name, 0);
+
+    for (search = fs_searchpaths; search; search = search->next) {
+        if ((flags & FS_PATH_MASK) && !(flags & search->mode & FS_PATH_MASK))
+            continue;
+        if (quake3_only && !(search->mode & FS_SEARCH_QUAKE3))
+            continue;
+
+        if (search->pack) {
+            pack_t *pak = search->pack;
+            packfile_t *entry;
+
+            if (namelen >= MAX_QPATH)
+                continue;
+            for (entry = pak->file_hash[hash & (pak->hash_size - 1)]; entry; entry = entry->hash_next) {
+                if (entry->namelen == namelen && !FS_pathcmp(pak->names + entry->nameofs, name)) {
+                    if (out && size)
+                        Q_strlcpy(out, pak->filename, size);
+                    return FS_REALPATH_PACK;
+                }
+            }
+        } else {
+            if (valid == PATH_NOT_CHECKED)
+                valid = FS_ValidatePath(name);
+            if (valid == PATH_INVALID)
+                continue;
+            if (Q_concat(fullpath, sizeof(fullpath), search->filename, "/", name) >= sizeof(fullpath))
+                continue;
+            if (Sys_IsFile(fullpath)) {
+                if (out && size)
+                    Q_strlcpy(out, fullpath, size);
+                return FS_REALPATH_DISK;
+            }
+        }
+    }
+
+    return FS_REALPATH_NONE;
+}
+
 // Finds the file in the search path.
 // Fills file_t and returns file length.
 // Used for streaming data out of either a pak file or a seperate file.
@@ -1402,8 +1500,16 @@ static int64_t open_file_read(file_t *file, const char *normalized, size_t namel
     packfile_t      *entry;
     int64_t         ret;
     int             valid;
+    bool            quake3_only = false;
 
     FS_COUNT_READ;
+
+    // "baseq3/<path>": Quake III's own copy of <path> (FS_SEARCH_QUAKE3)
+    if (namelen > 7 && !Q_strncasecmp(normalized, "baseq3/", 7)) {
+        normalized += 7;
+        namelen -= 7;
+        quake3_only = true;
+    }
 
     hash = FS_HashPath(normalized, 0);
 
@@ -1415,6 +1521,9 @@ static int64_t open_file_read(file_t *file, const char *normalized, size_t namel
             if ((file->mode & search->mode & FS_PATH_MASK) == 0) {
                 continue;
             }
+        }
+        if (quake3_only && !(search->mode & FS_SEARCH_QUAKE3)) {
+            continue;
         }
 
         // is the element a pak file?
@@ -3761,8 +3870,67 @@ static void add_rerelease_players(void)
     }
 }
 
+/*
+QUAKE III ARENA DATA, FOR ITS MAPS.
+
+<basedir>/baseq3 holds a retail Quake III install - pak0..pak8.pk3, zips like
+any other - and the bot match can be played on its maps (common/bsp_q3.c).
+Its packs, then the directory itself for loose overrides (baseq3/maps,
+/materials, /materialDev), go on the path BEFORE baseq2, which leaves them
+underneath everything else: every name Quake II or a mod also has is still
+theirs, and Quake III only answers for what nothing above it has - its
+textures/, scripts/, sound/, models/ and maps/. Within baseq3, later packs
+override earlier ones, as they do in Quake III.
+
+fs_quake3 says whether any were found, for the menu (declared up top).
+*/
+static void add_quake3_paths(void)
+{
+    char            dir[MAX_OSPATH], path[MAX_OSPATH];
+    listfiles_t     list;
+    int             count = 0;
+
+    if (Q_concat(dir, sizeof(dir), sys_basedir->string, "/baseq3") >= sizeof(dir) || !Sys_IsDir(dir)) {
+        Cvar_SetByVar(fs_quake3, "0", FROM_CODE);
+        return;
+    }
+
+#if USE_ZLIB
+    memset(&list, 0, sizeof(list));
+    list.filter = ".pk3";
+    Sys_ListFiles_r(&list, dir, 0);
+    qsort(list.files, list.count, sizeof(list.files[0]), pakcmp);
+
+    for (int i = 0; i < list.count; i++) {
+        if (Q_concat(path, sizeof(path), dir, "/", list.files[i]) < sizeof(path)) {
+            pack_t *pack = load_pack_file(path);
+            if (pack) {
+                searchpath_t *search = FS_Malloc(sizeof(searchpath_t));
+                search->mode = FS_PATH_BASE | FS_PATH_GAME | FS_SEARCH_QUAKE3;
+                search->filename[0] = 0;
+                search->pack = pack_get(pack);
+                search->next = fs_searchpaths;
+                fs_searchpaths = search;
+                count++;
+            } else {
+                Com_EPrintf("Couldn't load %s: %s\n", path, Com_GetLastError());
+            }
+        }
+        Z_Free(list.files[i]);
+    }
+    Z_Free(list.files);
+#endif
+
+    add_dir_path(FS_PATH_BASE | FS_PATH_GAME | FS_SEARCH_QUAKE3, dir);
+
+    if (count)
+        Com_Printf("Quake III Arena data: %d pk3 file(s) in %s\n", count, dir);
+    Cvar_SetByVar(fs_quake3, count ? "1" : "0", FROM_CODE);
+}
+
 static void setup_base_paths(void)
 {
+    add_quake3_paths();
     add_rerelease_players();
 
     // base paths have both BASE and GAME bits set by default
@@ -4032,6 +4200,7 @@ void FS_Init(void)
 
 	fs_shareware = Cvar_Get("fs_shareware", "0", CVAR_ROM);
 	fs_rerelease = Cvar_Get("fs_rerelease", "0", CVAR_ROM);
+    fs_quake3 = Cvar_Get("fs_quake3", "0", CVAR_ROM);
 
     // get the game cvar and start the filesystem
     fs_game = Cvar_Get("game", DEFGAME, CVAR_LATCH | CVAR_SERVERINFO);

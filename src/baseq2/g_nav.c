@@ -1037,7 +1037,7 @@ anything custom - gets one built by Nav_Generate.
 
 extern void teleporter_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf);
 
-#define NAV_MAX_TELEPORTERS     64
+#define NAV_MAX_TELEPORTERS     128     // Quake III maps: jump pads count too
 
 // a standing jump clears about 45 units; anything above this is not a jump
 #define NAV_PLAYER_JUMP         56.0f
@@ -1059,20 +1059,37 @@ static void Nav_FindTeleporters(void)
 
     nav_num_tele = 0;
     for (i = game.maxclients + 1; i < globals.num_edicts; i++) {
+        vec3_t  landing;
+        bool    jumppad = false;
+
         e = g_edicts + i;
-        if (!e->inuse || e->touch != teleporter_touch || !e->target)
+        if (!e->inuse || !e->target)
             continue;
 
-        dest = G_Find(NULL, FOFS(targetname), e->target);
-        if (!dest)
+        // Quake III's teleporters and jump pads (g_q3.c) take a bot from one
+        // place to another just as these pads do: walk in, come out there
+        if (e->touch == q3_jumppad_touch) {
+            if (!Q3_JumpPadLanding(e, landing))
+                continue;
+            jumppad = true;
+            dest = NULL;
+        } else if (e->touch == teleporter_touch || e->touch == q3_teleport_touch) {
+            dest = G_Find(NULL, FOFS(targetname), e->target);
+            if (!dest)
+                continue;
+        } else {
             continue;
+        }
 
         if (nav_num_tele == NAV_MAX_TELEPORTERS)
             break;
 
         VectorAdd(e->absmin, e->absmax, nav_tele[nav_num_tele].src);
         VectorScale(nav_tele[nav_num_tele].src, 0.5f, nav_tele[nav_num_tele].src);
-        VectorCopy(dest->s.origin, nav_tele[nav_num_tele].dest);
+        if (jumppad)
+            VectorCopy(landing, nav_tele[nav_num_tele].dest);
+        else
+            VectorCopy(dest->s.origin, nav_tele[nav_num_tele].dest);
         nav_num_tele++;
     }
 }

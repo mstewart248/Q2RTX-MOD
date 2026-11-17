@@ -40,6 +40,8 @@ enum {
    stay far below them (NUM_GLOBAL_TEXTUES). TEXNUM_WHITE, ~0, is exempt and
    still means "no texture". stretch_pic.vert splits them off - keep in sync. */
 #define STRETCH_PIC_FLAG_VIDEO (1u << 30)
+// the image's alpha is ignored: drawn as its colour alone (vkpt_draw_stretch_pic_opaque)
+#define STRETCH_PIC_FLAG_OPAQUE (1u << 31)
 
 static drawStatic_t draw = {
 	.scale = 1.0f,
@@ -1413,6 +1415,18 @@ R_DrawStretchPic_RTX(int x, int y, int w, int h, qhandle_t pic)
 		x,    y,    w,    h,
 		0.0f, 0.0f, 1.0f, 1.0f,
 		draw.colors[0].u32, pic);
+}
+
+/* R_DrawStretchPic with the image's alpha ignored, its colour as stored - the way
+   'mat print' shows a material's maps (MAT_DrawPreview): an albedo whose alpha is
+   a cutout, or zero everywhere, would otherwise draw as holes. */
+void
+vkpt_draw_stretch_pic_opaque(int x, int y, int w, int h, qhandle_t pic)
+{
+	int before = num_stretch_pics;
+	R_DrawStretchPic_RTX(x, y, w, h, pic);
+	if (num_stretch_pics > before && stretch_pic_queue[before].tex_handle != (uint32_t)TEXNUM_WHITE)
+		stretch_pic_queue[before].tex_handle |= STRETCH_PIC_FLAG_OPAQUE;
 }
 
 // A pic w x h centred on (cx, cy), turned clockwise by `angle` radians. The

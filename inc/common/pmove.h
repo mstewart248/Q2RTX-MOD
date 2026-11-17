@@ -45,6 +45,13 @@ typedef struct {
     // map name, the client in CL_ParseConfigstring, the server in
     // SV_SpawnServer.
     bool        n64;
+    // A Quake III Arena map (common/bsp_q3.c). Its Haste and Flight powerups
+    // change how the player moves, and the only per-player movement state that
+    // reaches client prediction bit-for-bit is pmove_state_t, so the game
+    // carries them in s.gravity, which it keeps even on these maps: an ODD
+    // gravity is Haste (x1.3 speed), and a gravity of 0 or 1 is Flight. 1/800
+    // of gravity is the price. Ignored when false, so no other map changes.
+    bool        q3;
     float       speedmult;
     float       watermult;
     float       maxspeed;

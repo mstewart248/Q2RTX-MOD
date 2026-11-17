@@ -483,7 +483,8 @@ void SV_CalcBlend(edict_t *ent)
     // add for powerups
     if (ent->client->quad_framenum > level.framenum) {
         remaining = ent->client->quad_framenum - level.framenum;
-        if (remaining == 30)    // beginning to fade
+        // beginning to fade (a Quake III map ticks wearoff.wav instead, Q3_ClientFrame)
+        if (remaining == 30 && !level.q3map)
             gi.sound(ent, CHAN_ITEM, gi.soundindex("items/damage2.wav"), 1, ATTN_NORM, 0);
         if (remaining > 30 || (remaining & 4))
             SV_AddBlend(0, 0, 1, 0.08f, ent->client->ps.blend);
@@ -605,9 +606,12 @@ void P_FallingDamage(edict_t *ent)
         damage = (delta - 30) / 2;
         if (damage < 1)
             damage = 1;
+        // Quake III's maps are built for its own, much smaller, falls (g_q3.c)
+        if (level.q3map)
+            damage = Q3_FallingDamage(delta);
         VectorSet(dir, 0, 0, 1);
 
-        if (!deathmatch->value || !((int)dmflags->value & DF_NO_FALLING))
+        if (damage && (!deathmatch->value || !((int)dmflags->value & DF_NO_FALLING)))
             T_Damage(ent, world, world, dir, ent->s.origin, vec3_origin, damage, 0, 0, MOD_FALLING);
     } else {
         ent->s.event = EV_FALLSHORT;
@@ -626,6 +630,7 @@ void P_WorldEffects(void)
 {
     bool        breather;
     bool        envirosuit;
+    bool        battlesuit;
     int         waterlevel, old_waterlevel;
 
     if (current_player->movetype == MOVETYPE_NOCLIP) {
@@ -639,6 +644,11 @@ void P_WorldEffects(void)
 
     breather = current_client->breather_framenum > level.framenum;
     envirosuit = current_client->enviro_framenum > level.framenum;
+
+    // Quake III's Battle Suit: no drowning, and no lava or slime at all
+    battlesuit = Q3_BattleSuitActive(current_client);
+    if (battlesuit)
+        envirosuit = true;
 
     //
     // if just entered a water volume, play a sound
@@ -767,7 +777,9 @@ void P_WorldEffects(void)
                 current_player->pain_debounce_framenum = level.framenum + 1 * BASE_FRAMERATE;
             }
 
-            if (envirosuit) // take 1/3 damage with envirosuit
+            if (battlesuit)
+                ;   // none
+            else if (envirosuit) // take 1/3 damage with envirosuit
                 T_Damage(current_player, world, world, vec3_origin, current_player->s.origin, vec3_origin, 1 * waterlevel, 0, 0, MOD_LAVA);
             else
                 T_Damage(current_player, world, world, vec3_origin, current_player->s.origin, vec3_origin, 3 * waterlevel, 0, 0, MOD_LAVA);
@@ -855,6 +867,9 @@ void G_SetClientEffects(edict_t *ent)
 
     // CTF: the flag's glow, and the flag on the carrier's back
     CTF_ClientEffects(ent);
+
+    // Quake III: the Battle Suit's and Regen's shells
+    Q3_ClientEffects(ent);
 }
 
 
@@ -910,6 +925,9 @@ void G_SetClientSound(edict_t *ent)
         ent->s.sound = ent->client->weapon_sound;
     else
         ent->s.sound = 0;
+
+    // Quake III: Flight's hum
+    Q3_ClientSound(ent);
 }
 
 /*
@@ -1053,6 +1071,9 @@ void ClientEndServerFrame(edict_t *ent)
 
     // burn from lava, etc
     P_WorldEffects();
+
+    // Quake III: Regen, the run-down over 100, powerup wear-off
+    Q3_ClientFrame(ent);
 
     //
     // set model angles from view angles so other things in

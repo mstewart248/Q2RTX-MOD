@@ -1348,8 +1348,10 @@ static void ct_fetch_surface(const ct_ray_t *ray, const ct_hit_t *hit, ct_surfac
 		roughness = base[3];
 	}
 
+	// a floor under the maps; the roughness itself with none (MAT_RoughnessIsWhole)
 	if (mat->roughness_override >= 0.f)
-		roughness = max(roughness, mat->roughness_override);
+		roughness = MAT_RoughnessIsWhole(mat) ? mat->roughness_override
+			: max(roughness, mat->roughness_override);
 	s->roughness = ct_clampf(roughness, 0.f, 1.f);
 	s->metallic = metallic;
 	s->specular_factor = mat->specular_factor + (1.f - mat->specular_factor) * metallic;

@@ -158,10 +158,19 @@ void DoRespawn(edict_t *ent)
 
     // send an effect
     ent->s.event = EV_ITEM_RESPAWN;
+
+    Q3_ItemRespawned(ent);  // the quad's, to everyone, on a Quake III map
 }
 
 void SetRespawn(edict_t *ent, float delay)
 {
+    // a Quake III item's "wait" (and "random") override its respawn time
+    if (level.q3map && ent->wait > 0) {
+        delay = ent->wait + crandom() * ent->random;
+        if (delay < 1)
+            delay = 1;
+    }
+
     ent->flags |= FL_RESPAWN;
     ent->svflags |= SVF_NOCLIENT;
     ent->solid = SOLID_NOT;
@@ -187,6 +196,19 @@ static bool Powerup_IsInstant(const gitem_t *it)
            it->use == Use_IR || it->use == Use_Double || it->use == Use_QuadFire;
 }
 
+/*
+Those that take effect the moment they are picked up, with or without
+DF_INSTANT_ITEMS (Matt, 2026-11-17):
+- on a Quake III map: Quake III had no powerup inventory, and its quad,
+  invisibility and suit spawn as Quake II's inventory items (g_q3.c)
+- picked up by a bot, which never uses one from its inventory (g_bot.c), so
+  a bot's quad did nothing
+*/
+static bool Powerup_UseAtPickup(const edict_t *ent, const edict_t *other)
+{
+    return Powerup_IsInstant(ent->item) && (level.q3map || Bot_IsBot(other));
+}
+
 bool Pickup_Powerup(edict_t *ent, edict_t *other)
 {
     int     quantity;
@@ -203,12 +225,13 @@ bool Pickup_Powerup(edict_t *ent, edict_t *other)
     if (deathmatch->value) {
         if (!(ent->spawnflags & DROPPED_ITEM))
             SetRespawn(ent, ent->item->quantity);
-        if (((int)dmflags->value & DF_INSTANT_ITEMS) || ((ent->item->use == Use_Quad) && (ent->spawnflags & DROPPED_PLAYER_ITEM))) {
+        if (((int)dmflags->value & DF_INSTANT_ITEMS) || ((ent->item->use == Use_Quad) && (ent->spawnflags & DROPPED_PLAYER_ITEM)) ||
+            Powerup_UseAtPickup(ent, other)) {
             if ((ent->item->use == Use_Quad) && (ent->spawnflags & DROPPED_PLAYER_ITEM))
                 quad_drop_timeout_hack = ent->nextthink - level.framenum;
             ent->item->use(other, ent->item);
         }
-    } else if (level.instantitems && Powerup_IsInstant(ent->item)) {
+    } else if ((level.instantitems || Powerup_UseAtPickup(ent, other)) && Powerup_IsInstant(ent->item)) {
         // [rerelease] the N64 had no inventory: on its maps (and any map with
         // worldspawn "instantitems") a powerup takes effect the moment it is
         // picked up (IsInstantItemsEnabled)
@@ -393,7 +416,7 @@ void Use_Quad(edict_t *ent, gitem_t *item)
     else
         ent->client->quad_framenum = level.framenum + timeout;
 
-    gi.sound(ent, CHAN_ITEM, gi.soundindex("items/damage.wav"), 1, ATTN_NORM, 0);
+    gi.sound(ent, CHAN_ITEM, Q3_QuadUseSound(), 1, ATTN_NORM, 0);   // Quake III's on its maps
 }
 
 // Double Damage (rogue). Shares quad's drop-timeout hack so a dropped one keeps
@@ -715,6 +738,10 @@ void MegaHealth_think(edict_t *self)
 
 bool Pickup_Health(edict_t *ent, edict_t *other)
 {
+    // Quake III map with its own amounts (g_q3.c)
+    if (level.q3map && g_q3_items->integer)
+        return Q3_PickupHealth(ent, other);
+
     if (!(ent->style & HEALTH_IGNORE_MAX))
         if (other->health >= other->max_health)
             return false;
@@ -769,6 +796,10 @@ bool Pickup_Armor(edict_t *ent, edict_t *other)
     float           salvage;
     int             salvagecount;
     int             base_count;
+
+    // Quake III map with its own amounts (g_q3.c)
+    if (level.q3map && g_q3_items->integer)
+        return Q3_PickupArmor(ent, other);
 
     // get info on new armor
     newinfo = (gitem_armor_t *)ent->item->info;
@@ -931,11 +962,18 @@ void Touch_Item(edict_t *ent, edict_t *other, cplane_t *plane, csurface_t *surf)
         other->client->ps.stats[STAT_PICKUP_STRING] = CS_ITEMS + ITEM_INDEX(ent->item);
         other->client->pickup_msg_framenum = level.framenum + 3.0f * BASE_FRAMERATE;
 
-        // change selected item
-        if (ent->item->use)
+        // change selected item - unless it was used up at the pickup (instant
+        // powerups), which would leave its icon in the slot with none held
+        if (ent->item->use && other->client->pers.inventory[ITEM_INDEX(ent->item)] > 0)
             other->client->pers.selected_item = other->client->ps.stats[STAT_SELECTED_ITEM] = ITEM_INDEX(ent->item);
 
-        if (ent->item->pickup == Pickup_Health) {
+        int q3_health_sound = (ent->item->pickup == Pickup_Health) ? Q3_HealthSound(ent) : 0;
+
+        if (Q3_PowerupPickupSound(ent, other)) {
+            // a powerup on a Quake III map: Quake III's, played there
+        } else if (q3_health_sound) {
+            gi.sound(other, CHAN_ITEM, q3_health_sound, 1, ATTN_NORM, 0);
+        } else if (ent->item->pickup == Pickup_Health) {
             if (ent->count == 2)
                 gi.sound(other, CHAN_ITEM, gi.soundindex("items/s_health.wav"), 1, ATTN_NORM, 0);
             else if (ent->count == 10)
@@ -1000,6 +1038,7 @@ edict_t *Drop_Item(edict_t *ent, gitem_t *item)
     VectorSet(dropped->mins, -15, -15, -15);
     VectorSet(dropped->maxs, 15, 15, 15);
     gi.setmodel(dropped, dropped->item->world_model);
+    Q3_DroppedItem(dropped);    // Quake III's quad model on its maps
     dropped->solid = SOLID_TRIGGER;
     dropped->movetype = MOVETYPE_TOSS;
     dropped->touch = drop_temp_touch;
@@ -1240,7 +1279,7 @@ void PrecacheItem(gitem_t *it)
             s++;
 
         // determine type based on extension
-        if (!strcmp(data + len - 3, "md2"))
+        if (!strcmp(data + len - 3, "md2") || !strcmp(data + len - 3, "md3"))
             gi.modelindex(data);
         else if (!strcmp(data + len - 3, "sp2"))
             gi.modelindex(data);
@@ -3372,6 +3411,132 @@ gitem_t itemlist[] = {
         NULL,
         0,
         /* precache */ "weapons/grapple/grfire.wav weapons/grapple/grpull.wav weapons/grapple/grhang.wav weapons/grapple/grreset.wav weapons/grapple/grhit.wav weapons/grapple/grfly.wav"
+    },
+
+    //
+    // QUAKE III ARENA - placed only by its maps, under their own rules and
+    // with their own models and sounds (g_q3.c). Kept at the end of the list
+    // so every item before them keeps its index.
+    //
+    {
+        "item_q3_haste",
+        Pickup_Q3Powerup,
+        NULL,
+        NULL,
+        NULL,
+        "#baseq3/sound/items/haste.wav",
+        "models/powerups/instant/haste.md3", EF_ROTATE,
+        NULL,
+        /* icon */      "/icons/haste.tga",
+        /* pickup */    "Haste",
+        /* width */     2,
+        30,
+        NULL,
+        IT_POWERUP,
+        0,
+        NULL,
+        0,
+        /* precache */ "models/powerups/instant/haste_ring.md3 #baseq3/sound/items/wearoff.wav"
+    },
+    {
+        "item_q3_regen",
+        Pickup_Q3Powerup,
+        NULL,
+        NULL,
+        NULL,
+        "#baseq3/sound/items/regeneration.wav",
+        "models/powerups/instant/regen.md3", EF_ROTATE,
+        NULL,
+        /* icon */      "/icons/regen.tga",
+        /* pickup */    "Regeneration",
+        /* width */     2,
+        30,
+        NULL,
+        IT_POWERUP,
+        0,
+        NULL,
+        0,
+        /* precache */ "models/powerups/instant/regen_ring.md3 #baseq3/sound/items/regen.wav #baseq3/sound/items/wearoff.wav"
+    },
+    {
+        "item_q3_flight",
+        Pickup_Q3Powerup,
+        NULL,
+        NULL,
+        NULL,
+        "#baseq3/sound/items/flight.wav",
+        "models/powerups/instant/flight.md3", EF_ROTATE,
+        NULL,
+        /* icon */      "/icons/flight.tga",
+        /* pickup */    "Flight",
+        /* width */     2,
+        60,
+        NULL,
+        IT_POWERUP,
+        0,
+        NULL,
+        0,
+        /* precache */ "models/powerups/instant/flight_ring.md3 #baseq3/sound/items/wearoff.wav"
+    },
+    {
+        "item_q3_battlesuit",
+        Pickup_Q3Powerup,
+        NULL,
+        NULL,
+        NULL,
+        "#baseq3/sound/items/protect.wav",
+        "models/powerups/instant/enviro.md3", EF_ROTATE,
+        NULL,
+        /* icon */      "/icons/envirosuit.tga",
+        /* pickup */    "Battle Suit",
+        /* width */     2,
+        30,
+        NULL,
+        IT_POWERUP,
+        0,
+        NULL,
+        0,
+        /* precache */ "models/powerups/instant/enviro_ring.md3 #baseq3/sound/items/protect3.wav #baseq3/sound/items/wearoff.wav"
+    },
+    {
+        "item_q3_medkit",
+        Pickup_Q3Holdable,
+        Use_Q3Medkit,
+        NULL,
+        NULL,
+        "#baseq3/sound/items/holdable.wav",
+        "models/powerups/holdable/medkit.md3", EF_ROTATE,
+        NULL,
+        /* icon */      "/icons/medkit.tga",
+        /* pickup */    "Medkit",
+        /* width */     0,
+        0,
+        NULL,
+        0,
+        0,
+        NULL,
+        0,
+        /* precache */ "#baseq3/sound/items/use_medkit.wav"
+    },
+    {
+        "item_q3_teleporter",
+        Pickup_Q3Holdable,
+        Use_Q3Teleporter,
+        NULL,
+        NULL,
+        "#baseq3/sound/items/holdable.wav",
+        "models/powerups/holdable/teleporter.md3", EF_ROTATE,
+        NULL,
+        /* icon */      "/icons/teleporter.tga",
+        /* pickup */    "Personal Teleporter",
+        /* width */     0,
+        0,
+        NULL,
+        0,
+        0,
+        NULL,
+        0,
+        /* precache */ "#baseq3/sound/world/telein.wav #baseq3/sound/world/teleout.wav"
     },
 
     // end of list marker

@@ -40,7 +40,10 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 typedef struct mtexinfo_s {  // used internally due to name len probs //ZOID
     csurface_t          c;
-    char                name[MAX_TEXNAME];
+    // MAX_QPATH rather than the on-disk MAX_TEXNAME: a Quake III map names its
+    // surfaces by shader path ("base_wall/c_met5_2" with "textures/" taken
+    // off, or "../models/mapobjects/..."), and those run past 32 characters.
+    char                name[MAX_QPATH];
 
 #if USE_REF
     int                 radiance;
@@ -71,6 +74,13 @@ typedef struct {
     uint32_t tangent;
     uint32_t bitangent;
 } mbasis_t;
+
+// A Quake III fog brush: its box, and its shader's "fogparms ( r g b ) distance"
+typedef struct {
+    vec3_t      mins, maxs;
+    vec3_t      color;
+    float       distance;       // how far in it turns opaque
+} mfogvolume_t;
 
 typedef struct {
     mvertex_t   *v[2];
@@ -116,6 +126,14 @@ typedef struct mface_s {
     mtexinfo_t      *texinfo;
     int             texturemins[2];
     int             extents[2];
+
+    // Quake III maps (bsp_q3.c): every face is one triangle carrying its own
+    // texture mapping, because Quake III stores a UV per vertex instead of
+    // texinfo axes. u = DotProduct(point, uv_axis[0]) + uv_axis[0][3], in
+    // 0..1 units of the image (v likewise) - not texels, so the renderer does
+    // not divide by the image size. texinfo->axis is unused when uv_mapped.
+    bool            uv_mapped;
+    float           uv_axis[2][4];
 
 #if REF_GL
     int             texnum[2];
@@ -191,6 +209,18 @@ typedef struct {
     int             area;
     mbrush_t        **firstleafbrush;
     int             numleafbrushes;
+
+    // Quake III maps (bsp_q3.c). A Quake III leaf has no contents of its own -
+    // detail brushes do not split the tree, so one leaf can be part water,
+    // part solid and part air - and its point contents come from testing the
+    // point against the leaf's brushes (pointtest). `contents` is then only
+    // the best single answer for the whole leaf (solid for an opaque leaf, a
+    // liquid when the leaf's centre is in one), which is what the renderer's
+    // leaf-level checks want. brushcontents is every contents bit any listed
+    // brush has, for the trace code's "can anything here stop me" early-out.
+    // Zero for a Quake II map, where `contents` already answers both.
+    int             brushcontents;
+    bool            pointtest;
 #if USE_REF
     mface_t         **firstleafface;
     int             numleaffaces;
@@ -303,6 +333,10 @@ typedef struct bsp_s {
 
     int             numbases;
     mbasis_t        *bases;
+
+    // Quake III fog brushes (bsp_q3.c) - a box of the map's own coloured fog
+    int             numfogvolumes;
+    mfogvolume_t    *fogvolumes;
 #endif
 
 	byte            *pvs_matrix;
@@ -310,6 +344,7 @@ typedef struct bsp_s {
 	bool            pvs_patched;
 
     bool            extended;
+    bool            q3;             // transcoded from a Quake III IBSP 46 (bsp_q3.c)
 
 	// WARNING: the 'name' string is actually longer than this, and the bsp_t structure is allocated larger than sizeof(bsp_t) in BSP_Load
     char            name[1];
@@ -317,6 +352,12 @@ typedef struct bsp_s {
 
 int BSP_Load(const char *name, bsp_t **bsp_p);
 void BSP_Free(bsp_t *bsp);
+
+// bsp_q3.c: fills `bsp` (name, refcount and checksum already set, hunk not yet
+// begun) from a whole Quake III .bsp file. BSP_Load calls it for IBSP 46 and
+// does the validation and PVS work that follows for either format.
+int BSP_LoadQ3(bsp_t *bsp, const byte *buf, size_t filelen);
+void BSP_Q3_Init(void);
 const char *BSP_GetError(void);
 
 #if USE_REF

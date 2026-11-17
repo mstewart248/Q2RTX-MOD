@@ -18,6 +18,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #include "shader/vertex_buffer.h"
 #include "material.h"
+#include "fog.h"
+#include "q3stages.h"
 
 #include <assert.h>
 #include "conversion.h"
@@ -79,6 +81,11 @@ static cvar_t* cvar_pt_fog_scale_dynamic  = NULL;
 static cvar_t* cvar_pt_fog_scale_model    = NULL;
 static cvar_t* cvar_pt_fog_lava_scale     = NULL;
 
+// A Quake III map whose own lights should fog everywhere at their class default,
+// as on a Quake II map, rather than only inside its fog brushes. Per map:
+// "mapcvar pt_fog_q3_map_lights 1" in baseq3/maps/<map>.cfg.
+static cvar_t* cvar_pt_fog_q3_map_lights  = NULL;
+
 // Resolve a light's volumetric scale: an explicit value wins, otherwise the
 // material's, otherwise the class default.  Called once per light per frame.
 static float
@@ -100,14 +107,25 @@ resolve_volumetric_scale(const light_poly_t* light)
 	if (light->type == DYNLIGHT_SPHERE || light->type == DYNLIGHT_SPOT)
 		return cvar_pt_fog_scale_dynamic ? cvar_pt_fog_scale_dynamic->value : 1.f;
 
+	/* A QUAKE III MAP'S OWN LIGHTS MAKE NO FOG OF THEIR OWN ACCORD - Matt's call.
+	   On those maps the fog is where the mapper put fog brushes, the sun and the
+	   sky's, and whatever light has been given a volumetric_scale on purpose
+	   (per light, or per material above). So a map light left at its class
+	   default fogs only INSIDE the map's fog brushes, which it has to light or
+	   they would be black. The NEGATIVE value says exactly that to the shader:
+	   fog_light_vol_scale (fog_medium.glsl) uses -value inside a fog brush and 0
+	   everywhere else. Model lights and dlights keep their defaults. */
+	float sign = (vkpt_fog_world_is_q3() && light->material
+	              && !(cvar_pt_fog_q3_map_lights && cvar_pt_fog_q3_map_lights->integer)) ? -1.f : 1.f;
+
 	// lava has its own knob (pt_fog_lava gives the fog its lava lights). It is
 	// x10 so the menu's 1..10 covers the useful range: a lava pool's emission
 	// is dim next to a fixture's, and the right amount measured ~50 by eye.
 	if (light->material && MAT_IsKind(light->material->flags, MATERIAL_KIND_LAVA))
-		return 10.f * (cvar_pt_fog_lava_scale ? cvar_pt_fog_lava_scale->value : 5.f);
+		return sign * 10.f * (cvar_pt_fog_lava_scale ? cvar_pt_fog_lava_scale->value : 5.f);
 
 	if (light->material)
-		return cvar_pt_fog_scale_emissive ? cvar_pt_fog_scale_emissive->value : 1.f;
+		return sign * (cvar_pt_fog_scale_emissive ? cvar_pt_fog_scale_emissive->value : 1.f);
 
 	return cvar_pt_fog_scale_model ? cvar_pt_fog_scale_model->value : 1.f;
 }
@@ -928,8 +946,41 @@ inject_model_lights(bsp_mesh_t* bsp_mesh, bsp_t* bsp, int num_model_lights, ligh
 	return (uint32_t)tail;
 }
 
+// the shader clock this frame's lights are worked out at (Quake III programs)
+static float light_time;
+
+/* A Quake III program's glow (light_poly_t q3_glow): its colour now, from the
+   program - NULL while its images are not in memory, when `color` stands in.
+   A still program's is worked out once and kept on the light. */
+static const float*
+q3_glow_color(light_poly_t* light, vec3_t out)
+{
+	if (!light->q3_glow || light->type != DYNLIGHT_POLYGON || !light->material || !light->material->q3_program)
+		return NULL;
+
+	const uint32_t key = vkpt_q3_program_key(light->material);
+	if (key && light->q3_glow_key == key)
+	{
+		VectorScale(light->q3_glow_rgb, light->emissive_factor, out);
+		return out;
+	}
+
+	vec3_t rgb;
+	const int result = vkpt_q3_light_glow(light->material, light->q3_uv, light->q3_samples, light_time, rgb);
+	if (result == 0)
+		return NULL;
+	if (result == 2)
+	{
+		light->q3_glow_key = key;
+		VectorCopy(rgb, light->q3_glow_rgb);
+	}
+
+	VectorScale(rgb, light->emissive_factor, out);
+	return out;
+}
+
 static inline void
-copy_light(const light_poly_t* light, float* vblight, const float* sky_radiance)
+copy_light(light_poly_t* light, float* vblight, const float* sky_radiance)
 {
 	float style_scale = 1.f;
 	float prev_style = 1.f;
@@ -942,7 +993,8 @@ copy_light(const light_poly_t* light, float* vblight, const float* sky_radiance)
 		prev_style = max(0.f, min(2.f, prev_style));
 	}
 
-	float mat_scale = light->material ? light->material->emissive_factor : 1.f;
+	// light_factor: the light cast only - the surface is drawn with emissive_factor alone
+	float mat_scale = light->material ? light->material->emissive_factor * light->material->light_factor : 1.f;
 
 	VectorCopy(light->positions + 0, vblight + 0);
 	VectorCopy(light->positions + 3, vblight + 4);
@@ -956,9 +1008,13 @@ copy_light(const light_poly_t* light, float* vblight, const float* sky_radiance)
 	}
 	else
 	{
-		vblight[3] = light->color[0] * mat_scale;
-		vblight[7] = light->color[1] * mat_scale;
-		vblight[11] = light->color[2] * mat_scale;
+		vec3_t glow;
+		const float* color = q3_glow_color(light, glow);
+		if (!color)
+			color = light->color;
+		vblight[3] = color[0] * mat_scale;
+		vblight[7] = color[1] * mat_scale;
+		vblight[11] = color[2] * mat_scale;
 	}
 
 	vblight[12] = style_scale;
@@ -979,6 +1035,8 @@ copy_light(const light_poly_t* light, float* vblight, const float* sky_radiance)
 
 extern char cluster_debug_mask[VIS_MAX_BYTES];
 
+bool vkpt_q3_materials_in_use;
+
 VkResult
 vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp_t* bsp, int num_model_lights, light_poly_t* transformed_model_lights, const float* sky_radiance)
 {
@@ -987,6 +1045,9 @@ vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp
 	// this frame's light staging, Vulkan's or D3D12's - see vkpt_prep_backend
 	LightBuffer* lbo = (LightBuffer*)vkpt_prep_backend->map_staging(VKPT_STAGING_LIGHTS);
 	assert(lbo);
+
+	// the clock vkpt_q3_upload draws the programs at, below
+	light_time = vkpt_refdef.fd ? vkpt_refdef.fd->time : 0.f;
 
 	// How far into the two list arrays this frame writes - see WHAT THE LIGHT AND
 	// IQM UPLOADS COPY.
@@ -1114,6 +1175,14 @@ vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp
 	// moved, so the table that reaches the device is byte-identical.
 	static uint32_t material_table[MAX_PBR_MATERIALS * MATERIAL_UINTS];
 
+	// Quake III shader stages for this frame's time (q3stages.c), first: the
+	// table below records where each material's program landed. Straight into
+	// the mapped staging, each vec4 written once.
+	vkpt_q3_upload(lbo->q3_stages, vkpt_refdef.fd ? vkpt_refdef.fd->time : 0.f);
+
+	// whether any row below uses what spec_q3 0 compiles out (main.c, update_q3_shaders)
+	bool q3_materials = false;
+
 	for (int nmat = 0; nmat < MAX_PBR_MATERIALS; nmat++)
 	{
 		pbr_material_t const* material = r_materials + nmat;
@@ -1137,6 +1206,10 @@ vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp
 		mat_data[3] |= floatToHalf(material->emissive_factor) << 16;
 		mat_data[4] |= (material->num_frames & 0xffff);
 		mat_data[4] |= (material->next_frame & 0xffff) << 16;
+		// bit 31 of word 4, above next_frame's 13 bits (MAX_PBR_MATERIALS 8192):
+		// roughness_override is the roughness all over (MAT_RoughnessIsWhole)
+		if (MAT_RoughnessIsWhole(material))
+			mat_data[4] |= 1u << 31;
 		mat_data[5] = floatToHalf(material->specular_factor);
 		mat_data[5] |= floatToHalf(material->base_factor) << 16;
 
@@ -1160,13 +1233,44 @@ vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp
 				mat_data[7] |= 1u << 3;
 		}
 
+		// alpha_glass in bit 4 of word 7: glass only where the base texture's
+		// alpha is under a half (material.h)
+		if (material->alpha_glass) {
+			mat_data[7] |= 1u << 4;
+			q3_materials = true;
+		}
+
+		// caustic strength in bits 5..15 of word 7, in 1/128ths (0 = off, top
+		// 2047/128 = 16 - the parser caps it at 15). GLASS only: no other kind's
+		// shadow ray reads it.
+		if (material->glass_caustic > 0.f && MAT_IsKind(material->flags, MATERIAL_KIND_GLASS)) {
+			uint32_t q = (uint32_t)(material->glass_caustic * 128.f + 0.5f);
+			mat_data[7] |= (max(1u, min(q, 2047u)) & 0x7ffu) << 5;
+			q3_materials = true;
+		}
+
 		// albedo_strength as a half in the low half of word 9, top half spare.
 		// Left at zero when not stated, which the shader reads as "use
 		// pt_bounce_albedo_power" - the same as an unregistered material's row.
 		// pt_bounce_albedo_material 0 leaves every row at zero.
 		if (material->albedo_strength > 0.f && cvar_pt_bounce_albedo_material->integer)
 			mat_data[9] = floatToHalf(material->albedo_strength);
+
+		// top half of word 9: the Quake III program's first vec4 + 1, 0 for none
+		if (material->q3_program) {
+			mat_data[9] |= (vkpt_q3_program_offset(material) & 0xffff) << 16;
+			q3_materials = true;
+		}
+
+		// caustic_ripple as a half in the low half of word 10, top half spare.
+		// GLASS only, as for caustic above.
+		if (material->caustic_ripple > 0.f && MAT_IsKind(material->flags, MATERIAL_KIND_GLASS)) {
+			mat_data[10] = floatToHalf(material->caustic_ripple);
+			q3_materials = true;
+		}
 	}
+
+	vkpt_q3_materials_in_use = q3_materials;
 
 	memcpy(lbo->material_table, material_table, sizeof(lbo->material_table));
 
@@ -1804,6 +1908,7 @@ vkpt_vertex_buffer_init_cvars(void)
 	cvar_pt_fog_scale_dynamic  = Cvar_Get("pt_fog_scale_dynamic",  "1.0", 0);
 	cvar_pt_fog_scale_model    = Cvar_Get("pt_fog_scale_model",    "1.0", 0);
 	cvar_pt_fog_lava_scale     = Cvar_Get("pt_fog_lava_scale",     "5.0", 0);
+	cvar_pt_fog_q3_map_lights  = Cvar_Get("pt_fog_q3_map_lights",  "0", 0);
 }
 
 VkResult

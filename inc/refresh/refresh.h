@@ -31,6 +31,14 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define MAX_PARTICLES   1000000
 #define MAX_LIGHTSTYLES 256
 
+// An IMAGE's path - image_t names and a material's texture_* files. Longer
+// than MAX_QPATH (63 characters) because a .mat can name a loose file anywhere,
+// e.g. materialDev/textures/base_door/shinymetaldoor_outside3a2_light.png (66).
+// Nothing that goes over the network or into a configstring holds one; names
+// the engine hands in (BSP textures, model skins, pics) still fit in MAX_QPATH,
+// and pak entries are still looked up only below MAX_QPATH (files.c).
+#define MAX_IMAGE_PATH  128
+
 #define POWERSUIT_SCALE     4.0f
 #define WEAPONSHELL_SCALE   0.5f
 
@@ -56,6 +64,20 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #define RF_SHELL_MASK       (RF_SHELL_RED | RF_SHELL_GREEN | RF_SHELL_BLUE | \
                              RF_SHELL_DOUBLE | RF_SHELL_HALF_DAM)
+
+// [Q2RTX] Client to renderer only, never on the wire (entities.c strips it from
+// what a server sends; bit 28, past every renderfx bit in shared.h). A quad
+// entity on a Quake III map: the RTX renderers draw Quake III's powerups/quad
+// lightning over it instead of the blue shell (vkpt q3stages.c "QUAKE III QUAD
+// DAMAGE"). RF_SHELL_BLUE stays set beside it for GL and software.
+#define RF_Q3_QUAD          0x10000000
+
+// [Q2RTX] Client to renderer only, never on the wire, like RF_Q3_QUAD. A player
+// under the invisibility powerup (the game's RF_TRANSLUCENT on a player model)
+// and the weapon in its hands: the RTX renderers draw them as kind WATER that
+// only refracts (vkpt main.c, TEXTURE_FLAG_CLOAK). RF_TRANSLUCENT stays for GL
+// and software.
+#define RF_CLOAK            0x20000000
 
 #define DLIGHT_CUTOFF       64
 
@@ -404,8 +426,8 @@ typedef struct ref_feedback_s {
 	   RENDERED frames, so it needs this to report what reached the display. */
 	int         presented_frames;
 
-	char        view_material[MAX_QPATH];
-	char        view_material_override[MAX_QPATH];
+	char        view_material[MAX_IMAGE_PATH];
+	char        view_material_override[MAX_IMAGE_PATH];
     int         view_material_index;
 
 	/* The geometry the crosshair is on, for the material system's per-surface
@@ -422,7 +444,8 @@ typedef struct ref_feedback_s {
 // A map's authored fog keys give it its SHAPE and colour only - the densities
 // are normalised to a peak of 1, so how bright the fog renders is decided by
 // the pt_fog_scale_* knobs alone and the same setting looks the same on every
-// map. A map with no fog keys gets a flat white medium of density 1.
+// map. A map with no fog keys gets a flat medium of density 1 (no_map_fog), white
+// - which the renderer turns the colour of the map's own sky (pt_fog_sky_color).
 typedef struct {
     int     mode;               // the renderer's fog_mode; 3 whenever cl_fog is on
 
@@ -438,6 +461,7 @@ typedef struct {
     float   hf_color_start_z;   // the colour is hf_start_color at this world Z
     float   hf_color_end_z;     // and hf_end_color at this one
     bool    color_layers;       // each fog in its own colour by its share (cl_fog_rerelease)
+    bool    no_map_fog;         // the map has no fog of its own: the default medium above
 } mapfog_params_t;
 
 /* THE RENDERER-SIDE ACCESSOR FOR THE ABOVE, DECLARED HERE ON PURPOSE.

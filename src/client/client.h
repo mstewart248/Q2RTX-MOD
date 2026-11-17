@@ -850,6 +850,7 @@ void CL_RegisterBspModels(void);
 void CL_RegisterVWepModels(void);
 void CL_PrepRefresh(void);
 void CL_UpdateConfigstring(int index);
+void CL_InitSkyOverride(void);
 
 
 //

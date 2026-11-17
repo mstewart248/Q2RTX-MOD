@@ -155,6 +155,12 @@ bool FS_ExtCmp(const char *extension, const char *string);
 
 int FS_LastModified(char const * file, uint64_t * last_modified);
 
+// which file a read of (path) would open - see files.c
+#define FS_REALPATH_NONE    0
+#define FS_REALPATH_DISK    1
+#define FS_REALPATH_PACK    2
+int FS_RealPath(const char *path, unsigned flags, char *out, size_t size);
+
 #define FS_ReallocList(list, count) \
     Z_Realloc(list, ALIGN(count, MIN_LISTED_FILES) * sizeof(void *))
 

@@ -72,6 +72,21 @@ static model_t *MOD_Alloc(void)
     return model;
 }
 
+model_t *MOD_AllocProcedural(const char *name, size_t hunk_size)
+{
+    model_t *model = MOD_Alloc();
+
+    if (!model)
+        return NULL;
+
+    memset(model, 0, sizeof(*model));
+    Q_strlcpy(model->name, name, sizeof(model->name));
+    model->registration_sequence = registration_sequence;
+    model->type = MOD_ALIAS;
+    Hunk_Begin(&model->hunk, hunk_size);
+    return model;
+}
+
 static model_t *MOD_Find(const char *name)
 {
     model_t *model;

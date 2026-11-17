@@ -502,6 +502,7 @@ category_of(int idx)
 	case PROFILER_ASVGF_TAA:
 		return CAT_DENOISER;
 	case PROFILER_COMPOSITING:
+	case PROFILER_ACCUMULATION:		// photo mode's running average (profiler.h)
 	case PROFILER_INTERLEAVE:
 	case PROFILER_MGPU_TRANSFERS:
 		return CAT_COMPOSITING;
@@ -2462,6 +2463,9 @@ draw_profiler(int enable_asvgf, const char *title)
 	else
 	{
 		PROFILER_DO(PROFILER_COMPOSITING, 1);
+		// photo mode's running average, only while it runs
+		if (shown_results()[PROFILER_ACCUMULATION * 2 + 1])
+			PROFILER_DO(PROFILER_ACCUMULATION, 1);
 	}
 	if (qvk.device_count > 1) {
 		PROFILER_DO(PROFILER_MGPU_TRANSFERS, 1);

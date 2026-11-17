@@ -356,11 +356,159 @@ OGG_WrapTrack(int trackNo)
 // --------
 
 /*
+ * QUAKE III ARENA MUSIC
+ *
+ * A Quake III map names its music in worldspawn's "music" key: one .wav, or
+ * an intro and a loop ("music/fla22k_04_intro.wav music/fla22k_04_loop.wav"),
+ * kept in its pk3s - not the Ogg tracks this player otherwise streams from
+ * disk. The game passes that string on in CS_CDTRACK and the client hands it
+ * here (precache.c, CL_PlayMapMusic). Plain PCM, so it goes to the same raw
+ * sample stream with no decoding: the intro once, then the loop over and over
+ * - the intro itself, when there is no loop, as Quake III does. ogg_status and
+ * the volume work for it as for a track; ogg_curfile is OGG_WAV_MUSIC.
+ */
+#define OGG_WAV_MUSIC   -2
+
+static struct {
+	byte        *file;          // the whole .wav (FS_LoadFile)
+	const byte  *pcm;           // its data chunk
+	size_t      size, pos;      // bytes
+	int         rate, width, channels;
+	char        intro[MAX_QPATH];
+	char        loop[MAX_QPATH];
+	bool        in_loop;
+} wav_music;
+
+static void WAV_Close(void)
+{
+	if (wav_music.file)
+		FS_FreeFile(wav_music.file);
+	wav_music.file = NULL;
+	wav_music.pcm = NULL;
+	wav_music.size = wav_music.pos = 0;
+}
+
+static bool WAV_Open(const char *name)
+{
+	byte    *file = NULL;
+	int     len;
+	const byte *p, *end;
+	bool    have_fmt = false;
+
+	WAV_Close();
+
+	len = FS_LoadFile(name, (void **)&file);
+	if (!file) {
+		Com_Printf("Music: couldn't load %s\n", name);
+		return false;
+	}
+	if (len < 12 || memcmp(file, "RIFF", 4) || memcmp(file + 8, "WAVE", 4)) {
+		Com_Printf("Music: %s is not a WAV file\n", name);
+		FS_FreeFile(file);
+		return false;
+	}
+
+	// walk the chunks for "fmt " and "data"
+	p = file + 12;
+	end = file + len;
+	while (end - p >= 8) {
+		uint32_t size = p[4] | (p[5] << 8) | (p[6] << 16) | ((uint32_t)p[7] << 24);
+		const byte *body = p + 8;
+
+		if ((size_t)(end - body) < size)
+			size = (uint32_t)(end - body);
+
+		if (!memcmp(p, "fmt ", 4) && size >= 16) {
+			int format = body[0] | (body[1] << 8);
+			wav_music.channels = body[2] | (body[3] << 8);
+			wav_music.rate = body[4] | (body[5] << 8) | (body[6] << 16) | (body[7] << 24);
+			wav_music.width = (body[14] | (body[15] << 8)) / 8;
+			if (format != 1 || (wav_music.width != 1 && wav_music.width != 2) ||
+				wav_music.channels < 1 || wav_music.channels > 2 || wav_music.rate <= 0) {
+				Com_Printf("Music: %s is not 8 or 16 bit PCM mono or stereo\n", name);
+				break;
+			}
+			have_fmt = true;
+		} else if (!memcmp(p, "data", 4) && have_fmt) {
+			wav_music.file = file;
+			wav_music.pcm = body;
+			wav_music.size = size - size % (wav_music.width * wav_music.channels);
+			wav_music.pos = 0;
+			return wav_music.size > 0;
+		}
+
+		p = body + size + (size & 1);
+	}
+
+	Com_Printf("Music: %s has no PCM data\n", name);
+	FS_FreeFile(file);
+	return false;
+}
+
+static void WAV_Read(void)
+{
+	const size_t frame = (size_t)wav_music.width * wav_music.channels;
+	size_t bytes;
+
+	if (!wav_music.pcm || wav_music.pos >= wav_music.size) {
+		// the intro is over, or the loop came round: the loop from its start
+		if (!WAV_Open(wav_music.loop[0] ? wav_music.loop : wav_music.intro)) {
+			ogg_status = STOP;
+			ogg_curfile = -1;
+			return;
+		}
+		wav_music.in_loop = true;
+	}
+
+	bytes = min(wav_music.size - wav_music.pos, frame * 4096);
+	S_RawSamples((int)(bytes / frame), wav_music.rate, wav_music.width, wav_music.channels,
+		(byte *)(wav_music.pcm + wav_music.pos), S_GetLinearVolume(ogg_volume->value));
+	wav_music.pos += bytes;
+}
+
+/*
+ * Play a Quake III map's music: (intro), then (loop) round and round. Paths
+ * as the filesystem takes them. Leaves the same music playing alone.
+ */
+void
+OGG_PlayMusicFiles(const char *intro, const char *loop)
+{
+	if (s_started == SS_NOT || !intro || !intro[0])
+		return;
+
+	if (ogg_curfile == OGG_WAV_MUSIC && ogg_status != STOP &&
+		!Q_stricmp(wav_music.intro, intro) && !Q_stricmp(wav_music.loop, loop ? loop : ""))
+		return;
+
+	OGG_Stop();
+
+	Q_strlcpy(wav_music.intro, intro, sizeof(wav_music.intro));
+	Q_strlcpy(wav_music.loop, loop ? loop : "", sizeof(wav_music.loop));
+	wav_music.in_loop = false;
+	if (!WAV_Open(intro))
+		return;
+
+	ogg_curfile = OGG_WAV_MUSIC;
+	ogg_numsamples = 0;
+	ogg_status = ogg_enable->integer ? PLAY : PAUSE;
+}
+
+/*
  * Play a portion of the currently opened file.
  */
 void
 static OGG_Read(void)
 {
+	if (ogg_curfile == OGG_WAV_MUSIC) {
+		WAV_Read();
+		return;
+	}
+
+	if (!ogg_file) {
+		ogg_status = STOP;
+		return;
+	}
+
 	short samples[4096] = {0};
 
 	int read_samples = stb_vorbis_get_samples_short_interleaved(ogg_file, ogg_file->channels, samples,
@@ -381,6 +529,7 @@ static OGG_Read(void)
 		// files content is added to the sample queue after the remaining
 		// samples from the old file.
 		stb_vorbis_close(ogg_file);
+		ogg_file = NULL;    // not left dangling if the next track will not open
 		ogg_status = STOP;
 		ogg_numbufs = 0;
 		ogg_numsamples = 0;
@@ -418,7 +567,9 @@ OGG_Stream(void)
 
 			/* active_buffers are all active OpenAL buffers,
 			   buffering normal sfx _and_ ogg/vorbis samples. */
-			while (active_buffers <= ogg_numbufs)
+			// a read can end the music (a Quake III loop that will not
+			// open): no buffer comes of it then, so stop asking
+			while (active_buffers <= ogg_numbufs && ogg_status == PLAY)
 			{
 				OGG_Read();
 			}
@@ -432,7 +583,7 @@ OGG_Stream(void)
 				   were played since the last call to this function.
 				   This keeps the buffer at all times at an "optimal"
 				   fill level. */
-				while (paintedtime + S_MAX_RAW_SAMPLES - 2048 > s_rawend)
+				while (paintedtime + S_MAX_RAW_SAMPLES - 2048 > s_rawend && ogg_status == PLAY)
 				{
 					OGG_Read();
 				}
@@ -512,6 +663,13 @@ OGG_PlayTrack(int trackNo)
 		}
 	}
 
+	/* a Quake III map's music gives way to the track */
+	if (ogg_curfile == OGG_WAV_MUSIC)
+	{
+		OGG_Stop();
+		ogg_curfile = -1;
+	}
+
 	/* Check running music. */
 	if (ogg_status == PLAY)
 	{
@@ -589,6 +747,15 @@ OGG_Info(void)
 
 	Com_Printf("Total: %d Ogg/Vorbis files.\n", ogg_maxfileindex+1);
 
+	if (ogg_curfile == OGG_WAV_MUSIC && ogg_status != STOP)
+	{
+		Com_Printf("State: %s Quake III music %s%s%s.\n", ogg_status == PLAY ? "Playing" : "Paused",
+			wav_music.in_loop && wav_music.loop[0] ? wav_music.loop : wav_music.intro,
+			wav_music.loop[0] && !wav_music.in_loop ? ", then " : "",
+			wav_music.loop[0] && !wav_music.in_loop ? wav_music.loop : "");
+		return;
+	}
+
 	switch (ogg_status)
 	{
 		case PLAY:
@@ -633,7 +800,15 @@ OGG_Stop(void)
 	}
 #endif
 
-	stb_vorbis_close(ogg_file);
+	if (ogg_curfile == OGG_WAV_MUSIC)
+	{
+		// no track to name afterwards: ogg_tracks[] has no entry for it
+		WAV_Close();
+		ogg_curfile = -1;
+	}
+	else
+		stb_vorbis_close(ogg_file);
+	ogg_file = NULL;
 	ogg_status = STOP;
 	ogg_numbufs = 0;
 }
@@ -736,7 +911,8 @@ OGG_Cmd(void)
 void
 OGG_SaveState(void)
 {
-	if (ogg_status != PLAY)
+	// a Quake III map's music starts again with its map (CL_PlayMapMusic)
+	if (ogg_status != PLAY || ogg_curfile == OGG_WAV_MUSIC)
 	{
 		ogg_saved_state.saved = false;
 		return;

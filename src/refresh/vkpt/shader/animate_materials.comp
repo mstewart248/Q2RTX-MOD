@@ -46,7 +46,10 @@ main()
 	uint new_material = material;
 	MaterialInfo minfo = get_material_info(material);
 
-	if((material & MATERIAL_KIND_MASK) == MATERIAL_KIND_CAMERA && global_ubo.num_cameras > 1)
+	// a Quake III portal keeps its own view (cameras.c): only the security
+	// cameras cycle
+	if((material & MATERIAL_KIND_MASK) == MATERIAL_KIND_CAMERA && global_ubo.num_cameras > 1
+		&& global_ubo.security_camera_data[((material & MATERIAL_LIGHT_STYLE_MASK) >> (MATERIAL_LIGHT_STYLE_SHIFT + 2)) & (MAX_CAMERAS - 1)][0].w >= 0.0)
 	{
 		uint camera_id = (material & MATERIAL_LIGHT_STYLE_MASK) >> MATERIAL_LIGHT_STYLE_SHIFT;
 		camera_id = (camera_id + 1) % (global_ubo.num_cameras * 4);

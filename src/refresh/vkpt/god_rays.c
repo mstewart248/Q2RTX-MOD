@@ -1171,25 +1171,33 @@ static void create_pipeline_layout(void)
 
 static void create_pipelines(void)
 {
+	// spec_q3 (global_ubo.h): the fog brushes and the map's own sun compiled out
+	// on a map without them (main.c, update_q3_shaders). The integrate and the
+	// sky exposure bake have no Quake III code.
+	const VkSpecializationInfo *spec_q3 = vkpt_spec_q3_info();
+
 	const VkPipelineShaderStageCreateInfo shader = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 		.stage = VK_SHADER_STAGE_COMPUTE_BIT,
 		.module = qvk.shader_modules[QVK_MOD_GOD_RAYS_COMP],
-		.pName = "main"
+		.pName = "main",
+		.pSpecializationInfo = spec_q3,
 	};
 
 	const VkPipelineShaderStageCreateInfo filter_shader = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 		.stage = VK_SHADER_STAGE_COMPUTE_BIT,
 		.module = qvk.shader_modules[QVK_MOD_GOD_RAYS_FILTER_COMP],
-		.pName = "main"
+		.pName = "main",
+		.pSpecializationInfo = spec_q3,
 	};
 
 	const VkPipelineShaderStageCreateInfo froxel_scatter_shader = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 		.stage = VK_SHADER_STAGE_COMPUTE_BIT,
 		.module = qvk.shader_modules[QVK_MOD_FROXEL_SCATTER_COMP],
-		.pName = "main"
+		.pName = "main",
+		.pSpecializationInfo = spec_q3,
 	};
 
 	const VkPipelineShaderStageCreateInfo froxel_integrate_shader = {
@@ -1203,14 +1211,16 @@ static void create_pipelines(void)
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 		.stage = VK_SHADER_STAGE_COMPUTE_BIT,
 		.module = qvk.shader_modules[QVK_MOD_FROXEL_RESERVOIR_COMP],
-		.pName = "main"
+		.pName = "main",
+		.pSpecializationInfo = spec_q3,
 	};
 
 	const VkPipelineShaderStageCreateInfo froxel_spatial_shader = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 		.stage = VK_SHADER_STAGE_COMPUTE_BIT,
 		.module = qvk.shader_modules[QVK_MOD_FROXEL_SPATIAL_COMP],
-		.pName = "main"
+		.pName = "main",
+		.pSpecializationInfo = spec_q3,
 	};
 
 	const VkPipelineShaderStageCreateInfo sky_exposure_bake_shader = {

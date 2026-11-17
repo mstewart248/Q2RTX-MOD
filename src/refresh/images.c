@@ -1035,6 +1035,28 @@ static image_t *lookup_image(const char *name,
     return NULL;
 }
 
+/* lookup_image, but only an image read from exactly this file. lookup_image takes
+   foo.jpg for foo.png - a Quake III picture id shipped as .jpg and a .png made
+   beside it share one image, whichever was asked for first, and switching a .mat
+   from one to the other showed nothing until a restart (Matt, 2026-11-17,
+   base_light/ceil1_39.blend). See IMG_FindFile. */
+static image_t *lookup_image_file(const char *name,
+                                  imagetype_t type, unsigned hash, size_t baselen)
+{
+    image_t *image;
+
+    LIST_FOR_EACH(image_t, image, &r_imageHash[hash], entry) {
+        if (image->type != type || image->baselen != baselen) {
+            continue;
+        }
+        if (image->filepath[0] && !FS_pathcmp(image->filepath, name)) {
+            return image;
+        }
+    }
+
+    return NULL;
+}
+
 #define TRY_IMAGE_SRC_GAME      1
 #define TRY_IMAGE_SRC_BASE      0   // any path, game dir included
 #define TRY_IMAGE_SRC_BASE_ONLY 2   // baseq2's own paths only
@@ -1230,7 +1252,7 @@ int IMG_GetDimensions(const char* name, int* width, int* height)
 // An override is the case that needs more - see override_fits_original.
 static int get_image_dimensions(imageformat_t fmt, image_t *image)
 {
-    char buffer[MAX_QPATH];
+    char buffer[MAX_IMAGE_PATH];
     memcpy(buffer, image->name, image->baselen + 1);
 
     if (fmt == IM_WAL) {
@@ -1280,7 +1302,7 @@ static bool override_fits_original(image_t *image, imagetype_t type)
     static const char *const sidecars[] = {
         "_n", "_rough", "_metallic", "_height", "_light", "_glow",
     };
-    char    base[MAX_QPATH];
+    char    base[MAX_IMAGE_PATH];
     size_t  len;
     bool    is_sidecar = false;
     int     w, h, ret;
@@ -1499,9 +1521,11 @@ static int try_load_image_candidate(image_t *image, const char *orig_name, size_
 }
 
 // finds or loads the given image, adding it to the hash table.
+// exact_file: IMG_FindFile's lookup - an image of the same name read from a
+// file of another format is not this one, and a new image is loaded beside it
 static int find_or_load_image(const char *name, size_t len,
                                    imagetype_t type, imageflags_t flags,
-                                   image_t **image_p)
+                                   bool exact_file, image_t **image_p)
 {
     image_t         *image;
     byte            *pic;
@@ -1521,7 +1545,9 @@ static int find_or_load_image(const char *name, size_t len,
     hash = FS_HashPathLen(name, len - 4, RIMAGES_HASH);
 
     // look for it
-    if ((image = lookup_image(name, type, hash, len - 4)) != NULL) {
+    image = exact_file ? lookup_image_file(name, type, hash, len - 4)
+                       : lookup_image(name, type, hash, len - 4);
+    if (image != NULL) {
         image->registration_sequence = registration_sequence;
         if (image->upload_width && image->upload_height) {
             image->flags |= flags & IF_PERMANENT;
@@ -1552,10 +1578,11 @@ static int find_or_load_image(const char *name, size_t len,
         else
             last_slash += 1;
 
-        strcpy(image->name, "overrides/");
-        strcat(image->name, last_slash);
-        image->baselen = strlen(image->name) - 4;
-        ret = try_load_image_candidate(image, name, len, &pic, type, flags, true, -1);
+        // a long name has no room for the prefix: it has no override
+        if (Q_concat(image->name, sizeof(image->name), "overrides/", last_slash) < sizeof(image->name)) {
+            image->baselen = strlen(image->name) - 4;
+            ret = try_load_image_candidate(image, name, len, &pic, type, flags, true, -1);
+        }
         memcpy(image->name, name, len + 1);
         image->baselen = len - 4;
 
@@ -1655,14 +1682,51 @@ image_t *IMG_Find(const char *name, imagetype_t type, imageflags_t flags)
     Q_assert(name);
 
     len = strlen(name);
-    Q_assert(len < MAX_QPATH);
+    if (len >= MAX_IMAGE_PATH) {
+        Com_EPrintf("Couldn't load %s: the path is %u characters, and can be %d at most\n",
+                    name, (unsigned)len, MAX_IMAGE_PATH - 1);
+        return R_NOTEXTURE;
+    }
 
-    ret = find_or_load_image(name, len, type, flags, &image);
+    ret = find_or_load_image(name, len, type, flags, false, &image);
     if (image) {
         return image;
     }
 
     // don't spam about missing images
+    if (ret != Q_ERR(ENOENT)) {
+        Com_EPrintf("Couldn't load %s: %s\n", name, Q_ErrorString(ret));
+    }
+
+    return R_NOTEXTURE;
+}
+
+/* The image of EXACTLY this file. IMG_Find matches the images already loaded by
+   name without the extension, IF_EXACT or not, so it hands back foo.jpg for
+   foo.png when foo.jpg came first. Here the file named is the one read: an image
+   of the same name from another format stays as it is for whoever asked for
+   that, and this one is loaded beside it. A file that is not there gets what
+   IMG_Find makes of the name. For paths a .mat or the console names on purpose -
+   Quake III stage maps, and the live texture edits - not the classic lookups,
+   whose override formats depend on sharing one image per name. */
+image_t *IMG_FindFile(const char *name, imagetype_t type, imageflags_t flags)
+{
+    image_t *image;
+    size_t len;
+    int ret;
+
+    Q_assert(name);
+
+    len = strlen(name);
+    if (len >= MAX_IMAGE_PATH || !FS_FileExists(name)) {
+        return IMG_Find(name, type, flags | IF_EXACT);
+    }
+
+    ret = find_or_load_image(name, len, type, flags | IF_EXACT, true, &image);
+    if (image) {
+        return image;
+    }
+
     if (ret != Q_ERR(ENOENT)) {
         Com_EPrintf("Couldn't load %s: %s\n", name, Q_ErrorString(ret));
     }
@@ -1682,7 +1746,7 @@ image_t *IMG_FindExisting(const char *name, imagetype_t type)
 
     // this should never happen
     len = strlen(name);
-    if (len >= MAX_QPATH) {
+    if (len >= MAX_IMAGE_PATH) {
         Com_Error(ERR_FATAL, "%s: oversize name", __func__);
     }
 
@@ -1805,7 +1869,7 @@ qhandle_t R_RegisterImage(const char *name, imagetype_t type,
         goto fail;
     }
 
-    err = find_or_load_image(fullname, len, type, flags, &image);
+    err = find_or_load_image(fullname, len, type, flags, false, &image);
     if (image) {
         if (err_p)
             *err_p = Q_ERR_SUCCESS;
@@ -2040,7 +2104,7 @@ apart, since they are read differently. NULL when there is none.
 */
 byte *IMG_LoadGlowMap(const image_t *image, int *width, int *height, bool *from_light)
 {
-    char        base[MAX_QPATH];
+    char        base[MAX_IMAGE_PATH];
     const char  *slash;
     image_t     temp;
     byte        *pic;

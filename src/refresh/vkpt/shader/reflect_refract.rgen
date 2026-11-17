@@ -38,6 +38,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "path_tracer_transparency.glsl"
 #include "projection.glsl"
 #include "flow.glsl"
+#include "fog_q3.glsl"   // the Quake III fog brushes along bounces 1-3' legs
 
 layout(constant_id = 0) const uint spec_bounce_index = 0;
 // 0 = compiled without the Flow march below. path_tracer.c binds that variant on
@@ -438,14 +439,30 @@ main()
 		uv.y = float((packedUV >> 14) & 0x3fff) / float(0x3fff);
 
 		uint camera_id = (packedUV >> 28) & (MAX_CAMERAS - 1);
-		// pt_dlss_camera_mv 2: the portal motion vector after the trace needs the camera
-		if(spec_bounce_index == 0)
-			portal_camera_id = int(camera_id);
-
 		mat4 camera_data = global_ubo.security_camera_data[camera_id];
-		position = camera_data[0].xyz;
-		direction = camera_data[1].xyz + camera_data[2].xyz * uv.x + camera_data[3].xyz * uv.y;
-		direction = normalize(direction);
+
+		if(Q3_SHADERS && camera_data[0].w < 0.0)
+		{
+			/* A Quake III portal (path_tracer_rgen.h, is_portal_camera): the ray goes
+			   on from the matching point of the far side, turned as the portal turns
+			   it - Quake III's R_MirrorPoint and R_MirrorVector. Fields as chrome
+			   takes them; the motion vector stays the surface's. */
+			position = portal_transform_point(camera_data, position);
+			direction = normalize(portal_transform_vector(camera_data, direction));
+
+			if(spec_bounce_index == 0 && checkerboard_flags == CHECKERBOARD_FLAG_PRIMARY)
+				checkerboard_flags = CHECKERBOARD_FLAG_REFLECTION;
+		}
+		else
+		{
+			// pt_dlss_camera_mv 2: the portal motion vector after the trace needs the camera
+			if(spec_bounce_index == 0)
+				portal_camera_id = int(camera_id);
+
+			position = camera_data[0].xyz;
+			direction = camera_data[1].xyz + camera_data[2].xyz * uv.x + camera_data[3].xyz * uv.y;
+			direction = normalize(direction);
+		}
 	}
 	else if(primary_is_chrome)
 	{
@@ -1006,6 +1023,28 @@ main()
 		imageStore(IMG_PT_RAYLENGTH_SPECULAR, ipos, vec4(PRIMARY_RAY_T_MAX, 0, 0, 0));
 	}
 
+	/* QUAKE III FOG BRUSHES ALONG THIS LEG, bounces 1-3. god_rays_filter.comp runs
+	   between bounce 0 and bounce 1 and fogs the eye's leg and bounce 0's; the legs
+	   after it were never fogged, so a health orb in q3dm4's pit showed the floor
+	   behind it clear (in, across, out: the floor is bounce 2). Laid UNDER the
+	   overlay as one more layer, as the filter does it: what is already in front
+	   stays, the fog's colour fills (1 - T) of what was left, at this leg's
+	   throughput, and everything after - this leg's effects, the sky, the surface it
+	   hits - is behind it. Only when the filter ran (fog_filter_active), or the
+	   near legs would be clear and the far ones fogged. */
+	if (Q3_SHADERS && spec_bounce_index != 0 && global_ubo.fog_filter_active != 0
+	    && global_ubo.fog_enable != 0 && global_ubo.pt_fog_extinction <= 0.0 && q3_fog_present())
+	{
+		vec3 q3_color;
+		float q3_t = q3_fog_transmittance(reflection_ray.origin, direction, reflection_ray.t_max, q3_color);
+		if (q3_t < 1.0)
+		{
+			vec3 q3_glow = (1.0 - q3_t) * q3_fog_tint(q3_color)
+			             * (global_ubo.prev_adapted_luminance * max(global_ubo.pt_fog_q3_ambient, 0.0));
+			transparent = alpha_blend_premultiplied(transparent, vec4(q3_glow * throughput, 1.0 - q3_t));
+		}
+	}
+
 	vec4 effects = trace_effects_ray(reflection_ray, /* skip_procedural = */ false, /* reflection_ray = */ true);
 	// fire and smoke seen in a mirror or through glass (flow.glsl) - and your
 	// own plasma beam as the mirror shows it where the mirror shows your body
@@ -1454,6 +1493,24 @@ main()
 		primary_emissive,
 		primary_specular_factor);
 
+	// a see-through Quake III program says per pixel how much of it is there
+	if (q3_surface_alpha >= 0.0)
+		triangle.alpha = q3_surface_alpha;
+
+	// Alpha glass (alpha_glass_solid): the far side of a framed pane seen
+	// through its near side - its frame ends the chain like any opaque
+	// surface, its pane is clear glass.
+	if (is_glass(material_id))
+	{
+		MaterialInfo glass_info = get_material_info(material_id);
+		if (glass_info.alpha_glass)
+		{
+			if (alpha_glass_solid(glass_info, tex_coord, tex_coord_x, tex_coord_y, -1))
+				material_id = (material_id & ~MATERIAL_KIND_MASK) | MATERIAL_KIND_REGULAR;
+			else
+				primary_base_color = vec3(clamp(glass_info.base_factor, 0.0, 1.0));
+		}
+	}
 
 	if(!do_refraction) {
 		/* Alpha carries the splitting bounce's Fresnel weight for pt_dlss_guide_field 4,
@@ -1511,7 +1568,9 @@ main()
 		// forces the whole surface down the force-field path, which is both
 		// uniform AND the look that was wanted.  Note the water normal above is
 		// applied either way, so the warp survives the switch to glass.
-		if(abs(geo_normal.z) < 0.1 || (material_id & MATERIAL_FLAG_CURVED_WATER) != 0)
+		// A cloaked player (TEXTURE_FLAG_CLOAK) stays water all over.
+		if((abs(geo_normal.z) < 0.1 || (material_id & MATERIAL_FLAG_CURVED_WATER) != 0)
+			&& (triangle.texture_flags & TEXTURE_FLAG_CLOAK) == 0)
 			material_id = (material_id & ~MATERIAL_KIND_MASK) | MATERIAL_KIND_GLASS;
 	}
 
@@ -1521,7 +1580,12 @@ main()
 	}
 
 	vec2 cameraUV = vec2(0);
-	if(is_camera(material_id))
+	if(is_camera(material_id) && is_portal_camera(camera_id_of_material(material_id)))
+	{
+		// a Quake III portal seen in a reflection or through glass: as above, whole
+		primary_emissive = vec3(0);
+	}
+	else if(is_camera(material_id))
 	{
 		if(get_camera_uv(tex_coord, cameraUV))
 		{
@@ -1565,7 +1629,14 @@ main()
 	// kind TRANSP_MODEL, not kind WATER.
 	bool alpha_is_refractive = is_water(material_id) || is_slime(material_id);
 
-	if (triangle.alpha < 1.0 && !alpha_is_refractive)
+	if (triangle.alpha <= 0.0 && !alpha_is_refractive
+		&& (triangle.material_id & MATERIAL_KIND_MASK) == MATERIAL_KIND_TRANSPARENT)
+	{
+		// only light added over what is behind it: straight through, no split
+		// (as in primary_rays.rgen)
+		material_id = (material_id & ~MATERIAL_KIND_MASK) | transparency_kind;
+	}
+	else if (triangle.alpha < 1.0 && !alpha_is_refractive)
 	{
 		// Translucent objects.
 		if (bitCount(checkerboard_flags & CHECKERBOARD_FLAG_FIELD_MASK) == 1)

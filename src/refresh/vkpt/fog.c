@@ -217,8 +217,33 @@ void vkpt_fog_reset(void)
 	memset(fog_volumes, 0, sizeof(fog_volumes));
 }
 
+// The loaded map's Quake III fog brushes - a copy, since the bsp_t can go first.
+static mfogvolume_t q3_volumes[MAX_FOG_VOLUMES];
+static int num_q3_volumes = 0;
+static bool world_is_q3 = false;
+
+void vkpt_fog_set_world(const bsp_t* bsp)
+{
+	num_q3_volumes = 0;
+	world_is_q3 = bsp && bsp->q3;
+	if (!bsp)
+		return;
+	for (int i = 0; i < bsp->numfogvolumes && num_q3_volumes < MAX_FOG_VOLUMES; i++)
+		q3_volumes[num_q3_volumes++] = bsp->fogvolumes[i];
+	if (bsp->numfogvolumes > MAX_FOG_VOLUMES)
+		Com_WPrintf("fog: the map has %d fog volumes, only %d are drawn\n", bsp->numfogvolumes, MAX_FOG_VOLUMES);
+	else if (num_q3_volumes)
+		Com_DPrintf("fog: %d Quake III fog volume(s)\n", num_q3_volumes);
+}
+
+bool vkpt_fog_world_is_q3(void)
+{
+	return world_is_q3;
+}
+
 void vkpt_fog_upload(ShaderFogVolume* dst)
 {
+	ShaderFogVolume* first = dst;
 	memset(dst, 0, sizeof(ShaderFogVolume) * MAX_FOG_VOLUMES);
 	
 	for (int i = 0; i < MAX_FOG_VOLUMES; i++)
@@ -265,6 +290,53 @@ void vkpt_fog_upload(ShaderFogVolume* dst)
 		
 		dst->is_active = 1;
 
+		++dst;
+	}
+
+	/* THEN THE QUAKE III MAP'S FOG BRUSHES, in whatever slots the command left.
+
+	   These are not the boxes above: is_active 2 keeps them out of the path
+	   tracer's tint-the-ray fog (find_fog_volumes stops at the first slot that is
+	   not 1). The volumetric medium reads them instead (fog_medium.glsl,
+	   q3_fog_at): real fog that the map's lights scatter in, in the colour of the
+	   shader's fogparms, and that hides what is behind it.
+
+	   fogparms gives the distance at which Quake III draws the fog fully opaque.
+	   Read here as 95% gone there: extinction 3 / distance, per unit - times
+	   pt_fog_q3_thickness. Quake III's own curve is sqrt(depth / distance), which
+	   is thicker than any exponential close to the eye: 1.5 matches it over the
+	   first sixteenth of the distance and is a little thicker past a quarter. */
+	static cvar_t* cvar_pt_fog_q3_thickness = NULL;
+	if (!cvar_pt_fog_q3_thickness)
+		cvar_pt_fog_q3_thickness = Cvar_Get("pt_fog_q3_thickness", "1.5", CVAR_ARCHIVE);
+	const float q3_thickness = max(cvar_pt_fog_q3_thickness->value, 0.f);
+
+	/* pt_fog_q3_fade: the top of each brush fades in over this many units, from
+	   none at the top face to full below - see fog_q3.glsl. 72 on q3dm4's
+	   128-unit pit is full fog at a player's height off its floor (Matt,
+	   2026-11-17). 0 = the old hard top. Rides in density.x, which only the
+	   command's boxes (is_active 1) use for their gradient. */
+	static cvar_t* cvar_pt_fog_q3_fade = NULL;
+	if (!cvar_pt_fog_q3_fade)
+		cvar_pt_fog_q3_fade = Cvar_Get("pt_fog_q3_fade", "72", CVAR_ARCHIVE);
+	const float q3_fade = max(cvar_pt_fog_q3_fade->value, 0.f);
+
+	for (int i = 0; i < num_q3_volumes; i++)
+	{
+		if (dst - first >= MAX_FOG_VOLUMES)
+		{
+			static bool warned = false;
+			if (!warned)
+				Com_WPrintf("fog: no room for %d of the map's fog volumes beside the \"fog\" command's\n", num_q3_volumes - i);
+			warned = true;
+			break;
+		}
+		const mfogvolume_t* v = &q3_volumes[i];
+		VectorCopy(v->mins, dst->mins);
+		VectorCopy(v->maxs, dst->maxs);
+		VectorCopy(v->color, dst->color);
+		Vector4Set(dst->density, q3_fade, 0.f, 0.f, q3_thickness * 3.f / max(v->distance, 1.f));
+		dst->is_active = 2;
 		++dst;
 	}
 }

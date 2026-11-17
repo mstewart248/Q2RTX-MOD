@@ -274,6 +274,42 @@ int CM_BoxLeafs(cm_t *cm, const vec3_t mins, const vec3_t maxs,
 
 /*
 ==================
+CM_LeafPointContents
+
+What is at `p` in `leaf`. A Quake II leaf is all one thing; a Quake III leaf
+(pointtest, see mleaf_t) is whatever brushes listed in it contain the point,
+which is what Quake III's own CM_PointContents does. Touches no shared state,
+so the client's worker threads can call it too.
+==================
+*/
+static int CM_LeafPointContents(const mleaf_t *leaf, const vec3_t p)
+{
+    int contents = 0;
+
+    if (!leaf->pointtest)
+        return leaf->contents;
+
+    for (int k = 0; k < leaf->numleafbrushes; k++) {
+        const mbrush_t *b = leaf->firstleafbrush[k];
+        const mbrushside_t *side = b->firstbrushside;
+        int i;
+
+        if ((contents & b->contents) == b->contents)
+            continue;   // nothing new to learn from this one
+
+        for (i = 0; i < b->numsides; i++, side++) {
+            if (DotProduct(p, side->plane->normal) > side->plane->dist)
+                break;
+        }
+        if (b->numsides && i == b->numsides)
+            contents |= b->contents;
+    }
+
+    return contents;
+}
+
+/*
+==================
 CM_PointContents
 ==================
 */
@@ -281,7 +317,7 @@ int CM_PointContents(const vec3_t p, mnode_t *headnode)
 {
     if (!headnode)
         return 0;
-    return BSP_PointLeaf(headnode, p)->contents;
+    return CM_LeafPointContents(BSP_PointLeaf(headnode, p), p);
 }
 
 /*
@@ -310,7 +346,7 @@ int CM_TransformedPointContents(const vec3_t p, mnode_t *headnode, const vec3_t 
         RotatePoint(p_l, axis);
     }
 
-    return BSP_PointLeaf(headnode, p_l)->contents;
+    return CM_LeafPointContents(BSP_PointLeaf(headnode, p_l), p_l);
 }
 
 /*
@@ -480,7 +516,7 @@ static void CM_TraceToLeaf(mleaf_t *leaf)
     int         k;
     mbrush_t    *b, **leafbrush;
 
-    if (!(leaf->contents & trace_contents))
+    if (!((leaf->contents | leaf->brushcontents) & trace_contents))
         return;
     // trace line against all brushes in the leaf
     leafbrush = leaf->firstleafbrush;
@@ -508,7 +544,7 @@ static void CM_TestInLeaf(mleaf_t *leaf)
     int         k;
     mbrush_t    *b, **leafbrush;
 
-    if (!(leaf->contents & trace_contents))
+    if (!((leaf->contents | leaf->brushcontents) & trace_contents))
         return;
     // trace line against all brushes in the leaf
     leafbrush = leaf->firstleafbrush;
@@ -753,7 +789,7 @@ static void CM_RecursivePointCheck(cm_point_trace_t *w, mnode_t *node, float p1f
     }
 
     mleaf_t *leaf = (mleaf_t *)node;
-    if (!(leaf->contents & w->contents))
+    if (!((leaf->contents | leaf->brushcontents) & w->contents))
         return;
 
     mbrush_t **leafbrush = leaf->firstleafbrush;
@@ -781,10 +817,11 @@ void CM_PointTraceReentrant(trace_t *trace, const vec3_t start, const vec3_t end
 
     if (VectorCompare(start, end)) {
         const mleaf_t *leaf = BSP_PointLeaf(headnode, start);
-        if (leaf->contents & brushmask) {
+        int contents = CM_LeafPointContents(leaf, start);
+        if (contents & brushmask) {
             trace->startsolid = trace->allsolid = true;
             trace->fraction = 0;
-            trace->contents = leaf->contents;
+            trace->contents = contents;
         }
         VectorCopy(start, trace->endpos);
         return;

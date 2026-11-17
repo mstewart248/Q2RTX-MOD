@@ -86,6 +86,10 @@ typedef enum {
 typedef struct {
     d3d12_pipeline_layout_id_t  layout;
     const char                  *shader;    // baseq2/shader_d3d12/<shader>.dxil
+    // the same built with spec_q3 0 (global_ubo.h: the Quake III code compiled
+    // out) for a frame without any (main.c, update_q3_shaders); NULL for a pass
+    // that has no Quake III code - world.c's pass sets
+    const char                  *q2_shader;
 } d3d12_pass_info_t;
 
 // The DXIL behind each pass: the specialization variants are cmake's
@@ -237,6 +241,7 @@ typedef struct {
     bool        dlss5;
     uint32_t    dlss5_push[2][D3D12_DLSS5_PUSH_WORDS];
     bool        taa_folded;         // vkpt_taa_folded: the interleave pass writes TAA_OUTPUT, no TAA
+    bool        accumulating;       // photo mode: the TAA pass is only the running average
     // the fog (vkpt_frame_prep_t's): the march, the froxel grid and the filter run at all
     // (god_rays_enabled, and the god rays sets given); the march (not god_rays_march_discarded);
     // a ray per pixel rather than per 2x2 block (photo mode's fog_accum_march); the grid

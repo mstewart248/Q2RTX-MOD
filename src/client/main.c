@@ -2966,6 +2966,7 @@ static void CL_InitLocal(void)
     LE_Init();
     CL_InitDynamicLights();
     CL_InitMapFog();
+    CL_InitSkyOverride();
     CL_InitAscii();
     CL_InitEffects();
     CL_InitTEnts();

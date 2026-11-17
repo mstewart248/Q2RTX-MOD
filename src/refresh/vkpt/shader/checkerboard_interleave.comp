@@ -571,6 +571,9 @@ void combine_fullres_fields(ivec2 opos)
     float guide_roughness_x = imageLoad(IMG_PT_ROUGHNESS, p_primary).x;
     if(mix_albedo_by_fresnel && int(global_ubo.pt_dlss_guide_field) != 6 && !blood_split)
         guide_roughness_x = clamp(global_ubo.pt_dlss_guide_mirror_roughness, 0.0, 1.0);
+    // pt_dlss_guide_mirror_snap (global_ubo.h): a near-mirror is a mirror to RR
+    if(guide_roughness_x < global_ubo.pt_dlss_guide_mirror_snap)
+        guide_roughness_x = 0.0;
 
     imageStore(IMG_DLSS_ALBEDO,             opos, guide_albedo);
     imageStore(IMG_DLSS_ROUGHNESS,          opos, vec4(guide_roughness_x));
@@ -733,7 +736,10 @@ void main()
         imageStore(IMG_DLSS_REFLECT_MOTION, opos, vec4(imageLoad(IMG_PT_REFLECT_MOTION, src).xy, 0, 0));
         imageStore(IMG_DLSS_FG_DEPTH, opos, vec4(1.0 / max(abs(imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, src).x), 0.01)));
         imageStore(IMG_DLSS_ALBEDO, opos, imageLoad(IMG_PT_ALBEDO, src));
-        imageStore(IMG_DLSS_ROUGHNESS, opos, imageLoad(IMG_PT_ROUGHNESS, src));
+        float flat_roughness = imageLoad(IMG_PT_ROUGHNESS, src).x;
+        if(flat_roughness < global_ubo.pt_dlss_guide_mirror_snap)   // see above
+            flat_roughness = 0.0;
+        imageStore(IMG_DLSS_ROUGHNESS, opos, vec4(flat_roughness));
         imageStore(IMG_DLSS_NORMAL, opos, imageLoad(IMG_PT_NORMAL, src));
         imageStore(IMG_DLSS_SPECULAR_ALBEDO, opos, imageLoad(IMG_PT_SPECULAR_ALBEDO, src));
         // alpha is DLSS 5's per-field scene share (below), not part of RR's guide

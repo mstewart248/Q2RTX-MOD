@@ -49,7 +49,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
    obvious to go. */
 /* Raised from 9 for albedo_strength: words 7 and 8 are full since the height
    map moved in. Low half of word 9 only, so the top half is the next knob's. */
-#define MATERIAL_UINTS          10
+/* Raised from 10 for caustic_ripple (2026-11-16): word 9's top half went to the
+   Quake III program offset. Low half of word 10; its top half is spare. */
+#define MATERIAL_UINTS          11
 
 // should match the same constant declared in material.h
 #define MAX_PBR_MATERIALS      8192
@@ -126,6 +128,8 @@ END_SHADER_STRUCT( VboPrimitive )
 BEGIN_SHADER_STRUCT( LightBuffer )
 {
 	uint material_table[MAX_PBR_MATERIALS * MATERIAL_UINTS];
+	// Quake III shader programs (q3stages.c) - see MAX_Q3_STAGE_VEC4S
+	vec4 q3_stages[MAX_Q3_STAGE_VEC4S];
 	vec4 light_polys[MAX_LIGHT_POLYS * LIGHT_POLY_VEC4S];
 	uint light_list_offsets[MAX_LIGHT_LISTS];
 	uint light_list_lights[MAX_LIGHT_LIST_NODES];
@@ -353,8 +357,20 @@ struct MaterialInfo
 	/* displace_clamp: the texture is drawn once on its face, so POM stays
 	   inside the tile the hit is in - see parallax_occlusion(). */
 	bool displace_clamp;
+	/* alpha_glass: a GLASS material that is glass only where the base
+	   texture's alpha is under a half - see alpha_glass_solid(). */
+	bool alpha_glass;
+	/* caustic: light from inside this GLASS is bent by the mesh normals on
+	   its way out; 1 = real glass, 0 = off - see glass_caustic(). */
+	float glass_caustic;
+	/* caustic_ripple: that light thrown in moving water ripples, projected out
+	   from the glass's centre of curvature - see glass_ripple(). 0 = off. */
+	float caustic_ripple;
 	float bump_scale;
 	float roughness_override;
+	/* roughness_override IS the roughness, all over, rather than a floor: the
+	   material has no map that carries one (material.c MAT_RoughnessIsWhole) */
+	bool roughness_whole;
 	float metalness_factor;
 	float emissive_factor;
 	float specular_factor;
@@ -437,6 +453,20 @@ layout(set = VERTEX_BUFFER_DESC_SET_IDX, binding = SUN_COLOR_BUFFER_BINDING_IDX)
 layout(set = VERTEX_BUFFER_DESC_SET_IDX, binding = SUN_COLOR_UBO_BINDING_IDX, std140) uniform SUN_COLOR_UBO {
 	SunColorBuffer sun_color_ubo;
 };
+
+/* THE SUN'S LIGHT - its radiance summed over its disc. Under the physical sky
+   that is what the sky pass sums from the sky it renders (sun_color_ubo). Under
+   a map's own skybox there is no sky pass; a sun the map's sky brings with it
+   (Quake III's q3map_sun) is set straight into the UBO, and map_sun_active says
+   so. Macros, not functions: not everything that includes this has global_ubo,
+   and a macro costs nothing until it is used. */
+#define SUN_COLOR_RESOLVED ((Q3_SHADERS && global_ubo.map_sun_active != 0) ? global_ubo.sun_color : sun_color_ubo.sun_color)
+#define SUN_LUMINANCE_RESOLVED ((Q3_SHADERS && global_ubo.map_sun_active != 0) ? dot(global_ubo.sun_color, vec3(0.299, 0.587, 0.114)) : sun_color_ubo.sun_luminance)
+
+// spec_q3 (global_ubo.h), which every includer has read first; all of it otherwise
+#ifndef Q3_SHADERS
+#define Q3_SHADERS true
+#endif
 
 layout(set = VERTEX_BUFFER_DESC_SET_IDX, binding = LIGHT_STATS_BUFFER_BINDING_IDX) buffer LIGHT_STATS_BUFFERS {
 	uint stats[];
@@ -546,6 +576,7 @@ load_and_transform_triangle(int instance_idx, uint buffer_idx, uint prim_id)
 		// (1.0 unless RF_TRANSLUCENT) drew them fully opaque. Every other
 		// static-mesh prim stores alpha 1.0, so this is a no-op for those.
 		t.alpha *= mi.alpha;
+		t.texture_flags |= mi.texture_flags;	// the entity's own (TEXTURE_FLAG_Q3_QUAD)
 
 		// Store the index of that instance and the prim offset relative to the instance.
 		t.instance_index = uint(instance_idx);
@@ -635,6 +666,7 @@ get_material_info(uint material_id)
 	data[7] = light_buffer.material_table[material_index * MATERIAL_UINTS + 7];
 	data[8] = light_buffer.material_table[material_index * MATERIAL_UINTS + 8];
 	data[9] = light_buffer.material_table[material_index * MATERIAL_UINTS + 9];
+	data[10] = light_buffer.material_table[material_index * MATERIAL_UINTS + 10];
 
 	MaterialInfo minfo;
 	minfo.base_texture = data[0] & 0xffff;
@@ -647,8 +679,13 @@ get_material_info(uint material_id)
 	minfo.displace_in = unpackHalf2x16(data[8]).x;
 	minfo.displace_out = unpackHalf2x16(data[8]).y;
 	minfo.displace_clamp = (data[7] & 8u) != 0;
+	// the Quake III glass features: compiled out with spec_q3 (global_ubo.h)
+	minfo.alpha_glass = Q3_SHADERS && (data[7] & 16u) != 0;
+	minfo.glass_caustic = Q3_SHADERS ? float((data[7] >> 5) & 0x7ffu) * (1.0 / 128.0) : 0.0;
+	minfo.caustic_ripple = Q3_SHADERS ? unpackHalf2x16(data[10]).x : 0.0;
 	minfo.bump_scale = unpackHalf2x16(data[2]).x;
 	minfo.roughness_override = unpackHalf2x16(data[2]).y;
+	minfo.roughness_whole = (data[4] & 0x80000000u) != 0u;
 	minfo.metalness_factor = unpackHalf2x16(data[3]).x;
 	minfo.emissive_factor = unpackHalf2x16(data[3]).y;
 	minfo.specular_factor = unpackHalf2x16(data[5]).x;

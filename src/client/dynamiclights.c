@@ -51,6 +51,17 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 //                                      tracer, ignored
 //   shadowlightstart/endfadedistance    a renderer LOD, ignored (see below)
 //
+// A Quake III Arena map's point lights (classname "light", cl.bsp->q3 only)
+// join them the same way. Its compiler baked them into lightmaps the path
+// tracer does not use, so here they are candidates for the light editor like
+// any dynamic_light. Their keys:
+//
+//   light / _light     intensity, default 300 - q3map lights 7500 * this / d^2
+//   _color             0..1
+//   target             aim entity: a spotlight
+//   radius             a spotlight's radius AT its target, default 64 - which
+//                      with the distance to the target makes the cone
+//
 
 #include "client.h"
 
@@ -155,6 +166,8 @@ typedef struct {
     float   cone_angle;
     float   vol_scale;
     float   angle;
+    float   q3_light;       // Quake III "light"
+    float   q3_radius;      // Quake III spotlight radius at its target
     int     style;
     int     spawnflags;
     bool    has_origin;
@@ -162,6 +175,14 @@ typedef struct {
     bool    has_cone;
     bool    has_angle;
 } entkeys_t;
+
+// a light this file builds: a rerelease dynamic_light, or a Quake III light
+static bool CL_IsDynamicLightEntity(const entkeys_t *ent)
+{
+    if (!strcmp(ent->classname, "dynamic_light"))
+        return true;
+    return cl.bsp && cl.bsp->q3 && !strcmp(ent->classname, "light");
+}
 
 typedef struct {
     char    name[64];
@@ -177,6 +198,8 @@ static bool CL_ParseEntityBlock(const char **data, entkeys_t *out)
 
     memset(out, 0, sizeof(*out));
     out->intensity = 1.0f;
+    out->q3_light = 300.0f;     // q3map's default
+    out->q3_radius = 64.0f;
     // 0 is a real volumetric scale ("lights the room, makes no fog"), so the
     // memset above cannot stand in for "the map did not say"
     out->vol_scale = LIGHT_VOLUMETRIC_SCALE_UNSET;
@@ -229,10 +252,49 @@ static bool CL_ParseEntityBlock(const char **data, entkeys_t *out)
         else if (!strcmp(key, "angle")) {
             out->angle = atof(token);
             out->has_angle = true;
-        }
+        } else if (!strcmp(key, "light") || !strcmp(key, "_light"))
+            out->q3_light = atof(token);
+        else if (!strcmp(key, "radius"))
+            out->q3_radius = atof(token);
     }
 
     return true;
+}
+
+/*
+=================
+CL_Q3LightKeys
+
+A Quake III light as the dynamic_light keys the rest of this file reads. Its
+reach is where q3map's 7500 * light / d^2 falls to 32 (of 255): light 300, the
+default, reaches 265 units, much as a rerelease light of radius 265 does. A
+starting point - the light editor is where it gets its real brightness.
+=================
+*/
+static void CL_Q3LightKeys(entkeys_t *ent, const namedent_t *named, int num_named)
+{
+    float light = fabsf(ent->q3_light);
+
+    ent->radius = sqrtf(7500.0f * light / 32.0f);
+    ent->intensity = 1.0f;
+
+    // a spotlight's cone: "radius" across at the distance of its target
+    if (ent->target[0]) {
+        for (int i = 0; i < num_named; i++) {
+            vec3_t d;
+            float dist;
+
+            if (strcmp(named[i].name, ent->target))
+                continue;
+            VectorSubtract(named[i].origin, ent->origin, d);
+            dist = VectorLength(d);
+            if (dist > 0.0f) {
+                ent->cone_angle = RAD2DEG(2.0f * atanf(max(ent->q3_radius, 1.0f) / dist));
+                ent->has_cone = true;
+            }
+            break;
+        }
+    }
 }
 
 /*
@@ -267,7 +329,7 @@ void CL_LoadDynamicLights(void)
     while (CL_ParseEntityBlock(&data, &ent)) {
         if (ent.targetname[0] && ent.has_origin)
             max_named++;
-        if (!strcmp(ent.classname, "dynamic_light"))
+        if (CL_IsDynamicLightEntity(&ent))
             num_lights++;
     }
 
@@ -294,8 +356,14 @@ void CL_LoadDynamicLights(void)
         cdynamiclight_t *dl;
         int             switch_index;
 
-        if (strcmp(ent.classname, "dynamic_light") || !ent.has_origin)
+        if (!CL_IsDynamicLightEntity(&ent) || !ent.has_origin)
             continue;
+
+        // Quake III: always on, never switched; its keys made into these
+        if (strcmp(ent.classname, "dynamic_light")) {
+            CL_Q3LightKeys(&ent, named, num_named);
+            ent.targetname[0] = 0;
+        }
 
         // A light with a targetname is switched by a trigger, and spawnflag 1
         // means it starts off. The game owns that state and publishes it as

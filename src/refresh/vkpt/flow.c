@@ -5833,7 +5833,10 @@ VkResult vkpt_flow_create_pipelines(void)
 
 	// The world's light on the smoke, where flow_env_create made its layout.
 	if (flow.env_pipeline_layout) {
-		pipeline_info.stage = (VkPipelineShaderStageCreateInfo)SHADER_STAGE(QVK_MOD_FLOW_AMBIENT_COMP, VK_SHADER_STAGE_COMPUTE_BIT);
+		// spec_q3 (global_ubo.h): a Quake III sky's clouds, compiled out on maps
+		// without one (main.c, update_q3_shaders)
+		pipeline_info.stage = (VkPipelineShaderStageCreateInfo)SHADER_STAGE_SPEC(QVK_MOD_FLOW_AMBIENT_COMP,
+			VK_SHADER_STAGE_COMPUTE_BIT, vkpt_spec_q3_info());
 		pipeline_info.layout = flow.env_pipeline_layout;
 		_VK(vkCreateComputePipelines(qvk.device, 0, 1, &pipeline_info, 0, &flow.env_pipeline));
 		ATTACH_LABEL_VARIABLE(flow.env_pipeline, PIPELINE);

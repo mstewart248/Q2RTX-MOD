@@ -24,6 +24,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "shared/shared.h"
 
 #include "common/bsp.h"
+#include "common/q3shader.h"
 #include "common/cmd.h"
 #include "common/cmodel.h"
 #include "common/common.h"
@@ -59,6 +60,23 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #endif
 
 static jmp_buf  com_abortframe;    // an ERR_DROP occured, exit the entire frame
+
+/* MSVC's longjmp UNWINDS every frame between Com_Error and the setjmp (RtlUnwindEx,
+   running each frame's language handler) - and an ERR_DROP has by then unloaded the
+   game DLL (SV_Shutdown). A gi.error left frames of that freed code on the stack;
+   the unwinder could not read them, walked off into stale stack, and ran a stray
+   handler. Matt, 2026-11-16: base1, then "map q3dm0" -> "Couldn't find spawn
+   point" -> 0xc0000409 (stack cookie fast fail) in nvwgf2umx.dll, five seconds
+   later; the dump's main thread was PF_error > Com_Error > longjmp > RtlUnwindEx.
+   A zero Frame makes longjmp a plain register restore, which is what gcc's always
+   is (the Linux build, Q2PRO's MinGW builds). Nothing in between needs its unwind:
+   the engine is C, and the C++ game DLL is the code being unloaded. q2rtx.exe is
+   not /CETCOMPAT, so there is no shadow stack to keep in step. */
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_ARM64))
+#define COM_NO_UNWIND(buf)  (((_JUMP_BUFFER *)(buf))->Frame = 0)
+#else
+#define COM_NO_UNWIND(buf)  ((void)0)
+#endif
 
 static void     (*com_abort_func)(void *);
 static void     *com_abort_arg;
@@ -1255,6 +1273,7 @@ void Qcommon_Init(int argc, char **argv)
 
     if (setjmp(com_abortframe))
         Sys_Error("Error during initialization: %s", com_errorMsg);
+    COM_NO_UNWIND(com_abortframe);
 
     com_argc = argc;
     com_argv = argv;
@@ -1392,6 +1411,7 @@ void Qcommon_Init(int argc, char **argv)
     NET_Init();
     BSP_Init();
     CM_Init();
+    Q3Shader_Init();
     SV_Init();
     Com_StartupMark("server");
     CL_Init();
@@ -1486,6 +1506,7 @@ void Qcommon_Frame(void)
     if (setjmp(com_abortframe)) {
         return;            // an ERR_DROP was thrown
     }
+    COM_NO_UNWIND(com_abortframe);
 
 #if USE_CLIENT
     time_before = time_event = time_between = time_after = 0;

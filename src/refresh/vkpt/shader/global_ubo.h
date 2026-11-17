@@ -88,7 +88,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	UBO_CVAR_DO(pt_min_log_sky_luminance, -10) /* minimum sky luminance, log2 scale, used for polygon light selection, (-inf..inf) */ \
 	UBO_CVAR_DO(pt_metallic_override, -1) /* overrides metallic parameter of all materials if non-negative, [0..1] */ \
 	UBO_CVAR_DO(pt_ndf_trim, 1) /* trim factor for GGX NDF sampling (0..1]. Below 1 it drops the lobe's tail without reweighting, so reflections lose energy. Was 0.9 (upstream A-SVGF stabilization); 1 since 2026-10-24, as photo mode already used. */ \
-	UBO_CVAR_DO(pt_num_bounce_rays, 1) /* number of bounce rays, valid values are 0 (disabled), 0.5 (half-res diffuse), 1 (full-res diffuse + specular), 2 to 8 (that many bounces; every bounce after the first is diffuse, light sampled with pt_bounce_nee, and from the third on Russian-rouletted with pt_bounce_rr) */ \
+	UBO_CVAR_DO(pt_num_bounce_rays, 1) /* number of bounce rays, valid values are 0 (disabled), 0.5 (half-res diffuse), 1 (full-res diffuse + specular), 2 to 8 (that many bounces; every bounce after the first follows the material it hits - pt_bounce_brdf - is light sampled with pt_bounce_nee, and from the third on Russian-rouletted with pt_bounce_rr) */ \
 	UBO_CVAR_DO(pt_particle_softness, 0.7) /* particle softness */ \
 	UBO_CVAR_DO(pt_particle_brightness, 100) /* particle brightness */ \
 	UBO_CVAR_DO(pt_reflect_refract, 2) /* number of reflection or refraction bounces: 0, 1 or 2 */ \
@@ -164,6 +164,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	UBO_CVAR_DO(pt_fog_sky_soften, 0.0) /* world units of overhead clearance over which sky lighting of the fog fades in. 0 = the original HARD BINARY up-ray, which paints full-strength blocky slabs of fog in open air above rooftops and is what the froxel jitter flickers across. Try 256-1024 */ \
 	UBO_CVAR_DO(pt_sky_brightness, 1.0) /* brightness of the SKY AS SEEN; does NOT change how much light it casts */ \
 	UBO_CVAR_DO(pt_fog_density_max, 64.0) /* ceiling on map-fog density in getDensity; was a hard-coded 4.0, which no map reaches at cl_fog_scale 1 */ \
+	UBO_CVAR_DO(pt_fog_q3_density, 2000.0) /* Quake III fog brushes: medium density per unit of their real extinction (3 / fogparms distance) - how bright a lit fog brush glows; NOT EYE-CHECKED */ \
 	UBO_CVAR_DO(pt_fog_eccentricity, -1.0) /* map-fog scattering directionality, 0 = even in all directions .. 0.95 = tight shafts; -1 follows gr_eccentricity */ \
 	UBO_CVAR_DO(pt_fog_ambient, 0.0) /* fraction of the sun's radiance that lights map fog IN SHADOW, isotropically; 0 = the hard shadow-map cliff this always had */ \
 	UBO_CVAR_DO(pt_fog_extinction, 0.0) /* real extinction per unit density for map fog, so a long ray SATURATES instead of accumulating without bound; 0 = the legacy flat 0.0001 */ \
@@ -290,7 +291,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	UBO_CVAR_DO(pt_pom_max_steps, 64) /* Remix rtx.displacement.maxIterations: the iteration cap for pt_pom 1, and the layer count at grazing angles for pt_pom 2 (a head-on view uses a quarter). */ \
 	UBO_CVAR_DO(pt_pom_fade_start, 40) /* raised relief (displace_out) starts fading at this view angle, in degrees from the surface normal - see parallax_occlusion(). Sunken relief (displace_in) never fades. */ \
 	UBO_CVAR_DO(pt_pom_fade_end, 75) /* ...and is gone (flat, painted) by this angle. Set it <= pt_pom_fade_start to turn the fade off. */ \
-	UBO_CVAR_DO(pt_bounce_material, 1) /* MATERIAL AT THE INDIRECT BOUNCE HIT (indirect_lighting.rgen). 0 = the original 2019 shortcut: base colour at a fixed mip 2, the interpolated vertex normal, and a pure white-diffuse surface (roughness 1, no specular), so metals and glossy surfaces bounce light like grey paint. 1 = the full material via get_material (normal map, roughness, metallic, specular factor, emissive; no POM), the texture mip chosen by a ray cone instead of fixed, and direct sun / polygon light at the hit evaluated with the real GGX lobe as well as diffuse. Metals then continue the path with their (dark) diffuse albedo only; their specular response is the direct-light highlight. Live toggle - A/B it in the console. */ \
+	UBO_CVAR_DO(pt_bounce_material, 1) /* MATERIAL AT THE INDIRECT BOUNCE HIT (indirect_lighting.rgen). 0 = the original 2019 shortcut: base colour at a fixed mip 2, the interpolated vertex normal, and a pure white-diffuse surface (roughness 1, no specular), so metals and glossy surfaces bounce light like grey paint. 1 = the full material via get_material (normal map, roughness, metallic, specular factor, emissive; no POM), the texture mip chosen by a ray cone instead of fixed, and direct sun / polygon light at the hit evaluated with the real GGX lobe as well as diffuse. Where the path goes on from the hit is pt_bounce_brdf's (its own diffuse or specular lobe; 0 = diffuse only). Live toggle - A/B it in the console. */ \
 	UBO_CVAR_DO(pt_bounce_cone_diffuse, 0.05) /* pt_bounce_material 1: ray-cone spread, in radians, added after a DIFFUSE bounce. The footprint at the hit is camera_distance * pixel_angle + (pixel_angle + this) * hit_distance, and the mip follows from the triangle's texel density. Larger = blurrier, smoother bounce colour; 0 = only the pixel footprint. A specular bounce uses 2 * roughness^2 instead. Ignored in accumulation (photo) mode, which keeps only the pixel footprint so the reference stays sharp. */ \
 	UBO_CVAR_DO(pt_bounce_lod_bias, 0) /* pt_bounce_material 1: added to the ray-cone mip at the bounce hit, in mip levels. Negative = sharper. */ \
 	UBO_CVAR_DO(pt_sharc, 0) /* SPATIAL HASH RADIANCE CACHE (shader/sharc.h). Multi-bounce indirect light: the last bounce hit adds albedo * a world-space cache of the light arriving there, and the cache is trained by sparse paths that themselves end in the cache, so the bounce count grows by one per frame. 0 = off, 1 = on (the cache also supplies the direct light that the second bounce never sampled), 2 = on, indirect only, 3 = debug view: the screen shows only what the cache holds at each visible surface (black = no entry). Never used in accumulation (photo) mode. */ \
@@ -372,7 +373,11 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	UBO_CVAR_DO(pt_bounce_min_roughness, 0.5) /* GLOSSY SURFACES SEEN BY A BOUNCE (Matt, 2026-11-13: a shiny blood vat on mgu1m1 throws speckled light up onto the pipe and wall above it, still speckled after 1,000 photo-mode frames, and it boils in real time). A diffuse bounce that lands on a near-mirror surface gets that surface's lamp or sun highlight only when the light sample happens to fall inside its tiny lobe - rare, and then enormous: a caustic, which neither DLSS-RR nor accumulation can average. Path regularisation (Kaplanyan & Dachsbacher 2013; Blender Cycles' Filter Glossy): the surface a bounce lands on is lit with at least this roughness, which spreads the same light into a soft glow. A specular bounce off the first surface keeps the hit as sharp as that first surface's own roughness allows, so glossy reflections of glossy things stay sharp. Applies in photo mode too, so it stays comparable with real time; 0 = off (exact caustics, slow to converge). The first surface itself is never changed. APPENDED AT THE END. */ \
 	UBO_CVAR_DO(pt_sun_disk_lobe, 1) /* SUN HIGHLIGHT ON GLOSSY SURFACES KEEPS ITS ENERGY (Matt, 2026-11-13: the blood vats on mgu1m1 threw light up "as if hitting a mirror", uncoloured and far too strong). get_sunlight and ReSTIR's sun shade the highlight once, toward the sun's centre, so the lobe must be widened to cover the sun's disk. 0 = the upstream way: NoH pushed up by 0.5 tan^2(half angle), which holds GGX at its PEAK across the whole disk without renormalising - about (sun radius / alpha)^2 times too much light on surfaces glossier than the disk: ~12x at roughness 0.05, ~470x at the 0.02 floor, ~1.8x at 0.1, nothing measurable above ~0.2. 1 = the disk folded into the lobe instead: alpha^2 + (tan(half angle) / 2)^2, the disk's radius in half-vector space, so D stays normalised and a mirror reflects F of the sun's light, no more. Rough surfaces are unchanged either way. APPENDED AT THE END. */ \
 	UBO_CVAR_DO(pt_fog_estimate_closest, 0) /* FOG SPARKLE ALONG BEAMS (Matt, 2026-11-14: little flashes of red noise all around mguhub-style laser beams, with sparse rendering and bounce cull off). cl_fog 3's RIS prices each candidate light polygon from its CENTROID (volume_light_estimate). A beam light is six triangles as long as the beam and a few units wide, so a froxel cell right beside a beam measures it from a centroid a third of the beam away, nearly edge-on: priced ~25x under what it gives, it is rarely picked and then lands one enormous sample - a flash that the short froxel history (pt_fog_froxel_dyn_split) cannot hide. 1 = price a polygon from its CLOSEST point to the cell instead, solid angle capped at 2 pi. Unbiased either way - only which light gets the visibility ray changes - but the firefly clamp (pt_fog_firefly) bites less when the pick is right, so the glow right next to big light panels can come out a little brighter. 0 = centroid, the old way. APPENDED AT THE END. */ \
-	UBO_CVAR_DO(pt_dlss_particle_layer, 2) /* PARTICLES GHOST AND SMEAR UNDER DLSS-RR, worst at a distance (Matt, 2026-11-14). They were traced into the same noisy colour RR denoises, and RR, keeping a long history to denoise, got the motion of the WALL BEHIND each particle - so it blended a particle's old positions into a streak. 1 = hand the effects in front of the first surface (particles, sprites, beams, explosions and the old fog volumes - everything trace_effects_ray returns, emissive and noise-free) to RR as its TRANSPARENCY OVERLAY (RR guide 3.4.10, DLSS_PARTICLE_LAYER in global_textures.h): not denoised, only upscaled, laid over its output - so the denoised scene never holds a particle. Flow smoke stays in the colour (it is noisy) and hides the layer where it is in front. 2 = 1 plus the layer's OWN motion vectors (DLSS_PARTICLE_MOTION): the most opaque effect hit in the pixel moves with its particle (particle_t.motion, from the client's analytic paths) or stays put with the world. 0 = the old way, effects in the colour. Only with Ray Reconstruction on a live frame with full-resolution fields - main.c forces it to 0 otherwise (A-SVGF, photo mode, checkerboard), and while the frame is smaller than the images it renders into (DRS below its top, pt_photo_mode_reserve 1 below 100%: RR stretched the layer over the whole output, a shrunk second copy of every particle, issue #28). APPENDED AT THE END. */
+	UBO_CVAR_DO(pt_dlss_particle_layer, 2) /* PARTICLES GHOST AND SMEAR UNDER DLSS-RR, worst at a distance (Matt, 2026-11-14). They were traced into the same noisy colour RR denoises, and RR, keeping a long history to denoise, got the motion of the WALL BEHIND each particle - so it blended a particle's old positions into a streak. 1 = hand the effects in front of the first surface (particles, sprites, beams, explosions and the old fog volumes - everything trace_effects_ray returns, emissive and noise-free) to RR as its TRANSPARENCY OVERLAY (RR guide 3.4.10, DLSS_PARTICLE_LAYER in global_textures.h): not denoised, only upscaled, laid over its output - so the denoised scene never holds a particle. Flow smoke stays in the colour (it is noisy) and hides the layer where it is in front. 2 = 1 plus the layer's OWN motion vectors (DLSS_PARTICLE_MOTION): the most opaque effect hit in the pixel moves with its particle (particle_t.motion, from the client's analytic paths) or stays put with the world. 0 = the old way, effects in the colour. Only with Ray Reconstruction on a live frame with full-resolution fields - main.c forces it to 0 otherwise (A-SVGF, photo mode, checkerboard), and while the frame is smaller than the images it renders into (DRS below its top, pt_photo_mode_reserve 1 below 100%: RR stretched the layer over the whole output, a shrunk second copy of every particle, issue #28). APPENDED AT THE END. */ \
+	UBO_CVAR_DO(pt_fog_q3_ambient, 1.0) /* QUAKE III FOG BRUSHES THAT HIDE WHAT IS BEHIND THEM (Matt, 2026-11-17, q3dm4: "it needs to be much more thick"). Quake III draws its fog in the fogparms colour whatever the light. Here a fog brush's own glow, laid over the (1 - transmittance) it takes away (god_rays_filter.comp), on top of the light the medium scatters: its colour at this many times the exposure's adapted luminance (prev_adapted_luminance), with the colour's brightness taken out and only its hue kept. 1 is NEUTRAL - fog at the exposure's own level leaves the auto-exposure where it was however much of the screen it fills; above 1 the fog brightens AND, with fog filling most of the view, pulls the exposure down with it. 0 = only the scattered light, which leaves an unlit fog brush black. NOT EYE-CHECKED. APPENDED AT THE END. */ \
+	UBO_CVAR_DO(pt_dlss_guide_mirror_snap, 0) /* NEAR-MIRROR GLOSS COMES BACK BLURRED FROM DLSS-RR (Matt, 2026-11-17: an ordinary surface at roughness 0 reflects perfectly, at 0.005 the reflection is "real blurry" in game but clear in photo mode). The path tracer's reflection at 0.005 is the one at 0 to within a GGX alpha of 2.5e-5 (brdf.glsl squares it), so the only thing that differs is the roughness GUIDE handed to RR, which sizes RR's specular filter: 0 reads as a mirror, anything above as a glossy lobe to filter. A guide roughness below this value is handed to RR as 0. 0.02 = MAX_MIRROR_ROUGHNESS, where chrome already becomes a mirror; up to ~0.05 is still sub-pixel at room distances. Only the guide changes, never the shading. 0 = off. A/B knob, live, not archived. APPENDED AT THE END. */ \
+	UBO_CVAR_DO(pt_bounce_brdf, 1) /* EVERY BOUNCE FOLLOWS THE MATERIAL IT HITS (Matt, 2026-11-17, q3dm0: a chrome mirror facing the roughness-0 q3abanner - the sign seen in the mirror showed no reflection of its own, "I just want everything physically accurate"). The camera's own mirror chain is reflect_refract.rgen's (pt_reflect_refract), which is why chrome in chrome always worked; every other reflection is a bounce ray, and every bounce after the first used to go on DIFFUSE whatever it hit, so a mirror, chrome pipe or glossy floor inside a reflection showed only its lamp highlights - no reflection of its own. 1 = the pass that hits a surface picks the next ray from that surface's material exactly as the first bounce does for the primary surface: the specular lobe (GGX visible normals, F * G1 / p) with bounce_specular_probability, else the diffuse lobe (albedo * (1 - F) / (1 - p)); its lamp highlight is shared between light sampling at the hit and that ray by pt_direct_roughness_threshold, as on the primary surface, so nothing is counted twice. Reflections nest as deep as pt_num_bounce_rays allows (2 = a mirror in a reflection; each further level needs one more). pt_bounce_min_roughness still regularises a sharp lobe reached through a rougher one. Unbiased, photo mode included. 0 = the old diffuse-only later bounces, for A/B and timing. Live. APPENDED AT THE END. */ \
+	UBO_CVAR_DO(pt_fog_accum_sun_substeps, 1) /* PHOTO MODE'S FOG MARCH, SUN LOOKUPS PER STEP (Matt, 2026-11-17: volumetrics 55 ms in photo mode on q3dm0). pt_fog_sun_substeps (16) averages the sun's shadow over each step so one frame's march does not alias a shaft through a grate into blobs under god_rays_filter's upsample. Photo mode has no upsample, marches every pixel at full resolution, and its step jitter is fresh white noise every frame (god_rays.comp rand), so one lookup per step converges to the same sun visibility over the accumulated frames at a sixteenth of the shadow-map fetches. Each frame is noisier in the shafts; the converged image is the same. 16 = gameplay's count, for A/B and timing. Live. APPENDED AT THE END. */
 
 /* FIELD LAYOUT of the path-tracer screen images (pt_fullres_fields / pt_field_offset).
  *
@@ -507,7 +512,11 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	/* main.c moves them to the front of the model lights,                    */ \
 	/* so fog_light_static_count keeps them on the long froxel history.       */ \
 	GLOBAL_UBO_VAR_LIST_DO(int,             fog_num_bmodel_lights) \
-	GLOBAL_UBO_VAR_LIST_DO(float,           fog_pad1) \
+	/* 1 = god_rays_filter.comp runs this frame (main.c god_rays_enabled; D3D12 */ \
+	/* world.c's `fog`). It applies the Quake III fog brushes to the eye's leg */ \
+	/* and bounce 0's; reflect_refract.rgen's later bounces add their own legs */ \
+	/* only then, or a bent path would get the far legs' fog without the near. */ \
+	GLOBAL_UBO_VAR_LIST_DO(int,             fog_filter_active) \
 	GLOBAL_UBO_VAR_LIST_DO(float,           fog_pad2) \
 	\
 	GLOBAL_UBO_VAR_LIST_DO(int,             pt_fullres_fields) /* see FIELD LAYOUT note above */ \
@@ -596,6 +605,24 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	GLOBAL_UBO_VAR_LIST_DO(int,             sky_exposure_dim_z) \
 	GLOBAL_UBO_VAR_LIST_DO(int,             sky_exposure_ready) \
 	\
+	/* QUAKE III SKY (q3stages.c vkpt_q3_sky_upload). The cloud layers of a     */ \
+	/* Quake III sky shader, drawn over the far box (TEX_ENVMAP) by env_map -   */ \
+	/* see q3_sky.glsl; q3_sky_num_layers 0 = none, the cube map is the sky.    */ \
+	/* map_sun_active: the sun is the map's own (q3map_sun under its skybox),   */ \
+	/* not the physical sky's, so its light is sun_color here rather than what  */ \
+	/* the sky pass sums into sun_color_ubo - see SUN_COLOR_RESOLVED.           */ \
+	GLOBAL_UBO_VAR_LIST_DO(vec4,            q3_sky_layers[Q3_SKY_MAX_LAYERS * Q3_SKY_LAYER_VEC4S]) \
+	GLOBAL_UBO_VAR_LIST_DO(int,             q3_sky_num_layers) \
+	GLOBAL_UBO_VAR_LIST_DO(float,           q3_sky_cloud_height) \
+	GLOBAL_UBO_VAR_LIST_DO(int,             map_sun_active) \
+	GLOBAL_UBO_VAR_LIST_DO(int,             q3_quad_active) \
+	\
+	/* QUAKE III QUAD DAMAGE (q3stages.c vkpt_q3_quad_upload): powerups/quad's  */ \
+	/* stage laid out as a sky cloud layer - the tcMod transform a b c d; e f,  */ \
+	/* image index; colour x pt_q3_quad_emissive - for the models marked        */ \
+	/* TEXTURE_FLAG_Q3_QUAD. q3_quad_active 0 = not loaded (not a Quake III map). */ \
+	GLOBAL_UBO_VAR_LIST_DO(vec4,            q3_quad_layer[Q3_SKY_LAYER_VEC4S]) \
+	\
 	UBO_CVAR_LIST // WARNING: Do not put any other members into global_ubo after this: the CVAR list is not vec4-aligned
 
 BEGIN_SHADER_STRUCT( ModelInstance )
@@ -629,6 +656,13 @@ BEGIN_SHADER_STRUCT( ModelInstance )
 	float blood_r;
 	float blood_g;
 	float blood_b;
+
+	// TEXTURE_FLAG_* added to each of this mesh's triangles' own (instance_geometry.comp,
+	// load_and_transform_triangle): TEXTURE_FLAG_Q3_QUAD
+	uint texture_flags;
+	uint instance_pad0;
+	uint instance_pad1;
+	uint instance_pad2;
 }
 END_SHADER_STRUCT( ModelInstance )
 
@@ -683,6 +717,31 @@ layout(set = GLOBAL_UBO_DESC_SET_IDX, binding = GLOBAL_INSTANCE_BUFFER_BINDING_I
 
 /*
 =================
+spec_q3
+
+QUAKE III CODE, COMPILED IN OR OUT (Matt, 2026-11-17: Quake II maps "a few fps
+slower" since the Quake III work). Every Quake III feature in the shaders sits
+behind a runtime test that a Quake II map never passes, but the compiler sizes
+the registers for the code all the same: measured on the Vulkan ray query
+builds, indirect lighting went from 96 to 128 registers (bounce 2: 80 -> 96) for
+the stage programs alone, god_rays from 80 to 100 for the fog brushes, direct
+lighting with caustics from 96 to 128 for the glass caustics.
+
+So this specialization constant decides, and the pipelines are made with it
+(main.c's vkpt_q3_shaders_update): 0 on a map that has none of it, where the
+driver drops the code; 1 (the default, so a pipeline made without it keeps
+everything) on a Quake III map, or wherever a material uses one of the features.
+Behind it: shader stage programs (q3_stages.glsl), Quake III sky clouds
+(q3_sky.glsl), the map's own sun (map_sun_active), Quake III portals, fog
+brushes (fog_q3.glsl), the quad damage look, alpha glass, glass caustics and
+caustic_ripple. Not the cloak, which every map has.
+=================
+*/
+layout(constant_id = SPEC_Q3_CONSTANT_ID) const uint spec_q3 = 1;
+#define Q3_SHADERS (spec_q3 != 0u)
+
+/*
+=================
 fog_sun_is_the_sky
 
 Whether the SKY's contribution to the map fog is left to cl_fog 1's sun term
@@ -732,11 +791,17 @@ pt_fog_sky_sun_only now only decides whether the grid ALSO adds the traced sky
 ambient (fog_sky_inscatter). The three sun-split sites key off this predicate -
 froxel_scatter.comp skips its sun, god_rays.comp drops its local half,
 god_rays_filter.comp adds rather than replaces - so they cannot disagree.
+
+A map's OWN sun (Quake III's q3map_sun, map_sun_active) is the same shadow-mapped
+sun under a skybox, and it leaked the same way through q3dm0's roofs (Matt,
+2026-11-16) while only the physical sky went to the march. Both now do.
+main.c's god_rays_march_discarded mirrors this through fog_march_discarded.
 =================
 */
 bool fog_sun_in_march()
 {
-	return global_ubo.environment_type == ENVIRONMENT_DYNAMIC;
+	return global_ubo.environment_type == ENVIRONMENT_DYNAMIC
+	    || (Q3_SHADERS && global_ubo.map_sun_active != 0);
 }
 
 /*

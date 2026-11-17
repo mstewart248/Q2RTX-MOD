@@ -11,16 +11,26 @@ The 3D view's compute passes - see passes.h.
 #include "../vkpt/shader/froxel_shared.h"   // FROXEL_GRID_*, FROXEL_*GROUP_*
 
 const d3d12_pass_info_t d3d12_pass_info[D3D12_NUM_PASSES] = {
-    [D3D12_PASS_PRIMARY_RAYS]               = { D3D12_PL_PATH_TRACER, "primary_rays.rgen.query" },
+    // The second name on a pass with Quake III code in it is its build with spec_q3 0
+    // (passes.h, q2_shader): the base name with "_7_0" on its spec suffix.
+    [D3D12_PASS_PRIMARY_RAYS]               = { D3D12_PL_PATH_TRACER, "primary_rays.rgen.query",
+                                                "primary_rays.rgen.query.spec_7_0" },
     // path_tracer.c's PIPELINE_REFLECT_REFRACT_1/2_NOFLOW (spec 0 = bounce index,
     // 1 = Flow): a frame with no Flow grid, the march compiled out (pt_reflect_noflow)
-    [D3D12_PASS_REFLECT_REFRACT_FIRST]      = { D3D12_PL_PATH_TRACER, "reflect_refract.rgen.query.spec_1_0" },
-    [D3D12_PASS_REFLECT_REFRACT_SECOND]     = { D3D12_PL_PATH_TRACER, "reflect_refract.rgen.query.spec_0_1_1_0" },
-    [D3D12_PASS_DIRECT_LIGHTING]            = { D3D12_PL_PATH_TRACER, "direct_lighting.rgen.query" },
-    [D3D12_PASS_DIRECT_LIGHTING_CAUSTICS]   = { D3D12_PL_PATH_TRACER, "direct_lighting.rgen.query.spec_0_1" },
-    [D3D12_PASS_INDIRECT_LIGHTING_FIRST]    = { D3D12_PL_PATH_TRACER, "indirect_lighting.rgen.query" },
-    [D3D12_PASS_INDIRECT_LIGHTING_SECOND]   = { D3D12_PL_PATH_TRACER, "indirect_lighting.rgen.query.spec_0_1" },
-    [D3D12_PASS_RESTIR_GI]                  = { D3D12_PL_PATH_TRACER, "restir_gi.rgen.query" },
+    [D3D12_PASS_REFLECT_REFRACT_FIRST]      = { D3D12_PL_PATH_TRACER, "reflect_refract.rgen.query.spec_1_0",
+                                                "reflect_refract.rgen.query.spec_1_0_7_0" },
+    [D3D12_PASS_REFLECT_REFRACT_SECOND]     = { D3D12_PL_PATH_TRACER, "reflect_refract.rgen.query.spec_0_1_1_0",
+                                                "reflect_refract.rgen.query.spec_0_1_1_0_7_0" },
+    [D3D12_PASS_DIRECT_LIGHTING]            = { D3D12_PL_PATH_TRACER, "direct_lighting.rgen.query",
+                                                "direct_lighting.rgen.query.spec_7_0" },
+    [D3D12_PASS_DIRECT_LIGHTING_CAUSTICS]   = { D3D12_PL_PATH_TRACER, "direct_lighting.rgen.query.spec_0_1",
+                                                "direct_lighting.rgen.query.spec_0_1_7_0" },
+    [D3D12_PASS_INDIRECT_LIGHTING_FIRST]    = { D3D12_PL_PATH_TRACER, "indirect_lighting.rgen.query",
+                                                "indirect_lighting.rgen.query.spec_7_0" },
+    [D3D12_PASS_INDIRECT_LIGHTING_SECOND]   = { D3D12_PL_PATH_TRACER, "indirect_lighting.rgen.query.spec_0_1",
+                                                "indirect_lighting.rgen.query.spec_0_1_7_0" },
+    [D3D12_PASS_RESTIR_GI]                  = { D3D12_PL_PATH_TRACER, "restir_gi.rgen.query",
+                                                "restir_gi.rgen.query.spec_7_0" },
     [D3D12_PASS_GRADIENT_REPROJECT]         = { D3D12_PL_STANDARD, "asvgf_gradient_reproject.comp" },
     [D3D12_PASS_GRADIENT_IMG]               = { D3D12_PL_STANDARD, "asvgf_gradient_img.comp" },
     [D3D12_PASS_GRADIENT_ATROUS]            = { D3D12_PL_STANDARD, "asvgf_gradient_atrous.comp" },
@@ -41,7 +51,8 @@ const d3d12_pass_info_t d3d12_pass_info[D3D12_NUM_PASSES] = {
     [D3D12_PASS_INSTANCE_GEOMETRY]          = { D3D12_PL_UBO_VERTEX_BUFFER, "instance_geometry.comp" },
     [D3D12_PASS_ANIMATE_MATERIALS]          = { D3D12_PL_UBO_VERTEX_BUFFER, "animate_materials.comp" },
     // path_tracer.c's PIPELINE_SHARC_UPDATE, and vertex_buffer.c's resolve
-    [D3D12_PASS_SHARC_UPDATE]               = { D3D12_PL_PATH_TRACER, "sharc_update.rgen.query" },
+    [D3D12_PASS_SHARC_UPDATE]               = { D3D12_PL_PATH_TRACER, "sharc_update.rgen.query",
+                                                "sharc_update.rgen.query.spec_7_0" },
     [D3D12_PASS_SHARC_RESOLVE]              = { D3D12_PL_UBO_VERTEX_BUFFER, "sharc_resolve.comp" },
     // vertex_buffer.c's vkpt_blood_move_dispatch
     [D3D12_PASS_BLOOD_MOVE]                 = { D3D12_PL_UBO_VERTEX_BUFFER, "blood_move.comp" },
@@ -50,12 +61,17 @@ const d3d12_pass_info_t d3d12_pass_info[D3D12_NUM_PASSES] = {
     [D3D12_PASS_BLOOM_COMPOSITE]            = { D3D12_PL_STANDARD, "bloom_composite.comp" },
     [D3D12_PASS_DLSSG_HDR]                  = { D3D12_PL_STANDARD, "dlssg_hdr.comp" },
     // god_rays.c's GOD_RAYS_PIPELINE_*
-    [D3D12_PASS_GOD_RAYS]                   = { D3D12_PL_GOD_RAYS, "god_rays.comp" },
-    [D3D12_PASS_GOD_RAYS_FILTER]            = { D3D12_PL_GOD_RAYS, "god_rays_filter.comp" },
-    [D3D12_PASS_FROXEL_RESERVOIR]           = { D3D12_PL_GOD_RAYS, "froxel_reservoir.comp" },
-    [D3D12_PASS_FROXEL_SPATIAL]             = { D3D12_PL_GOD_RAYS, "froxel_spatial.comp" },
+    [D3D12_PASS_GOD_RAYS]                   = { D3D12_PL_GOD_RAYS, "god_rays.comp",
+                                                "god_rays.comp.spec_7_0" },
+    [D3D12_PASS_GOD_RAYS_FILTER]            = { D3D12_PL_GOD_RAYS, "god_rays_filter.comp",
+                                                "god_rays_filter.comp.spec_7_0" },
+    [D3D12_PASS_FROXEL_RESERVOIR]           = { D3D12_PL_GOD_RAYS, "froxel_reservoir.comp",
+                                                "froxel_reservoir.comp.spec_7_0" },
+    [D3D12_PASS_FROXEL_SPATIAL]             = { D3D12_PL_GOD_RAYS, "froxel_spatial.comp",
+                                                "froxel_spatial.comp.spec_7_0" },
     [D3D12_PASS_SKY_EXPOSURE_BAKE]          = { D3D12_PL_GOD_RAYS, "sky_exposure_bake.comp" },
-    [D3D12_PASS_FROXEL_SCATTER]             = { D3D12_PL_GOD_RAYS, "froxel_scatter.comp" },
+    [D3D12_PASS_FROXEL_SCATTER]             = { D3D12_PL_GOD_RAYS, "froxel_scatter.comp",
+                                                "froxel_scatter.comp.spec_7_0" },
     [D3D12_PASS_FROXEL_INTEGRATE]           = { D3D12_PL_GOD_RAYS, "froxel_integrate.comp" },
     // motion_blur.c's and chromatic_aberration.c's, and the copy back vkpt makes
     // with vkCmdCopyImage (the D3D12 renderer's own shader, d3d12/shader)
@@ -69,13 +85,18 @@ const d3d12_pass_info_t d3d12_pass_info[D3D12_NUM_PASSES] = {
     // (spec 1 = spec_flow_mode: 1 the primary rays without the march, 2 the march alone -
     // frozen, see src/CMakeLists.txt), PIPELINE_REFLECT_REFRACT_1/2 with the march, and
     // flow.c's pipelines on their layouts
-    [D3D12_PASS_PRIMARY_RAYS_FLOW_SPLIT]    = { D3D12_PL_PATH_TRACER, "primary_rays.rgen.query.spec_1_1" },
-    [D3D12_PASS_FLOW_MARCH]                 = { D3D12_PL_PATH_TRACER, "primary_rays.rgen.query.spec_1_2" },
-    [D3D12_PASS_REFLECT_REFRACT_FIRST_FLOW] = { D3D12_PL_PATH_TRACER, "reflect_refract.rgen.query" },
-    [D3D12_PASS_REFLECT_REFRACT_SECOND_FLOW] = { D3D12_PL_PATH_TRACER, "reflect_refract.rgen.query.spec_0_1" },
+    [D3D12_PASS_PRIMARY_RAYS_FLOW_SPLIT]    = { D3D12_PL_PATH_TRACER, "primary_rays.rgen.query.spec_1_1",
+                                                "primary_rays.rgen.query.spec_1_1_7_0" },
+    [D3D12_PASS_FLOW_MARCH]                 = { D3D12_PL_PATH_TRACER, "primary_rays.rgen.query.spec_1_2",
+                                                "primary_rays.rgen.query.spec_1_2_7_0" },
+    [D3D12_PASS_REFLECT_REFRACT_FIRST_FLOW] = { D3D12_PL_PATH_TRACER, "reflect_refract.rgen.query",
+                                                "reflect_refract.rgen.query.spec_7_0" },
+    [D3D12_PASS_REFLECT_REFRACT_SECOND_FLOW] = { D3D12_PL_PATH_TRACER, "reflect_refract.rgen.query.spec_0_1",
+                                                 "reflect_refract.rgen.query.spec_0_1_7_0" },
     [D3D12_PASS_FLOW_OCCUPANCY]             = { D3D12_PL_UBO_TEXTURES, "flow_occupancy.comp" },
     [D3D12_PASS_FLOW_LIGHTS]                = { D3D12_PL_UBO_TEXTURES, "flow_lights.comp" },
-    [D3D12_PASS_FLOW_AMBIENT]               = { D3D12_PL_FLOW_ENV, "flow_ambient.comp" },
+    [D3D12_PASS_FLOW_AMBIENT]               = { D3D12_PL_FLOW_ENV, "flow_ambient.comp",
+                                                "flow_ambient.comp.spec_7_0" },
 };
 
 void d3d12_barrier_all(ID3D12GraphicsCommandList4 *cmd, bool enhanced)
@@ -923,11 +944,13 @@ void d3d12_record_passes(const d3d12_passes_t *p, const d3d12_passes_frame_t *f)
     pass(&r, D3D12_PASS_INTERLEAVE, NULL, 0, (iw + 15) / 16, (ih + 15) / 16);
     mark(&r, PROFILER_INTERLEAVE, PROFILER_STOP);
 
-    // (an empty span when folded, as vkpt_taa's)
-    mark(&r, PROFILER_ASVGF_TAA, PROFILER_START);
+    // (an empty span when folded, as vkpt_taa's). In photo mode the dispatch is
+    // only the running average, timed as its own row (vkpt_taa's profiler_row).
+    const int taa_row = f->accumulating ? PROFILER_ACCUMULATION : PROFILER_ASVGF_TAA;
+    mark(&r, taa_row, PROFILER_START);
     if (!f->taa_folded)
         pass(&r, D3D12_PASS_TAAU, NULL, 0, (tw + 15) / 16, (th + 15) / 16);
-    mark(&r, PROFILER_ASVGF_TAA, PROFILER_STOP);
+    mark(&r, taa_row, PROFILER_STOP);
 
     // vkpt's DLSS arm: DLSSApply (NGX), then R_EndFrame's bloom and tone mapping on
     // DLSS_OUTPUT at the output size

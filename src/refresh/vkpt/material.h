@@ -35,13 +35,13 @@ typedef struct image_s image_t;
 typedef struct pbr_material_s {
 	list_t entry;
 	char name[MAX_QPATH];
-	char filename_base[MAX_QPATH];
-	char filename_normals[MAX_QPATH];
-	char filename_emissive[MAX_QPATH];
-	char filename_mask[MAX_QPATH];
-	char filename_roughness[MAX_QPATH];
-	char filename_metallic[MAX_QPATH];
-	char filename_height[MAX_QPATH];
+	char filename_base[MAX_IMAGE_PATH];
+	char filename_normals[MAX_IMAGE_PATH];
+	char filename_emissive[MAX_IMAGE_PATH];
+	char filename_mask[MAX_IMAGE_PATH];
+	char filename_roughness[MAX_IMAGE_PATH];
+	char filename_metallic[MAX_IMAGE_PATH];
+	char filename_height[MAX_IMAGE_PATH];
 	char source_matfile[MAX_QPATH];
 	uint32_t source_line;
 	int original_width;
@@ -72,9 +72,34 @@ typedef struct pbr_material_s {
 	// grazing view traces round into the neighbouring copy of the texture, and a
 	// lamp shows its lens twice. Default off, because tiled maps need the wrap.
 	bool displace_clamp;
+	// alpha_glass 1 (or "kind ALPHA_GLASS"): a GLASS material that is glass only
+	// where its base texture's alpha is under a half - a window pane cut out of
+	// a frame drawn on the same face (Quake III's textures/base_wall/glass_frame).
+	// The rest is shaded as an ordinary surface, with the material's own maps.
+	// Decided per pixel by the shaders (alpha_glass_solid, path_tracer_rgen.h);
+	// apply_q3_shader sets it for an alpha-tested Quake III glass shader.
+	bool alpha_glass;
+	// caustic <s> (or "kind GLASSCAUSTIC" = GLASS + caustic 1): light from a
+	// lamp INSIDE this glass is bent by the mesh's own vertex normals on its way
+	// out, bunching up where the surface focuses it and thinning where it
+	// spreads it (glass_caustic, path_tracer_rgen.h). 1 = real glass (IOR 1.52),
+	// 2 = twice the bend, 0 = off. Needs pt_caustics 1. Shadow rays only.
+	float glass_caustic;
+	// caustic_ripple <s>: the light through this GLASS is thrown in moving
+	// water ripples (the animated water normal map, as water's caustics), as if
+	// the glass were rippling water - Matt's health orbs, 2026-11-16. Projected
+	// out from the shape's centre of curvature, so a lamp the size of the glass
+	// still throws sharp lines (glass_ripple, path_tracer_rgen.h). 1 = the
+	// default network, 2 = stronger folds, 0 = off; the total light it lets
+	// through stays the same. Separate from `caustic`, which it multiplies.
+	// Needs pt_caustics 1. Shadow rays only.
+	float caustic_ripple;
 	float roughness_override;
 	float metalness_factor;
 	float emissive_factor;
+	// light_factor: scales only the light the surface CASTS (its light polys),
+	// not how bright it looks - emissive_factor and default_radiance scale both
+	float light_factor;
 	float specular_factor;
 	float base_factor;
 	uint32_t flags;
@@ -95,6 +120,11 @@ typedef struct pbr_material_s {
 	// MAT_InheritScalars, which never overwrites a value the definition spelled
 	// out.
 	uint32_t specified_fields;
+	// The same bits, for the attributes changed with 'mat <attribute> <value>'
+	// since the material was loaded: what 'mat save' with no file name writes
+	// back into the entry the material came from (material.c save_to_source_files).
+	// Only ever set on a live material, never on a definition.
+	uint32_t console_fields;
 	// The material whose layout-independent tuning this one inherits, recorded
 	// by MAT_InheritScalars - for an md5 skin, the classic .md2 skin it
 	// replaces. Kept because 'mat reload' has to re-apply that inheritance and
@@ -125,6 +155,15 @@ typedef struct pbr_material_s {
 	// REPLACES the slider rather than scaling it. Not stated (<= 0, the default)
 	// means the slider decides.
 	float albedo_strength;
+	// A Quake III shader drawn stage by stage (q3stages.c): index + 1 of its
+	// program, 0 for none. Built by apply_q3_shader for shaders that animate or
+	// draw from more than one image; cleared with the material.
+	uint16_t q3_program;
+	// A Quake III shader that only ADDS light over what is behind it (q3shader.c
+	// q3_analyze "additive"): nothing of the surface itself shows, so its faces
+	// get alpha 0 (bsp_mesh.c create_poly) and the primary ray goes straight
+	// through, picking up only the glow.
+	bool q3_additive;
 } pbr_material_t;
 
 extern pbr_material_t r_materials[MAX_PBR_MATERIALS];
@@ -159,12 +198,26 @@ void MAT_InstanceName(const char* base_name, uint32_t instance_hash, char* out, 
 // sorted lookup that fails fast and allocates nothing.
 pbr_material_t* MAT_FindInstance(const pbr_material_t* base, uint32_t instance_hash);
 
+// The Quake III shader a material draws (an instance's is its base's), or NULL
+// when no script defines one.
+const struct q3shader_s* MAT_Q3Shader(const pbr_material_t* mat);
+
 // True if (mat)'s own definition or a 'mat kind' command set its kind, rather
 // than it inheriting the kind from a base material or a default.
 bool MAT_KindSpecified(const pbr_material_t* mat);
 
+// True if (mat)'s roughness_override is its roughness all over, not a floor
+// under its maps: no roughness map, normal map or metallic map to carry one.
+bool MAT_RoughnessIsWhole(const pbr_material_t* mat);
+
 // returns a material by index, if it's valid - NULL otherwise
 pbr_material_t* MAT_ForIndex(int index);
+
+// 'mat print's picture of the material's albedo (or another map) in the top-right
+// corner; both renderers' R_EndFrame call it before drawing the 2D layer
+void MAT_DrawPreview(void);
+// The index of a live material (one of r_materials), or -1 for a definition.
+int MAT_IndexOf(const pbr_material_t* mat);
 
 // update material when a skin is applied
 pbr_material_t* MAT_ForSkin(image_t * image_base);

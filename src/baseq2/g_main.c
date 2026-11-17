@@ -266,6 +266,7 @@ void InitGame(void)
 
     // bot match and team deathmatch (g_bot.c); needs game.maxclients
     CTF_Init();
+    Q3_InitGame();
     Bot_Init();
 }
 

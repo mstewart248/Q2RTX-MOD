@@ -144,7 +144,7 @@ bool fog_layers_summed(ivec2 pos)
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 void main()
 {
-	vec3 sun_color = sun_color_ubo.sun_color;
+	vec3 sun_color = SUN_COLOR_RESOLVED;
 
 	// In fog mode 2 the medium is lit by the map's own lights, so an absent sun
 	// is the normal case rather than a reason to bail - every rerelease map has
@@ -437,7 +437,9 @@ void main()
 		// the bilateral upsample in god_rays_filter blew those into blobs. The
 		// extra lookups are shadow-map fetches only, stratified with this pixel's
 		// jitter so neighbours still differ. See pt_fog_sun_substeps.
-		int sun_substeps = clamp(int(global_ubo.pt_fog_sun_substeps), 1, 16);
+		// photo mode: its own count, 1 by default (pt_fog_accum_sun_substeps)
+		int sun_substeps = clamp(int(fog_accum_march() ? global_ubo.pt_fog_accum_sun_substeps
+		                                               : global_ubo.pt_fog_sun_substeps), 1, 16);
 		if (sun_substeps > 1)
 		{
 			float sub_jitter = rand(ivec2(pixelPos.xy) + ivec2(step_index * 13 + 1, step_index * 7 + 5));
@@ -499,6 +501,21 @@ void main()
 		inscatter += differentialInscatter;
 		throughput *= exp(-(stepLength * density) * extinction_factors);
 
+		// A Quake III fog brush has REAL extinction whatever the map fog's is
+		// (fog_medium.glsl q3_fog_sigma), so it dims both the light that gets
+		// through it and the picture behind it, as Quake III's fog does.
+		{
+			float q3_sigma = q3_fog_sigma(currentPos);
+			if (q3_sigma > 0.0)
+			{
+				float q3_t = exp(-stepLength * q3_sigma);
+				throughput *= q3_t;
+				fog_transmittance *= q3_t;
+				if (fog_transmittance < 0.003)
+					break;
+			}
+		}
+
 		if (fog_medium)
 		{
 			fog_transmittance *= exp(-(stepLength * density) * global_ubo.pt_fog_extinction);
@@ -513,7 +530,7 @@ void main()
 		}
 	}
 
-	vec3 inscatterColor = inscatter * sun_color_ubo.sun_color * fog_sun_scale() * 0.0001;
+	vec3 inscatterColor = inscatter * SUN_COLOR_RESOLVED * fog_sun_scale() * 0.0001;
 
 	// The local-light half carries its own radiance already, so it is added
 	// after the sun tint rather than being folded into it.

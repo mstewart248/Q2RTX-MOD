@@ -1,0 +1,627 @@
+
+# instance of textures/base_light/s_proto_light
+# q3dm6, created at (-575 770 505)
+# Inherits everything from textures/base_light/s_proto_light; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_light/s_proto_light#75129922:
+#	texture_base materialDev/textures/base_light/proto_light.jpg
+#	texture_emissive materialDev/textures/base_light/proto_lightmap.jpg
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 0
+#	specular_factor 0
+#	base_factor 1
+	emissive_factor 2
+	light_factor 10
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 0
+	default_radiance 1
+
+# instance of textures/base_light/s_proto_light
+# q3dm6, created at (-576 928 507)
+# Inherits everything from textures/base_light/s_proto_light; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_light/s_proto_light#dfb3b78a:
+#	texture_base materialDev/textures/base_light/proto_light.jpg
+#	texture_emissive materialDev/textures/base_light/proto_lightmap.jpg
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 0
+#	specular_factor 0
+#	base_factor 1
+	emissive_factor 2
+	light_factor 10
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 0
+#	default_radiance 1
+
+# instance of textures/base_light/s_proto_light
+# q3dm6, created at (-577 1088 505)
+# Inherits everything from textures/base_light/s_proto_light; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_light/s_proto_light#5365ad7a:
+#	texture_base materialDev/textures/base_light/proto_light.jpg
+#	texture_emissive materialDev/textures/base_light/proto_lightmap.jpg
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 0
+#	specular_factor 0
+#	base_factor 1
+	emissive_factor 2
+	light_factor 10
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/base_light/s_proto_light
+# q3dm6, created at (-766 1088 505)
+# Inherits everything from textures/base_light/s_proto_light; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_light/s_proto_light#3ad2b002:
+#	texture_base materialDev/textures/base_light/proto_light.jpg
+#	texture_emissive materialDev/textures/base_light/proto_lightmap.jpg
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 0
+#	specular_factor 0
+#	base_factor 1
+	emissive_factor 2
+	light_factor 10
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/base_light/s_proto_light
+# q3dm6, created at (-768 930 505)
+# Inherits everything from textures/base_light/s_proto_light; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_light/s_proto_light#cc44bfee:
+#	texture_base materialDev/textures/base_light/proto_light.jpg
+#	texture_emissive materialDev/textures/base_light/proto_lightmap.jpg
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 0
+#	specular_factor 0
+#	base_factor 1
+	emissive_factor 2
+	light_factor 10
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/base_light/s_proto_light
+# q3dm6, created at (-769 770 504)
+# Inherits everything from textures/base_light/s_proto_light; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_light/s_proto_light#eb3ea562:
+#	texture_base materialDev/textures/base_light/proto_light.jpg
+#	texture_emissive materialDev/textures/base_light/proto_lightmap.jpg
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 0
+#	specular_factor 0
+#	base_factor 1
+	emissive_factor 2
+	light_factor 10
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/base_trim/dirty_pewter
+# q3dm6, created at (-291 -200 399)
+# Inherits everything from textures/base_trim/dirty_pewter; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_trim/dirty_pewter#36a1a5c9:
+	texture_metallic materialDev/textures/base_trim/dirty_pewter_metal.png
+	texture_roughness materialDev/textures/base_trim/dirty_pewter_rough.png
+	texture_normals materialDev/textures/base_trim/dirty_pewter_n.png
+	bump_scale .25
+	base_factor 3
+#	texture_base materialDev/textures/base_trim/dirty_pewter.jpg
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+	emissive_factor 0
+#	light_factor 1
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/base_trim/dirty_pewter
+# q3dm6, created at (-292 -323 384)
+# Inherits everything from textures/base_trim/dirty_pewter; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_trim/dirty_pewter#0c8c8c55:
+	texture_metallic materialDev/textures/base_trim/dirty_pewter_metal.png
+	texture_roughness materialDev/textures/base_trim/dirty_pewter_rough.png
+	texture_normals materialDev/textures/base_trim/dirty_pewter_n.png
+	bump_scale .25
+	base_factor 3
+#	texture_base materialDev/textures/base_trim/dirty_pewter.jpg
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	light_factor 1
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/base_trim/dirty_pewter
+# q3dm6, created at (-447 -36 407)
+# Inherits everything from textures/base_trim/dirty_pewter; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_trim/dirty_pewter#a99b5663:
+	texture_metallic materialDev/textures/base_trim/dirty_pewter_metal.png
+	texture_roughness materialDev/textures/base_trim/dirty_pewter_rough.png
+	texture_normals materialDev/textures/base_trim/dirty_pewter_n.png
+	bump_scale .25
+	base_factor 3
+#	texture_base materialDev/textures/base_trim/dirty_pewter.jpg
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	light_factor 1
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+
+# instance of textures/base_trim/dirty_pewter
+# q3dm6, created at (-573 -35 393)
+# Inherits everything from textures/base_trim/dirty_pewter; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_trim/dirty_pewter#534089a5:
+	texture_metallic materialDev/textures/base_trim/dirty_pewter_metal.png
+	texture_roughness materialDev/textures/base_trim/dirty_pewter_rough.png
+	texture_normals materialDev/textures/base_trim/dirty_pewter_n.png
+	bump_scale .25
+	base_factor 3
+#	texture_base materialDev/textures/base_trim/dirty_pewter.jpg
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	light_factor 1
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/base_trim/dirty_pewter
+# q3dm6, created at (-683 -22 394)
+# Inherits everything from textures/base_trim/dirty_pewter; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_trim/dirty_pewter#19238213:
+	texture_metallic materialDev/textures/base_trim/dirty_pewter_metal.png
+	texture_roughness materialDev/textures/base_trim/dirty_pewter_rough.png
+	texture_normals materialDev/textures/base_trim/dirty_pewter_n.png
+	bump_scale .25
+	base_factor 3
+#	texture_base materialDev/textures/base_trim/dirty_pewter.jpg
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	light_factor 1
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/base_trim/dirty_pewter
+# q3dm6, created at (-856 -192 419)
+# Inherits everything from textures/base_trim/dirty_pewter; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_trim/dirty_pewter#db78a0dc:
+	texture_metallic materialDev/textures/base_trim/dirty_pewter_metal.png
+	texture_roughness materialDev/textures/base_trim/dirty_pewter_rough.png
+	texture_normals materialDev/textures/base_trim/dirty_pewter_n.png
+	bump_scale .25
+	base_factor 3
+#	texture_base materialDev/textures/base_trim/dirty_pewter.jpg
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	light_factor 1
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/base_trim/dirty_pewter
+# q3dm6, created at (-857 -330 419)
+# Inherits everything from textures/base_trim/dirty_pewter; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_trim/dirty_pewter#6ab17218:
+	texture_metallic materialDev/textures/base_trim/dirty_pewter_metal.png
+	texture_roughness materialDev/textures/base_trim/dirty_pewter_rough.png
+	texture_normals materialDev/textures/base_trim/dirty_pewter_n.png
+	bump_scale .25
+	base_factor 3
+#	texture_base materialDev/textures/base_trim/dirty_pewter.jpg
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	light_factor 1
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/base_trim/dirty_pewter
+# q3dm6, created at (-811 -320 666)
+# Inherits everything from textures/base_trim/dirty_pewter; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_trim/dirty_pewter#775e24d0:
+	texture_metallic materialDev/textures/base_trim/dirty_pewter_metal.png
+	texture_roughness materialDev/textures/base_trim/dirty_pewter_rough.png
+	texture_normals materialDev/textures/base_trim/dirty_pewter_n.png
+	bump_scale .25
+	base_factor 3
+#	texture_base materialDev/textures/base_trim/dirty_pewter.jpg
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	light_factor 1
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/base_trim/dirty_pewter
+# q3dm6, created at (-819 -198 665)
+# Inherits everything from textures/base_trim/dirty_pewter; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_trim/dirty_pewter#880e3ac0:
+	texture_metallic materialDev/textures/base_trim/dirty_pewter_metal.png
+	texture_roughness materialDev/textures/base_trim/dirty_pewter_rough.png
+	texture_normals materialDev/textures/base_trim/dirty_pewter_n.png
+	bump_scale .25
+	base_factor 3
+#	texture_base materialDev/textures/base_trim/dirty_pewter.jpg
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	light_factor 1
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/base_trim/pewter
+# q3dm6, created at (-702 -80 676)
+# Inherits everything from textures/base_trim/pewter; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_trim/pewter#d7626c74:
+	texture_metallic materialDev/textures/base_trim/dirty_pewter_metal.png
+	texture_roughness materialDev/textures/base_trim/dirty_pewter_rough.png
+	texture_normals materialDev/textures/base_trim/dirty_pewter_n.png
+	bump_scale .25
+	base_factor 3
+#	texture_base materialDev/textures/base_trim/pewter.jpg
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	light_factor 1
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/base_trim/pewter
+# q3dm6, created at (-570 -87 673)
+# Inherits everything from textures/base_trim/pewter; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_trim/pewter#996d1454:
+	texture_metallic materialDev/textures/base_trim/dirty_pewter_metal.png
+	texture_roughness materialDev/textures/base_trim/dirty_pewter_rough.png
+	texture_normals materialDev/textures/base_trim/dirty_pewter_n.png
+	bump_scale .25
+	base_factor 3
+#	texture_base materialDev/textures/base_trim/pewter.jpg
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	light_factor 1
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/base_trim/pewter
+# q3dm6, created at (-447 -81 672)
+# Inherits everything from textures/base_trim/pewter; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_trim/pewter#e80af894:
+	texture_metallic materialDev/textures/base_trim/dirty_pewter_metal.png
+	texture_roughness materialDev/textures/base_trim/dirty_pewter_rough.png
+	texture_normals materialDev/textures/base_trim/dirty_pewter_n.png
+	bump_scale .25
+	base_factor 3
+#	texture_base materialDev/textures/base_trim/pewter.jpg
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	light_factor 1
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/base_trim/dirty_pewter
+# q3dm6, created at (-342 -321 676)
+# Inherits everything from textures/base_trim/dirty_pewter; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_trim/dirty_pewter#16d750f9:
+	texture_metallic materialDev/textures/base_trim/dirty_pewter_metal.png
+	texture_roughness materialDev/textures/base_trim/dirty_pewter_rough.png
+	texture_normals materialDev/textures/base_trim/dirty_pewter_n.png
+	bump_scale .25
+	base_factor 3
+#	texture_base materialDev/textures/base_trim/dirty_pewter.jpg
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	light_factor 1
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/base_trim/dirty_pewter
+# q3dm6, created at (-341 -193 677)
+# Inherits everything from textures/base_trim/dirty_pewter; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_trim/dirty_pewter#9fd9c751:
+	texture_metallic materialDev/textures/base_trim/dirty_pewter_metal.png
+	texture_roughness materialDev/textures/base_trim/dirty_pewter_rough.png
+	texture_normals materialDev/textures/base_trim/dirty_pewter_n.png
+	bump_scale .25
+	base_factor 3
+#	texture_base materialDev/textures/base_trim/dirty_pewter.jpg
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	light_factor 1
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/base_trim/pewter
+# q3dm6, created at (-294 -217 627)
+# Inherits everything from textures/base_trim/pewter; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_trim/pewter#b955273c:
+	texture_metallic materialDev/textures/base_trim/dirty_pewter_metal.png
+	texture_roughness materialDev/textures/base_trim/dirty_pewter_rough.png
+	texture_normals materialDev/textures/base_trim/dirty_pewter_n.png
+	bump_scale .25
+	base_factor 3
+#	texture_base materialDev/textures/base_trim/pewter.jpg
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	light_factor 1
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/base_trim/pewter
+# q3dm6, created at (-284 -296 628)
+# Inherits everything from textures/base_trim/pewter; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_trim/pewter#36da6a93:
+	texture_metallic materialDev/textures/base_trim/dirty_pewter_metal.png
+	texture_roughness materialDev/textures/base_trim/dirty_pewter_rough.png
+	texture_normals materialDev/textures/base_trim/dirty_pewter_n.png
+	bump_scale .25
+	base_factor 3
+#	texture_base materialDev/textures/base_trim/pewter.jpg
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	light_factor 1
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/base_trim/pewter
+# q3dm6, created at (-426 -33 627)
+# Inherits everything from textures/base_trim/pewter; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_trim/pewter#2c71d1a7:
+	texture_metallic materialDev/textures/base_trim/dirty_pewter_metal.png
+	texture_roughness materialDev/textures/base_trim/dirty_pewter_rough.png
+	texture_normals materialDev/textures/base_trim/dirty_pewter_n.png
+	bump_scale .25
+	base_factor 3
+#	texture_base materialDev/textures/base_trim/pewter.jpg
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	light_factor 1
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/base_trim/pewter
+# q3dm6, created at (-679 -17 629)
+# Inherits everything from textures/base_trim/pewter; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_trim/pewter#4e841dd7:
+	texture_metallic materialDev/textures/base_trim/dirty_pewter_metal.png
+	texture_roughness materialDev/textures/base_trim/dirty_pewter_rough.png
+	texture_normals materialDev/textures/base_trim/dirty_pewter_n.png
+	bump_scale .25
+	base_factor 3
+#	texture_base materialDev/textures/base_trim/pewter.jpg
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	light_factor 1
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/base_trim/pewter
+# q3dm6, created at (-869 -162 632)
+# Inherits everything from textures/base_trim/pewter; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_trim/pewter#6e6c35c2:
+	texture_metallic materialDev/textures/base_trim/dirty_pewter_metal.png
+	texture_roughness materialDev/textures/base_trim/dirty_pewter_rough.png
+	texture_normals materialDev/textures/base_trim/dirty_pewter_n.png
+	bump_scale .25
+	base_factor 3
+#	texture_base materialDev/textures/base_trim/pewter.jpg
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	light_factor 1
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/base_trim/pewter
+# q3dm6, created at (-864 -294 629)
+# Inherits everything from textures/base_trim/pewter; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_trim/pewter#d5a9e615:
+	texture_metallic materialDev/textures/base_trim/dirty_pewter_metal.png
+	texture_roughness materialDev/textures/base_trim/dirty_pewter_rough.png
+	texture_normals materialDev/textures/base_trim/dirty_pewter_n.png
+	bump_scale .25
+	base_factor 3
+#	texture_base materialDev/textures/base_trim/pewter.jpg
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	light_factor 1
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1

@@ -1407,7 +1407,10 @@ begin skill
 end
 
 // Deathmatch against bots (src/baseq2/g_bot.c). The game reads bot_count,
-// bot_skinN and bot_skillN when the match starts. Each bot wears a random
+// bot_skinN and bot_skillN when the match starts. bot_count 0 is a match
+// with nobody else in it - for walking a map. "allow cheats" (bot_cheats,
+// ui.c) is copied into the latched "cheats" by every start action, so
+// noclip and god work in the match. Each bot wears a random
 // stock skin (male, female, cyborg) and goes by its name: bot_lineup
 // (src/client/ui/ui.c) rolls them as the page opens, once a session, and
 // "shuffle" rolls again; a row labelled "$_ui_botnameN" shows that name.
@@ -1432,6 +1435,14 @@ end
 // default, leaves it to the game, which evens the teams out as the match
 // starts (Bot_PlanTeams, g_bot.c). A bot's row says its side when it has
 // been given one ("$_ui_botlabelN", set in ui.c).
+//
+// With Quake III Arena installed (its pak*.pk3 in baseq3, fs_quake3 1), "map
+// set" picks its maps instead (bot_mapset 1): the deathmatch and tourney
+// arenas, or its CTF maps in capture the flag (bot_map_q3, bot_map_q3ctf).
+// Its items become Quake II's (src/baseq2/g_q3.c), and two more rows say how:
+// Quake III's or Quake II's health and armor amounts (g_q3_items - the
+// Quake III amounts bring its Battle Suit, Quake II's the Environment Suit),
+// and what you spawn holding (g_q3_kit).
 begin botmatch
     background #212F3CD0
     style --compact
@@ -1442,6 +1453,20 @@ begin botmatch
     ifneq fs_rerelease 1
         pairs --live --status "team deathmatch: red against blue, teams kept even" "game mode" bot_mode deathmatch 0 "team deathmatch" 1
     endif
+    ifeq fs_quake3 1
+        pairs --live --status "quake iii arena: its maps, with quake ii's weapons and items in its weapons' and items' places" "map set" bot_mapset "quake ii" 0 "quake iii arena" 1
+    endif
+    ifeq bot_mapset 1
+    ifeq bot_mode 2
+        pairs "map" bot_map_q3ctf "Dueling Keeps" q3ctf1 "Troubled Waters" q3ctf2 "The Stronghold" q3ctf3 "Space CTF" q3ctf4 "Across Space" q3tourney6_ctf
+    endif
+    ifneq bot_mode 2
+        pairs "map" bot_map_q3 "Introduction" q3dm0 "Arena Gate" q3dm1 "House Of Pain" q3dm2 "Arena Of Death" q3dm3 "The Place Of Many Deaths" q3dm4 "The Forgotten Place" q3dm5 "The Camping Grounds" q3dm6 "Temple of Retribution" q3dm7 "Brimstone Abbey" q3dm8 "Hero's Keep" q3dm9 "The Nameless Place" q3dm10 "Deva Station" q3dm11 "The Dredwerkz" q3dm12 "Lost World" q3dm13 "Grim Dungeons" q3dm14 "Demon Keep" q3dm15 "The Bouncy Map" q3dm16 "The Longest Yard" q3dm17 "Space Chamber" q3dm18 "Apocalypse Void" q3dm19 "Powerstation 0218" q3tourney1 "The Proving Grounds" q3tourney2 "Hell's Gate" q3tourney3 "Vertical Vengeance" q3tourney4 "Fatal Instinct" q3tourney5 "The Very End Of You" q3tourney6 "The Campgrounds II" pro-q3dm6 "Lost World II" pro-q3dm13 "The Proving Grounds II" pro-q3tourney2 "Vertical Vengeance II" pro-q3tourney4
+    endif
+        pairs --status "quake iii: 5 / 25 / 50 / 100 health, 5 / 50 / 100 armor, the battle suit. quake ii: its own, the environment suit" "health and armor" g_q3_items "quake iii arena" 1 "quake ii" 0
+        pairs --status "what every player spawns holding" "spawn with" g_q3_kit "blaster, machinegun" 0 "chainfist, machinegun" 1 "blaster" 2
+    endif
+    ifneq bot_mapset 1
     ifeq bot_mode 2
         pairs "map" bot_map_ctf "McKinley Revival" q2ctf1 "Stronghold Opposition" q2ctf2 "The Smelter" q2ctf3 "Outlands II" q2ctf4 "Capture Showdown" q2ctf5 "Captured Reckoning" q2kctf1 "Nexus CTF" q2kctf2 "Something Epic" ndctf0
     endif
@@ -1471,6 +1496,7 @@ begin botmatch
         strings "map" bot_map_any $$com_maplist
     endif
     endif
+    endif
     ifge bot_mode 1
         toggle --status "(dmflags)" "friendly fire" dmflags ~8
     endif
@@ -1481,10 +1507,13 @@ begin botmatch
         field --integer --status "0 - no capture limit" --width 3 "capture limit" capturelimit
     endif
     field --integer --status "0 - no time limit" --width 3 "time limit" timelimit
+    toggle --status "noclip, god, notarget and give work in this match (cheats)" "allow cheats" bot_cheats
     action --align "deathmatch flags..." pushmenu gameflags
     blank
-    pairs --live "bots" bot_count 1 1 2 2 3 3 4 4 5 5 6 6 7 7 8 8 9 9 10 10 11 11 12 12 13 13 14 14 15 15
-    action --align --status "new faces: every bot in another skin" "shuffle bots" "bot_lineup shuffle"
+    pairs --live --status "0: no bots, the map to yourself" "bots" bot_count 0 0 1 1 2 2 3 3 4 4 5 5 6 6 7 7 8 8 9 9 10 10 11 11 12 12 13 13 14 14 15 15
+    ifge bot_count 1
+        action --align --status "new faces: every bot in another skin" "shuffle bots" "bot_lineup shuffle"
+    endif
     ifge bot_mode 1
         action --align --status "which side you and each bot play on - auto evens the teams out" "teams..." pushmenu botteams
     endif
@@ -1534,27 +1563,37 @@ begin botmatch
         pairs --status "enter: pick its model and skin, left and right: its skill" --command "set _ui_botslot 15; pushmenu botpick" "$_ui_botlabel15" bot_skill15 practice 0 easy 1 medium 2 hard 3 expert 4 nightmare 5
     endif
     blank
+    ifeq bot_mapset 1
     ifeq bot_mode 2
-        action --align "start match" "forcemenuoff; set bot_match 1; set teamplay 0; set ctf 1; deathmatch 1; coop 0; maxclients 16; map $bot_map_ctf force"
+        action --align "start match" "forcemenuoff; set bot_match 1; set teamplay 0; set ctf 1; deathmatch 1; coop 0; maxclients 16; set cheats $bot_cheats; map $bot_map_q3ctf force"
+    endif
+    ifneq bot_mode 2
+        action --align "start match" "forcemenuoff; set bot_match 1; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; maxclients 16; set cheats $bot_cheats; map $bot_map_q3 force"
+    endif
+    endif
+    ifneq bot_mapset 1
+    ifeq bot_mode 2
+        action --align "start match" "forcemenuoff; set bot_match 1; set teamplay 0; set ctf 1; deathmatch 1; coop 0; maxclients 16; set cheats $bot_cheats; map $bot_map_ctf force"
     endif
     ifneq bot_mode 2
     ifeq _ui_botpack 0
-        action --align "start match" "forcemenuoff; set bot_match 1; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; maxclients 16; map $bot_map_q2 force"
+        action --align "start match" "forcemenuoff; set bot_match 1; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; maxclients 16; set cheats $bot_cheats; map $bot_map_q2 force"
     endif
     ifeq _ui_botpack 1
-        action --align "start match" "forcemenuoff; set bot_match 1; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; maxclients 16; map $bot_map_mg force"
+        action --align "start match" "forcemenuoff; set bot_match 1; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; maxclients 16; set cheats $bot_cheats; map $bot_map_mg force"
     endif
     ifeq _ui_botpack 2
-        action --align "start match" "forcemenuoff; set bot_match 1; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; maxclients 16; map $bot_map_xdm force"
+        action --align "start match" "forcemenuoff; set bot_match 1; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; maxclients 16; set cheats $bot_cheats; map $bot_map_xdm force"
     endif
     ifeq _ui_botpack 3
-        action --align "start match" "forcemenuoff; set bot_match 1; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; maxclients 16; map $bot_map_rdm force"
+        action --align "start match" "forcemenuoff; set bot_match 1; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; maxclients 16; set cheats $bot_cheats; map $bot_map_rdm force"
     endif
     ifeq _ui_botpack 4
-        action --align "start match" "forcemenuoff; set bot_match 1; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; maxclients 16; map $bot_map_q64 force"
+        action --align "start match" "forcemenuoff; set bot_match 1; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; maxclients 16; set cheats $bot_cheats; map $bot_map_q64 force"
     endif
     ifeq _ui_botpack 5
-        action --align "start match" "forcemenuoff; set bot_match 1; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; maxclients 16; map $bot_map_any force"
+        action --align "start match" "forcemenuoff; set bot_match 1; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; maxclients 16; set cheats $bot_cheats; map $bot_map_any force"
+    endif
     endif
     endif
 end

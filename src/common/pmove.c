@@ -39,6 +39,10 @@ typedef struct {
 
     vec3_t      previous_origin;
     bool        ladder;
+
+    // Quake III powerups (pmoveParams_t.q3)
+    float       speedscale;     // 1.3 with Haste, else 1
+    bool        q3_flight;
 } pml_t;
 
 static pmove_t      *pm;
@@ -536,9 +540,9 @@ static void PM_WaterMove(void)
     VectorCopy(wishvel, wishdir);
     wishspeed = VectorNormalize(wishdir);
 
-    if (wishspeed > pmp->maxspeed) {
-        VectorScale(wishvel, pmp->maxspeed / wishspeed, wishvel);
-        wishspeed = pmp->maxspeed;
+    if (wishspeed > pmp->maxspeed * pml.speedscale) {
+        VectorScale(wishvel, pmp->maxspeed * pml.speedscale / wishspeed, wishvel);
+        wishspeed = pmp->maxspeed * pml.speedscale;
     }
     wishspeed *= pmp->watermult;
 
@@ -578,6 +582,7 @@ static void PM_AirMove(void)
 // clamp to server defined max speed
 //
     maxspeed = (pm->s.pm_flags & PMF_DUCKED) ? pm_duckspeed : pmp->maxspeed;
+    maxspeed *= pml.speedscale;
 
     if (wishspeed > maxspeed) {
         VectorScale(wishvel, maxspeed / wishspeed, wishvel);
@@ -624,6 +629,48 @@ static void PM_AirMove(void)
         pml.velocity[2] -= pm->s.gravity * pml.frametime;
         PM_StepSlideMove();
     }
+}
+
+/*
+===================
+PM_Q3FlightMove
+
+Quake III's Flight powerup (bg_pmove.c PM_FlyMove): no gravity, steer in
+three dimensions along the view with jump to rise and crouch to sink, a light
+friction of its own (3) and acceleration of 8. Collides like walking.
+===================
+*/
+static void PM_Q3FlightMove(void)
+{
+    vec3_t  wishvel, wishdir;
+    float   wishspeed, maxspeed, speed;
+    int     i;
+
+    speed = VectorLength(pml.velocity);
+    if (speed < 1) {
+        VectorClear(pml.velocity);
+    } else {
+        float newspeed = speed - speed * 3 * pml.frametime;
+        if (newspeed < 0)
+            newspeed = 0;
+        VectorScale(pml.velocity, newspeed / speed, pml.velocity);
+    }
+
+    AngleVectors(pm->viewangles, pml.forward, pml.right, pml.up);
+
+    for (i = 0; i < 3; i++)
+        wishvel[i] = pml.forward[i] * pm->cmd.forwardmove + pml.right[i] * pm->cmd.sidemove;
+    wishvel[2] += pm->cmd.upmove;
+
+    VectorCopy(wishvel, wishdir);
+    wishspeed = VectorNormalize(wishdir);
+
+    maxspeed = pmp->maxspeed * pml.speedscale;
+    if (wishspeed > maxspeed)
+        wishspeed = maxspeed;
+
+    PM_Accelerate(wishdir, wishspeed, 8);
+    PM_StepSlideMove();
 }
 
 /*
@@ -1181,6 +1228,14 @@ void Pmove(pmove_t *pmove, pmoveParams_t *params)
 
     pml.frametime = pm->cmd.msec * 0.001f;
 
+    // Quake III Haste and Flight, carried in the gravity (pmoveParams_t.q3)
+    pml.speedscale = 1;
+    if (pmp->q3 && pm->s.pm_type == PM_NORMAL) {
+        if (pm->s.gravity & 1)
+            pml.speedscale = 1.3f;
+        pml.q3_flight = (pm->s.gravity & ~1) == 0;
+    }
+
     if (pm->s.pm_type >= PM_DEAD) {
         pm->cmd.forwardmove = 0;
         pm->cmd.sidemove = 0;
@@ -1220,6 +1275,8 @@ void Pmove(pmove_t *pmove, pmoveParams_t *params)
 
     if (pm->s.pm_flags & PMF_TIME_TELEPORT) {
         // teleport pause stays exactly in place
+    } else if (pml.q3_flight) {
+        PM_Q3FlightMove();
     } else if (pm->s.pm_flags & PMF_TIME_WATERJUMP) {
         // waterjump has no control, but falls
         pml.velocity[2] -= pm->s.gravity * pml.frametime;

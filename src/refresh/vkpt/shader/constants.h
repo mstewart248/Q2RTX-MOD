@@ -40,7 +40,93 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #define MAX_CAMERAS 8
 
-#define MAX_FOG_VOLUMES 8
+#define MAX_FOG_VOLUMES 16  // the "fog" command's boxes, then a Quake III map's fog brushes (fog.c)
+
+/* QUAKE III CODE, COMPILED IN OR OUT (spec_q3, global_ubo.h). The specialization
+   constant every shader with Quake III code reads; the C side passes it with this
+   id (vkpt_spec_q3_info, and the D3D12 ".spec_..._7_0" variants). */
+#define SPEC_Q3_CONSTANT_ID 7
+
+/* QUAKE III SHADER STAGES (q3stages.c, q3_stages.glsl). A Quake III shader that
+   animates or draws from several images is uploaded as a PROGRAM: a header vec4
+   and Q3P_STAGE_VEC4S per stage, in LightBuffer.q3_stages, re-evaluated for the
+   current time on the CPU every frame. The material table's word 9 carries the
+   program's first vec4 + 1 in its top half (0 = none). */
+#define MAX_Q3_STAGE_VEC4S  4096
+#define Q3P_MAX_STAGES      8
+#define Q3P_STAGE_VEC4S     5
+
+// header .x: stage count in the low byte, then these
+#define Q3P_PROG_TRANSLUCENT    0x100   // what is behind shows through: alpha comes from the program
+#define Q3P_PROG_IMPLICIT_LIT   0x200   // no lightmap stage: the colour stages are lit anyway
+#define Q3P_PROG_SHINE          0x400   // pt_q3_env_shine: reflection-map stages make the surface glossy instead of drawing
+#define Q3P_PROG_SHINE_METAL    0x800   // ... and metal (metalsteps, or a metal word in the shader's or its reflection map's name)
+#define Q3P_PROG_SELF_LIT       0x1000  // q3map_surfacelight, but every stage is multiplied by the light: it emits its fully lit colour (q3stages.c program_emits)
+#define Q3P_PROG_GLOW           0x2000  // a stage is Q3P_STAGE_GLOW
+#define Q3P_PROG_PROPS          0x4000  // .mat stage<N>_* settings: Q3P_PROP_VEC4S per stage follow the stages
+
+/* A stage's own surface (q3stages.h STAGE SETTINGS, q3_stages.glsl): two vec4s
+   per stage after all the stages - .x roughness | metallic map << 16 and .y
+   normal map | Q3P_PROP_* << 16 (image indices, 0 = none), then roughness_override,
+   metalness_factor, specular_factor, bump_scale. */
+#define Q3P_PROP_VEC4S          2
+#define Q3P_PROP_ROUGH          0x0001  // roughness_override: the roughness, or a floor under the map
+#define Q3P_PROP_METAL          0x0002  // metalness_factor: the metalness, or what scales the map
+#define Q3P_PROP_SPEC           0x0004  // specular_factor
+#define Q3P_PROP_BUMP           0x0008  // bump_scale of its normal map
+#define Q3P_PROP_ROUGH_MAP      0x0010  // texture_roughness
+#define Q3P_PROP_METAL_MAP      0x0020  // texture_metallic
+#define Q3P_PROP_NORMAL_MAP     0x0040  // texture_normals
+
+/* pt_q3_env_shine 1 (never on a see-through program, where the reflection map
+   is the effect itself). The values live on the MATERIAL - material.c's
+   apply_q3_shader starts them here unless the .mat entry sets its own, and
+   'mat print' shows them:
+   - a METAL shader: roughness_override Q3_SHINE_ROUGHNESS_METAL and
+     metalness_factor Q3_SHINE_METALLIC, flat over the whole surface;
+   - any other: roughness_override Q3_SHINE_ROUGHNESS, only where its reflection
+     map showed (the share of the colour it made, doubled, up to 1);
+   - both: specular_factor 1.
+   A metal's reflection map stands in at its own hue with Q3_SHINE_METAL_F0
+   luminance - the reflectance of a bright steel - where the surface is made of
+   it; one added on top (dst ONE) keeps its own average, as Quake III added. */
+#define Q3_SHINE_ROUGHNESS_METAL        0.2
+#define Q3_SHINE_METALLIC               0.9
+#define Q3_SHINE_ROUGHNESS              0.08
+#define Q3_SHINE_METAL_F0               0.6
+
+// stage word 0, top 16 bits
+#define Q3P_STAGE_LIGHTMAP      0x0001  // $lightmap: the light itself, L
+#define Q3P_STAGE_WHITE         0x0002  // $whiteimage
+#define Q3P_STAGE_ENV           0x0004  // tcGen environment
+#define Q3P_STAGE_CLAMP         0x0008  // clampMap
+#define Q3P_STAGE_LIT           0x0010  // multiplied by L (rgbGen vertex/lightingDiffuse, or implicit)
+#define Q3P_STAGE_ONE_MINUS_LIT 0x0020  // multiplied by 1 - L (rgbGen oneMinusVertex)
+#define Q3P_STAGE_TURB          0x0040  // tcMod turb between the two matrices
+#define Q3P_STAGE_NO_IMAGE      0x0080  // the image did not load: the stage is skipped
+#define Q3P_STAGE_HIGHLIGHT     0x0100  // a reflection map added after the light: never drawn; marks gloss under Q3P_PROG_SHINE
+#define Q3P_STAGE_ENV_EFFECT    0x0200  // a reflection map that scrolls or spins: an effect, drawn as it is even under Q3P_PROG_SHINE
+#define Q3P_STAGE_GLOW          0x0400  // the .mat entry's texture_emissive is this stage's image: what shows of it, fully lit, is emitted too
+
+// stage word 1: source factor, destination factor (Q3BF_* in q3shader.h), alpha test
+#define Q3P_BF_NONE                 0
+#define Q3P_BF_ONE                  1
+#define Q3P_BF_ZERO                 2
+#define Q3P_BF_DST_COLOR            3
+#define Q3P_BF_ONE_MINUS_DST_COLOR  4
+#define Q3P_BF_SRC_ALPHA            5
+#define Q3P_BF_ONE_MINUS_SRC_ALPHA  6
+#define Q3P_BF_DST_ALPHA            7
+#define Q3P_BF_ONE_MINUS_DST_ALPHA  8
+#define Q3P_BF_SRC_COLOR            9
+#define Q3P_BF_ONE_MINUS_SRC_COLOR  10
+#define Q3P_BF_SRC_ALPHA_SATURATE   11
+
+/* QUAKE III SKY CLOUD LAYERS (q3stages.c vkpt_q3_sky_upload, q3_sky.glsl): the
+   sky shader's cloud stages, in global_ubo.q3_sky_layers, Q3_SKY_LAYER_VEC4S
+   each - the tcMod transform a b c d; e f, image index, blend factors; colour. */
+#define Q3_SKY_MAX_LAYERS   4
+#define Q3_SKY_LAYER_VEC4S  3
 
 #define AA_MODE_OFF 0
 #define AA_MODE_TAA 1
@@ -146,6 +232,21 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // Doubles the SURF_FLOWING scroll rate on one face. Set only on the fire over
 // the MGU drop pod windows (see bsp_mesh.c), which reads as a crawl at 1.6.
 #define TEXTURE_FLAG_FAST_FLOW       0x00000008
+
+// Quake III's quad damage look on a model (q3stages.c "QUAKE III QUAD DAMAGE"):
+// its powerups/quad stage glows over the surface in place of the blue shell
+// (path_tracer_rgen.h get_emissive_q3_quad). Per ENTITY, so it comes from the
+// model instance (ModelInstance.texture_flags), never from the mesh - and the
+// material word has no bit left for it.
+#define TEXTURE_FLAG_Q3_QUAD         0x00000010
+
+// The invisibility powerup (RF_CLOAK, client entities.c): the player is kind
+// WATER (main.c compute_mesh_material_flags), and this keeps ALL of it water.
+// Plain WATER turns its sideways-facing faces into force-field glass tinted by
+// the skin (primary_rays.rgen / reflect_refract.rgen), which on a body is a
+// dark band round the middle; the cloak should only bend what is behind it.
+// Per entity, from ModelInstance.texture_flags, as TEXTURE_FLAG_Q3_QUAD.
+#define TEXTURE_FLAG_CLOAK           0x00000020
 
 // Scroll rate in texture widths per second, for the N64 scroll flags above.
 // Matches GL_ScrollSpeed() in the rerelease-derived q2repro renderer, which

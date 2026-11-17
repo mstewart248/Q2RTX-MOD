@@ -812,6 +812,13 @@ void T_Damage(edict_t *targ, edict_t *inflictor, edict_t *attacker, const vec3_t
         }
     }
 
+    // Quake III's Battle Suit: after the knockback, so rocket jumps still go
+    if (client && Q3_BattleSuitActive(client) && damage) {
+        damage = Q3_BattleSuitDamage(targ, damage, dflags, mod);
+        if (!damage)
+            return;
+    }
+
     take = damage;
     save = 0;
 

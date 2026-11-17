@@ -33,6 +33,7 @@ SET(SRC_BASEQ2
 	baseq2/g_nav.c
 	baseq2/g_bot.c
 	baseq2/g_ctf.c
+	baseq2/g_q3.c
 	baseq2/g_xatrix.c
 	baseq2/g_weapon.c
 	baseq2/m_actor.c
@@ -189,6 +190,7 @@ SET(HEADERS_SERVER
 
 SET(SRC_COMMON
 	common/bsp.c
+	common/bsp_q3.c
 	common/cmd.c
 	common/cmodel.c
 	common/common.c
@@ -202,6 +204,7 @@ SET(SRC_COMMON
 	common/msg.c
 	common/pmove.c
 	common/prompt.c
+	common/q3shader.c
 	common/sizebuf.c
 #	common/tests.c
 	common/utils.c
@@ -377,6 +380,8 @@ SET(SRC_VKPT
 	refresh/vkpt/path_tracer.c
 	refresh/vkpt/physical_sky.c
 	refresh/vkpt/precomputed_sky.c
+	refresh/vkpt/q3stages.c
+	refresh/vkpt/q3deform.c
 	refresh/vkpt/profiler.c
 	refresh/vkpt/ptlas.c
 	refresh/vkpt/clusters.c
@@ -415,6 +420,8 @@ SET(HEADERS_VKPT
 	refresh/vkpt/fog.h
 	refresh/vkpt/cameras.h
 	refresh/vkpt/material.h
+	refresh/vkpt/q3stages.h
+	refresh/vkpt/q3deform.h
 	refresh/vkpt/physical_sky.h
 	refresh/vkpt/precomputed_sky.h
 	refresh/vkpt/precomputed_sky_params.h
@@ -772,6 +779,34 @@ IF (TARGET client)
         # pt_ser 3: the reorder before the hit's triangle is fetched (spec_ser_early)
         compile_shader_d3d12_variant(BASE_NAME indirect_lighting.rgen.query SPEC 1=1      ENTRY ser OUTPUT_FILE_LIST d3d12_dxil)
         compile_shader_d3d12_variant(BASE_NAME indirect_lighting.rgen.query SPEC 0=1 1=1  ENTRY ser OUTPUT_FILE_LIST d3d12_dxil)
+        # pt_q3_shaders: each pass with Quake III code in it again with spec_q3 (7) = 0,
+        # the code compiled out (passes.c's q2_shader, world.c's pass sets; main.c's
+        # update_q3_shaders) - every variant above that has any, and the bases
+        compile_shader_d3d12_variant(BASE_NAME primary_rays.rgen.query      SPEC 7=0             OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME primary_rays.rgen.query      SPEC 1=1 7=0         OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME primary_rays.rgen.query      SPEC 1=2 7=0 FREEZE  OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME reflect_refract.rgen.query   SPEC 7=0             OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME reflect_refract.rgen.query   SPEC 0=1 7=0         OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME reflect_refract.rgen.query   SPEC 1=0 7=0         OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME reflect_refract.rgen.query   SPEC 0=1 1=0 7=0     OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME direct_lighting.rgen.query   SPEC 7=0             OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME direct_lighting.rgen.query   SPEC 0=1 7=0         OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME indirect_lighting.rgen.query SPEC 7=0             OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME indirect_lighting.rgen.query SPEC 0=1 7=0         OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME indirect_lighting.rgen.query SPEC 7=0         ENTRY raygen OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME indirect_lighting.rgen.query SPEC 0=1 7=0     ENTRY raygen OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME indirect_lighting.rgen.query SPEC 7=0         ENTRY ser    OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME indirect_lighting.rgen.query SPEC 0=1 7=0     ENTRY ser    OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME indirect_lighting.rgen.query SPEC 1=1 7=0     ENTRY ser    OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME indirect_lighting.rgen.query SPEC 0=1 1=1 7=0 ENTRY ser    OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME restir_gi.rgen.query         SPEC 7=0             OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME sharc_update.rgen.query      SPEC 7=0             OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME god_rays.comp                SPEC 7=0             OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME god_rays_filter.comp         SPEC 7=0             OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME froxel_reservoir.comp        SPEC 7=0             OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME froxel_spatial.comp          SPEC 7=0             OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME froxel_scatter.comp          SPEC 7=0             OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME flow_ambient.comp            SPEC 7=0             OUTPUT_FILE_LIST d3d12_dxil)
         compile_shader_d3d12_variant(BASE_NAME asvgf_atrous.comp            SPEC 0=1     OUTPUT_FILE_LIST d3d12_dxil)
         compile_shader_d3d12_variant(BASE_NAME asvgf_atrous.comp            SPEC 0=2     OUTPUT_FILE_LIST d3d12_dxil)
         compile_shader_d3d12_variant(BASE_NAME asvgf_atrous.comp            SPEC 0=3     OUTPUT_FILE_LIST d3d12_dxil)

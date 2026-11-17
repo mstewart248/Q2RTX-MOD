@@ -18,7 +18,12 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #include "material.h"
 #include "vkpt.h"
+#include "q3stages.h"
 #include <common/prompt.h>
+#include <common/q3shader.h>
+#include <format/bsp3.h>
+#include <client/keys.h>        // Key_GetDest: the preview stays while the console is open
+#include <system/system.h>      // Sys_Milliseconds
 
 #include <stdlib.h>
 #include <string.h>
@@ -27,11 +32,22 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 extern cvar_t *cvar_pt_surface_lights_fake_emissive_algo;
 extern cvar_t* cvar_pt_surface_lights_threshold;
+extern cvar_t *cvar_pt_enable_surface_lights;
+extern cvar_t *cvar_pt_enable_surface_lights_warp;
+extern cvar_t *cvar_pt_bsp_radiance_scale;
 
 extern void CL_PrepRefresh(void);
 
 pbr_material_t r_materials[MAX_PBR_MATERIALS];
-static pbr_material_t r_global_materials[MAX_PBR_MATERIALS];
+
+/* The DEFINITIONS every .mat file in materials/ makes, live or not. Not bound by
+   MAX_PBR_MATERIALS, which is what one frame can draw (the GPU's material
+   table): baseq2.mat and rerelease.mat already define some 4,600, and
+   baseq3/materials/quake3.mat stubs every Quake III texture - at 8192 shared,
+   whichever file listed last lost its entries, and the files list
+   alphabetically, so quake3.mat would have cut rerelease.mat short. */
+#define MAX_PBR_MATERIAL_DEFS 16384
+static pbr_material_t r_global_materials[MAX_PBR_MATERIAL_DEFS];
 static pbr_material_t r_map_materials[MAX_PBR_MATERIALS];
 static uint32_t num_global_materials = 0;
 // remembered so 'mat reload' can re-read the per-map overrides
@@ -137,6 +153,10 @@ static void load_global_materials(void)
 {
 	memset(r_global_materials, 0, sizeof(r_global_materials));
 	num_global_materials = 0;
+	vkpt_q3_stage_override_clear(Q3SS_SCOPE_GLOBAL);
+	// and what was typed in the console: unsaved, it goes the way of the
+	// attributes typed there (q3stages.h)
+	vkpt_q3_stage_override_clear(Q3SS_SCOPE_CONSOLE);
 
 	// find all *.mat files in the root
 	int num_files;
@@ -147,7 +167,7 @@ static void load_global_materials(void)
 		char buffer[MAX_QPATH];
 		Q_concat(buffer, sizeof(buffer), "materials/", file_name);
 		
-		int mat_slots_available = MAX_PBR_MATERIALS - num_global_materials;
+		int mat_slots_available = MAX_PBR_MATERIAL_DEFS - num_global_materials;
 		if (mat_slots_available > 0) {
 			uint32_t count = load_material_file(buffer, r_global_materials + num_global_materials,
 				mat_slots_available);
@@ -169,6 +189,7 @@ static void load_global_materials(void)
 void MAT_Shutdown()
 {
 	Cmd_RemoveCommand("mat");
+	vkpt_q3_light_cache_clear();
 }
 
 static void MAT_SetIndex(pbr_material_t* mat)
@@ -190,6 +211,7 @@ static void MAT_Reset(pbr_material_t * mat)
 	mat->roughness_override = -1.0f;
 	mat->metalness_factor = 1.f;
 	mat->emissive_factor = 1.f;
+	mat->light_factor = 1.f;
 	mat->specular_factor = 1.f;
 	mat->base_factor = 1.f;
 	mat->light_styles = true;
@@ -259,16 +281,17 @@ static const char * getMaterialKindName(uint32_t flag)
 	return NULL;
 }
 
-static size_t truncate_extension(char const* src, char dest[MAX_QPATH])
+// (src) without its extension, cut to fit (size) - a texture path can be
+// longer than a material name (MAX_IMAGE_PATH), and 'mat print' takes anything
+static size_t truncate_extension(char const* src, char* dest, size_t size)
 {
 	size_t len = strlen(src);
-	assert(len < MAX_QPATH);
 
 	if (len > 4 && src[len - 4] == '.')
 		len -= 4;
-	
-	Q_strlcpy(dest, src, len + 1);
-	
+
+	Q_strlcpy(dest, src, min(len + 1, size));
+
 	return len;
 }
 
@@ -393,6 +416,10 @@ enum AttributeIndex
 	MAT_ALBEDO_STRENGTH,
 	MAT_DOUBLE_SIDED,
 	MAT_DISPLACE_CLAMP,
+	MAT_ALPHA_GLASS,
+	MAT_CAUSTIC,
+	MAT_LIGHT_FACTOR,
+	MAT_CAUSTIC_RIPPLE,
 };
 enum AttributeType { ATTR_BOOL, ATTR_FLOAT, ATTR_STRING, ATTR_INT };
 
@@ -429,12 +456,21 @@ static struct MaterialAttribute {
 	{MAT_ALBEDO_STRENGTH, "albedo_strength", ATTR_FLOAT},
 	{MAT_DOUBLE_SIDED, "double_sided", ATTR_BOOL},
 	{MAT_DISPLACE_CLAMP, "displace_clamp", ATTR_BOOL},
+	{MAT_ALPHA_GLASS, "alpha_glass", ATTR_BOOL},
+	{MAT_CAUSTIC, "caustic", ATTR_FLOAT},
+	// the light the surface casts, times this; how it looks is untouched (Matt,
+	// 2026-11-16: q3dm0's purple band - "I want it to cast light but I want the
+	// texture to look the same"). Live: copy_light reads it every frame.
+	{MAT_LIGHT_FACTOR, "light_factor", ATTR_FLOAT},
+	{MAT_CAUSTIC_RIPPLE, "caustic_ripple", ATTR_FLOAT},
 };
 
 static int c_NumAttributes = sizeof(c_Attributes) / sizeof(struct MaterialAttribute);
 
 // pbr_material_t::specified_fields is one bit per entry of c_Attributes, so the
-// table has to stay inside a uint32_t
+// table has to stay inside a uint32_t. caustic_ripple took the LAST bit
+// (2026-11-16): the next attribute needs specified_fields and console_fields
+// widened to uint64_t and every `1u << attr` made 64-bit.
 static_assert(sizeof(c_Attributes) / sizeof(struct MaterialAttribute) <= 32,
 	"too many material attributes for pbr_material_t::specified_fields");
 
@@ -442,24 +478,54 @@ static_assert(sizeof(c_Attributes) / sizeof(struct MaterialAttribute) <= 32,
 // it at the default for something else to fill in
 #define MAT_SPECIFIED(mat, attr) (((mat)->specified_fields & (1u << (attr))) != 0)
 
-static void set_material_texture(pbr_material_t* mat, const char* svalue, char mat_texture_path[MAX_QPATH],
+/* A TEXTURE SLOT CLEARED ON PURPOSE. "texture_roughness 0", "texture_roughness"
+   with nothing after it, "texture_roughness \"\"" in a .mat file (which has no
+   quoting, so the two quote marks arrive as they are), or 'mat texture_roughness
+   ""' in the console: no map, and nothing may fill the slot in later - not the
+   <name>_rough sidecar, not a player skin's own map, not a Quake III shader's
+   solid stand-in. Only "0" used to count, so an empty value was skipped as a
+   line with no value (the file) or looked up as a texture called "" (the
+   console), and the map that was there stayed or came back (Matt, 2026-11-17). */
+static bool MAT_TextureValueClears(const char* value)
+{
+	return !value[0] || !strcmp(value, "0") || !strcmp(value, "\"\"");
+}
+
+// a texture_* attribute: its value is an image path, or a clear
+static bool is_texture_attribute(enum AttributeIndex index)
+{
+	switch (index)
+	{
+	case MAT_TEXTURE_BASE: case MAT_TEXTURE_NORMALS: case MAT_TEXTURE_EMISSIVE: case MAT_TEXTURE_MASK:
+	case MAT_TEXTURE_ROUGHNESS: case MAT_TEXTURE_METALLIC: case MAT_TEXTURE_HEIGHT:
+		return true;
+	default:
+		return false;
+	}
+}
+
+// the slot (attr) that (mat) states has no texture at all: see MAT_TextureValueClears
+#define MAT_CLEARED(mat, attr, filename) (MAT_SPECIFIED(mat, attr) && !(mat)->filename[0])
+
+static void set_material_texture(pbr_material_t* mat, const char* svalue, char mat_texture_path[MAX_IMAGE_PATH],
 	image_t** mat_image, imageflags_t flags, bool from_console)
 {
-	if (strcmp(svalue, "0") == 0) {
+	if (MAT_TextureValueClears(svalue)) {
 		mat_texture_path[0] = 0;
 		*mat_image = NULL;
 	}
 	else if (from_console) {
-		image_t* image = IMG_Find(svalue, mat->image_type, flags | IF_EXACT | (mat->image_flags & IF_SRC_MASK));
+		// the file typed, not an image already loaded from its .jpg/.png twin
+		image_t* image = IMG_FindFile(svalue, mat->image_type, flags | (mat->image_flags & IF_SRC_MASK));
 		if (image != R_NOTEXTURE) {
-			Q_strlcpy(mat_texture_path, svalue, MAX_QPATH);
+			Q_strlcpy(mat_texture_path, svalue, MAX_IMAGE_PATH);
 			*mat_image = image;
 		}
 		else
 			Com_WPrintf("Cannot load texture '%s'\n", svalue);
 	}
 	else {
-		Q_strlcpy(mat_texture_path, svalue, MAX_QPATH);
+		Q_strlcpy(mat_texture_path, svalue, MAX_IMAGE_PATH);
 	}
 }
 
@@ -489,7 +555,7 @@ static int set_material_attribute(pbr_material_t* mat, const char* attribute, co
 		return Q_ERR_FAILURE;
 	}
 
-	char svalue[MAX_QPATH];
+	char svalue[MAX_IMAGE_PATH];
 
 	float fvalue = 0.f; bool bvalue = false;
 	int ivalue = 0;
@@ -499,6 +565,27 @@ static int set_material_attribute(pbr_material_t* mat, const char* attribute, co
 	case ATTR_FLOAT:  fvalue = (float)atof(value); break;
 	case ATTR_STRING: {
 		char* asterisk = strchr(value, '*');
+
+		/* A path that does not fit used to be cut short here and fail later as
+		   "Invalid quake path" on a name that was never in the file - "..._light."
+		   for "..._light.png". Say so, and keep what the material had. Texture
+		   paths may be MAX_IMAGE_PATH (127 characters) now, not the engine's
+		   MAX_QPATH (63) - materialDev/ names ran past that. */
+		size_t needed = strlen(value);
+		if (asterisk) {
+			const char* slash = strrchr(mat->name, '/');
+			needed += strlen(slash ? slash + 1 : mat->name) - 1;
+		}
+		if (needed >= sizeof(svalue)) {
+			if (sourceFile)
+				Com_EPrintf("%s:%d: %s %s: the path is %u characters, and can be %d at most - shorten the file name\n",
+					sourceFile, lineno, attribute, value, (unsigned)needed, MAX_IMAGE_PATH - 1);
+			else
+				Com_EPrintf("%s %s: the path is %u characters, and can be %d at most - shorten the file name\n",
+					attribute, value, (unsigned)needed, MAX_IMAGE_PATH - 1);
+			return Q_ERR(ENAMETOOLONG);
+		}
+
 		if (asterisk) {
 			// get the base name of the material, i.e. without the path
 			// material names have no extensions, so no need to remove that
@@ -529,12 +616,36 @@ static int set_material_attribute(pbr_material_t* mat, const char* attribute, co
 	case MAT_DISPLACE_IN: mat->displace_in = fvalue; break;
 	case MAT_DISPLACE_OUT: mat->displace_out = fvalue; break;
 	case MAT_DISPLACE_CLAMP: mat->displace_clamp = bvalue; break;
+	// glass only where the base texture is see-through - see material.h
+	case MAT_ALPHA_GLASS: mat->alpha_glass = bvalue; break;
+	// light inside this glass bent by the mesh normals - see material.h
+	case MAT_CAUSTIC: mat->glass_caustic = max(0.f, min(fvalue, 15.f)); break;
+	// that light thrown in moving water ripples - see material.h
+	case MAT_CAUSTIC_RIPPLE: mat->caustic_ripple = max(0.f, min(fvalue, 4.f)); break;
 	case MAT_VOLUMETRIC_SCALE: mat->volumetric_scale = fvalue; break;
 	case MAT_ROUGHNESS_OVERRIDE: mat->roughness_override = fvalue; break;
 	case MAT_METALNESS_FACTOR: mat->metalness_factor = fvalue; break;
 	case MAT_EMISSIVE_FACTOR: mat->emissive_factor = fvalue; break;
+	case MAT_LIGHT_FACTOR: mat->light_factor = fvalue; break;
 	case MAT_KIND: {
-		uint32_t kind = getMaterialKind(svalue);
+		// "kind ALPHA_GLASS": shorthand for kind GLASS + alpha_glass 1. There is
+		// no kind of its own to give it - the 4-bit kind field is full - so it is
+		// glass with a per-pixel test, and prints and saves as the two lines.
+		// "kind GLASSCAUSTIC" likewise: GLASS + caustic 1, unless an earlier
+		// line of the same entry already gave its own caustic strength.
+		const bool alpha_glass_kind = !Q_stricmp(svalue, "ALPHA_GLASS");
+		const bool caustic_kind = !Q_stricmp(svalue, "GLASSCAUSTIC") || !Q_stricmp(svalue, "GLASS_CAUSTIC");
+		uint32_t kind = (alpha_glass_kind || caustic_kind) ? MATERIAL_KIND_GLASS : getMaterialKind(svalue);
+		if (alpha_glass_kind)
+		{
+			mat->alpha_glass = true;
+			mat->specified_fields |= 1u << MAT_ALPHA_GLASS;
+		}
+		if (caustic_kind && !MAT_SPECIFIED(mat, MAT_CAUSTIC))
+		{
+			mat->glass_caustic = 1.f;
+			mat->specified_fields |= 1u << MAT_CAUSTIC;
+		}
 		if (kind != MATERIAL_KIND_UNKNOWN_NAME)
 			mat->flags = MAT_SetKind(mat->flags, kind);
 		else
@@ -766,6 +877,20 @@ static uint32_t load_material_file(const char* file_name, pbr_material_t* dest, 
 		char* value = strtok(NULL, delimiters);
 		char* extra = strtok(NULL, delimiters);
 
+		// "texture_roughness" alone clears the slot (MAT_TextureValueClears); so
+		// does "stage2_texture_roughness" alone. Any other key needs its value.
+		if (key && !value)
+		{
+			int stage_field;
+			const struct MaterialAttribute* attr = NULL;
+			for (int i = 0; i < c_NumAttributes; ++i)
+				if (!strcmp(key, c_Attributes[i].name))
+					attr = &c_Attributes[i];
+			if ((attr && is_texture_attribute(attr->index))
+				|| (vkpt_q3_stage_parse_key(key, &stage_field) >= 0 && stage_field >= 0 && stage_field < Q3SS_NUM_PATHS))
+				value = "";
+		}
+
 		if (!key || !value)
 		{
 			Com_WPrintf("%s:%d: expected key and value\n", file_name, lineno);
@@ -792,6 +917,27 @@ static uint32_t load_material_file(const char* file_name, pbr_material_t* dest, 
 			dest -= (num_materials_in_group - 1);
 			num_materials_in_group = 0;
 			state = INITIAL;
+			continue;
+		}
+
+		// "stage<N>_map", "stage<N>_roughness_override", ...: one stage of a
+		// Quake III shader - kept beside the definitions, not in them
+		// (q3stages.h STAGE SETTINGS)
+		int q3_field;
+		int q3_stage = vkpt_q3_stage_parse_key(key, &q3_field);
+		if (q3_stage >= 0)
+		{
+			const bool map_scope = dest >= r_map_materials && dest < r_map_materials + MAX_PBR_MATERIALS;
+			char err[256];
+			for (uint32_t i = 0; i < num_materials_in_group; i++)
+			{
+				if (!vkpt_q3_stage_setting_add(map_scope ? Q3SS_SCOPE_MAP : Q3SS_SCOPE_GLOBAL, (dest - i)->name,
+					q3_stage, q3_field, value, err, sizeof(err)))
+				{
+					Com_EPrintf("%s:%d: %s %s: %s\n", file_name, lineno, key, value, err);
+					break;
+				}
+			}
 			continue;
 		}
 
@@ -843,9 +989,13 @@ static void save_materials(const char* file_name, bool save_all, bool force)
 		// entry into one that pins today's sidecars forever. Materials with no
 		// source file are the generated block, where the detected paths ARE the
 		// content, so those keep being written in full.
+		// A slot the entry cleared is written as cleared ("0"): left out, the
+		// next load would fill it from the sidecar again.
 #define WRITE_TEXTURE(attr, field, key) \
 		if (mat->field[0] && (!mat->source_matfile[0] || MAT_SPECIFIED(mat, attr))) \
-			FS_FPrintf(file, "\t" key " %s\n", mat->field)
+			FS_FPrintf(file, "\t" key " %s\n", mat->field); \
+		else if (MAT_CLEARED(mat, attr, field)) \
+			FS_FPrintf(file, "\t" key " 0\n")
 
 		WRITE_TEXTURE(MAT_TEXTURE_BASE, filename_base, "texture_base");
 		WRITE_TEXTURE(MAT_TEXTURE_NORMALS, filename_normals, "texture_normals");
@@ -869,6 +1019,15 @@ static void save_materials(const char* file_name, bool save_all, bool force)
 		if (mat->displace_clamp)
 			FS_FPrintf(file, "\tdisplace_clamp 1\n");
 
+		if (mat->alpha_glass && MAT_SPECIFIED(mat, MAT_ALPHA_GLASS))
+			FS_FPrintf(file, "\talpha_glass 1\n");
+
+		if (mat->glass_caustic > 0.f)
+			FS_FPrintf(file, "\tcaustic %f\n", mat->glass_caustic);
+
+		if (mat->caustic_ripple > 0.f)
+			FS_FPrintf(file, "\tcaustic_ripple %f\n", mat->caustic_ripple);
+
 		if (mat->roughness_override > 0.f)
 			FS_FPrintf(file, "\troughness_override %f\n", mat->roughness_override);
 		
@@ -877,6 +1036,9 @@ static void save_materials(const char* file_name, bool save_all, bool force)
 		
 		if (mat->emissive_factor != 1.f)
 			FS_FPrintf(file, "\temissive_factor %f\n", mat->emissive_factor);
+
+		if (mat->light_factor != 1.f)
+			FS_FPrintf(file, "\tlight_factor %f\n", mat->light_factor);
 
 		if (mat->specular_factor != 1.f)
 			FS_FPrintf(file, "\tspecular_factor %f\n", mat->specular_factor);
@@ -936,6 +1098,697 @@ static void save_materials(const char* file_name, bool save_all, bool force)
 	Com_Printf("saved %d materials\n", count);
 }
 
+/*
+=================
+'mat save' with no file name: what was changed in the console, written back
+into the .mat entries those materials came from (Matt, 2026-11-16: "it should
+save it into the associated material file and not prompt me to provide a file
+name").
+
+Only what 'mat <attribute> <value>' changed since the material was loaded is
+written (pbr_material_t::console_fields), and only inside the material's own
+entry: the rest of the file, its comments and its line endings stay exactly as
+they were. A changed attribute replaces the entry's line for it; failing that, a
+commented-out line for it among the entry's own lines ("#\tkey value", the way
+the generated stubs list what can be set) is uncommented in place; failing that,
+a line is added after the entry's last setting.
+
+The file is the one load_material_file read, wherever that is - rerelease/,
+baseq2/ or baseq3/ (FS_RealPath) - replaced whole through a .tmp, with the
+version it replaces kept as .bak.
+=================
+*/
+
+// the .mat attribute called (name), or NULL
+static struct MaterialAttribute const* find_attribute(const char* name)
+{
+	for (int i = 0; i < c_NumAttributes; ++i)
+	{
+		if (strcmp(name, c_Attributes[i].name) == 0)
+			return &c_Attributes[i];
+	}
+	return NULL;
+}
+
+// Where the .mat file a definition was read from is, found the way
+// load_material_file found it: the game directory first when there is one, then
+// baseq2 and Quake III's baseq3. FS_REALPATH_* (files.h).
+static int material_file_real_path(const char* file_name, char* out, size_t size)
+{
+	int where = FS_REALPATH_NONE;
+	if (is_game_custom())
+		where = FS_RealPath(file_name, FS_PATH_GAME, out, size);
+	if (where == FS_REALPATH_NONE)
+		where = FS_RealPath(file_name, FS_PATH_BASE, out, size);
+	return where;
+}
+
+// (path) from the install folder down - "baseq3/materials/quake3.mat" - for
+// messages; the full path when it is somewhere else (a home directory)
+static const char* material_short_path(const char* path)
+{
+	const char* basedir = Cvar_VariableString("basedir");
+	size_t n = strlen(basedir);
+	if (n && !Q_strncasecmp(path, basedir, n) && (path[n] == '/' || path[n] == '\\'))
+		return path + n + 1;
+	return path;
+}
+
+// The value of attribute (index) as (mat) has it now, the way a .mat file
+// states it. False when there is nothing to write (a kind with no name).
+static bool format_attribute_value(const pbr_material_t* mat, enum AttributeIndex index, char* out, size_t size)
+{
+#define FLOAT_VALUE(v)   Q_snprintf(out, size, "%g", (v)); return true
+#define INT_VALUE(v)     Q_snprintf(out, size, "%d", (int)(v)); return true
+#define TEXTURE_VALUE(f) Q_strlcpy(out, mat->f[0] ? mat->f : "0", size); return true
+
+	switch (index)
+	{
+	case MAT_BUMP_SCALE:         FLOAT_VALUE(mat->bump_scale);
+	case MAT_ROUGHNESS_OVERRIDE: FLOAT_VALUE(mat->roughness_override);
+	case MAT_METALNESS_FACTOR:   FLOAT_VALUE(mat->metalness_factor);
+	case MAT_EMISSIVE_FACTOR:    FLOAT_VALUE(mat->emissive_factor);
+	case MAT_LIGHT_FACTOR:       FLOAT_VALUE(mat->light_factor);
+	case MAT_BASE_FACTOR:        FLOAT_VALUE(mat->base_factor);
+	case MAT_SPECULAR_FACTOR:    FLOAT_VALUE(mat->specular_factor);
+	case MAT_DEFAULT_RADIANCE:   FLOAT_VALUE(mat->default_radiance);
+	case MAT_DISPLACE_IN:        FLOAT_VALUE(mat->displace_in);
+	case MAT_DISPLACE_OUT:       FLOAT_VALUE(mat->displace_out);
+	case MAT_CAUSTIC:            FLOAT_VALUE(mat->glass_caustic);
+	case MAT_CAUSTIC_RIPPLE:     FLOAT_VALUE(mat->caustic_ripple);
+	case MAT_VOLUMETRIC_SCALE:   FLOAT_VALUE(mat->volumetric_scale);
+	case MAT_ALBEDO_STRENGTH:    FLOAT_VALUE(mat->albedo_strength);
+	case MAT_EMISSIVE_THRESHOLD: INT_VALUE(mat->emissive_threshold);
+	case MAT_DLSS_GUIDE_FIELD:   INT_VALUE(mat->dlss_guide_field);
+	case MAT_LIGHT_STYLES:       INT_VALUE(mat->light_styles ? 1 : 0);
+	case MAT_BSP_RADIANCE:       INT_VALUE(mat->bsp_radiance ? 1 : 0);
+	case MAT_SYNTH_EMISSIVE:     INT_VALUE(mat->synth_emissive ? 1 : 0);
+	case MAT_DISPLACE_CLAMP:     INT_VALUE(mat->displace_clamp ? 1 : 0);
+	case MAT_ALPHA_GLASS:        INT_VALUE(mat->alpha_glass ? 1 : 0);
+	case MAT_IS_LIGHT:           INT_VALUE((mat->flags & MATERIAL_FLAG_LIGHT) ? 1 : 0);
+	case MAT_CURVED_WATER:       INT_VALUE((mat->flags & MATERIAL_FLAG_CURVED_WATER) ? 1 : 0);
+	case MAT_DOUBLE_SIDED:       INT_VALUE((mat->flags & MATERIAL_FLAG_DOUBLE_SIDED) ? 1 : 0);
+	case MAT_TEXTURE_BASE:       TEXTURE_VALUE(filename_base);
+	case MAT_TEXTURE_NORMALS:    TEXTURE_VALUE(filename_normals);
+	case MAT_TEXTURE_EMISSIVE:   TEXTURE_VALUE(filename_emissive);
+	case MAT_TEXTURE_MASK:       TEXTURE_VALUE(filename_mask);
+	case MAT_TEXTURE_ROUGHNESS:  TEXTURE_VALUE(filename_roughness);
+	case MAT_TEXTURE_METALLIC:   TEXTURE_VALUE(filename_metallic);
+	case MAT_TEXTURE_HEIGHT:     TEXTURE_VALUE(filename_height);
+	case MAT_KIND: {
+		const char* kind = getMaterialKindName(mat->flags);
+		if (!kind)
+			return false;
+		Q_strlcpy(out, kind, size);
+		return true;
+	}
+	}
+
+#undef FLOAT_VALUE
+#undef INT_VALUE
+#undef TEXTURE_VALUE
+
+	return false;
+}
+
+// A .mat file as lines, each kept byte for byte with its own line ending, so
+// that what 'mat save' does not change it writes back unchanged.
+typedef struct {
+	const char* text;   // without the line ending: in the file's buffer, or owned
+	size_t      len;
+	const char* eol;    // "\r\n", "\n", or "" for an unterminated last line
+	bool        owned;  // text was allocated here
+} mat_line_t;
+
+typedef struct {
+	mat_line_t* lines;
+	int         count;
+	int         alloc;
+	const char* eol;    // the file's own line ending, for lines added to it
+} mat_text_t;
+
+static void mat_text_insert(mat_text_t* t, int at, const char* text, size_t len, const char* eol, bool owned)
+{
+	if (t->count == t->alloc)
+	{
+		t->alloc = t->alloc ? t->alloc * 2 : 1024;
+		t->lines = Z_Realloc(t->lines, sizeof(mat_line_t) * t->alloc);
+	}
+	memmove(t->lines + at + 1, t->lines + at, sizeof(mat_line_t) * (t->count - at));
+	t->lines[at].text = text;
+	t->lines[at].len = len;
+	t->lines[at].eol = eol;
+	t->lines[at].owned = owned;
+	t->count++;
+}
+
+static void mat_text_parse(mat_text_t* t, const char* buf, size_t size)
+{
+	memset(t, 0, sizeof(*t));
+	t->eol = "\n";
+	bool eol_seen = false;
+
+	size_t pos = 0;
+	while (pos < size)
+	{
+		size_t start = pos;
+		while (pos < size && buf[pos] != '\n')
+			pos++;
+		size_t end = pos;
+		const char* eol = "";
+		if (pos < size)
+		{
+			pos++;
+			if (end > start && buf[end - 1] == '\r')
+			{
+				end--;
+				eol = "\r\n";
+			}
+			else
+				eol = "\n";
+			if (!eol_seen)
+			{
+				t->eol = eol;
+				eol_seen = true;
+			}
+		}
+		mat_text_insert(t, t->count, buf + start, end - start, eol, false);
+	}
+}
+
+static void mat_text_free(mat_text_t* t)
+{
+	for (int i = 0; i < t->count; i++)
+	{
+		if (t->lines[i].owned)
+			Z_Free((void*)t->lines[i].text);
+	}
+	Z_Free(t->lines);
+	memset(t, 0, sizeof(*t));
+}
+
+// line (i) becomes (text), a copy
+static void mat_text_set(mat_text_t* t, int i, const char* text)
+{
+	mat_line_t* l = t->lines + i;
+	if (l->owned)
+		Z_Free((void*)l->text);
+	l->text = Z_CopyString(text);
+	l->len = strlen(text);
+	l->owned = true;
+}
+
+enum { MATLINE_BLANK, MATLINE_COMMENT, MATLINE_HEADER, MATLINE_SETTING };
+
+// What load_material_file makes of a line, by its rules: for a header, the
+// name it declares in (*first) and its last character - ':' closes a group of
+// names, ',' continues one; for a setting, its key and value. (line) is the
+// scratch copy they point into.
+static int mat_line_kind(const mat_line_t* l, char line[1024], char** first, char** second, char* header_end)
+{
+	size_t len = min(l->len, (size_t)1023);
+	memcpy(line, l->text, len);
+	line[len] = 0;
+	*first = *second = NULL;
+
+	const char* t = line;
+	while (*t == ' ' || *t == '\t')
+		++t;
+	if (*t == '#')
+		return MATLINE_COMMENT;
+
+	while (len > 0 && strchr(" \t\r\n", line[len - 1]))
+		--len;
+	line[len] = 0;
+	if (len == 0)
+		return MATLINE_BLANK;
+
+	char last = line[len - 1];
+	if (last == ':' || last == ',')
+	{
+		line[len - 1] = 0;
+		*first = line;  // the loader keeps any leading whitespace in the name too
+		if (header_end)
+			*header_end = last;
+		return MATLINE_HEADER;
+	}
+
+	*first = strtok(line, " \t\r\n");
+	*second = strtok(NULL, " \t\r\n");
+	return MATLINE_SETTING;
+}
+
+// The key of a commented-out setting, "#\tkey value" - a comment of exactly two
+// words - or NULL
+static const char* mat_line_commented_key(const mat_line_t* l, char line[1024])
+{
+	size_t len = min(l->len, (size_t)1023);
+	memcpy(line, l->text, len);
+	line[len] = 0;
+
+	char* t = line;
+	while (*t == ' ' || *t == '\t')
+		++t;
+	if (*t != '#')
+		return NULL;
+
+	char* key = strtok(t + 1, " \t\r\n");
+	char* value = strtok(NULL, " \t\r\n");
+	char* extra = strtok(NULL, " \t\r\n");
+	return (key && value && !extra) ? key : NULL;
+}
+
+// The entry for (name): the header line declaring it - the one nearest
+// (near_line), counted from 1, if there are several - the first line of the
+// settings after its group's last header and the line after them (the next
+// header, or the end), and how many names share those settings.
+static bool mat_text_find_entry(const mat_text_t* t, const char* name, uint32_t near_line,
+	int* header, int* first, int* end, int* group_size)
+{
+	char line[1024];
+	char *a, *b;
+	char last = 0;
+
+	int best = -1;
+	for (int i = 0; i < t->count; i++)
+	{
+		if (mat_line_kind(t->lines + i, line, &a, &b, &last) == MATLINE_HEADER && !Q_stricmp(a, name))
+		{
+			if (best < 0 || abs(i + 1 - (int)near_line) < abs(best + 1 - (int)near_line))
+				best = i;
+		}
+	}
+	if (best < 0)
+		return false;
+
+	// "a," "b," "c:" - the three share the settings after "c:"
+	int group_first = best;
+	for (int i = best - 1; i >= 0; i--)
+	{
+		int kind = mat_line_kind(t->lines + i, line, &a, &b, &last);
+		if (kind == MATLINE_BLANK || kind == MATLINE_COMMENT)
+			continue;
+		if (kind == MATLINE_HEADER && last == ',')
+		{
+			group_first = i;
+			continue;
+		}
+		break;
+	}
+
+	int colon = -1;
+	for (int i = best; i < t->count; i++)
+	{
+		int kind = mat_line_kind(t->lines + i, line, &a, &b, &last);
+		if (kind == MATLINE_BLANK || kind == MATLINE_COMMENT)
+			continue;
+		if (kind == MATLINE_HEADER)
+		{
+			if (last == ':')
+			{
+				colon = i;
+				break;
+			}
+			continue;
+		}
+		break;  // a setting before the group closed: the loader drops the group
+	}
+	if (colon < 0)
+		return false;
+
+	int names = 0;
+	for (int i = group_first; i <= colon; i++)
+	{
+		if (mat_line_kind(t->lines + i, line, &a, &b, &last) == MATLINE_HEADER)
+			names++;
+	}
+
+	int e = colon + 1;
+	while (e < t->count && mat_line_kind(t->lines + e, line, &a, &b, &last) != MATLINE_HEADER)
+		e++;
+
+	*header = best;
+	*first = colon + 1;
+	*end = e;
+	*group_size = names;
+	return true;
+}
+
+// (key) set to (value) in the entry whose settings are lines [first, *end) - see
+// the block comment above for where. (*insert_at) is where a new line goes.
+static void mat_text_set_setting(mat_text_t* t, int first, int* end, int* insert_at,
+	const char* key, const char* value)
+{
+	char line[1024], text[1024];
+	char *a, *b;
+	bool replaced = false;
+
+	for (int i = first; i < *end; i++)
+	{
+		if (mat_line_kind(t->lines + i, line, &a, &b, NULL) != MATLINE_SETTING || strcmp(a, key) != 0)
+			continue;
+
+		// keep the line's indent and the gap between key and value
+		const char* src = t->lines[i].text;
+		size_t len = t->lines[i].len;
+		size_t p = 0;
+		while (p < len && (src[p] == ' ' || src[p] == '\t'))
+			p++;
+		p += strlen(key);
+		while (p < len && (src[p] == ' ' || src[p] == '\t'))
+			p++;
+		Q_snprintf(text, sizeof(text), "%.*s%s", (int)p, src, value);
+		mat_text_set(t, i, text);
+		replaced = true;
+	}
+	if (replaced)
+		return;
+
+	// a commented-out line for it among the entry's own lines - the unbroken
+	// run after its header, so never one heading the entry after it
+	int body_end = first;
+	while (body_end < *end && mat_line_kind(t->lines + body_end, line, &a, &b, NULL) != MATLINE_BLANK)
+		body_end++;
+	for (int i = body_end - 1; i >= first; i--)
+	{
+		const char* commented = mat_line_commented_key(t->lines + i, line);
+		if (!commented || strcmp(commented, key) != 0)
+			continue;
+
+		// "#\tkey  old" -> "\tkey  new": what followed the '#' is the indent
+		const char* src = t->lines[i].text;
+		size_t len = t->lines[i].len;
+		size_t p = 0;
+		while (p < len && src[p] != '#')
+			p++;
+		p++;
+		size_t q = p;
+		while (q < len && (src[q] == ' ' || src[q] == '\t'))
+			q++;
+		size_t g = q + strlen(key);
+		while (g < len && (src[g] == ' ' || src[g] == '\t'))
+			g++;
+		if (q > p)
+			Q_snprintf(text, sizeof(text), "%.*s%s", (int)(g - p), src + p, value);
+		else
+			Q_snprintf(text, sizeof(text), "\t%.*s%s", (int)(g - q), src + q, value);
+		mat_text_set(t, i, text);
+		return;
+	}
+
+	// a new line after the entry's last setting
+	Q_snprintf(text, sizeof(text), "\t%s %s", key, value);
+	if (*insert_at > 0 && t->lines[*insert_at - 1].eol[0] == 0)
+		t->lines[*insert_at - 1].eol = t->eol;  // the file's last line had no ending
+	mat_text_insert(t, *insert_at, Z_CopyString(text), strlen(text), t->eol, true);
+	(*insert_at)++;
+	(*end)++;
+}
+
+// (t) over (path), through path.tmp, keeping the version it replaces as path.bak
+static bool mat_text_write(const mat_text_t* t, const char* path)
+{
+	char tmp[MAX_OSPATH], bak[MAX_OSPATH];
+	if (Q_concat(tmp, sizeof(tmp), path, ".tmp") >= sizeof(tmp)
+		|| Q_concat(bak, sizeof(bak), path, ".bak") >= sizeof(bak))
+		return false;
+
+	FILE* f = fopen(tmp, "wb");
+	if (!f)
+	{
+		Com_WPrintf("Cannot write '%s': %s\n", tmp, Q_ErrorString(Q_ERRNO));
+		return false;
+	}
+
+	bool ok = true;
+	for (int i = 0; i < t->count && ok; i++)
+	{
+		const mat_line_t* l = t->lines + i;
+		size_t eol_len = strlen(l->eol);
+		if (l->len && fwrite(l->text, 1, l->len, f) != l->len)
+			ok = false;
+		if (eol_len && fwrite(l->eol, 1, eol_len, f) != eol_len)
+			ok = false;
+	}
+	if (fclose(f) != 0)
+		ok = false;
+	if (!ok)
+	{
+		Com_WPrintf("Cannot write '%s'\n", tmp);
+		remove(tmp);
+		return false;
+	}
+
+	remove(bak);
+	if (rename(path, bak) != 0)
+	{
+		Com_WPrintf("Cannot replace '%s' (is it open in another program?): %s\n", path, Q_ErrorString(Q_ERRNO));
+		remove(tmp);
+		return false;
+	}
+	if (rename(tmp, path) != 0)
+	{
+		Com_WPrintf("Cannot replace '%s': %s\n", path, Q_ErrorString(Q_ERRNO));
+		rename(bak, path);
+		return false;
+	}
+	return true;
+}
+
+// The definition a live material was made from, the way MAT_Find and
+// 'mat reload' pick it: a wall takes its map's .mat first
+static pbr_material_t* live_material_definition(const pbr_material_t* mat)
+{
+	pbr_material_t* matdef = NULL;
+	if (mat->image_type == IT_WALL)
+		matdef = find_material_sorted(mat->name, r_map_materials, num_map_materials);
+	if (!matdef)
+		matdef = find_material_sorted(mat->name, r_global_materials, num_global_materials);
+	return matdef;
+}
+
+// something typed in the console that 'mat save' has not written: an attribute,
+// or one of its Quake III stages' settings (q3stages.h)
+static bool material_unsaved(const pbr_material_t* mat)
+{
+	return mat->console_fields || vkpt_q3_stage_unsaved(mat->name);
+}
+
+// Every changed material defined in (source_matfile), written into it in one go.
+// (tried) marks the materials dealt with, saved or not.
+static int save_changes_to_file(const char* source_matfile, uint8_t* tried)
+{
+	char path[MAX_OSPATH];
+	int where = material_file_real_path(source_matfile, path, sizeof(path));
+
+	if (where != FS_REALPATH_DISK)
+	{
+		for (int i = 0; i < MAX_PBR_MATERIALS; i++)
+		{
+			pbr_material_t* mat = r_materials + i;
+			if (!mat->registration_sequence || !material_unsaved(mat) || tried[i] || strcmp(mat->source_matfile, source_matfile) != 0)
+				continue;
+			tried[i] = 1;
+			if (where == FS_REALPATH_PACK)
+				Com_WPrintf("%s: not saved - %s is inside %s. Copy it out of the pack first.\n",
+					mat->name, source_matfile, material_short_path(path));
+			else
+				Com_WPrintf("%s: not saved - %s is no longer on disk.\n", mat->name, source_matfile);
+		}
+		return 0;
+	}
+
+	const char* shown = material_short_path(path);
+
+	FILE* f = fopen(path, "rb");
+	if (!f)
+	{
+		Com_WPrintf("Cannot read '%s': %s\n", shown, Q_ErrorString(Q_ERRNO));
+		return 0;
+	}
+	fseek(f, 0, SEEK_END);
+	long size = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	char* buf = Z_Malloc(size > 0 ? (size_t)size : 1);
+	size_t got = size > 0 ? fread(buf, 1, (size_t)size, f) : 0;
+	fclose(f);
+	if (size < 0 || got != (size_t)size)
+	{
+		Com_WPrintf("Cannot read '%s'\n", shown);
+		Z_Free(buf);
+		return 0;
+	}
+
+	mat_text_t text;
+	mat_text_parse(&text, buf, got);
+
+	// the materials written into (text), to finish off once it is on disk
+	static int pending[MAX_PBR_MATERIALS];
+	int num_pending = 0;
+
+	Com_Printf("%s:\n", shown);
+
+	for (int i = 0; i < MAX_PBR_MATERIALS; i++)
+	{
+		pbr_material_t* mat = r_materials + i;
+		if (!mat->registration_sequence || !material_unsaved(mat) || tried[i] || strcmp(mat->source_matfile, source_matfile) != 0)
+			continue;
+		tried[i] = 1;
+
+		int header, first, end, group_size;
+		if (!mat_text_find_entry(&text, mat->name, mat->source_line, &header, &first, &end, &group_size))
+		{
+			Com_WPrintf("  %s: not saved - its entry is not in the file any more. 'mat save <file>' "
+				"writes it to a file of its own.\n", mat->name);
+			continue;
+		}
+
+		// a new line goes after the entry's last setting, or else after the
+		// comments and stage lines right under its header
+		int insert_at = -1;
+		char line[1024];
+		char *a, *b;
+		for (int l = first; l < end; l++)
+		{
+			if (mat_line_kind(text.lines + l, line, &a, &b, NULL) == MATLINE_SETTING)
+				insert_at = l + 1;
+		}
+		if (insert_at < 0)
+		{
+			insert_at = first;
+			while (insert_at < end && mat_line_kind(text.lines + insert_at, line, &a, &b, NULL) != MATLINE_BLANK)
+				insert_at++;
+		}
+
+		char list[512] = "";
+		for (int k = 0; k < c_NumAttributes; k++)
+		{
+			const struct MaterialAttribute* attr = c_Attributes + k;
+			if (!(mat->console_fields & (1u << attr->index)))
+				continue;
+
+			char value[MAX_IMAGE_PATH];
+			if (!format_attribute_value(mat, attr->index, value, sizeof(value)))
+				continue;
+
+			mat_text_set_setting(&text, first, &end, &insert_at, attr->name, value);
+			Q_strlcat(list, list[0] ? ", " : "", sizeof(list));
+			Q_strlcat(list, attr->name, sizeof(list));
+			Q_strlcat(list, " ", sizeof(list));
+			Q_strlcat(list, value, sizeof(list));
+		}
+
+		// its Quake III stages' settings, "stage2_roughness_override 0.8"
+		char stage_key[64], stage_value[MAX_IMAGE_PATH];
+		for (int k = 0; vkpt_q3_stage_unsaved_get(mat->name, k, stage_key, sizeof(stage_key),
+			stage_value, sizeof(stage_value)); k++)
+		{
+			mat_text_set_setting(&text, first, &end, &insert_at, stage_key, stage_value);
+			Q_strlcat(list, list[0] ? ", " : "", sizeof(list));
+			Q_strlcat(list, stage_key, sizeof(list));
+			Q_strlcat(list, " ", sizeof(list));
+			Q_strlcat(list, stage_value, sizeof(list));
+		}
+
+		Com_Printf("  %s (line %d): %s\n", mat->name, header + 1, list);
+		if (group_size > 1)
+			Com_Printf("    that entry is shared by %d materials: it changes for all of them ('mat reload' shows them now)\n",
+				group_size);
+
+		pending[num_pending++] = i;
+	}
+
+	int saved = 0;
+	if (num_pending > 0 && mat_text_write(&text, path))
+	{
+		for (int p = 0; p < num_pending; p++)
+		{
+			pbr_material_t* mat = r_materials + pending[p];
+
+			/* The definition too, which is where the next map, or this material's
+			   next registration, takes its values from - the global table is
+			   only re-read by 'mat reload', so without this a saved change
+			   would seem to come undone on a map change. */
+			pbr_material_t* matdef = live_material_definition(mat);
+			int header, first, end, group_size;
+			uint32_t line = mat->source_line;
+			if (mat_text_find_entry(&text, mat->name, mat->source_line, &header, &first, &end, &group_size))
+				line = (uint32_t)header + 1;  // lines added above it moved it down
+
+			for (int k = 0; k < c_NumAttributes; k++)
+			{
+				const struct MaterialAttribute* attr = c_Attributes + k;
+				char value[MAX_IMAGE_PATH];
+				if (!(mat->console_fields & (1u << attr->index)) || !format_attribute_value(mat, attr->index, value, sizeof(value)))
+					continue;
+				if (matdef && !strcmp(matdef->source_matfile, source_matfile))
+					set_material_attribute(matdef, attr->name, value, source_matfile, line, NULL);
+			}
+
+			mat->source_line = line;
+			if (matdef && !strcmp(matdef->source_matfile, source_matfile) && !strcmp(matdef->name, mat->name))
+				matdef->source_line = line;
+			mat->console_fields = 0;
+
+			// the stage settings into the scope of the file they went to, so a
+			// map change keeps them before the next 'mat reload' reads them
+			vkpt_q3_stage_saved(mat->name,
+				matdef && matdef >= r_map_materials && matdef < r_map_materials + MAX_PBR_MATERIALS);
+			saved++;
+		}
+	}
+
+	mat_text_free(&text);
+	Z_Free(buf);
+	return saved;
+}
+
+static void save_to_source_files(void)
+{
+	static uint8_t tried[MAX_PBR_MATERIALS];
+	memset(tried, 0, sizeof(tried));
+
+	int saved = 0, changed = 0;
+	char no_entry[512] = "";
+	int num_no_entry = 0;
+
+	for (int i = 0; i < MAX_PBR_MATERIALS; i++)
+	{
+		pbr_material_t* mat = r_materials + i;
+		if (!mat->registration_sequence || !material_unsaved(mat))
+			continue;
+		changed++;
+		if (tried[i])
+			continue;
+
+		if (!mat->source_matfile[0])
+		{
+			tried[i] = 1;
+			if (num_no_entry++ < 6)
+			{
+				Q_strlcat(no_entry, no_entry[0] ? ", " : "", sizeof(no_entry));
+				Q_strlcat(no_entry, mat->name, sizeof(no_entry));
+			}
+			continue;
+		}
+
+		saved += save_changes_to_file(mat->source_matfile, tried);
+	}
+
+	if (changed == 0)
+	{
+		Com_Printf("Nothing to save: no material was changed with 'mat <attribute> <value>' since it was loaded.\n");
+		return;
+	}
+
+	if (num_no_entry > 0)
+		Com_Printf("%d changed material%s with no .mat entry, not saved: %s%s - 'mat save <file>' writes those.\n",
+			num_no_entry, num_no_entry == 1 ? "" : "s", no_entry, num_no_entry > 6 ? ", ..." : "");
+
+	Com_Printf("Saved %d of %d changed material%s (each file's old version is kept as .bak).\n",
+		saved, changed, changed == 1 ? "" : "s");
+}
+
 void MAT_ChangeMap(const char* map_name)
 {
 	/* THE SAME MAP RELOADING IS NOT A MAP CHANGE. Every CL_PrepRefresh rebuilds
@@ -957,8 +1810,10 @@ void MAT_ChangeMap(const char* map_name)
 	}
 
 	// load the new materials
+	vkpt_q3_stage_override_clear(Q3SS_SCOPE_MAP);
+	vkpt_q3_light_cache_clear();
 	char map_name_no_ext[MAX_QPATH];
-	truncate_extension(map_name, map_name_no_ext);
+	truncate_extension(map_name, map_name_no_ext, sizeof(map_name_no_ext));
 	char file_name[MAX_QPATH];
 	Q_snprintf(file_name, sizeof(file_name), "%s.mat", map_name_no_ext);
 	num_map_materials = load_material_file(file_name, r_map_materials, MAX_PBR_MATERIALS);
@@ -1003,6 +1858,18 @@ static void load_material_image(image_t** image, const char* filename, pbr_mater
 	}
 }
 
+/* load_material_image for a glow map, which has no texture of the material's own
+   to fall back on. A path into materialDev/ may name a copy of a pak file at the
+   pak's own path (quake3.mat's texture_emissive for the health crosses); only the
+   edited copies are in git, so with the copy missing the pak's file is the same
+   picture. */
+static void load_material_image_or_pak(image_t** image, const char* filename, pbr_material_t* mat, imagetype_t type, imageflags_t flags)
+{
+	load_material_image(image, filename, mat, type, flags);
+	if (*image == R_NOTEXTURE && !Q_strncasecmp(filename, "materialDev/", 12) && filename[12])
+		load_material_image(image, filename + 12, mat, type, flags);
+}
+
 /*
 =================
 player_skin_map
@@ -1026,7 +1893,7 @@ static const char* player_skin_map(const char* mat_name, const char* base_file,
 	const char* shared, const char* suffix, char* buffer, size_t size)
 {
 	const char* slash;
-	char stem[MAX_QPATH];
+	char stem[MAX_IMAGE_PATH];
 
 	if (strncmp(mat_name, "players/", 8) || !base_file[0])
 		return shared;
@@ -1035,7 +1902,7 @@ static const char* player_skin_map(const char* mat_name, const char* base_file,
 	if (!slash || slash == mat_name + 8 || strchr(slash + 1, '/'))
 		return shared;
 
-	truncate_extension(base_file, stem);
+	truncate_extension(base_file, stem, sizeof(stem));
 	if (Q_snprintf(buffer, size, "%s%s.tga", stem, suffix) >= size || !FS_FileExists(buffer))
 		return shared;
 
@@ -1099,7 +1966,7 @@ over whatever happens to be lying beside the texture.
 static void autodetect_material_textures(pbr_material_t* mat, const char* name, const char* mat_name_no_ext,
 	imagetype_t type, imageflags_t flags)
 {
-	char file_name[MAX_QPATH];
+	char file_name[MAX_IMAGE_PATH];
 
 	if (name && !MAT_SPECIFIED(mat, MAT_TEXTURE_BASE))
 	{
@@ -1257,7 +2124,7 @@ void MAT_InheritScalars(pbr_material_t* mat, const char* source_name)
 	if (!mat || !source_name || !*source_name)
 		return;
 
-	truncate_extension(source_name, source_no_ext);
+	truncate_extension(source_name, source_no_ext, sizeof(source_no_ext));
 	Q_strlwr(source_no_ext);
 
 	// remembered so that 'mat reload' can re-apply this - see
@@ -1291,6 +2158,7 @@ void MAT_InheritScalars(pbr_material_t* mat, const char* source_name)
 	if (!has_own_metallic)
 		INHERIT(MAT_METALNESS_FACTOR, metalness_factor);
 	INHERIT(MAT_EMISSIVE_FACTOR, emissive_factor);
+	INHERIT(MAT_LIGHT_FACTOR, light_factor);
 	INHERIT(MAT_BASE_FACTOR, base_factor);
 	INHERIT(MAT_LIGHT_STYLES, light_styles);
 	INHERIT(MAT_BSP_RADIANCE, bsp_radiance);
@@ -1331,6 +2199,8 @@ base whose maps live in materialDev/ or are .png would have lost them anyway,
 along with every scalar its entry set (base_factor, metalness_factor, ...).
 =================
 */
+static const q3shader_t* q3_shader_for(const char* name_no_ext, imagetype_t type);
+
 static void material_inherit_instance(pbr_material_t* mat, const pbr_material_t* base)
 {
 	// The surface's UVs come from its texinfo and the base .wal's size, which
@@ -1352,6 +2222,24 @@ static void material_inherit_instance(pbr_material_t* mat, const pbr_material_t*
 
 	INHERIT(MAT_SYNTH_EMISSIVE, synth_emissive);
 	INHERIT(MAT_EMISSIVE_THRESHOLD, emissive_threshold);
+
+	/* A Quake III shader's stages: the instance draws a program of its own,
+	   built from the same shader - so its stage<N>_* settings can differ from
+	   the material it is one of, whose settings it takes for what it does not
+	   state (q3stages.h STAGE SETTINGS). Shared, the program was built from the
+	   base's name, and an instance's settings did nothing (Matt's q3dm2 floor,
+	   2026-11-16, is an instance). The base's own images count as the
+	   instance's, as they do everywhere else here. */
+	mat->q3_program = base->q3_program;
+	mat->q3_additive = base->q3_additive;
+	if (base->q3_program && MAT_IndexOf(mat) >= 0)
+	{
+		const q3shader_t* q3 = q3_shader_for(base->name, base->image_type);
+		if (q3)
+			vkpt_q3_build_program(mat, q3, base->image_type, base->image_flags & ~IF_SRC_MASK,
+				MAT_SPECIFIED(mat, MAT_TEXTURE_BASE) || MAT_SPECIFIED(base, MAT_TEXTURE_BASE),
+				MAT_SPECIFIED(mat, MAT_TEXTURE_EMISSIVE) || MAT_SPECIFIED(base, MAT_TEXTURE_EMISSIVE));
+	}
 
 	// A synthesized emissive ('*E') is the base image's bright texels at the
 	// base's threshold. An instance that changes either needs one of its own, so
@@ -1377,6 +2265,10 @@ static void material_inherit_instance(pbr_material_t* mat, const pbr_material_t*
 	INHERIT(MAT_DISPLACE_IN, displace_in);
 	INHERIT(MAT_DISPLACE_OUT, displace_out);
 	INHERIT(MAT_DISPLACE_CLAMP, displace_clamp);
+	INHERIT(MAT_ALPHA_GLASS, alpha_glass);
+	INHERIT(MAT_CAUSTIC, glass_caustic);
+	INHERIT(MAT_CAUSTIC_RIPPLE, caustic_ripple);
+	INHERIT(MAT_LIGHT_FACTOR, light_factor);
 	INHERIT(MAT_ROUGHNESS_OVERRIDE, roughness_override);
 	INHERIT(MAT_METALNESS_FACTOR, metalness_factor);
 	INHERIT(MAT_EMISSIVE_FACTOR, emissive_factor);
@@ -1405,10 +2297,563 @@ static void material_inherit_instance(pbr_material_t* mat, const pbr_material_t*
 	mat->flags = (mat->flags & ~inherited_flags) | (base->flags & inherited_flags);
 }
 
+/*
+=================
+QUAKE III SHADERS AS MATERIAL DEFAULTS
+
+A Quake III surface is named by a shader (scripts/*.shader), not an image: the
+name "textures/base_light/ceil1_22a" may draw from ceil1_22a.tga under a
+lightmap with ceil1_22a.blend.tga added on top as the glow. When a material is
+asked for by a name some script defines, the shader's facts fill whatever the
+.mat definition (if any) did not state - base, glow, cut-out mask, kind,
+is_light - so a Quake III map lights and looks roughly right with no
+materials written, and a .mat entry in baseq3/materials still overrides any
+of it one field at a time, the same way a tuning-only entry does for a
+Quake II texture.
+
+A name no script defines is an "implicit" shader in Quake III - just the image
+of that name - and is left to the usual lookup, which finds the .tga or .jpg.
+=================
+*/
+static const q3shader_t* q3_shader_for(const char* name_no_ext, imagetype_t type)
+{
+	if (type != IT_WALL && type != IT_SKIN)
+		return NULL;
+	Q3Shader_Load();    // once; indexes the scripts if there are any
+	return Q3Shader_Find(name_no_ext);
+}
+
+// The Quake III shader a live material draws - an instance's is the one of the
+// material it is one of ("name#1a2b3c4d" is no shader's name).
+static const q3shader_t* q3_shader_of(const pbr_material_t* mat)
+{
+	char name[MAX_QPATH];
+	Q_strlcpy(name, mat->name, sizeof(name));
+	const char* sep = instance_separator(name);
+	if (sep)
+		name[sep - name] = 0;
+	return q3_shader_for(name, mat->image_type);
+}
+
+const struct q3shader_s* MAT_Q3Shader(const pbr_material_t* mat)
+{
+	return mat ? q3_shader_of(mat) : NULL;
+}
+
+// Rebuilds a live material's stage program the way a load builds it (an
+// instance's as material_inherit_instance does), after a console change - and
+// then its instances', whose programs take what they do not state from it.
+static void material_rebuild_program(pbr_material_t* mat, const q3shader_t* q3)
+{
+	const pbr_material_t* base = find_instance_base(mat->name);
+	vkpt_q3_build_program(mat, q3, base ? base->image_type : mat->image_type,
+		(base ? base->image_flags : mat->image_flags) & ~IF_SRC_MASK,
+		MAT_SPECIFIED(mat, MAT_TEXTURE_BASE) || (base && MAT_SPECIFIED(base, MAT_TEXTURE_BASE)),
+		MAT_SPECIFIED(mat, MAT_TEXTURE_EMISSIVE) || (base && MAT_SPECIFIED(base, MAT_TEXTURE_EMISSIVE)));
+
+	if (base)
+		return;
+	for (int i = 0; i < MAX_PBR_MATERIALS; i++)
+	{
+		pbr_material_t* m = r_materials + i;
+		if (m != mat && m->registration_sequence && m->q3_program && instance_separator(m->name)
+			&& find_instance_base(m->name) == mat)
+			material_rebuild_program(m, q3);
+	}
+}
+
+// The image stage `index` of `q3` draws from - or the one a .mat
+// "stage<N>_map" line puts there instead (q3stages.h).
+static image_t* q3_stage_image(const pbr_material_t* mat, const q3shader_t* q3, int index, imagetype_t type, imageflags_t flags)
+{
+	char path[MAX_IMAGE_PATH];
+
+	if (index < 0 || index >= q3->num_stages)
+		return NULL;
+
+	const q3stage_t* stage = &q3->stages[index];
+	// "stage<N>_map off": the stage gives the material nothing
+	if (mat && vkpt_q3_stage_off(mat->name, index))
+		return NULL;
+	const char* override = mat ? vkpt_q3_stage_override(mat->name, index) : NULL;
+
+	// IMG_FindFile: the file named, not its .jpg/.png twin already loaded (as
+	// q3stages.c load_stage_image)
+	if (override)
+	{
+		image_t* image = IMG_FindFile(override, type, flags);
+		if (image != R_NOTEXTURE)
+			return image;
+		if (!Q3Shader_ResolveImage(override, path, sizeof(path)))
+			return NULL;
+	}
+	else
+	{
+		if (!stage->map[0] || stage->lightmap || stage->white)
+			return NULL;
+		if (!Q3Shader_ResolveImage(stage->map, path, sizeof(path)))
+			return NULL;
+	}
+
+	image_t* image = IMG_FindFile(path, type, flags);
+	return image == R_NOTEXTURE ? NULL : image;
+}
+
+// The stage a shader's surface colour comes from: its colour stage, or for a
+// glow-only effect the glow, or failing both the first image it draws at all
+// (a chrome powerup that is nothing but an environment map). -1 for none.
+// Not a stage `mat`'s entry turns off (stage<N>_map off); mat may be NULL.
+static int q3_base_stage_index(const pbr_material_t* mat, const q3shader_t* q3)
+{
+#define STAGE_ON(i) (!mat || !vkpt_q3_stage_off(mat->name, (i)))
+	if (q3->diffuse_stage >= 0 && STAGE_ON(q3->diffuse_stage))
+		return q3->diffuse_stage;
+	if (q3->emissive_stage >= 0 && STAGE_ON(q3->emissive_stage))
+		return q3->emissive_stage;
+	for (int i = 0; i < q3->num_stages; i++)
+	{
+		const q3stage_t* st = &q3->stages[i];
+		if (st->map[0] && !st->lightmap && !st->white && !st->video && STAGE_ON(i))
+			return i;
+	}
+	return -1;
+#undef STAGE_ON
+}
+
+static const q3stage_t* q3_base_stage(const q3shader_t* q3)
+{
+	int index = q3_base_stage_index(NULL, q3);
+	return index >= 0 ? &q3->stages[index] : NULL;
+}
+
+/* The solid stand-ins q3_solid_slot makes (vkpt_solid_texture: "<image>*W.wal"
+   and the rest), which apply_q3_shader puts in for glass, mirrors and chrome. */
+static bool q3_is_solid_clone(const image_t* image)
+{
+	static const char* const tags[] = { "*W.wal", "*C.wal", "*R0.wal", "*R20.wal", "*M1.wal" };
+	if (!image)
+		return false;
+	const char* star = strrchr(image->name, '*');
+	if (!star)
+		return false;
+	for (int i = 0; i < (int)q_countof(tags); i++)
+		if (!Q_stricmp(star, tags[i]))
+			return true;
+	return false;
+}
+
+static void q3_drop_solid_slot(pbr_material_t* mat, int attr, image_t** slot, char* filename)
+{
+	if (MAT_SPECIFIED(mat, attr) || !q3_is_solid_clone(*slot))
+		return;
+	*slot = NULL;
+	filename[0] = 0;
+}
+
+/* Glass in Quake III is a reflection map added over what is behind it and
+   nothing else (glass01, the globe of kmlamp_white): a see-through surface
+   whose only stages are environment maps that add. */
+// every stage but the lightmap a reflection map added over what is there
+static bool q3_env_add_only(const q3shader_t* q3)
+{
+	bool any_env = false;
+	for (int i = 0; i < q3->num_stages; i++)
+	{
+		const q3stage_t* st = &q3->stages[i];
+		if (st->lightmap || st->white)
+			continue;
+		if (!st->env_map || st->blend != Q3BLEND_ADD)
+			return false;
+		any_env = true;
+	}
+	return any_env;
+}
+
+// a see-through surface drawn only from reflection maps: Quake III's glass
+static bool q3_is_env_glass(const q3shader_t* q3, imagetype_t type)
+{
+	// moving (the electric tube round q3dm0's tesla coil) is a glow, drawn by
+	// its program; a lamp globe (q3map_surfacelight) glows, see env_light
+	if (!q3->translucent || q3->animated || q3->surface_light > 0)
+		return false;
+	// A map's own surface needs no "surfaceparm trans": Quake III added the
+	// reflection over what was behind it all the same (the console pane in
+	// q3dm0, models/mapobjects/console/jacobs). A model's does - the item
+	// shaders made of reflection maps are not all glass.
+	if (type != IT_WALL && !(q3->trans || (q3->content_flags & Q3_CONTENTS_TRANSLUCENT)))
+		return false;
+	return q3_env_add_only(q3);
+}
+
+// solid images standing in for maps the shader never had (vkpt_solid_texture)
+static void q3_solid_slot(pbr_material_t* mat, image_t* like, int attr, image_t** slot, char* filename,
+                          const char* tag, byte r, byte g, byte b)
+{
+	if (MAT_SPECIFIED(mat, attr) || !like)
+		return;
+	image_t* solid = vkpt_solid_texture(like, tag, r, g, b);
+	if (!solid)
+		return;
+	*slot = solid;
+	Q_strlcpy(filename, solid->name, MAX_IMAGE_PATH);
+}
+
+static void apply_q3_shader(pbr_material_t* mat, const q3shader_t* q3, imagetype_t type, imageflags_t flags)
+{
+	const int base_index = q3_base_stage_index(mat, q3);
+
+	/* A KIND TAKEN BACK. Glass, a mirror and chrome swap the base (and the
+	   roughness and metallic) for solid stand-ins below, and the image found
+	   for a slot is only ever looked for while the slot is EMPTY - so after one
+	   'mat reload' as GLASS, the white base stayed through every reload after:
+	   Matt's slamp2 lamp shade, put back to REGULAR, printed texture_base
+	   slamp2*W.wal and its pink was gone (2026-11-17). The stand-ins are this
+	   function's own doing, so it starts without them; what the kind wants now
+	   puts them back. Not a slot the entry names. */
+	q3_drop_solid_slot(mat, MAT_TEXTURE_BASE, &mat->image_base, mat->filename_base);
+	q3_drop_solid_slot(mat, MAT_TEXTURE_ROUGHNESS, &mat->image_roughness, mat->filename_roughness);
+	q3_drop_solid_slot(mat, MAT_TEXTURE_METALLIC, &mat->image_metallic, mat->filename_metallic);
+
+	/* The entry's own glow, loaded NOW: the program below draws it in place of
+	   the shader's glow stage, and the light list samples the program. A
+	   tuning-only entry (no texture_base) reached here from MAT_Find before its
+	   texture_emissive was loaded - that load comes after this call - so the
+	   program found no image and drew the shader's glow after all: Matt's
+	   shinymetaldoor_outside3a2_light.png listed in 'mat print', and the door
+	   still showed shinymetaldoor_outside3glow (2026-11-16). 'mat reload' loads
+	   before calling this, which is why only a fresh map load showed it. */
+	if (MAT_SPECIFIED(mat, MAT_TEXTURE_EMISSIVE) && mat->filename_emissive[0] && !mat->image_emissive)
+	{
+		load_material_image_or_pak(&mat->image_emissive, mat->filename_emissive, mat, type, flags | IF_SRGB);
+		if (mat->image_emissive == R_NOTEXTURE)
+			mat->image_emissive = NULL;
+	}
+
+	if (!MAT_SPECIFIED(mat, MAT_TEXTURE_BASE) && !mat->image_base && base_index >= 0)
+	{
+		mat->image_base = q3_stage_image(mat, q3, base_index, type, flags | IF_SRGB);
+		if (mat->image_base)
+		{
+			Q_strlcpy(mat->filename_base, mat->image_base->filepath, sizeof(mat->filename_base));
+			mat->original_width = mat->image_base->width;
+			mat->original_height = mat->image_base->height;
+		}
+	}
+
+	if (!MAT_SPECIFIED(mat, MAT_TEXTURE_EMISSIVE) && !mat->image_emissive && q3->emissive_stage >= 0)
+	{
+		mat->image_emissive = q3_stage_image(mat, q3, q3->emissive_stage, type, flags | IF_SRGB);
+		if (mat->image_emissive)
+			Q_strlcpy(mat->filename_emissive, mat->image_emissive->filepath, sizeof(mat->filename_emissive));
+	}
+
+	// Animated or layered: drawn stage by stage (q3stages.c). The material's
+	// images above stay as the still picture everything else sees.
+	const bool program = vkpt_q3_wants_program(q3);
+	const bool env_glass = q3_is_env_glass(q3, type);
+
+	/* A lamp globe drawn only from a reflection map (models/mapobjects/
+	   lamplight_y, q3dm7): q3map_surfacelight made it the lamp, and the map
+	   added over what was behind it is all Quake III showed of it. So the map
+	   is its glow - an additive effect, like a flame - and the light it sheds
+	   (MATERIAL_FLAG_LIGHT below). */
+	const bool env_light = !program && q3->translucent && q3->surface_light > 0 &&
+		!q3->sky && !q3->portal && q3_env_add_only(q3);
+	if (env_light && !MAT_SPECIFIED(mat, MAT_TEXTURE_EMISSIVE) && !mat->image_emissive && mat->image_base)
+	{
+		mat->image_emissive = mat->image_base;
+		Q_strlcpy(mat->filename_emissive, mat->image_base->filepath, sizeof(mat->filename_emissive));
+	}
+
+	// Alpha-tested: cut out where the colour texture's alpha says. Not for a
+	// see-through program: its cut-out stage is one layer of several, and the
+	// glows around it (the spinning logo's halo) must not be cut with it.
+	if (!MAT_SPECIFIED(mat, MAT_TEXTURE_MASK) && !mat->image_mask && q3->alpha_test && mat->image_base
+		&& !(program && q3->translucent))
+	{
+		int func = q3->stages[q3->diffuse_stage].alpha_func;
+		mat->image_mask = vkpt_alpha_mask_texture(mat->image_base, func ? func : Q3ALPHA_GE128);
+		if (mat->image_mask)
+			Q_strlcpy(mat->filename_mask, mat->image_mask->name, sizeof(mat->filename_mask));
+	}
+
+	/* An alpha test that no pixel passes: Quake III never drew the surface.
+	   models/mapobjects/console/under (q3dm0, the stand under the console) cuts
+	   its image at alpha 128, and under.tga's alpha is 0 all over - the artist's
+	   cables never showed. Drawn anyway it came out a white post (Matt,
+	   2026-11-16). INVISIBLE leaves it out of the world (bsp_mesh.c); a .mat
+	   'kind' brings it back. */
+	const bool never_drawn = q3->alpha_test && !(program && q3->translucent)
+		&& mat->image_mask && mat->image_mask->alpha_mask_empty
+		&& !MAT_SPECIFIED(mat, MAT_TEXTURE_MASK);
+
+	if (!MAT_SPECIFIED(mat, MAT_KIND))
+	{
+		uint32_t kind = MATERIAL_KIND_REGULAR;
+		int contents = q3->content_flags;
+
+		if (never_drawn)
+			kind = MATERIAL_KIND_INVISIBLE;
+		else if (q3->sky || (q3->surface_flags & Q3_SURF_SKY))
+			kind = MATERIAL_KIND_SKY;
+		else if (contents & Q3_CONTENTS_LAVA)
+			kind = MATERIAL_KIND_LAVA;
+		else if (contents & Q3_CONTENTS_SLIME)
+			kind = MATERIAL_KIND_SLIME;
+		else if (contents & Q3_CONTENTS_WATER)
+			kind = MATERIAL_KIND_WATER;
+		// "portal": a mirror, or a window onto a misc_portal_camera's view
+		// (cameras.c) - which bsp_mesh.c makes a mirror after all on a face no
+		// portal camera owns, as Quake III does
+		else if (q3->portal)
+			kind = Q_strHas(q3->name, "mirror") ? MATERIAL_KIND_CHROME : MATERIAL_KIND_CAMERA;
+		else if (env_glass || (q3->translucent && Q_strHas(q3->name, "glass")))
+			kind = MATERIAL_KIND_GLASS;
+		else if (q3->chrome)
+			kind = MATERIAL_KIND_CHROME;
+		// see-through: an effect that only adds light, or a layered program
+		// whose stages leave some of what is behind it showing (per pixel, in
+		// the program's alpha)
+		else if (q3->additive || env_light || (program && q3->translucent))
+			kind = MATERIAL_KIND_TRANSPARENT;
+
+		mat->flags = MAT_SetKind(mat->flags, kind);
+	}
+
+	const bool is_glass = MAT_IsKind(mat->flags, MATERIAL_KIND_GLASS);
+	const bool is_chrome = MAT_IsKind(mat->flags, MATERIAL_KIND_CHROME) && !q3->portal;
+
+	/* ALPHA GLASS. A glass shader whose colour stage is cut out by its alpha
+	   (alphaFunc) is a pane with its frame painted round it on the same face -
+	   textures/base_wall/glass_frame, q3dm0's column: a reflection map added,
+	   then the frame image alpha-tested over it. Quake III drew the frame solid
+	   and the cut-out as only the reflection. Made all glass, the frame's dark
+	   pixels tinted the whole column black (Matt, 2026-11-16). So: glass only
+	   where the image is see-through, an ordinary surface elsewhere (the
+	   shaders' alpha_glass_solid), and NO mask - that would cut the pane out
+	   altogether, leaving nothing to be glass. */
+	if (!MAT_SPECIFIED(mat, MAT_ALPHA_GLASS))
+		mat->alpha_glass = is_glass && q3->alpha_test && mat->image_base != NULL;
+	if (mat->alpha_glass && !MAT_SPECIFIED(mat, MAT_TEXTURE_MASK))
+	{
+		mat->image_mask = NULL;
+		mat->filename_mask[0] = 0;
+	}
+
+	// An effect that only adds light: none of the surface shows, only its glow
+	// over what is behind it (bsp_mesh.c gives its faces alpha 0). A program
+	// works out its own alpha per pixel.
+	mat->q3_additive = (q3->additive || env_light) && !program && MAT_IsKind(mat->flags, MATERIAL_KIND_TRANSPARENT);
+
+	/* Glass drawn from a reflection map: the map is Quake III's fake of what
+	   the glass reflects, and as the base colour it TINTS what is seen through
+	   it (glass-base-tints-transmission) - tinfx.tga made a vial of dark smoked
+	   glass. Clear glass, a white base; the path tracer does the reflection.
+	   The same for a shader of reflection maps alone that a .mat entry calls
+	   glass - Quake III's health spheres, which no "surfaceparm trans" marks. */
+	if (is_glass && (env_glass || q3_env_add_only(q3)) && mat->image_base)
+	{
+		q3_solid_slot(mat, mat->image_base, MAT_TEXTURE_BASE, &mat->image_base, mat->filename_base, "W", 255, 255, 255);
+		if (!MAT_SPECIFIED(mat, MAT_TEXTURE_EMISSIVE))
+		{
+			mat->image_emissive = NULL;
+			mat->filename_emissive[0] = 0;
+		}
+	}
+
+	/* A mirror or portal: Matt's call - fully white, roughness 0 - which is also
+	   what the path tracer needs to treat it as one at all (a surface at or over
+	   MAX_MIRROR_ROUGHNESS is drawn as an ordinary one, and with no maps a
+	   material is pinned at roughness 1). Solid clones of the shader's own image
+	   (textures.c, vkpt_solid_texture), unless the .mat entry names its own. No
+	   glow: what shows is the reflection or the view. */
+	if (q3->portal && mat->image_base)
+	{
+		image_t* image = mat->image_base;
+		q3_solid_slot(mat, image, MAT_TEXTURE_BASE, &mat->image_base, mat->filename_base, "W", 255, 255, 255);
+		if (!mat->image_roughness)
+			q3_solid_slot(mat, image, MAT_TEXTURE_ROUGHNESS, &mat->image_roughness, mat->filename_roughness, "R0", 0, 0, 0);
+		if (!mat->image_metallic)
+			q3_solid_slot(mat, image, MAT_TEXTURE_METALLIC, &mat->image_metallic, mat->filename_metallic, "M1", 255, 255, 255);
+		if (!MAT_SPECIFIED(mat, MAT_TEXTURE_EMISSIVE))
+		{
+			mat->image_emissive = NULL;
+			mat->filename_emissive[0] = 0;
+		}
+	}
+	/* Chrome (chrome_metal): Quake III's reflection map faked a polished metal,
+	   so draw polished metal - a bright base, glossy, fully metallic. Not a
+	   perfect mirror (roughness over MAX_MIRROR_ROUGHNESS): a pillar reads as
+	   chrome with a little blur. The .mat entry can name real maps. */
+	else if (is_chrome && mat->image_base)
+	{
+		image_t* image = mat->image_base;
+		q3_solid_slot(mat, image, MAT_TEXTURE_BASE, &mat->image_base, mat->filename_base, "C", 230, 230, 230);
+		if (!mat->image_roughness)
+			q3_solid_slot(mat, image, MAT_TEXTURE_ROUGHNESS, &mat->image_roughness, mat->filename_roughness, "R20", 20, 20, 20);
+		if (!mat->image_metallic)
+			q3_solid_slot(mat, image, MAT_TEXTURE_METALLIC, &mat->image_metallic, mat->filename_metallic, "M1", 255, 255, 255);
+		if (!MAT_SPECIFIED(mat, MAT_TEXTURE_EMISSIVE))
+		{
+			mat->image_emissive = NULL;
+			mat->filename_emissive[0] = 0;
+		}
+	}
+
+	/* ...AND METAL IT IS. The metallic map above is read times metalness_factor,
+	   and autodetect_material_textures - which runs before this, when the
+	   material had no maps at all - took it for a "basic diffuse" surface and
+	   set metalness_factor and specular_factor to 0. So every Quake III chrome
+	   came out metallic 0, specular 0: matte grey at R20, and the instances
+	   made of it inherited the zeros (Matt's q3dm12 chrome_metal instance,
+	   2026-11-17, still fully rough with roughness_override 0.005). Not over
+	   what the entry states. */
+	if ((q3->portal || is_chrome) && mat->image_base
+		&& (mat->image_metallic || (MAT_SPECIFIED(mat, MAT_TEXTURE_METALLIC) && mat->filename_metallic[0])))
+	{
+		if (!MAT_SPECIFIED(mat, MAT_METALNESS_FACTOR))
+			mat->metalness_factor = 1.f;
+		if (!MAT_SPECIFIED(mat, MAT_SPECULAR_FACTOR))
+			mat->specular_factor = 1.f;
+	}
+
+	/* GLASS THAT MOVES. A .mat entry that makes a stage program glass keeps the
+	   program for its GLOW, which is the part that animates. That is Matt's
+	   textures/sfx/teslacoil, the electric tube round q3dm0's tesla coil, set
+	   to kind GLASS. Glass used to get no program at all: a live 'mat kind GLASS'
+	   kept the one built at load, so the glass animated until the next restart
+	   and then stood still (Matt, 2026-11-16).
+
+	   The program's COLOUR does not tint the glass. Matt: "it should just be
+	   flat surface with white albedo and zero roughness". So the base is white
+	   unless the entry names its own texture_base, and path_tracer_rgen.h leaves
+	   a glass base alone.
+
+	   Glass that Quake III drew from reflection maps keeps its old rules: no
+	   program, white base. That covers env_glass and env-only shaders such as
+	   the health spheres.
+
+	   ALPHA glass keeps its program too, but not the white base. The base's
+	   alpha is the frame (alpha_glass_solid), and the white clone is opaque all
+	   over, so the whole face would be frame. The teslacoil entry with
+	   alpha_glass 1: the cables (stage3 cabletest2) are the solid frame, the
+	   rest is clear glass, and the electric glow animates. Alpha glass used to
+	   get no program, so a live 'mat alpha_glass 1' animated until the next
+	   restart and then stood still (Matt, 2026-11-17). */
+	const bool glass_program = program && is_glass && MAT_SPECIFIED(mat, MAT_KIND)
+		&& !env_glass && !q3_env_add_only(q3);
+	if (glass_program && !mat->alpha_glass && mat->image_base)
+		q3_solid_slot(mat, mat->image_base, MAT_TEXTURE_BASE, &mat->image_base, mat->filename_base, "W", 255, 255, 255);
+
+	if (program && (!is_glass || glass_program) && !is_chrome)
+		vkpt_q3_build_program(mat, q3, type, flags,
+			MAT_SPECIFIED(mat, MAT_TEXTURE_BASE), MAT_SPECIFIED(mat, MAT_TEXTURE_EMISSIVE));
+	else
+		mat->q3_program = 0;
+
+	/* pt_q3_env_shine (q3stages.c): a reflection map that stood in for a shine is
+	   not drawn; the surface reflects the scene instead. Its starting values go
+	   on the material itself, where 'mat print' shows them and the entry or
+	   'mat roughness_override' / 'mat metalness_factor' tune them (Matt,
+	   2026-11-16). A metal shader: glossy metal all over. Any other: glossy
+	   where the reflection map showed (the shaders' q3_shine). Specular 1, which
+	   a material with no normal map would otherwise be denied (the "basic
+	   diffuse" rule above). Not over the entry's own roughness or metallic map:
+	   roughness_override is a floor under one, metalness_factor scales the other. */
+	bool shine_metal;
+	if (vkpt_q3_program_shines(mat, &shine_metal))
+	{
+		const bool has_roughness = mat->image_roughness
+			|| (MAT_SPECIFIED(mat, MAT_TEXTURE_ROUGHNESS) && mat->filename_roughness[0]);
+		const bool has_metallic = mat->image_metallic
+			|| (MAT_SPECIFIED(mat, MAT_TEXTURE_METALLIC) && mat->filename_metallic[0]);
+
+		if (!MAT_SPECIFIED(mat, MAT_ROUGHNESS_OVERRIDE) && !has_roughness)
+			mat->roughness_override = (float)(shine_metal ? Q3_SHINE_ROUGHNESS_METAL : Q3_SHINE_ROUGHNESS);
+		if (!MAT_SPECIFIED(mat, MAT_METALNESS_FACTOR) && !has_metallic && shine_metal)
+			mat->metalness_factor = (float)Q3_SHINE_METALLIC;
+		if (!MAT_SPECIFIED(mat, MAT_SPECULAR_FACTOR))
+			mat->specular_factor = 1.f;
+	}
+
+	// q3map_surfacelight is the map author saying "this lights the room"
+	if (!MAT_SPECIFIED(mat, MAT_IS_LIGHT) && q3->surface_light > 0 && !q3->sky && !q3->portal)
+		mat->flags |= MATERIAL_FLAG_LIGHT;
+
+	/* EVERY GLOW IS A LIGHT (Matt, 2026-11-16: "Every emissive should be a real
+	   light source", with "an emissive_factor and default_radiance that I can
+	   change and tweak or override with a different emissive map").
+
+	   A map surface with a glow stage sheds the light it shows. One the author
+	   marked q3map_surfacelight that has no glow stage gets a glow made from its
+	   colour image's bright pixels (synth_emissive), as Quake II's SURF_LIGHT
+	   textures do - a program surface still DRAWS its own stages, so there the
+	   made-up image only feeds the light list.
+
+	   The brightness lives on the material, where 'mat print' shows it and the
+	   entry, 'mat default_radiance' or 'mat emissive_factor' tune it, and
+	   'texture_emissive' swaps the glow: q3map_surfacelight's value at
+	   pt_bsp_radiance_scale - the very number bsp_radiance gave these faces
+	   before, so nothing looks different - and 1, the default, for a glow the
+	   author gave no value.
+
+	   Not a sky, portal, glass, chrome or anything never drawn. Not a model's
+	   (IT_SKIN): an item would shed a light per triangle - 'is_light 1' on its
+	   entry still makes it one. Not a liquid unless pt_enable_surface_lights_warp
+	   says so, as for Quake II. Not a see-through surface left REGULAR here,
+	   which bsp_mesh.c turns TRANSPARENT only while it is not a light. */
+	if (type == IT_WALL && q3->surface_light > 0 && !q3->sky && !q3->portal
+		&& !MAT_SPECIFIED(mat, MAT_BSP_RADIANCE) && !MAT_SPECIFIED(mat, MAT_DEFAULT_RADIANCE))
+	{
+		mat->bsp_radiance = false;
+		mat->default_radiance = q3->surface_light * cvar_pt_bsp_radiance_scale->value;
+
+		/* SEEN AT ITS OWN COLOUR. q3map_surfacelight says how much light the
+		   surface SHEDS - flame2 5500, the proto_light_2k fixtures 2000 - and at
+		   pt_bsp_radiance_scale that is 5.5 and 2 times the glow. Quake III drew
+		   the surface itself at its stages' colour, 1, whatever light it gave
+		   off; drawn 5.5 times over, the torch flames burned out to a red rim
+		   round a white core and the fixtures to white blobs (Matt, 2026-11-16).
+		   So the surface shows at 1 and the light it casts stays what it was:
+		   emissive_factor 1/R scales both, light_factor R puts the light back
+		   (copy_light: R x 1/R x R). Only while the entry states neither -
+		   'mat print' shows the two, and either one in the entry takes over. */
+		if (mat->default_radiance > 1.f
+			&& !MAT_SPECIFIED(mat, MAT_EMISSIVE_FACTOR) && !MAT_SPECIFIED(mat, MAT_LIGHT_FACTOR))
+		{
+			mat->emissive_factor = 1.f / mat->default_radiance;
+			mat->light_factor = mat->default_radiance;
+		}
+	}
+
+	const bool liquid =MAT_IsKind(mat->flags, MATERIAL_KIND_WATER) || MAT_IsKind(mat->flags, MATERIAL_KIND_SLIME);
+	if (type == IT_WALL && !q3->sky && !q3->portal && !q3->no_draw && !is_glass && !is_chrome
+		&& !(q3->translucent && MAT_IsKind(mat->flags, MATERIAL_KIND_REGULAR))
+		&& (!liquid || cvar_pt_enable_surface_lights_warp->integer))
+	{
+		if (mat->image_emissive)
+		{
+			if (!MAT_SPECIFIED(mat, MAT_IS_LIGHT))
+				mat->flags |= MATERIAL_FLAG_LIGHT;
+		}
+		else if (q3->surface_light > 0 && mat->image_base && (mat->flags & MATERIAL_FLAG_LIGHT)
+			&& cvar_pt_enable_surface_lights->integer
+			&& !MAT_SPECIFIED(mat, MAT_SYNTH_EMISSIVE) && !MAT_SPECIFIED(mat, MAT_TEXTURE_EMISSIVE))
+		{
+			// MAT_Find / material_reapply_definition make it (MAT_SynthesizeEmissive)
+			mat->synth_emissive = true;
+		}
+	}
+
+	// "cull none": seen, and hit, from both sides - foliage, banners, grates
+	if (!MAT_SPECIFIED(mat, MAT_DOUBLE_SIDED) && q3->cull == Q3CULL_NONE)
+		mat->flags |= MATERIAL_FLAG_DOUBLE_SIDED;
+}
+
 pbr_material_t* MAT_Find(const char* name, imagetype_t type, imageflags_t flags)
 {
 	char mat_name_no_ext[MAX_QPATH];
-	truncate_extension(name, mat_name_no_ext);
+	truncate_extension(name, mat_name_no_ext, sizeof(mat_name_no_ext));
 	Q_strlwr(mat_name_no_ext);
 
 	/* A MATERIAL INSTANCE is named <texture>#<geometry hash> - see
@@ -1503,26 +2948,37 @@ pbr_material_t* MAT_Find(const char* name, imagetype_t type, imageflags_t flags)
 		{
 			// an instance takes the slots it leaves unsaid from its base, below
 			if (!instance_base)
-				autodetect_material_textures(mat, texture_name, texture_name_no_ext, type, flags);
+			{
+				const q3shader_t* q3 = q3_shader_for(texture_name_no_ext, type);
+				// a Quake III shader names its own colour image; the shader's
+				// name is not a file
+				autodetect_material_textures(mat, (q3 && q3_base_stage(q3)) ? NULL : texture_name,
+				                             texture_name_no_ext, type, flags);
+				if (q3)
+					apply_q3_shader(mat, q3, type, flags);
+			}
 		}
 		else
 		{
-			// a player skin's own maps beat its model's shared ones
-			char skin_map[MAX_QPATH];
-			struct { char* filename; const char* suffix; } slots[] = {
-				{ mat->filename_normals,   "_n" },
-				{ mat->filename_roughness, "_rough" },
-				{ mat->filename_metallic,  "_metallic" },
-				{ mat->filename_height,    "_height" },
-				{ mat->filename_emissive,  "_light" },
+			// a player skin's own maps beat its model's shared ones - but not a
+			// slot the entry cleared on purpose
+			char skin_map[MAX_IMAGE_PATH];
+			struct { char* filename; const char* suffix; int attr; } slots[] = {
+				{ mat->filename_normals,   "_n",        MAT_TEXTURE_NORMALS },
+				{ mat->filename_roughness, "_rough",    MAT_TEXTURE_ROUGHNESS },
+				{ mat->filename_metallic,  "_metallic", MAT_TEXTURE_METALLIC },
+				{ mat->filename_height,    "_height",   MAT_TEXTURE_HEIGHT },
+				{ mat->filename_emissive,  "_light",    MAT_TEXTURE_EMISSIVE },
 			};
 
 			for (int i = 0; i < q_countof(slots); i++)
 			{
+				if (MAT_SPECIFIED(mat, slots[i].attr) && !slots[i].filename[0])
+					continue;
 				const char* found = player_skin_map(mat->name, mat->filename_base, slots[i].filename,
 				                                    slots[i].suffix, skin_map, sizeof(skin_map));
 				if (found != slots[i].filename)
-					Q_strlcpy(slots[i].filename, found, MAX_QPATH);
+					Q_strlcpy(slots[i].filename, found, MAX_IMAGE_PATH);
 			}
 		}
 
@@ -1584,7 +3040,7 @@ pbr_material_t* MAT_Find(const char* name, imagetype_t type, imageflags_t flags)
 		}
 
 		if (mat->filename_emissive[0] && !mat->image_emissive) {
-			load_material_image(&mat->image_emissive, mat->filename_emissive, mat, type, flags | IF_SRGB);
+			load_material_image_or_pak(&mat->image_emissive, mat->filename_emissive, mat, type, flags | IF_SRGB);
 			if (mat->image_emissive == R_NOTEXTURE) {
 				Com_DPrintf("Texture '%s' specified in material '%s' could not be found.\n", mat->filename_emissive, mat_name_no_ext);
 				mat->image_emissive = NULL;
@@ -1598,6 +3054,17 @@ pbr_material_t* MAT_Find(const char* name, imagetype_t type, imageflags_t flags)
 				mat->image_mask = NULL;
 			}
 		}
+
+		/* A scripted Quake III shader whose entry names its own base image:
+		   the shader still says what kind of surface it is, what glows and how
+		   it moves - apply_q3_shader fills only what the entry left unsaid, and
+		   the program draws the entry's image for the colour stage. */
+		if (MAT_SPECIFIED(mat, MAT_TEXTURE_BASE) && !instance_base)
+		{
+			const q3shader_t* q3 = q3_shader_for(texture_name_no_ext, type);
+			if (q3)
+				apply_q3_shader(mat, q3, type, flags);
+		}
 	}
 	else
 	{
@@ -1605,7 +3072,13 @@ pbr_material_t* MAT_Find(const char* name, imagetype_t type, imageflags_t flags)
 		Q_strlcpy(mat->name, mat_name_no_ext, sizeof(mat->name));
 
 		if (!instance_base)
-			autodetect_material_textures(mat, texture_name, texture_name_no_ext, type, flags);
+		{
+			const q3shader_t* q3 = q3_shader_for(texture_name_no_ext, type);
+			autodetect_material_textures(mat, (q3 && q3_base_stage(q3)) ? NULL : texture_name,
+			                             texture_name_no_ext, type, flags);
+			if (q3)
+				apply_q3_shader(mat, q3, type, flags);
+		}
 	}
 
 	if (instance_base)
@@ -1644,6 +3117,38 @@ void MAT_InstanceName(const char* base_name, uint32_t instance_hash, char* out, 
 bool MAT_KindSpecified(const pbr_material_t* mat)
 {
 	return mat && MAT_SPECIFIED(mat, MAT_KIND);
+}
+
+/* ROUGHNESS_OVERRIDE IS THE ROUGHNESS where nothing else says how rough the
+   surface is (Matt, 2026-11-16: "lets have roughness override set the
+   roughness of the whole texture if a roughness map is not supplied"). Where
+   something does - a texture_roughness, or the roughness the stock Quake II
+   RTX textures pack into the base image's alpha, which get_material reads
+   when there is a normal or metallic map - it stays the floor it always was,
+   so the stock entries and every one tuned against them look as they did.
+   With neither, the shader pinned roughness at 1 and max(1, override) threw
+   the override away: q3dm0's main_q3abanner at 0.0005 never shone.
+   Not the gloss apply_q3_shader gives a Quake III reflection map by default,
+   which shows only where the map did (path_tracer_rgen.h) - unless the entry
+   or 'mat roughness_override' states it.
+
+   AN ENTRY THAT CLEARED ITS ROUGHNESS MAP and states a roughness_override
+   means that number, normal or metallic map or not. Matt's q3dm12 instance of
+   textures/base_wall/chrome_metal, 2026-11-17: texture_roughness cleared,
+   roughness_override 0.005, and still fully rough - its metallic map (the
+   chrome's M1 stand-in) sent get_material to the base image's alpha for the
+   roughness, and the base is the opaque solid clone, so max(1, 0.005) = 1. */
+bool MAT_RoughnessIsWhole(const pbr_material_t* mat)
+{
+	if (!mat || mat->roughness_override < 0.f)
+		return false;
+	if (mat->image_roughness)
+		return false;
+	if (MAT_CLEARED(mat, MAT_TEXTURE_ROUGHNESS, filename_roughness) && MAT_SPECIFIED(mat, MAT_ROUGHNESS_OVERRIDE))
+		return true;
+	if (mat->image_normals || mat->image_metallic)
+		return false;
+	return MAT_SPECIFIED(mat, MAT_ROUGHNESS_OVERRIDE) || !mat->q3_program;
 }
 
 pbr_material_t* MAT_FindInstance(const pbr_material_t* base, uint32_t instance_hash)
@@ -1714,6 +3219,7 @@ void MAT_UpdateRegistration(pbr_material_t * mat)
 	if (mat->image_metallic) mat->image_metallic->registration_sequence = registration_sequence;
 	if (mat->image_height) mat->image_height->registration_sequence = registration_sequence;
 	if (mat->image_mask) mat->image_mask->registration_sequence = registration_sequence;
+	vkpt_q3_touch_program(mat);
 }
 
 //
@@ -1739,6 +3245,13 @@ int MAT_FreeUnused()
 	}
 
 	return Q_ERR_SUCCESS;
+}
+
+int MAT_IndexOf(const pbr_material_t* mat)
+{
+	if (!mat || mat < r_materials || mat >= r_materials + MAX_PBR_MATERIALS)
+		return -1;
+	return (int)(mat - r_materials);
 }
 
 pbr_material_t* MAT_ForIndex(int index)
@@ -1792,17 +3305,20 @@ pbr_material_t* MAT_ForSkin(image_t* image_base)
 // Where a .mat file a definition came from actually lives. The recorded name is
 // game-relative, and in the rerelease that names two files - rerelease/'s
 // materials/baseq2.mat shadows baseq2/'s - so say which folder it was read from,
-// or that it came out of a pack.
+// or that it came out of a pack. Found as the loader found it (FS_RealPath): the
+// old guess called every file outside the game directory baseq2/'s, which
+// quake3.mat, in baseq3/, is not.
 static void material_source_location(const char* file_name, char* out, size_t size)
 {
-	const char* game = Cvar_VariableString("game");
+	char path[MAX_OSPATH];
+	int where = material_file_real_path(file_name, path, sizeof(path));
 
-	if (FS_FileExistsEx(file_name, FS_TYPE_REAL | FS_PATH_GAME))
-		Q_concat(out, size, game[0] ? game : BASEGAME, "/", file_name);
-	else if (FS_FileExistsEx(file_name, FS_TYPE_REAL | FS_PATH_BASE))
-		Q_concat(out, size, BASEGAME "/", file_name);
+	if (where == FS_REALPATH_DISK)
+		Q_strlcpy(out, material_short_path(path), size);
+	else if (where == FS_REALPATH_PACK)
+		Q_concat(out, size, file_name, " (inside ", material_short_path(path), ")");
 	else
-		Q_concat(out, size, file_name, " (inside a pack)");
+		Q_concat(out, size, file_name, " (no longer on disk)");
 }
 
 //
@@ -1835,9 +3351,22 @@ void MAT_Print(pbr_material_t const * mat)
 	Com_Printf("    displace_in %f\n", mat->displace_in);
 	Com_Printf("    displace_out %f\n", mat->displace_out);
 	Com_Printf("    displace_clamp %d\n", mat->displace_clamp ? 1 : 0);
-	Com_Printf("    roughness_override %f\n", mat->roughness_override);
+	if (MAT_IsKind(mat->flags, MATERIAL_KIND_GLASS) || mat->alpha_glass)
+		Com_Printf("    alpha_glass %d%s\n", mat->alpha_glass ? 1 : 0,
+			MAT_SPECIFIED(mat, MAT_ALPHA_GLASS) ? "" : " (auto)");
+	if (MAT_IsKind(mat->flags, MATERIAL_KIND_GLASS) || mat->glass_caustic > 0.f)
+		Com_Printf("    caustic %g%s\n", mat->glass_caustic,
+			mat->glass_caustic > 0.f && !MAT_IsKind(mat->flags, MATERIAL_KIND_GLASS) ? " (inactive: not GLASS)" : "");
+	if (MAT_IsKind(mat->flags, MATERIAL_KIND_GLASS) || mat->caustic_ripple > 0.f)
+		Com_Printf("    caustic_ripple %g%s\n", mat->caustic_ripple,
+			mat->caustic_ripple > 0.f && !MAT_IsKind(mat->flags, MATERIAL_KIND_GLASS) ? " (inactive: not GLASS)"
+			: mat->caustic_ripple > 0.f ? "   (the light through it thrown in moving water ripples)" : "");
+	Com_Printf("    roughness_override %f%s\n", mat->roughness_override,
+		mat->roughness_override < 0.f ? "" : MAT_RoughnessIsWhole(mat)
+			? "   (the roughness all over: no roughness map)" : "   (a floor under its maps)");
 	Com_Printf("    metalness_factor %f\n", mat->metalness_factor);
 	Com_Printf("    emissive_factor %f\n", mat->emissive_factor);
+	Com_Printf("    light_factor %f   (the light it casts only)\n", mat->light_factor);
 	Com_Printf("    specular_factor %f\n", mat->specular_factor);
 	Com_Printf("    base_factor %f\n", mat->base_factor);
 	if (mat->flags & MATERIAL_FLAG_CURVED_WATER)
@@ -1845,7 +3374,17 @@ void MAT_Print(pbr_material_t const * mat)
 	if (mat->flags & MATERIAL_FLAG_DOUBLE_SIDED)
 		Com_Printf("    double_sided 1\n");
 	const char * kind = getMaterialKindName(mat->flags);
-	Com_Printf("    kind %s\n", kind ? kind : "");
+	// "kind GLASSCAUSTIC" / "kind ALPHA_GLASS" have no kind of their own (the
+	// kind field is full): GLASS plus a switch, which is what this line shows
+	const bool glass = MAT_IsKind(mat->flags, MATERIAL_KIND_GLASS);
+	const bool caustic = glass && mat->glass_caustic > 0.f;
+	const bool alpha = glass && mat->alpha_glass;
+	Com_Printf("    kind %s%s%s%s%s%s\n", kind ? kind : "",
+		(caustic || alpha) ? "   (" : "",
+		caustic ? "GLASSCAUSTIC = GLASS + caustic" : "",
+		(caustic && alpha) ? "; " : "",
+		alpha ? "ALPHA_GLASS = GLASS + alpha_glass" : "",
+		(caustic || alpha) ? ")" : "");
 	Com_Printf("    is_light %d\n", (mat->flags & MATERIAL_FLAG_LIGHT) != 0);
 	Com_Printf("    light_styles %d\n", mat->light_styles ? 1 : 0);
 	Com_Printf("    bsp_radiance %d\n", mat->bsp_radiance ? 1 : 0);
@@ -1865,6 +3404,10 @@ void MAT_Print(pbr_material_t const * mat)
 	else
 		Com_Printf("    albedo_strength (pt_bounce_albedo_power)\n");
 
+	// a Quake III shader drawn stage by stage: what each stage really draws
+	if (mat->q3_program)
+		vkpt_q3_print_program(mat);
+
 	// Last, so it sits right above the prompt: the file and line to edit.
 	char where[MAX_OSPATH];
 	if (mat->source_matfile[0])
@@ -1874,6 +3417,28 @@ void MAT_Print(pbr_material_t const * mat)
 	}
 	else
 		Com_Printf("    defined in: no .mat entry - generated from the texture and its sidecars\n");
+
+	// what 'mat save' would write back
+	if (material_unsaved(mat))
+	{
+		char changed[512] = "";
+		for (int i = 0; i < c_NumAttributes; i++)
+		{
+			if (mat->console_fields & (1u << c_Attributes[i].index))
+			{
+				Q_strlcat(changed, " ", sizeof(changed));
+				Q_strlcat(changed, c_Attributes[i].name, sizeof(changed));
+			}
+		}
+		char stage_key[64], stage_value[MAX_IMAGE_PATH];
+		for (int k = 0; vkpt_q3_stage_unsaved_get(mat->name, k, stage_key, sizeof(stage_key),
+			stage_value, sizeof(stage_value)); k++)
+		{
+			Q_strlcat(changed, " ", sizeof(changed));
+			Q_strlcat(changed, stage_key, sizeof(changed));
+		}
+		Com_Printf("    changed, not saved:%s ('mat save')\n", changed);
+	}
 
 	// An md5 skin with no entry of its own takes the classic skin's tuning.
 	if (mat->inherit_source[0])
@@ -1897,27 +3462,35 @@ void MAT_Print(pbr_material_t const * mat)
 static void material_reload_image(image_t** image, char* dest_name, const char* new_name,
                                   pbr_material_t* mat, imageflags_t extra)
 {
-	if (!strcmp(dest_name, new_name) && (*image || !new_name[0]))
-		return;
-
-	Q_strlcpy(dest_name, new_name, MAX_QPATH);
-
+	// no name: no image, whatever the slot held (an image under an empty name
+	// would otherwise survive the name check below)
 	if (!new_name[0]) {
+		dest_name[0] = 0;
 		*image = NULL;
 		return;
 	}
+
+	if (!strcmp(dest_name, new_name) && *image)
+		return;
+
+	Q_strlcpy(dest_name, new_name, MAX_IMAGE_PATH);
 
 	load_material_image(image, new_name, mat, mat->image_type, mat->image_flags | extra);
 
 	/* IMG_Find matches an image that is already loaded by its name WITHOUT the
 	   extension, IF_EXACT or not. So switching a map from foo_n.tga to
 	   foo_n.png handed back the foo_n.tga still in memory, and the .png only
-	   showed after a restart, where it is the first one asked for. Read the file
-	   that was asked for into that image, or, failing that, treat it as missing,
-	   as a cold load would. */
-	if (*image != R_NOTEXTURE && (*image)->filepath[0] && FS_pathcmp((*image)->filepath, new_name)
-		&& !IMG_ReloadFrom(*image, new_name))
-		*image = R_NOTEXTURE;
+	   showed after a restart, where it is the first one asked for. Take the file
+	   that was asked for as an image of its own (IMG_FindFile), or, failing that,
+	   treat it as missing, as a cold load would. This used to read the new file
+	   INTO the old image, which changed it for every material sharing it: the
+	   other xceil1_39 lights' .jpg glow turned into the one entry's .png. */
+	if (*image != R_NOTEXTURE && (*image)->filepath[0] && FS_pathcmp((*image)->filepath, new_name))
+	{
+		*image = IMG_FindFile(new_name, mat->image_type, (mat->image_flags | extra) & ~IF_SRC_MASK);
+		if (*image != R_NOTEXTURE && (*image)->filepath[0] && FS_pathcmp((*image)->filepath, new_name))
+			*image = R_NOTEXTURE;
+	}
 
 	if (*image == R_NOTEXTURE) {
 		Com_WPrintf("Texture '%s' specified in material '%s' could not be found.\n", new_name, mat->name);
@@ -1960,9 +3533,13 @@ static void material_reapply_definition(pbr_material_t* mat, const pbr_material_
 	mat->displace_in        = matdef->displace_in;
 	mat->displace_out       = matdef->displace_out;
 	mat->displace_clamp     = matdef->displace_clamp;
+	mat->alpha_glass        = matdef->alpha_glass;
+	mat->glass_caustic      = matdef->glass_caustic;
+	mat->caustic_ripple     = matdef->caustic_ripple;
 	mat->roughness_override = matdef->roughness_override;
 	mat->metalness_factor   = matdef->metalness_factor;
 	mat->emissive_factor    = matdef->emissive_factor;
+	mat->light_factor       = matdef->light_factor;
 	mat->specular_factor    = matdef->specular_factor;
 	mat->base_factor        = matdef->base_factor;
 	mat->light_styles       = matdef->light_styles;
@@ -1976,6 +3553,8 @@ static void material_reapply_definition(pbr_material_t* mat, const pbr_material_
 	// what the definition states ITSELF, which is what the auto-detection and
 	// the inheritance below are gated on
 	mat->specified_fields   = matdef->specified_fields;
+	// a reload takes the file's values, so console changes not saved are gone
+	mat->console_fields     = 0;
 
 	// keep 'mat which' truthful about where the values came from
 	Q_strlcpy(mat->source_matfile, matdef->source_matfile, sizeof(mat->source_matfile));
@@ -2019,11 +3598,12 @@ static void material_reapply_definition(pbr_material_t* mat, const pbr_material_
 	if (describes_textures || MAT_SPECIFIED(matdef, attr)) \
 		material_reload_image(&mat->image, mat->filename, matdef->filename, mat, extra)
 
-	// a player skin's own map beats its model's shared one, as in MAT_Find
-	char skin_map[MAX_QPATH];
+	// a player skin's own map beats its model's shared one, as in MAT_Find -
+	// unless the entry cleared the slot (MAT_CLEARED)
+	char skin_map[MAX_IMAGE_PATH];
 #define RELOAD_SKIN_TEXTURE(attr, image, filename, suffix, extra) \
 	if (describes_textures || MAT_SPECIFIED(matdef, attr)) \
-		material_reload_image(&mat->image, mat->filename, describes_textures \
+		material_reload_image(&mat->image, mat->filename, describes_textures && !MAT_CLEARED(matdef, attr, filename) \
 			? player_skin_map(mat->name, matdef->filename_base, matdef->filename, suffix, skin_map, sizeof(skin_map)) \
 			: matdef->filename, mat, extra)
 
@@ -2040,11 +3620,23 @@ static void material_reapply_definition(pbr_material_t* mat, const pbr_material_
 
 	if (instance_base)
 		material_inherit_instance(mat, instance_base);
-	else if (!describes_textures)
+	else if (describes_textures)
+	{
+		// as in MAT_Find: a Quake III shader still decides what the entry does not
+		const q3shader_t* q3 = q3_shader_for(mat->name, mat->image_type);
+		if (q3)
+			apply_q3_shader(mat, q3, mat->image_type, mat->image_flags & ~IF_SRC_MASK);
+	}
+	else
 	{
 		// re-detect the slots the definition left unsaid, as a cold load would
 		autodetect_material_textures(mat, NULL, mat->name, mat->image_type,
 		                             mat->image_flags & ~IF_SRC_MASK);
+
+		// and what a Quake III shader says about the slots still empty
+		const q3shader_t* q3 = q3_shader_for(mat->name, mat->image_type);
+		if (q3)
+			apply_q3_shader(mat, q3, mat->image_type, mat->image_flags & ~IF_SRC_MASK);
 
 		// and re-apply the classic material's tuning, which no .mat file records -
 		// without this a reload drops an md5 skin from the inherited base_factor
@@ -2109,11 +3701,12 @@ static void material_command_reload(void)
 	if (current_map_name[0])
 	{
 		char map_name_no_ext[MAX_QPATH];
-		truncate_extension(current_map_name, map_name_no_ext);
+		truncate_extension(current_map_name, map_name_no_ext, sizeof(map_name_no_ext));
 		char file_name[MAX_QPATH];
 		Q_snprintf(file_name, sizeof(file_name), "%s.mat", map_name_no_ext);
 
 		memset(r_map_materials, 0, sizeof(r_map_materials));
+		vkpt_q3_stage_override_clear(Q3SS_SCOPE_MAP);
 		num_map_materials = load_material_file(file_name, r_map_materials, MAX_PBR_MATERIALS);
 		if (num_map_materials > 0) {
 			sort_and_deduplicate_materials(r_map_materials, &num_map_materials);
@@ -2198,6 +3791,12 @@ static void write_instance_stub_values(qhandle_t file, const pbr_material_t* mat
 	FS_FPrintf(file, "#\tdisplace_out %g\n", mat->displace_out);
 	if (mat->displace_clamp)
 		FS_FPrintf(file, "#\tdisplace_clamp 1\n");
+	if (mat->alpha_glass)
+		FS_FPrintf(file, "#\talpha_glass 1\n");
+	if (mat->glass_caustic > 0.f)
+		FS_FPrintf(file, "#\tcaustic %g\n", mat->glass_caustic);
+	if (mat->caustic_ripple > 0.f)
+		FS_FPrintf(file, "#\tcaustic_ripple %g\n", mat->caustic_ripple);
 	// negative means "no override" here, and is not something to write back
 	if (mat->roughness_override >= 0.f)
 		FS_FPrintf(file, "#\troughness_override %g\n", mat->roughness_override);
@@ -2205,6 +3804,7 @@ static void write_instance_stub_values(qhandle_t file, const pbr_material_t* mat
 	FS_FPrintf(file, "#\tspecular_factor %g\n", mat->specular_factor);
 	FS_FPrintf(file, "#\tbase_factor %g\n", mat->base_factor);
 	FS_FPrintf(file, "#\temissive_factor %g\n", mat->emissive_factor);
+	FS_FPrintf(file, "#\tlight_factor %g\n", mat->light_factor);
 	if (mat->synth_emissive || synthesized) {
 		FS_FPrintf(file, "#\tsynth_emissive 1\n");
 		FS_FPrintf(file, "#\temissive_threshold %d\n", mat->emissive_threshold);
@@ -2297,8 +3897,10 @@ static void material_create_instance(const pbr_material_t* mat)
 		return;
 	}
 
+	// a Quake III map's into baseq3/materials, beside its data (files.c)
 	char file_name[MAX_QPATH];
-	Q_snprintf(file_name, sizeof(file_name), "materials/%s.mat", map_base);
+	Q_snprintf(file_name, sizeof(file_name), "%smaterials/%s.mat",
+		vkpt_refdef.bsp_mesh_world_loaded && vkpt_refdef.bsp_mesh_world.q3 ? "baseq3/" : "", map_base);
 
 	qhandle_t file = 0;
 	int err = FS_OpenFile(file_name, &file, FS_MODE_APPEND);
@@ -2332,19 +3934,338 @@ static void material_create_instance(const pbr_material_t* mat)
 	material_command_reload();
 }
 
+/* 'mat print' puts the material's albedo in the top-right corner of the screen,
+   over the console, so the surface the crosshair picked can be checked to be the
+   one meant before tuning it. 'mat print normals' (emissive, mask, roughness,
+   metallic, height) shows that map instead, 'mat print <name> [map]' a named
+   material's. The map is drawn as stored, its alpha ignored - an albedo whose
+   alpha is a cutout, or zero everywhere, would otherwise draw as holes. It stays
+   up while the console is open and for MAT_PREVIEW_MS after it closes. */
+
+#define MAT_PREVIEW_MS 8000
+
+enum { PREVIEW_ALBEDO, PREVIEW_NORMALS, PREVIEW_EMISSIVE, PREVIEW_MASK,
+	PREVIEW_ROUGHNESS, PREVIEW_METALLIC, PREVIEW_HEIGHT };
+
+static const struct {
+	const char *word;
+	int map;
+} mat_preview_words[] = {
+	{ "albedo", PREVIEW_ALBEDO }, { "base", PREVIEW_ALBEDO }, { "diffuse", PREVIEW_ALBEDO },
+	{ "normals", PREVIEW_NORMALS }, { "normal", PREVIEW_NORMALS },
+	{ "emissive", PREVIEW_EMISSIVE }, { "mask", PREVIEW_MASK },
+	{ "roughness", PREVIEW_ROUGHNESS }, { "metallic", PREVIEW_METALLIC },
+	{ "metalness", PREVIEW_METALLIC }, { "height", PREVIEW_HEIGHT },
+};
+
+static const char *const mat_preview_names[] = {
+	"albedo", "normals", "emissive", "mask", "roughness", "metallic", "height"
+};
+
+static struct {
+	bool active;
+	qhandle_t pic;                  // the map's r_images index; 0 = none
+	char label[48];                 // which map: "albedo", "stage2 roughness"
+	int width, height;
+	char material[MAX_QPATH];
+	char file[MAX_IMAGE_PATH + 16]; // the image, or why there is none
+	unsigned shown_ms;              // the print, or the last frame the console was open
+} mat_preview;
+
+// the PREVIEW_* a word after 'mat print' names, or -1
+static int mat_preview_word(const char *word)
+{
+	for (int i = 0; i < (int)q_countof(mat_preview_words); i++)
+		if (!Q_stricmp(word, mat_preview_words[i].word))
+			return mat_preview_words[i].map;
+	return -1;
+}
+
+static void mat_preview_set(pbr_material_t const *mat, int map)
+{
+	image_t *image = NULL;
+	const char *file = "";
+	switch (map)
+	{
+	case PREVIEW_ALBEDO:    image = mat->image_base;      file = mat->filename_base; break;
+	case PREVIEW_NORMALS:   image = mat->image_normals;   file = mat->filename_normals; break;
+	case PREVIEW_EMISSIVE:  image = mat->image_emissive;  file = mat->filename_emissive; break;
+	case PREVIEW_MASK:      image = mat->image_mask;      file = mat->filename_mask; break;
+	case PREVIEW_ROUGHNESS: image = mat->image_roughness; file = mat->filename_roughness; break;
+	case PREVIEW_METALLIC:  image = mat->image_metallic;  file = mat->filename_metallic; break;
+	case PREVIEW_HEIGHT:    image = mat->image_height;    file = mat->filename_height; break;
+	}
+
+	memset(&mat_preview, 0, sizeof(mat_preview));
+	mat_preview.active = true;
+	Q_strlcpy(mat_preview.label, mat_preview_names[map], sizeof(mat_preview.label));
+	mat_preview.shown_ms = Sys_Milliseconds();
+	Q_strlcpy(mat_preview.material, mat->name, sizeof(mat_preview.material));
+
+	if (image && image > r_images && image < r_images + MAX_RIMAGES && image->registration_sequence)
+	{
+		mat_preview.pic = (qhandle_t)(image - r_images);
+		mat_preview.width = image->width;
+		mat_preview.height = image->height;
+		Q_strlcpy(mat_preview.file, image->name, sizeof(mat_preview.file));
+	}
+	else if (file[0])
+		Q_concat(mat_preview.file, sizeof(mat_preview.file), file, " (NOT LOADED)");
+	else
+		Q_concat(mat_preview.file, sizeof(mat_preview.file), "no ", mat_preview_names[map], " map");
+}
+
+/* 'mat view stage<N> [map]': what one stage of a Quake III program draws - its
+   image as it shows now - or the roughness, metallic or normals map its
+   stage<N>_* settings give it (q3stages.h STAGE SETTINGS). */
+static void mat_preview_set_stage(pbr_material_t const *mat, int stage, int map)
+{
+	int which = 0;
+	switch (map)
+	{
+	case PREVIEW_ROUGHNESS: which = 1; break;
+	case PREVIEW_METALLIC:  which = 2; break;
+	case PREVIEW_NORMALS:   which = 3; break;
+	default:                which = 0; break;
+	}
+
+	const char *file = "";
+	const image_t *image = vkpt_q3_stage_image(mat, stage, which, &file);
+
+	memset(&mat_preview, 0, sizeof(mat_preview));
+	mat_preview.active = true;
+	Q_snprintf(mat_preview.label, sizeof(mat_preview.label), "stage%d %s", stage,
+		which == 0 ? "image" : mat_preview_names[map]);
+	mat_preview.shown_ms = Sys_Milliseconds();
+	Q_strlcpy(mat_preview.material, mat->name, sizeof(mat_preview.material));
+
+	if (image && image > r_images && image < r_images + MAX_RIMAGES && image->registration_sequence)
+	{
+		mat_preview.pic = (qhandle_t)(image - r_images);
+		mat_preview.width = image->width;
+		mat_preview.height = image->height;
+	}
+	Q_strlcpy(mat_preview.file, file, sizeof(mat_preview.file));
+}
+
+// a line of the preview's caption, cut from the left to `max_chars` if it is longer
+static void mat_preview_line(int x, int y, int max_chars, int flags, const char *s, qhandle_t font)
+{
+	size_t len = strlen(s);
+	if (max_chars > 3 && len > (size_t)max_chars)
+	{
+		char buf[MAX_IMAGE_PATH + 32];
+		Q_concat(buf, sizeof(buf), "...", s + len - (max_chars - 3));
+		R_DrawString_RTX(x, y, flags, max_chars, buf, font);
+	}
+	else
+		R_DrawString_RTX(x, y, flags, max_chars, s, font);
+}
+
+// R_EndFrame_RTX and D3D12's R_EndFrame: last, over the console
+void MAT_DrawPreview(void)
+{
+	if (!mat_preview.active)
+		return;
+
+	unsigned now = Sys_Milliseconds();
+	if (Key_GetDest() & KEY_CONSOLE)
+		mat_preview.shown_ms = now;
+	else if (now - mat_preview.shown_ms > MAT_PREVIEW_MS)
+	{
+		mat_preview.active = false;
+		return;
+	}
+
+	qhandle_t font = R_RegisterFont("conchars");
+
+	// a virtual screen about 720 lines tall, the console text's size on most setups
+	const float scale = 1.f / (float)max(1, (int)((float)r_config.height / 720.f + 0.5f));
+	const int vw = (int)((float)r_config.width * scale + 0.5f);
+	const int vh = (int)((float)r_config.height * scale + 0.5f);
+
+	// the map fits a square 40% of the screen's height, its own shape kept
+	const int box = max(64, vh * 2 / 5);
+	int w = box, h = box;
+	if (mat_preview.pic && mat_preview.width > 0 && mat_preview.height > 0)
+	{
+		if (mat_preview.width >= mat_preview.height)
+			h = max(8, box * mat_preview.height / mat_preview.width);
+		else
+			w = max(8, box * mat_preview.width / mat_preview.height);
+	}
+
+	char size_line[64];
+	if (mat_preview.pic)
+		Q_snprintf(size_line, sizeof(size_line), "%s  %dx%d", mat_preview.label,
+			mat_preview.width, mat_preview.height);
+	else
+		Q_strlcpy(size_line, mat_preview.label, sizeof(size_line));
+
+	// wide enough for the longest caption line, up to half the screen
+	const int pad = 4, margin = 8, line_h = 10;
+	size_t longest = max(strlen(size_line), max(strlen(mat_preview.material), strlen(mat_preview.file)));
+	int panel_w = max(w, (int)longest * CHAR_WIDTH) + 2 * pad;
+	panel_w = min(panel_w, max(w + 2 * pad, vw / 2));
+	const int max_chars = (panel_w - 2 * pad) / CHAR_WIDTH;
+	const int panel_h = pad + h + pad + 3 * line_h + pad;
+	const int px = vw - margin - panel_w, py = margin;
+
+	vkpt_draw_push_state(scale);
+
+	R_DrawFill32_RTX(px, py, panel_w, panel_h, MakeColor(0, 0, 0, 220));
+
+	const int ix = px + (panel_w - w) / 2, iy = py + pad;
+	if (mat_preview.pic)
+		vkpt_draw_stretch_pic_opaque(ix, iy, w, h, mat_preview.pic);
+	else
+		R_DrawFill32_RTX(ix, iy, w, h, MakeColor(64, 0, 64, 255));
+
+	if (font)
+	{
+		int ty = iy + h + pad + 1;
+		mat_preview_line(px + pad, ty, max_chars, UI_ALTCOLOR, size_line, font);
+		mat_preview_line(px + pad, ty + line_h, max_chars, 0, mat_preview.material, font);
+		mat_preview_line(px + pad, ty + 2 * line_h, max_chars, 0, mat_preview.file, font);
+	}
+
+	vkpt_draw_pop_state();
+}
+
+// "stage2", or "stage" "2", at argument (*argi): the stage number, with (*argi)
+// moved past it - else -1
+static int parse_stage_arg(int* argi)
+{
+	if (*argi >= Cmd_Argc())
+		return -1;
+	const char* s = Cmd_Argv(*argi);
+	if (Q_strncasecmp(s, "stage", 5))
+		return -1;
+
+	const char* num = s + 5;
+	int used = 1;
+	if (!*num && *argi + 1 < Cmd_Argc())
+	{
+		num = Cmd_Argv(*argi + 1);
+		used = 2;
+	}
+	if (!Q_isdigit(num[0]) || num[1])
+		return -1;
+
+	*argi += used;
+	return num[0] - '0';
+}
+
+/* 'mat stage<N> <setting> <value>' (q3stages.h STAGE SETTINGS): one stage of the
+   crosshair's Quake III shader - its image, or a surface of its own where it
+   shows. Kept as the console's until 'mat save' writes it into the material's
+   .mat entry as stage<N>_<setting>. No value: what the stage has. */
+static void material_command_stage(pbr_material_t* mat, int stage, const char* setting, int field, const char* value)
+{
+	const q3shader_t* q3 = q3_shader_of(mat);
+	q3stagesettings_t s;
+	char shown[MAX_IMAGE_PATH];
+
+	if (!q3)
+	{
+		Com_Printf("%s is not a Quake III shader: it has no stages\n", mat->name);
+		return;
+	}
+	if (stage >= q3->num_stages)
+	{
+		Com_Printf("%s has %d stages, stage0 to stage%d ('mat print' lists them)\n", mat->name,
+			q3->num_stages, q3->num_stages - 1);
+		return;
+	}
+
+	if (!setting || field < 0)
+	{
+		if (setting)
+			Com_Printf("'%s' is not a stage setting.\n", setting);
+		vkpt_q3_stage_settings(mat->name, stage, &s);
+		Com_Printf("%s stage%d:%s\n", mat->name, stage, s.set ? "" : " nothing of its own");
+		for (int f = 0; f < Q3SS_COUNT; f++)
+		{
+			if (!(s.set & (1u << f)))
+				continue;
+			vkpt_q3_stage_format_value(&s, f, shown, sizeof(shown));
+			Com_Printf("    %s %s\n", vkpt_q3_stage_field_name(f), shown);
+		}
+		Com_Printf("usage: mat stage%d <setting> <value|none>, the setting one of: map (its image; "
+			"'map off' leaves the stage out), roughness_override, metalness_factor, specular_factor, "
+			"bump_scale, texture_roughness, texture_metallic, texture_normals\n", stage);
+		return;
+	}
+
+	if (!value)
+	{
+		vkpt_q3_stage_settings(mat->name, stage, &s);
+		vkpt_q3_stage_format_value(&s, field, shown, sizeof(shown));
+		Com_Printf("%s stage%d_%s %s\n", mat->name, stage, vkpt_q3_stage_field_name(field), shown);
+		return;
+	}
+
+	char err[256];
+	if (!vkpt_q3_stage_setting_add(Q3SS_SCOPE_CONSOLE, mat->name, stage, field, value, err, sizeof(err)))
+	{
+		Com_Printf("stage%d_%s %s: %s\n", stage, vkpt_q3_stage_field_name(field), value, err);
+		return;
+	}
+
+	vkpt_q3_stage_settings(mat->name, stage, &s);
+	vkpt_q3_stage_format_value(&s, field, shown, sizeof(shown));
+	Com_Printf("%s stage%d_%s %s ('mat save' writes it into %s)\n", mat->name, stage,
+		vkpt_q3_stage_field_name(field), shown,
+		mat->source_matfile[0] ? mat->source_matfile : "nothing: no .mat entry - 'mat save <file>'");
+
+	if (q3->stages[stage].lightmap && field != Q3SS_MAP)
+		Com_Printf("  stage%d is the $lightmap - the light, not a surface: this does nothing\n", stage);
+
+	if (!mat->q3_program)
+	{
+		if (field == Q3SS_MAP)
+			Com_Printf("  %s draws still, its image taken when it loads: 'mat save', then 'mat reload'\n", mat->name);
+		else
+			Com_Printf("  %s draws still, from its own maps (no stage program): its stages have no surfaces "
+				"of their own - set the material's (roughness_override, ...)\n", mat->name);
+		return;
+	}
+
+	// The program draws from what it was built with: rebuilt, as for 'mat
+	// texture_emissive' - and for a new image the map too, which is what its
+	// glow lights from.
+	material_rebuild_program(mat, q3);
+	if (field == Q3SS_MAP && vkpt_refdef.fd)
+	{
+		vkpt_vertex_buffer_invalidate_static_model_vbos(vkpt_refdef.fd->feedback.view_material_index);
+		CL_PrepRefresh();
+	}
+}
+
 static void material_command_help(void)
 {
 	Com_Printf("mat command - interface to the material system\n");
 	Com_Printf("usage: mat <command> <arguments...>\n");
 	Com_Printf("available commands:\n");
 	Com_Printf("    help: print this message\n");
-	Com_Printf("    print [name]: print the material at the crosshair, or the named one\n");
+	Com_Printf("    print [name] [map]: print the material at the crosshair, or the named one,\n");
+	Com_Printf("        and show its albedo in the top-right corner - or the map named:\n");
+	Com_Printf("        normals, emissive, mask, roughness, metallic, height ('mat print normals')\n");
+	Com_Printf("    view [stage<N>] [map]: only show it - or what stage N of a Quake III shader draws,\n");
+	Com_Printf("        or its own roughness, metallic or normals map ('mat view stage2 roughness')\n");
+	Com_Printf("    stage<N> <setting> <value>: one stage of a Quake III shader - map (its image), or a\n");
+	Com_Printf("        surface of its own where it shows: roughness_override, metalness_factor,\n");
+	Com_Printf("        specular_factor, bump_scale, texture_roughness, texture_metallic, texture_normals\n");
+	Com_Printf("        ('none' takes one away; 'map off' leaves the stage out of the drawing).\n");
+	Com_Printf("        In a .mat file: stage2_roughness_override 0.8, stage1_map off\n");
 	Com_Printf("    which: tell where the current material is defined\n");
 	Com_Printf("    create_instance: give the surface at the crosshair its own material,\n");
 	Com_Printf("        so it can be tuned without affecting other uses of the same texture.\n");
 	Com_Printf("        Writes an empty section to materials/<map>.mat and reloads.\n");
 	Com_Printf("    reload: re-read all .mat files, and any texture saved since it was loaded, from disk and rebuild\n");
-	Com_Printf("    save <filename> <options>: save the active materials to a file\n");
+	Com_Printf("    save: write what 'mat <attribute> <value>' changed back into the .mat entries\n");
+	Com_Printf("        those materials came from - only those lines (the old file is kept as .bak)\n");
+	Com_Printf("    save <filename> <options>: save the active materials to a new file\n");
 	Com_Printf("        option 'all': save all materials (otherwise only the undefined ones)\n");
 	Com_Printf("        option 'force': overwrite the output file if it exists\n");
 	Com_Printf("    <attribute> <value>: set an attribute of the current material\n");
@@ -2369,12 +4290,13 @@ static void material_command(void)
 
 	if (strcmp(key, "save") == 0)
 	{
+		// no file name: into the files the changed materials came from
 		if (Cmd_Argc() < 3)
 		{
-			Com_Printf("expected file name\n");
+			save_to_source_files();
 			return;
 		}
-		
+
 		const char* file_name = Cmd_Argv(2);
 
 		bool save_all = false;
@@ -2407,17 +4329,65 @@ static void material_command(void)
 	// reach a skin that is not on screen - a monster variant this map does not
 	// spawn, say - and that is exactly when one needs checking, because a
 	// tuning-only .mat entry is invisible in 'mat save' by design.
-	if (strcmp(key, "print") == 0 && Cmd_Argc() >= 3)
+	/* Which of the material's maps 'mat print' shows on screen: the albedo, or
+	   one named after it - 'mat print normals' (the crosshair's material) or
+	   'mat print <name> normals'. */
+	int preview_map = PREVIEW_ALBEDO;
+	/* ... or one stage of a Quake III program: 'mat print stage2', 'mat view
+	   stage 2 roughness' - what it draws, or its own maps (STAGE SETTINGS).
+	   'mat view' only shows, with nothing printed (Matt, 2026-11-16). */
+	const bool view = strcmp(key, "view") == 0;
+	int preview_stage = -1;
+	if ((view || strcmp(key, "print") == 0) && Cmd_Argc() >= 3)
+	{
+		int argi = 2;
+		preview_stage = parse_stage_arg(&argi);
+		if (preview_stage < 0)
+			argi = 2;
+		if (argi < Cmd_Argc() && (preview_stage >= 0 || view))
+		{
+			preview_map = mat_preview_word(Cmd_Argv(argi));
+			if (preview_map < 0)
+			{
+				Com_Printf("'%s' is not a map: albedo, normals, roughness or metallic%s\n", Cmd_Argv(argi),
+					preview_stage >= 0 ? "" : ", emissive, mask or height");
+				preview_map = PREVIEW_ALBEDO;
+			}
+		}
+	}
+
+	if (view || preview_stage >= 0)
+	{
+		// the crosshair's material, below
+	}
+	else if (strcmp(key, "print") == 0 && Cmd_Argc() >= 3 && mat_preview_word(Cmd_Argv(2)) >= 0)
+	{
+		preview_map = mat_preview_word(Cmd_Argv(2));
+	}
+	else if (strcmp(key, "print") == 0 && Cmd_Argc() >= 3)
 	{
 		char name_no_ext[MAX_QPATH];
-		truncate_extension(Cmd_Argv(2), name_no_ext);
+		truncate_extension(Cmd_Argv(2), name_no_ext, sizeof(name_no_ext));
 		Q_strlwr(name_no_ext);
 
 		pbr_material_t* named = find_material(name_no_ext,
 			Com_HashString(name_no_ext, RMATERIALS_HASH), r_materials, MAX_PBR_MATERIALS);
 
+		if (Cmd_Argc() >= 4)
+		{
+			preview_map = mat_preview_word(Cmd_Argv(3));
+			if (preview_map < 0)
+			{
+				Com_Printf("'%s' is not a map: albedo, normals, emissive, mask, roughness, metallic or height\n", Cmd_Argv(3));
+				preview_map = PREVIEW_ALBEDO;
+			}
+		}
+
 		if (named)
+		{
 			MAT_Print(named);
+			mat_preview_set(named, preview_map);
+		}
 		else
 			Com_Printf("No material named '%s' is loaded\n", name_no_ext);
 		return;
@@ -2431,9 +4401,23 @@ static void material_command(void)
 	if (!mat)
 		return;
 
+	if (view)
+	{
+		if (preview_stage >= 0)
+			mat_preview_set_stage(mat, preview_stage, preview_map);
+		else
+			mat_preview_set(mat, preview_map);
+		Com_Printf("%s: %s\n", mat_preview.label, mat_preview.file);
+		return;
+	}
+
 	if (strcmp(key, "print") == 0)
 	{
 		MAT_Print(mat);
+		if (preview_stage >= 0)
+			mat_preview_set_stage(mat, preview_stage, preview_map);
+		else
+			mat_preview_set(mat, preview_map);
 
 		/* The surface's own identity, so two uses of one texture can be told
 		   apart BEFORE committing to splitting them - aim at each in turn and
@@ -2473,6 +4457,30 @@ static void material_command(void)
 		return;
 	}
 
+	// 'mat stage2 roughness_override 0.8', 'mat stage 2 ...', or the .mat
+	// file's spelling, 'mat stage2_roughness_override 0.8'
+	{
+		int argi = 1, field = -1;
+		const char* setting = NULL;
+		int stage = vkpt_q3_stage_parse_key(key, &field);
+		if (stage >= 0)
+		{
+			setting = key + 7;
+			argi = 2;
+		}
+		else if ((stage = parse_stage_arg(&argi)) >= 0)
+		{
+			setting = argi < Cmd_Argc() ? Cmd_Argv(argi) : NULL;
+			field = vkpt_q3_stage_field(setting);
+			argi++;
+		}
+		if (stage >= 0)
+		{
+			material_command_stage(mat, stage, setting, field, argi < Cmd_Argc() ? Cmd_Argv(argi) : NULL);
+			return;
+		}
+	}
+
 	if (Cmd_Argc() < 3)
 	{
 		Com_Printf("expected value for attribute\n");
@@ -2480,7 +4488,35 @@ static void material_command(void)
 	}
 
 	unsigned int reload_flags = 0;
-	set_material_attribute(mat, key, Cmd_Argv(2), NULL, 0, &reload_flags);
+	const struct MaterialAttribute* attr = find_attribute(key);
+	const uint32_t specified_before = mat->specified_fields;
+	if (set_material_attribute(mat, key, Cmd_Argv(2), NULL, 0, &reload_flags) == Q_ERR_SUCCESS && attr)
+	{
+		// what 'mat save' writes back (save_to_source_files) - with whatever
+		// else it set: "kind ALPHA_GLASS" is also alpha_glass 1
+		mat->console_fields |= (1u << attr->index) | (mat->specified_fields & ~specified_before);
+		if (attr->index == MAT_KIND && !Q_stricmp(Cmd_Argv(2), "ALPHA_GLASS"))
+			mat->console_fields |= 1u << MAT_ALPHA_GLASS;
+
+		/* A QUAKE III PROGRAM DRAWS FROM THE IMAGES IT WAS BUILT WITH. Typed
+		   here, texture_emissive / texture_base changed the material's image
+		   and left its program drawing the old stages: firegorre.tga named as
+		   the glow of q3dm1's skull arch (textures/gothic_door/skullarch_b)
+		   never glowed - nor after a map reload, which keeps the live material
+		   (Matt, 2026-11-16). Rebuilt as 'mat reload' would, and the map
+		   reloaded so a glow that is new gets its light polys. */
+		if ((attr->index == MAT_TEXTURE_EMISSIVE || attr->index == MAT_TEXTURE_BASE) && mat->q3_program)
+		{
+			// an instance's from its base's shader (q3_shader_of), and the
+			// instances' of it with it
+			const q3shader_t* q3 = q3_shader_of(mat);
+			if (q3)
+			{
+				material_rebuild_program(mat, q3);
+				reload_flags |= RELOAD_MAP;
+			}
+		}
+	}
 
 	if ((reload_flags & RELOAD_EMISSIVE) != 0)
 	{
@@ -2524,9 +4560,12 @@ static void material_completer(genctx_t* ctx, int argnum)
 		// sub-commands
 		
 		Prompt_AddMatch(ctx, "print");
+		Prompt_AddMatch(ctx, "view");
 		Prompt_AddMatch(ctx, "save");
 		Prompt_AddMatch(ctx, "which");
 		Prompt_AddMatch(ctx, "create_instance");
+		for (int i = 0; i < Q3P_MAX_STAGES; i++)
+			Prompt_AddMatch(ctx, va("stage%d", i));
 
 		for (int i = 0; i < c_NumAttributes; i++)
 			Prompt_AddMatch(ctx, c_Attributes[i].name);
@@ -2539,7 +4578,21 @@ static void material_completer(genctx_t* ctx, int argnum)
 			Prompt_AddMatch(ctx, "all");
 			Prompt_AddMatch(ctx, "force");
 		}
-		else if((strcmp(Cmd_Argv(1), "print") == 0) || (strcmp(Cmd_Argv(1), "which") == 0)
+		else if (strcmp(Cmd_Argv(1), "print") == 0 || strcmp(Cmd_Argv(1), "view") == 0)
+		{
+			// the map to show on screen, or the stage
+			for (int i = 0; i < (int)q_countof(mat_preview_names); i++)
+				Prompt_AddMatch(ctx, mat_preview_names[i]);
+			for (int i = 0; i < Q3P_MAX_STAGES; i++)
+				Prompt_AddMatch(ctx, va("stage%d", i));
+		}
+		else if (!Q_strncasecmp(Cmd_Argv(1), "stage", 5) && Q_isdigit(Cmd_Argv(1)[5]) && !Cmd_Argv(1)[6])
+		{
+			// a stage's settings
+			for (int f = 0; f < Q3SS_COUNT; f++)
+				Prompt_AddMatch(ctx, vkpt_q3_stage_field_name(f));
+		}
+		else if((strcmp(Cmd_Argv(1), "which") == 0)
 			|| (strcmp(Cmd_Argv(1), "create_instance") == 0))
 		{
 			// Nothing to complete for these

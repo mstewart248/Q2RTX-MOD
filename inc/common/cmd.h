@@ -122,6 +122,11 @@ void Cmd_RestoreMapCvars(void);
 const char *Cmd_GetMapCvarSaved(const char *name);
 void Cmd_ClearMapCvarOverride(const char *name);
 
+// The server's own mapcvar, for one GAME: Cmd_SetGameCvar just before SV_InitGame,
+// Cmd_RestoreGameCvars before the next one. The player setting it themselves keeps theirs.
+void Cmd_SetGameCvar(const char *name, const char *value);
+void Cmd_RestoreGameCvars(void);
+
 void Cmd_Init(void);
 
 bool Cmd_Exists(const char *cmd_name);

@@ -38,4 +38,11 @@ void vkpt_fog_shutdown(void);
 void vkpt_fog_reset(void);
 void vkpt_fog_upload(ShaderFogVolume* dst);
 
+// The loaded map's Quake III fog brushes (bsp_t.fogvolumes), or NULL on unload.
+struct bsp_s;
+void vkpt_fog_set_world(const struct bsp_s* bsp);
+
+// True while a Quake III map is loaded - see resolve_volumetric_scale.
+bool vkpt_fog_world_is_q3(void);
+
 #endif // __FOG_H_

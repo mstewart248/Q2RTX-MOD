@@ -517,6 +517,7 @@ typedef struct {
     bool                dlss5;
     uint32_t            dlss5_push[2][D3D12_DLSS5_PUSH_WORDS];
     bool                taa_folded;         // vkpt_taa_folded
+    bool                accumulating;       // ref_mode.enable_accumulation (photo mode)
     float               frame_time;         // seconds, for the eye adaptation
     // the physical sky: render this frame's share of it before the primary rays
     // (vkpt_physical_sky_work: the whole sky, or a slice of a sun drift's update), as
@@ -672,6 +673,12 @@ void d3d12_flow_bind(int set, ID3D12Resource *density, DXGI_FORMAT density_forma
 // slot `slot`, `tlas` written into it - NULL when there are no probes this frame
 const d3d12_set_t *d3d12_flow_frame(const d3d12_world_flow_t *flow, int slot, D3D12_GPU_VIRTUAL_ADDRESS tlas,
                                     d3d12_flow_passes_t *out);
+
+// pt_q3_shaders (main.c's update_q3_shaders) - vkpt_prep_backend's set_q3_shaders:
+// the passes with the Quake III code in (on) or compiled out, made the first time
+// that set is wanted; sets vkpt_spec_q3 when it switched
+bool d3d12_world_set_q3_shaders(bool on);
+extern uint32_t vkpt_spec_q3;   // vkpt/main.c (vkpt.h)
 
 // The fog's resources: the sun's shadow map, the bake's mask, the god rays sets (made
 // with the world; without them there is no fog)

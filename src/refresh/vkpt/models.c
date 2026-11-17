@@ -910,6 +910,149 @@ fail:
 	return ret;
 }
 
+/* QUAKE III'S HEALTH SPHERES, MADE ROUND.
+
+   Each is a ball of 128 triangles round the cross, which Quake III drew with
+   an additive reflection map that hid the facets. Drawn as glass the facets
+   show in the outline and in what is seen through it (Matt, q3dm0, 11-16).
+   So it is fitted to the sphere it stands for - the centre of its box, the
+   mean distance of its corners from that - split ROUND_SPHERE_LEVELS times,
+   each triangle into four (128 -> 2048), and every corner put on the sphere
+   with its normal straight out of it. Single-frame meshes only. */
+#define ROUND_SPHERE_LEVELS 2
+
+static bool md3_is_round_sphere(const char *mod_name)
+{
+	return mod_name && Q_stristr(mod_name, "powerups/health/") && Q_stristr(mod_name, "_sphere");
+}
+
+typedef struct {
+	int a, b;       // the edge's corners, a < b; a = -1 for an empty slot
+	int mid;        // the corner made at its middle
+} sphere_edge_t;
+
+static int sphere_edge_mid(sphere_edge_t *table, uint32_t mask, int a, int b,
+                           vec3_t *pos, vec2_t *tc, int *num_verts)
+{
+	if (a > b) {
+		int t = a; a = b; b = t;
+	}
+
+	uint32_t h = ((uint32_t)a * 2654435761u) ^ ((uint32_t)b * 40503u);
+	for (uint32_t i = h & mask;; i = (i + 1) & mask) {
+		sphere_edge_t *e = &table[i];
+		if (e->a == a && e->b == b)
+			return e->mid;
+		if (e->a < 0) {
+			int v = (*num_verts)++;
+			VectorAdd(pos[a], pos[b], pos[v]);
+			VectorScale(pos[v], 0.5f, pos[v]);
+			tc[v][0] = 0.5f * (tc[a][0] + tc[b][0]);
+			tc[v][1] = 0.5f * (tc[a][1] + tc[b][1]);
+			e->a = a;
+			e->b = b;
+			e->mid = v;
+			return v;
+		}
+	}
+}
+
+static void round_sphere_mesh(model_t *model, maliasmesh_t *mesh)
+{
+	if (model->numframes != 1 || mesh->numverts < 4 || mesh->numtris < 4)
+		return;
+
+	// the most corners and triangles there can be: every level adds at most
+	// one corner per edge, three per triangle
+	int max_verts = mesh->numverts, tris = mesh->numtris;
+	for (int l = 0; l < ROUND_SPHERE_LEVELS; l++) {
+		max_verts += 3 * tris;
+		tris *= 4;
+	}
+	if (max_verts > TESS_MAX_VERTICES || tris * 3 > TESS_MAX_INDICES)
+		return;
+
+	vec3_t mins, maxs, centre;
+	ClearBounds(mins, maxs);
+	for (int v = 0; v < mesh->numverts; v++)
+		AddPointToBounds(mesh->positions[v], mins, maxs);
+	VectorAdd(mins, maxs, centre);
+	VectorScale(centre, 0.5f, centre);
+
+	float radius = 0.f;
+	for (int v = 0; v < mesh->numverts; v++)
+		radius += Distance(mesh->positions[v], centre);
+	radius /= (float)mesh->numverts;
+	if (radius <= 0.f)
+		return;
+
+	vec3_t *pos = MOD_Malloc(max_verts * sizeof(vec3_t));
+	vec3_t *nrm = MOD_Malloc(max_verts * sizeof(vec3_t));
+	vec2_t *tc = MOD_Malloc(max_verts * sizeof(vec2_t));
+	int *idx = MOD_Malloc(tris * 3 * sizeof(int));
+	int *src = Z_Malloc(tris * 3 * sizeof(int));
+	int *dst = Z_Malloc(tris * 3 * sizeof(int));
+	if (!pos || !nrm || !tc || !idx) {
+		Z_Free(src);
+		Z_Free(dst);
+		return;
+	}
+
+	int num_verts = mesh->numverts, num_tris = mesh->numtris;
+	memcpy(pos, mesh->positions, num_verts * sizeof(vec3_t));
+	memcpy(tc, mesh->tex_coords, num_verts * sizeof(vec2_t));
+	memcpy(src, mesh->indices, num_tris * 3 * sizeof(int));
+
+	for (int l = 0; l < ROUND_SPHERE_LEVELS; l++) {
+		// a table at least twice the edges (3 per triangle at most)
+		uint32_t size = 1;
+		while (size < (uint32_t)num_tris * 6)
+			size <<= 1;
+		sphere_edge_t *table = Z_Malloc(size * sizeof(*table));
+		for (uint32_t i = 0; i < size; i++)
+			table[i].a = table[i].b = -1;
+
+		for (int t = 0; t < num_tris; t++) {
+			const int i0 = src[t * 3 + 0], i1 = src[t * 3 + 1], i2 = src[t * 3 + 2];
+			const int m01 = sphere_edge_mid(table, size - 1, i0, i1, pos, tc, &num_verts);
+			const int m12 = sphere_edge_mid(table, size - 1, i1, i2, pos, tc, &num_verts);
+			const int m20 = sphere_edge_mid(table, size - 1, i2, i0, pos, tc, &num_verts);
+			int *out = dst + t * 12;
+
+			// the corners keep their order, so the winding does too
+			out[0] = i0;  out[1] = m01;  out[2] = m20;
+			out[3] = m01; out[4] = i1;   out[5] = m12;
+			out[6] = m20; out[7] = m12;  out[8] = i2;
+			out[9] = m01; out[10] = m12; out[11] = m20;
+		}
+		Z_Free(table);
+
+		num_tris *= 4;
+		int *swap = src; src = dst; dst = swap;
+	}
+
+	for (int v = 0; v < num_verts; v++) {
+		vec3_t d;
+		VectorSubtract(pos[v], centre, d);
+		if (VectorNormalize(d) <= 0.f)
+			VectorSet(d, 0.f, 0.f, 1.f);
+		VectorMA(centre, radius, d, pos[v]);
+		VectorCopy(d, nrm[v]);
+	}
+
+	memcpy(idx, src, num_tris * 3 * sizeof(int));
+	Z_Free(src);
+	Z_Free(dst);
+
+	mesh->positions = pos;
+	mesh->normals = nrm;
+	mesh->tex_coords = tc;
+	mesh->indices = idx;
+	mesh->numverts = num_verts;
+	mesh->numtris = num_tris;
+	mesh->numindices = num_tris * 3;
+}
+
 int MOD_LoadMD3_RTX(model_t *model, const void *rawdata, size_t length, const char* mod_name)
 {
 	dmd3header_t    header;
@@ -976,6 +1119,20 @@ int MOD_LoadMD3_RTX(model_t *model, const void *rawdata, size_t length, const ch
 			goto fail;
 		src_mesh += offset;
 		remaining -= offset;
+	}
+
+	// Quake III's health spheres, made round - see round_sphere_mesh
+	if (md3_is_round_sphere(mod_name) && model->numframes == 1) {
+		maliasframe_t *f = &model->frames[0];
+
+		ClearBounds(f->bounds[0], f->bounds[1]);
+		for (i = 0; i < header.num_meshes; i++) {
+			maliasmesh_t *mesh = &model->meshes[i];
+
+			round_sphere_mesh(model, mesh);
+			for (int v = 0; v < mesh->numverts; v++)
+				AddPointToBounds(mesh->positions[v], f->bounds[0], f->bounds[1]);
+		}
 	}
 
     // calculate frame bounds. MOD_LoadMD3Mesh took them from vertices already

@@ -792,6 +792,10 @@ static void UI_BotLineup_f(void)
     // capture the flag is the rerelease's: its maps and media are in its pak
     if (Cvar_VariableInteger("bot_mode") == 2 && Cvar_VariableInteger("fs_rerelease") != 1)
         Cvar_Set("bot_mode", "0");
+
+    // Quake III Arena's maps only while its paks are there (files.c)
+    if (Cvar_VariableInteger("bot_mapset") == 1 && Cvar_VariableInteger("fs_quake3") != 1)
+        Cvar_Set("bot_mapset", "0");
 }
 
 /*
@@ -819,6 +823,11 @@ static void UI_BotInit(void)
     Cvar_Get("bot_player_team", "0", CVAR_ARCHIVE);
 
     Cvar_Get("bot_count", "3", CVAR_ARCHIVE);
+
+    // "cheats" is latched and not archived, so the menu keeps its own and
+    // each start action copies it over - the map ... force applies it
+    Cvar_Get("bot_cheats", "0", CVAR_ARCHIVE);
+
     for (i = 1; i <= BOT_MAX_MATCH; i++) {
         cvar_t *skin = Cvar_Get(va("bot_skin%d", i), "random", 0);
         cvar_t *team = Cvar_Get(va("bot_team%d", i), "0", 0);
@@ -844,10 +853,18 @@ static void UI_BotInit(void)
     // 3 ground zero, 4 quake ii 64, 5 any map
     Cvar_Get("_ui_botpack", "0", 0);
 
+    // Quake III Arena's maps, when baseq3 has them: 0 Quake II's, 1 Quake
+    // III's (deathmatch and tourney, or CTF)
+    Cvar_Get("bot_mapset", "0", CVAR_ARCHIVE);
+    Cvar_Get("bot_map_q3", "q3dm17", CVAR_ARCHIVE);
+    Cvar_Get("bot_map_q3ctf", "q3ctf1", CVAR_ARCHIVE);
+
     // the game's own, registered here too so the menu has a value to show
     // before any game has run
     Cvar_Get("teamplay", "0", 0);
     Cvar_Get("capturelimit", "8", CVAR_ARCHIVE);
+    Cvar_Get("g_q3_items", "1", CVAR_ARCHIVE);     // g_q3.c
+    Cvar_Get("g_q3_kit", "0", CVAR_ARCHIVE);
 }
 
 static void UI_BotShutdown(void)

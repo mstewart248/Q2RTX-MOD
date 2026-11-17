@@ -32,6 +32,8 @@ uniform accelerationStructureEXT topLevelAS[TLAS_COUNT];
 #define VERTEX_BUFFER_DESC_SET_IDX 3
 #define VERTEX_READONLY 1
 #include "vertex_buffer.h"
+#include "q3_stages.glsl"
+#include "q3_sky.glsl"
 
 #include "asvgf.glsl"
 #include "brdf.glsl"
@@ -136,6 +138,9 @@ env_map(vec3 direction, bool remove_sun)
 	else if (global_ubo.environment_type == ENVIRONMENT_STATIC)
 	{
 		envmap = textureLod(TEX_ENVMAP, direction.xzy, 0).rgb;
+		// a Quake III sky's cloud layers, over its far box
+		if (Q3_SHADERS && global_ubo.q3_sky_num_layers > 0)
+			envmap = q3_sky_clouds(direction, envmap);
 #if DESATURATE_ENVIRONMENT_MAP
 		float avg = (envmap.x + envmap.y + envmap.z) / 3.0;
 		envmap = mix(envmap, avg.xxx, 0.1) * 0.5;
@@ -552,7 +557,9 @@ void find_fog_volumes(inout RayPayloadEffects rp, Ray ray)
 	{
 		const ShaderFogVolume volume = global_ubo.fog_volumes[i];
 
-		if (volume.is_active == 0)
+		// 0 ends the list; 2 is a Quake III fog brush, which follows the
+		// command's boxes and belongs to the volumetric medium (fog_q3.glsl)
+		if (volume.is_active != 1)
 			return;
 
 		vec3 t1 = (volume.mins - ray.origin) * inv_dir;
@@ -814,6 +821,346 @@ trace_shadow_ray(Ray ray, int cull_mask)
 #endif
 }
 
+/*
+=================
+alpha_glass_solid
+
+ALPHA GLASS (.mat alpha_glass 1 / kind ALPHA_GLASS, material.h): a GLASS
+material whose base texture paints a frame round a pane - Quake III's
+textures/base_wall/glass_frame. It is glass only where that texture's alpha is
+under a half; this says the hit is on the FRAME, which every caller then treats
+as an ordinary opaque surface:
+  primary_rays.rgen / reflect_refract.rgen   shade it REGULAR, no split
+  trace_caustic_ray                          it blocks light outright
+A pane pixel stays glass, but CLEAR: the base texture's colour there is only
+what Quake III never drew (the frame image's cut-out, black on glass_frame), and
+as glass's base colour it would tint everything behind the pane that colour.
+=================
+*/
+bool alpha_glass_solid(MaterialInfo minfo, vec2 tex_coord, vec2 tex_coord_x, vec2 tex_coord_y, float mip_level)
+{
+	if (!minfo.alpha_glass || minfo.base_texture == 0)
+		return false;
+	float alpha = (mip_level >= 0)
+		? global_textureLod(minfo.base_texture, tex_coord, mip_level).a
+		: global_textureGrad(minfo.base_texture, tex_coord, tex_coord_x, tex_coord_y).a;
+	return alpha >= 0.5;
+}
+
+/*
+=================
+glass_caustic
+
+GLASSCAUSTIC (.mat caustic <s> / kind GLASSCAUSTIC, material.h): a lamp INSIDE
+a glass shape, such as a Quake III kmlamp bulb, whose light the shape bends on
+the way out. There is no texture: the pattern comes from the mesh's vertex
+normals, the direction each bit of the surface faces.
+
+The shadow ray still runs straight from the lit point to the light sample, and
+crosses the glass at P. This asks how much a small PATCH of glass round P
+spreads or squeezes the light leaving it, against no glass at all:
+  - the light (the far end of the ray; the sun's ray is ~10000 long and counts
+    as parallel light) reaches P and two neighbours a few percent of the
+    triangle away;
+  - each of the three directions is bent by Snell's law at that point's
+    interpolated normal, glass (1.52) into air;
+  - carried on for the distance from the glass to the lit point, the three bent
+    rays and the three straight ones each span a small triangle;
+  - straight area over bent area is how much brighter the lit point gets: the
+    same light squeezed into less area.
+Right at the glass both triangles are the patch itself and the ratio is ~1;
+further off it becomes the shape's focusing. Where the bent rays cross (a focus)
+the bent area goes to zero, so the ratio is capped at GLASS_CAUSTIC_MAX, like
+water's 8. Total internal reflection (light meeting the surface past ~41 deg)
+lets nothing out: 0. Fresnel takes its 4% and more off the rest.
+
+WHICH patch: not simply P. The light that reaches the lit point left the glass
+somewhere else - wherever the bend sends it there - and reading the squeeze at
+P instead piles the light up in the bright spots: over all directions, a
+kmlamp bulb then gave out 1.3 to 2.8 times its light. So GLASS_CAUSTIC_STEPS
+Newton steps walk from P to the point whose BENT ray lands on the lit point,
+using the patch's own footprint as the slope, and the squeeze is read there.
+Tested in Python on q3dm0's bulb mesh (2026-11-16): the output over all
+directions then stays at 0.6 to 1.2 of the light's (under 1 where total
+internal reflection traps some of it, as it would in a solid lump of glass).
+Past a focus, where several points land on the same spot, it finds only one,
+so a caustic's brightest line comes out a little dim.
+
+The steps stay within one triangle's width of P; beyond the hit triangle the
+normals are its own, carried on in a straight line.
+
+`strength` scales the bend: index 1 + 0.52 * strength. 1 = real glass, 0 = no
+effect at all (no bend, no Fresnel).
+=================
+*/
+#define GLASS_CAUSTIC_MAX   8.0
+#define GLASS_CAUSTIC_EPS   0.05 // the neighbours' offset, in barycentric units
+#define GLASS_CAUSTIC_STEPS 3
+
+struct GlassCausticPatch
+{
+	vec3 N;          // the surface normal there
+	vec3 d;          // the light's direction arriving there, inside the glass
+	vec3 o;          // ... and leaving, bent
+	vec3 b1;         // the bent footprint's two edges at the lit point's distance
+	vec3 b2;
+	float a_straight; // footprint areas across the beam: no glass ...
+	float a_bent;     // ... and bent
+	bool tir;        // total internal reflection: nothing leaves
+};
+
+// The patch `beta` neighbour-offsets from the hit (bary): beta.x along vertex
+// 0 -> 1, beta.y along 0 -> 2, in GLASS_CAUSTIC_EPS steps.
+GlassCausticPatch glass_caustic_patch(Triangle tri, vec3 bary, vec2 beta, vec3 to_p, bool directional,
+                                      float z, float eta)
+{
+	GlassCausticPatch g;
+	g.tir = false;
+	g.a_straight = 0.0;
+	g.a_bent = 0.0;
+
+	vec3 dp1 = (tri.positions[1] - tri.positions[0]) * GLASS_CAUSTIC_EPS;
+	vec3 dp2 = (tri.positions[2] - tri.positions[0]) * GLASS_CAUSTIC_EPS;
+	vec3 dn1 = (tri.normals[1] - tri.normals[0]) * GLASS_CAUSTIC_EPS;
+	vec3 dn2 = (tri.normals[2] - tri.normals[0]) * GLASS_CAUSTIC_EPS;
+
+	vec3 n = tri.normals * bary + dn1 * beta.x + dn2 * beta.y;
+	if (dot(n, n) < 1e-8)
+		return g; // no normal to speak of: a_straight 0, the caller's "no effect"
+
+	vec3 N0 = normalize(n);
+	vec3 N1 = normalize(n + dn1);
+	vec3 N2 = normalize(n + dn2);
+
+	// the way the light travels: from the light through each of the three points
+	vec3 d0 = normalize(to_p);
+	vec3 d1 = d0;
+	vec3 d2 = d0;
+	if (!directional)
+	{
+		vec3 v = to_p + dp1 * beta.x + dp2 * beta.y;
+		d0 = normalize(v);
+		d1 = normalize(v + dp1);
+		d2 = normalize(v + dp2);
+	}
+
+	vec3 o0 = refract(d0, faceforward(N0, d0, N0), eta);
+	vec3 o1 = refract(d1, faceforward(N1, d1, N1), eta);
+	vec3 o2 = refract(d2, faceforward(N2, d2, N2), eta);
+	if (dot(o0, o0) == 0.0 || dot(o1, o1) == 0.0 || dot(o2, o2) == 0.0)
+	{
+		g.tir = true;
+		return g;
+	}
+
+	// the two small triangles, carried on to the lit point's distance
+	vec3 s1 = dp1 + z * (d1 - d0);
+	vec3 s2 = dp2 + z * (d2 - d0);
+	g.b1 = dp1 + z * (o1 - o0);
+	g.b2 = dp2 + z * (o2 - o0);
+	g.a_straight = abs(dot(cross(s1, s2), d0));
+	g.a_bent = abs(dot(cross(g.b1, g.b2), o0));
+	g.N = N0;
+	g.d = d0;
+	g.o = o0;
+	return g;
+}
+
+float glass_caustic(Triangle triangle, vec3 bary, Ray ray, float hit_distance, float strength)
+{
+	float eta = 1.0 + 0.52 * strength; // glass over air
+	float z = hit_distance;            // glass -> lit point
+
+	// light -> P. The sun's shadow ray (get_sunlight) is 10000 long: parallel light.
+	bool directional = ray.t_max >= 9000.0;
+	vec3 to_p = -ray.direction * max(ray.t_max - hit_distance, 0.01);
+
+	vec2 beta = vec2(0);
+	GlassCausticPatch g = glass_caustic_patch(triangle, bary, beta, to_p, directional, z, eta);
+	if (g.tir)
+		return 0.0;
+	if (!(g.a_straight > 0.0))
+		return 1.0;
+
+	// Where the straight ray reaches the lit point, from P. Walk beta until the
+	// bent ray from P + offset lands there too.
+	vec3 target = z * g.d;
+	vec3 dp1 = (triangle.positions[1] - triangle.positions[0]) * GLASS_CAUSTIC_EPS;
+	vec3 dp2 = (triangle.positions[2] - triangle.positions[0]) * GLASS_CAUSTIC_EPS;
+	for (int newton = 0; newton < GLASS_CAUSTIC_STEPS; newton++)
+	{
+		vec3 miss = target - (dp1 * beta.x + dp2 * beta.y + z * g.o);
+		float a11 = dot(g.b1, g.b1);
+		float a12 = dot(g.b1, g.b2);
+		float a22 = dot(g.b2, g.b2);
+		float det = a11 * a22 - a12 * a12;
+		if (!(det > 1e-6 * a11 * a22))
+			break; // at a focus the footprint is flat: no way to step
+		vec2 rb = vec2(dot(g.b1, miss), dot(g.b2, miss));
+		vec2 next = beta + vec2(a22 * rb.x - a12 * rb.y, a11 * rb.y - a12 * rb.x) / det;
+		// no further than one triangle's width
+		float reach = max(max(abs(next.x), abs(next.y)), abs(next.x + next.y)) * GLASS_CAUSTIC_EPS;
+		if (reach > 1.0)
+			next /= reach;
+		GlassCausticPatch g2 = glass_caustic_patch(triangle, bary, next, to_p, directional, z, eta);
+		if (g2.tir)
+			return 0.0;
+		if (!(g2.a_straight > 0.0))
+			break;
+		g = g2;
+		beta = next;
+	}
+
+	float ratio = g.a_straight / max(g.a_bent, g.a_straight * (1.0 / GLASS_CAUSTIC_MAX));
+
+	// Fresnel transmission, glass -> air
+	float ci = abs(dot(g.N, g.d));
+	float ct = abs(dot(g.N, g.o));
+	float rs = (eta * ci - ct) / (eta * ci + ct);
+	float rp = (ci - eta * ct) / (ci + eta * ct);
+	float transmit = 1.0 - 0.5 * (rs * rs + rp * rp);
+
+	return ratio * transmit;
+}
+
+/*
+=================
+glass_ripple
+
+caustic_ripple <s> (material.h): the light through this glass thrown in moving
+water ripples - Matt's Quake III health orbs (2026-11-16), "so it looks mystical
+and ethereal". The ripples are water's own: the animated water normal map and
+its three drifting octaves (get_water_normal, water.glsl). Read as a rippling
+surface, they bunch the light up where they focus it:
+  brightness = 1 / |det(I + k * grad tilt)|
+bright along the lines where the ripples fold the light together and dim in
+between - a caustic network, capped at GLASS_CAUSTIC_MAX like water's.
+
+WHERE in the pattern - not where the shadow ray crosses the glass. An orb's lamp
+is the cross inside it, 13 units in a 24-unit ball: every lit point gets light
+through most of the ball, so a pattern fixed on the glass would average away to
+nothing. The pattern hangs instead on the directions out of the shape's centre
+of curvature, and a lit point reads the direction it lies in: the same spot
+whichever part of the lamp the ray came from, so the lines stay sharp at any
+lamp size. The centre is fitted on the hit triangle, corner positions against
+corner normals (p = C + R n on a sphere: exact on the orbs, which models.c
+rounds). A nearly flat triangle has none, and the pattern then lies in its plane
+in world units under the lit point, the way water's lies under the sun.
+
+That is for a light INSIDE the shape. A light outside it - the sun, a lamp
+across the room - reaches each lit point through one small spot of glass, and
+its lit patch (the ring under an orb) is a narrow cone seen from the centre: it
+read a sliver of one ripple, stretched smooth (Matt, 2026-11-16: the sun's
+caustic under the orb didn't ripple). So an outside light reads the pattern
+where its ray crosses the glass - the ball's own ripples, projected through it
+like a lens. For a light at the centre the two directions are the same one, so
+it is still one pattern.
+
+Directions are mapped round the centre without a seam: azimuth, a whole number
+of tiles round for every octave, by polar angle; straight down and up, where the
+azimuth pinches, a planar cap blended in over 50 -> 30 degrees off the vertical.
+
+Read at mip GLASS_RIPPLE_LOD: the map's per-texel grain only makes speckle, its
+broad swells make lines. Tuned offline (scratchpad tools/ripple_proto.py on
+water_n.tga): k = 2 per unit of strength is a clear network. The mean
+brightness over the pattern (glass_ripple_mean, 1.74 at k = 2) is divided out,
+so the glass passes the same light in total, only rearranged.
+=================
+*/
+#define GLASS_RIPPLE_TILES      4.0    // pattern tiles round the centre (first octave)
+#define GLASS_RIPPLE_LOD        4.0
+#define GLASS_RIPPLE_K          2.0    // the fold strength at caustic_ripple 1
+#define GLASS_RIPPLE_SPEED      1.5    // water's drift (water.glsl) is 2.5
+#define GLASS_RIPPLE_FLAT_TILE  128.0  // world units per tile on flat glass
+#define GLASS_RIPPLE_FLAT_R     256.0  // a radius of curvature past this is flat
+
+// water.glsl's three octaves, scales made whole numbers of tiles round (1, 1/2, 5/4)
+vec2 glass_ripple_tilt(vec2 uv)
+{
+	float t = global_ubo.time * GLASS_RIPPLE_SPEED;
+	vec2 a = global_textureLod(global_ubo.water_normal_texture, uv + t * vec2(0.01, 0.02), GLASS_RIPPLE_LOD).xy;
+	vec2 b = global_textureLod(global_ubo.water_normal_texture, uv * 0.5 + t * vec2(0.013, 0.014), GLASS_RIPPLE_LOD).xy;
+	vec2 c = global_textureLod(global_ubo.water_normal_texture, uv * 1.25 + t * vec2(-0.01, -0.02), GLASS_RIPPLE_LOD).xy;
+	return (a * 2.0 - 1.0) * 0.3 + (b * 2.0 - 1.0) * 0.5 + (c * 2.0 - 1.0) * 0.3;
+}
+
+float glass_ripple_bright(vec2 uv, float k, float h)
+{
+	vec2 o0 = glass_ripple_tilt(uv);
+	vec2 du = (glass_ripple_tilt(uv + vec2(h, 0.0)) - o0) * (k / h);
+	vec2 dv = (glass_ripple_tilt(uv + vec2(0.0, h)) - o0) * (k / h);
+	float det = (1.0 + du.x) * (1.0 + dv.y) - du.y * dv.x;
+	return 1.0 / max(abs(det), 1.0 / GLASS_CAUSTIC_MAX);
+}
+
+// the mean of glass_ripple_bright over the pattern at k = 0, 1, ... 8 (offline,
+// averaged over time); it rises while the folds sharpen, then falls as the
+// light gathers into ever thinner lines
+float glass_ripple_mean(float k)
+{
+	const float m[9] = float[9](1.0, 1.110, 1.740, 2.275, 2.318, 2.151, 1.921, 1.700, 1.501);
+	float x = clamp(k, 0.0, 7.999);
+	int i = int(x);
+	return mix(m[i], m[i + 1], x - float(i));
+}
+
+float glass_ripple(Triangle tri, vec3 bary, Ray ray, float hit_distance, float strength)
+{
+	vec3 N = tri.normals * bary;
+	if (dot(N, N) < 1e-8)
+		return 1.0;
+	N = normalize(N);
+
+	vec3 lit = ray.origin;                                  // the shadow ray starts at the lit point
+	vec3 P = ray.origin + ray.direction * hit_distance;     // ... and crosses the glass here
+
+	float k = GLASS_RIPPLE_K * strength;
+	float h = exp2(GLASS_RIPPLE_LOD) / max(float(global_textureSize(global_ubo.water_normal_texture, 0).x), 1.0);
+
+	// centre of curvature: R from p = C + R n over the triangle's two edges
+	vec3 dp1 = tri.positions[1] - tri.positions[0];
+	vec3 dp2 = tri.positions[2] - tri.positions[0];
+	vec3 dn1 = tri.normals[1] - tri.normals[0];
+	vec3 dn2 = tri.normals[2] - tri.normals[0];
+	float nn = dot(dn1, dn1) + dot(dn2, dn2);
+	float pn = dot(dp1, dn1) + dot(dp2, dn2);
+
+	float bright;
+	if (nn > 1e-8 && pn > 0.0 && pn < GLASS_RIPPLE_FLAT_R * nn)
+	{
+		float R = pn / nn;
+		vec3 C = P - R * N;
+		// a light outside the shape reads the pattern where it crosses the glass
+		// (the sun's shadow ray is 10000 long - see glass_caustic)
+		vec3 light_pos = ray.origin + ray.direction * ray.t_max;
+		bool outside = ray.t_max >= 9000.0 || distance(light_pos, C) > R;
+		vec3 d = normalize((outside ? P : lit) - C);
+
+		const float per_radian = GLASS_RIPPLE_TILES / (2.0 * M_PI);
+		float w_cap = smoothstep(0.643, 0.866, abs(d.z));   // cos 50, cos 30
+		bright = 0.0;
+		if (w_cap < 1.0)
+		{
+			vec2 uv = vec2(atan(d.y, d.x), acos(clamp(-d.z, -1.0, 1.0))) * per_radian;
+			bright += (1.0 - w_cap) * glass_ripple_bright(uv, k, h);
+		}
+		if (w_cap > 0.0)
+		{
+			// straight up gets its own part of the pattern, not straight down's mirrored
+			vec2 uv = d.xy * per_radian + (d.z > 0.0 ? vec2(0.5) : vec2(0.0));
+			bright += w_cap * glass_ripple_bright(uv, k, h);
+		}
+	}
+	else
+	{
+		mat3 basis = construct_ONB_frisvad(abs(N));
+		vec2 uv = vec2(dot(lit, basis[0]), dot(lit, basis[2])) * (1.0 / GLASS_RIPPLE_FLAT_TILE);
+		bright = glass_ripple_bright(uv, k, h);
+	}
+
+	return bright / glass_ripple_mean(k);
+}
+
 vec3
 trace_caustic_ray(Ray ray, int surface_medium)
 {
@@ -862,7 +1209,13 @@ trace_caustic_ray(Ray ray, int surface_medium)
 		vec3 geo_normal = triangle.normals[0];
 		bool is_vertical = abs(geo_normal.z) < 0.1;
 
-		if ((is_water(triangle.material_id) || is_slime(triangle.material_id)) && !is_vertical)
+		if ((triangle.texture_flags & TEXTURE_FLAG_CLOAK) != 0)
+		{
+			// a cloaked player lets the light through untouched: no shadow, no
+			// caustic, and no water from it to the light
+			throughput = vec3(1);
+		}
+		else if ((is_water(triangle.material_id) || is_slime(triangle.material_id)) && !is_vertical)
 		{
 			vec3 position = ray.origin + ray.direction * ray_payload_geometry.hit_distance;
 			vec3 w = get_water_normal(triangle.material_id, geo_normal, triangle.tangents[0], position, true);
@@ -893,9 +1246,19 @@ trace_caustic_ray(Ray ray, int surface_medium)
 			MaterialInfo minfo = get_material_info(triangle.material_id);
 
 			vec3 base_color = vec3(minfo.base_factor);
-			if (minfo.base_texture > 0)
+			// alpha glass: the frame stops the light, the pane is clear
+			if (minfo.alpha_glass && is_glass(triangle.material_id))
+				base_color = alpha_glass_solid(minfo, tex_coord, vec2(0), vec2(0), 2) ? vec3(0) : base_color;
+			else if (minfo.base_texture > 0)
 				base_color *= global_textureLod(minfo.base_texture, tex_coord, 2).rgb;
 			base_color = clamp(base_color, vec3(0), vec3(1));
+
+			// GLASSCAUSTIC: the lamp's light bent by the shape (glass_caustic)
+			if (minfo.glass_caustic > 0.0 && is_glass(triangle.material_id) && any(greaterThan(base_color, vec3(0))))
+				base_color *= glass_caustic(triangle, bary, ray, ray_payload_geometry.hit_distance, minfo.glass_caustic);
+			// caustic_ripple: and thrown in moving water ripples (glass_ripple)
+			if (minfo.caustic_ripple > 0.0 && is_glass(triangle.material_id) && any(greaterThan(base_color, vec3(0))))
+				base_color *= glass_ripple(triangle, bary, ray, ray_payload_geometry.hit_distance, minfo.caustic_ripple);
 
 			throughput = base_color;
 		}
@@ -984,7 +1347,7 @@ float get_unshadowed_env_path_contrib(
 	float specular = phong(normal, direction, view_direction, phong_exp) * phong_scale;
 	float m = mix(1.0, specular, phong_weight);
 
-	float light_lum = sun_color_ubo.sun_luminance;// / global_ubo.sun_solid_angle;
+	float light_lum = SUN_LUMINANCE_RESOLVED;// / global_ubo.sun_solid_angle;
 
 	m *= abs(light_lum); // abs because sky lights have negative color
 
@@ -1124,12 +1487,16 @@ get_direct_illumination(
 	vec3 L = pos_on_light - position;
 	L = normalize(L);
 
-	if (direct_specular_weight > 0 && polygonal_light_is_sky && global_ubo.pt_specular_mis != 0)
+	if (direct_specular_weight > 0 && polygonal_light_is_sky && global_ubo.pt_specular_mis != 0 && bounce == 0)
 	{
 		// MIS with direct specular and indirect specular.
 		// Only applied to sky lights, for two reasons:
 		//  1) Non-sky lights are trimmed to match the light texture, and indirect rays don't see that;
 		//  2) Non-sky lights are usually away from walls, so the direct sampling issue is not as pronounced.
+		// Only on the primary surface (bounce 0): only its specular ray applies the other
+		// half (indirect_lighting.rgen). At a bounce hit this used to be applied too, with
+		// no ray to make up the rest, so a glossy surface's sky highlight seen by a bounce
+		// came out short; there the plain direct_specular_weight split is used on both sides.
 
 		direct_specular_weight *= get_specular_sampled_lighting_weight(roughness,
 			normal, -view_direction, L, light_pdfw);
@@ -1235,15 +1602,24 @@ get_sunlight(
 	// This allows us to get properly shaped shadows from the sun that is partially occluded
 	// by clouds or landscape.
 
-	vec3 envmap_direction = (global_ubo.environment_rotation_matrix * vec4(direction, 0)).xyz;
+	vec3 radiance;
+	if (Q3_SHADERS && global_ubo.map_sun_active != 0)
+	{
+		// the map's own sun (q3map_sun): no sky texture has it in
+		radiance = global_ubo.sun_color;
+	}
+	else
+	{
+		vec3 envmap_direction = (global_ubo.environment_rotation_matrix * vec4(direction, 0)).xyz;
 
-	vec3 envmap = textureLod(TEX_PHYSICAL_SKY, envmap_direction.xzy, 0).rgb;
+		vec3 envmap = textureLod(TEX_PHYSICAL_SKY, envmap_direction.xzy, 0).rgb;
 
-	vec3 radiance = (global_ubo.sun_solid_angle * global_ubo.pt_env_scale) * envmap;
+		radiance = (global_ubo.sun_solid_angle * global_ubo.pt_env_scale) * envmap;
+	}
 #else
 	// Fetch the average sun color from the resolved UBO - it's faster.
 
-	vec3 radiance = sun_color_ubo.sun_color;
+	vec3 radiance = SUN_COLOR_RESOLVED;
 #endif
 
 #ifdef ENABLE_SHADOW_CAUSTICS
@@ -1308,6 +1684,57 @@ vec3 get_emissive_shell(uint material_id)
 
 	if (tonemap_buffer.adapted_luminance > 0)
 		c.rgb *= tonemap_buffer.adapted_luminance * 100;
+
+	return c;
+}
+
+/*
+QUAKE III QUAD DAMAGE (TEXTURE_FLAG_Q3_QUAD; q3stages.c "QUAKE III QUAD DAMAGE").
+On a Quake III map the quad's shell is Quake III's powerups/quad stage instead of
+the blue: textures/effects/quadmap2 added over the model, at tcGen environment's
+coordinates (RB_CalcEnvironmentTexCoords - the eye reflected in the surface,
+here in world space rather than the model's) through the stage's tcMods
+(q3_quad_layer, a sky cloud layer's layout). Added, as GL_ONE GL_ONE did: not
+tinted by the skin the way the blue shell is. Scaled like the shell, so the
+exposure does not change how it reads; pt_q3_quad_emissive is in the layer
+colour.
+
+Only the lightning glows, over the skin, which stays lit and visible under it
+(Matt, 2026-11-17). quadmap2 is bright veins on a dark blue haze (~88% of it
+below sRGB 100); in Quake III that haze was a faint tint, but at the shell's
+scale it outshone the lit skin and the whole body read as lightning. So each
+texel counts by its brightest channel: nothing below Q3_QUAD_VEIN_LO (linear,
+~sRGB 97), all of it from Q3_QUAD_VEIN_HI (~sRGB 170).
+`normal` is the interpolated vertex normal, `direction` the ray's.
+*/
+#define Q3_QUAD_VEIN_LO 0.12
+#define Q3_QUAD_VEIN_HI 0.40
+
+vec3 get_emissive_q3_quad(uint material_id, uint texture_flags, vec3 normal, vec3 direction)
+{
+	if (!Q3_SHADERS || (texture_flags & TEXTURE_FLAG_Q3_QUAD) == 0 || global_ubo.q3_quad_active == 0)
+		return vec3(0);
+
+	vec3 viewer = -direction;
+	vec3 reflected = normal * (2.0 * dot(normal, viewer)) - viewer;
+	vec2 st = vec2(0.5 + 0.5 * reflected.y, 0.5 - 0.5 * reflected.z);
+
+	vec4 m = global_ubo.q3_quad_layer[0];
+	vec4 k = global_ubo.q3_quad_layer[1];
+	vec4 colour = global_ubo.q3_quad_layer[2];
+	vec2 uv = vec2(m.x * st.x + m.y * st.y + k.x,
+	               m.z * st.x + m.w * st.y + k.y);
+
+	// mip 0: the picture is 64x64, so already magnified over a player - a
+	// smaller mip blurs the veins into the haze the key below takes out
+	vec3 c = global_textureLod(floatBitsToUint(k.z), uv, 0.0).rgb;
+	c *= smoothstep(Q3_QUAD_VEIN_LO, Q3_QUAD_VEIN_HI, max(c.r, max(c.g, c.b)));
+	c *= colour.rgb;
+
+	if ((material_id & MATERIAL_FLAG_WEAPON) != 0) c *= 0.2;    // as the shell's
+
+	if (tonemap_buffer.adapted_luminance > 0)
+		c *= tonemap_buffer.adapted_luminance * 100;
 
 	return c;
 }
@@ -1659,6 +2086,8 @@ get_material(
 	out vec3 emissive,
 	out float specular_factor)
 {
+	q3_surface_alpha = -1.0;
+
 	// Blood droplets (cl_blood_spheres) are procedurally generated geometry with
 	// no material entry, no albedo texture and no UV unwrap - which is exactly
 	// why get_blood_normal() is driven by the geometric normal rather than by a
@@ -1858,6 +2287,28 @@ get_material(
 	base_color = image1.rgb * minfo.base_factor;
 	base_color = clamp(base_color, vec3(0), vec3(1));
 
+	/* A Quake III shader that animates or layers several images (q3stages.c,
+	   q3_stages.glsl): its stages, composited at this hit, give the colour and
+	   the glow - and for a see-through one, how much of it is there at all
+	   (q3_surface_alpha). The maps below (normal, roughness, metal) still come
+	   from the material, in the surface's own coordinates. */
+	q3_surface_alpha = -1.0;
+	vec3 q3_albedo, q3_emission;
+	float q3_alpha;
+	bool q3_program = q3_program_material(triangle.material_id, triangle.positions * bary,
+		tex_coord, tex_coord_x, tex_coord_y, mip_level, normalize(triangle.normals * bary),
+		ray_direction, minfo.base_texture, false, q3_albedo, q3_emission, q3_alpha);
+	// Glass with a program (an entry's kind GLASS over an animated shader,
+	// material.c "GLASS THAT MOVES") takes only the program's glow. The base
+	// tints what is seen through the glass, so it stays the material's own,
+	// white unless the entry names one.
+	if (q3_program && !is_glass(triangle.material_id))
+	{
+		base_color = clamp(q3_albedo * minfo.base_factor, vec3(0), vec3(1));
+		if ((triangle.material_id & MATERIAL_KIND_MASK) == MATERIAL_KIND_TRANSPARENT)
+			q3_surface_alpha = q3_alpha;
+	}
+
 	normal = geo_normal;
 	metallic = 0;
 	roughness = 1;
@@ -1952,8 +2403,11 @@ get_material(
 		if (!have_roughness_tex)
 			roughness = image1.a;
 
+		// a floor under the maps - or the roughness itself, where the entry
+		// cleared its roughness map and stated one (MAT_RoughnessIsWhole)
 		if (minfo.roughness_override >= 0)
-			roughness = max(roughness, minfo.roughness_override);
+			roughness = minfo.roughness_whole ? minfo.roughness_override
+				: max(roughness, minfo.roughness_override);
 
 		roughness = clamp(roughness, 0, 1);
 
@@ -1988,27 +2442,83 @@ get_material(
 		if (have_metallic_tex && !have_roughness_tex)
 			roughness = image1.a;
 
+		// nothing says how rough it is: a stated roughness_override is the
+		// roughness (material.c MAT_RoughnessIsWhole), not a floor under the 1
 		if (minfo.roughness_override >= 0)
-			roughness = max(roughness, minfo.roughness_override);
+			roughness = minfo.roughness_whole ? minfo.roughness_override
+				: max(roughness, minfo.roughness_override);
 
 		roughness = clamp(roughness, 0, 1);
+	}
+
+	/* pt_q3_env_shine (constants.h): a Quake III program's reflection map is not
+	   drawn (q3_stages.glsl); the surface reflects the scene instead, with the
+	   material's roughness_override - a metal shader's all over, any other's
+	   where the map showed - and its metalness_factor (material.c starts them;
+	   'mat print' shows them). A roughness or metallic map wins over both. */
+	if (q3_program && q3_shine_on)
+	{
+		if (!have_roughness_tex && minfo.roughness_override >= 0)
+			roughness = q3_shine_metal ? minfo.roughness_override
+				: mix(roughness, minfo.roughness_override, q3_shine);
+		if (!have_metallic_tex)
+			metallic = clamp(minfo.metalness_factor, 0, 1);
+	}
+
+	/* STAGE SETTINGS (q3_stages.glsl): a stage's own surface - the .mat's
+	   stage<N>_roughness_override, _texture_normals, ... - over all of the
+	   above, where that stage shows. The rest keeps the material's. A second
+	   pass over the program, for the few that have them (see
+	   q3_program_material's want_props). */
+	float specular_own = minfo.specular_factor;
+	if (q3_program && q3_program_has_props(triangle.material_id))
+	{
+		vec3 props_albedo, props_emission;
+		float props_alpha;
+		q3_program_material(triangle.material_id, triangle.positions * bary,
+			tex_coord, tex_coord_x, tex_coord_y, mip_level, normalize(triangle.normals * bary),
+			ray_direction, minfo.base_texture, true, props_albedo, props_emission, props_alpha);
+
+		roughness = clamp(q3_prop_sum.x + (1.0 - q3_prop_w.x) * roughness, 0.0, 1.0);
+		metallic = clamp(q3_prop_sum.y + (1.0 - q3_prop_w.y) * metallic, 0.0, 1.0);
+		specular_own = q3_prop_sum.z + (1.0 - q3_prop_w.z) * specular_own;
+
+		if (q3_prop_w.w > 0.0 && dot(triangle.tangents[0], triangle.tangents[0]) > 0)
+		{
+			// the frame the material's normal map uses (above), this triangle's winding
+			vec3 tangent = normalize(triangle.tangents * bary);
+			vec3 bitangent = cross(geo_normal, tangent);
+			vec2 duv0 = triangle.tex_coords[1] - triangle.tex_coords[0];
+			vec2 duv1 = triangle.tex_coords[2] - triangle.tex_coords[0];
+			vec3 dp0 = triangle.positions[1] - triangle.positions[0];
+			vec3 dp1 = triangle.positions[2] - triangle.positions[0];
+			if ((duv0.x * duv1.y - duv1.x * duv0.y) * dot(cross(dp0, dp1), geo_normal) < 0)
+				bitangent = -bitangent;
+
+			vec3 stage_normal = tangent * q3_prop_normal.x + bitangent * q3_prop_normal.y + geo_normal * q3_prop_normal.z;
+			normal = normalize(stage_normal + (1.0 - q3_prop_w.w) * normal);
+		}
 	}
 
 	if (global_ubo.pt_roughness_override >= 0) roughness = global_ubo.pt_roughness_override;
 	if (global_ubo.pt_metallic_override >= 0) metallic = global_ubo.pt_metallic_override;
 
 	// The specular factor parameter should only affect dielectrics, so make it 1.0 for metals
-	specular_factor = mix(minfo.specular_factor, 1.0, metallic);
+	specular_factor = mix(specular_own, 1.0, metallic);
 
 	if (triangle.emissive_factor > 0)
 	{
-		emissive = sample_emissive_texture(triangle.material_id, minfo, tex_coord, tex_coord_x, tex_coord_y, mip_level);
+		if (q3_program)
+			emissive = correct_emissive(triangle.material_id, q3_emission) * minfo.emissive_factor;
+		else
+			emissive = sample_emissive_texture(triangle.material_id, minfo, tex_coord, tex_coord_x, tex_coord_y, mip_level);
 		emissive *= triangle.emissive_factor;
 	}
 	else
 		emissive = vec3(0);
 
 	emissive += get_emissive_shell(triangle.material_id) * base_color * (1 - metallic * 0.9);
+	emissive += get_emissive_q3_quad(triangle.material_id, triangle.texture_flags, geo_normal, ray_direction);
 
 	/* BLOOD ON THE BODY (cl_blood_skin, blood_skin.c): what droplets left on this
 	   monster or item, in its texture space - so it follows the animation for free.
@@ -2051,6 +2561,32 @@ get_material(
 // reflect_refract.rgen, which maps a camera UV back onto the screen through it.
 #define CAMERA_SCREEN_MIN_UV vec2(11.0 / 256.0, 14.0 / 256.0)
 #define CAMERA_SCREEN_MAX_UV vec2(245.0 / 256.0, 148.0 / 256.0)
+
+/* A Quake III portal (cameras.c, vkpt_cameras_load_q3): its camera slot holds no
+   picture but a rigid transform of the ray, from the portal surface to the view
+   it opens on - the rotation's rows in columns 1..3 .xyz, the translation in
+   their .w, and -1 in column 0's .w to say so. The whole surface is the portal,
+   with no screen rectangle (get_camera_uv) and no picture to cut between. */
+uint camera_id_of_material(uint material_id)
+{
+	return ((material_id & MATERIAL_LIGHT_STYLE_MASK) >> (MATERIAL_LIGHT_STYLE_SHIFT + 2)) & (MAX_CAMERAS - 1);
+}
+
+bool is_portal_camera(uint camera_id)
+{
+	return Q3_SHADERS && global_ubo.security_camera_data[camera_id & (MAX_CAMERAS - 1)][0].w < 0.0;
+}
+
+vec3 portal_transform_point(mat4 portal, vec3 p)
+{
+	return vec3(dot(portal[1].xyz, p), dot(portal[2].xyz, p), dot(portal[3].xyz, p))
+	     + vec3(portal[1].w, portal[2].w, portal[3].w);
+}
+
+vec3 portal_transform_vector(mat4 portal, vec3 v)
+{
+	return vec3(dot(portal[1].xyz, v), dot(portal[2].xyz, v), dot(portal[3].xyz, v));
+}
 
 bool get_camera_uv(vec2 tex_coord, out vec2 cameraUV)
 {

@@ -309,7 +309,7 @@ static void Nuke_Explode(edict_t *ent)
     T_RadiusNukeDamage(ent, ent->teammaster, (float)ent->dmg, ent, ent->dmg_radius, MOD_NUKE);
 
     if (ent->dmg > NUKE_DAMAGE)
-        gi.sound(ent, CHAN_ITEM, gi.soundindex("items/damage3.wav"), 1, ATTN_NORM, 0);
+        gi.sound(ent, CHAN_ITEM, Q3_QuadFireSound(), 1, ATTN_NORM, 0);
 
     gi.sound(ent, CHAN_NO_PHS_ADD | CHAN_VOICE, gi.soundindex("weapons/grenlx1a.wav"), 1, ATTN_NONE, 0);
 

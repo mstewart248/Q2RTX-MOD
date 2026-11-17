@@ -562,6 +562,22 @@ static const spawn_field_t temp_fields[] = {
     {"hub_map", STOFS(hub_map), F_INT},
     {"style_on", STOFS(style_on), F_LSTRING},
     {"style_off", STOFS(style_off), F_LSTRING},
+
+    // Quake III Arena (g_q3.c); the last few are for its bots and portal
+    // cameras, read elsewhere or not at all
+    {"notfree", STOFS(notfree), F_INT},
+    {"notteam", STOFS(notteam), F_INT},
+    {"notsingle", STOFS(notsingle), F_INT},
+    {"gametype", STOFS(gametype), F_LSTRING},
+    {"model2", STOFS(model2), F_LSTRING},
+    {"phase", STOFS(phase), F_FLOAT},
+    {"music", STOFS(music), F_LSTRING},
+    {"nobots", STOFS(nobots), F_INT},
+    {"nohumans", STOFS(nohumans), F_INT},
+    {"range", 0, F_IGNORE},
+    {"weight", 0, F_IGNORE},
+    {"roll", 0, F_IGNORE},
+    {"ambient", 0, F_IGNORE},   // worldspawn, for q3map's light pass
     {"radius", STOFS(radius), F_FLOAT},
     {"fade_start_dist", STOFS(fade_start_dist), F_INT},
     {"fade_end_dist", STOFS(fade_end_dist), F_INT},
@@ -744,6 +760,16 @@ static bool ED_ParseField(const spawn_field_t *fields, const char *key, const ch
             // found it
             switch (f->type) {
             case F_LSTRING:
+                // Quake III's worldspawn "music" is a path, and half its maps
+                // write it with backslashes ("music\fla22k_02.wav"): copied as
+                // it is, since ED_NewStringEx would take "\f" for an escape and
+                // drop the f. Quake III reads it raw too (G_SpawnString).
+                if (!Q_stricmp(key, "music")) {
+                    char *raw = gi.TagMalloc(strlen(value) + 1, TAG_LEVEL);
+                    strcpy(raw, value);
+                    *(char **)(b + f->ofs) = raw;
+                    break;
+                }
                 // worldspawn "goals" is a TAB-separated list of $keys; resolving it
                 // as one string mangles every entry after the first.
                 // G_CommitN64Goal resolves the entries one at a time.
@@ -1297,6 +1323,8 @@ void SpawnEntities(const char *mapname, const char *entities, const char *spawnp
     Q_strlcpy(level.mapname, mapname, sizeof(level.mapname));
     Q_strlcpy(game.spawnpoint, spawnpoint, sizeof(game.spawnpoint));
     level.is_n64 = !strncmp(level.mapname, "q64/", 4);
+    // a Quake III Arena map, as the server found it when it loaded the BSP
+    level.q3map = gi.cvar("sv_map_q3", "0", 0)->integer != 0;
 
     // set client fields on player ents
     for (i = 0 ; i < game.maxclients ; i++)
@@ -1367,7 +1395,10 @@ void SpawnEntities(const char *mapname, const char *entities, const char *spawnp
                                  SPAWNFLAG_RESERVED1 | SPAWNFLAG_COOP_ONLY | SPAWNFLAG_RESERVED2);
         }
 
-        ED_CallSpawn(ent);
+        if (level.q3map)
+            Q3_SpawnEntity(ent);    // the Quake III entities, translated
+        else
+            ED_CallSpawn(ent);
     }
 
     gi.dprintf("%i entities inhibited\n", inhibit);
@@ -1387,6 +1418,9 @@ void SpawnEntities(const char *mapname, const char *entities, const char *spawnp
     G_PrecacheInventoryItems();
 
     G_FindTeams();
+
+    // Quake III: jump pads and cameras aimed, target_give's items put away
+    Q3_LevelStart();
 
     // rogue hint paths have to be chained AFTER everything has spawned,
     // since the chain is followed through target/targetname. On a map
@@ -1637,6 +1671,8 @@ void SP_worldspawn(edict_t *ent)
 
     if (st.sky && st.sky[0])
         gi.configstring(CS_SKY, st.sky);
+    else if (level.q3map)
+        gi.configstring(CS_SKY, "");    // the client draws its sky shader (CL_SetSky)
     else
         gi.configstring(CS_SKY, "unit1_");
 
@@ -1647,7 +1683,37 @@ void SP_worldspawn(edict_t *ent)
     gi.configstring(CS_SKYAXIS, va("%f %f %f",
                                    st.skyaxis[0], st.skyaxis[1], st.skyaxis[2]));
 
-    gi.configstring(CS_CDTRACK, va("%i", ent->sounds));
+    // a Quake III map's own music, its .wav names as they are (the client's
+    // CL_PlayMapMusic plays them); a "sounds" track number wins
+    if (level.q3map && !ent->sounds && st.music && st.music[0] && strlen(st.music) < MAX_QPATH)
+        gi.configstring(CS_CDTRACK, st.music);
+    else if (level.q3map && !ent->sounds)
+    {
+        // A Quake III map with no music of its own (q3dm0, test_bigbox) sent
+        // track 0, and the client filled that with a random QUAKE II track
+        // (OGG_PlayTrack). It gets one of Quake III's own pieces instead, picked
+        // by the map's name, so the same map always plays the same one and a
+        // reload ('mat reload', a material edit that rebuilds the map) leaves it
+        // playing (OGG_PlayMusicFiles).
+        static const char *const q3_music[] = {
+            "music/fla22k_01_intro.wav music/fla22k_01_loop.wav",
+            "music/fla22k_02.wav",
+            "music/fla22k_03.wav",
+            "music/fla22k_04_intro.wav music/fla22k_04_loop.wav",
+            "music/fla22k_05.wav",
+            "music/fla22k_06.wav",
+            "music/sonic1.wav",
+            "music/sonic2.wav",
+            "music/sonic5.wav",
+            "music/sonic6.wav",
+        };
+        unsigned hash = 0;
+        for (const char *c = level.mapname; *c; c++)
+            hash = hash * 31 + (unsigned char)Q_tolower(*c);
+        gi.configstring(CS_CDTRACK, q3_music[hash % q_countof(q3_music)]);
+    }
+    else
+        gi.configstring(CS_CDTRACK, va("%i", ent->sounds));
 
     gi.configstring(CS_MAXCLIENTS, va("%i", (int)(maxclients->value)));
 

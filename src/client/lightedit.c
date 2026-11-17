@@ -54,8 +54,10 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 //                                    names "light edit trigger_on" takes. Given
 //                                    a name, starts the chain from that instead.
 //
-// r, g, b are 0..255, as typed. brightness is on the same 0..255 scale but is a
-// real number, so a big, barely-there light can be "brightness .1". radius is in world units
+// r, g, b are 0..255, as typed. brightness is on the same scale - 255 is
+// light_scale engine units - but is a real number and is NOT capped at 255, so a
+// big, barely-there light can be "brightness .1" and a lamp behind glass
+// "brightness 2000". radius is in world units
 // and is the size of the emitter sphere, which is what softens the shadow
 // edge; it also sets the size of the debug marker and of the crosshair pick
 // target, so what is on screen in debug mode is exactly what gets picked.
@@ -76,7 +78,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 //   rgb <r> <g> <b>        colour, 0..255 each   (also "color", "colour")
 //   red <n> / green <n> / blue <n>
 //                          one channel of the colour
-//   brightness <n>         0..255, fractions allowed (.5, .05)  (also "bright")
+//   brightness <n>         255 = light_scale units; fractions (.5) and more
+//                          than 255 allowed                  (also "bright")
 //   radius <n>             emitter size in world units   (also "size")
 //   vol <n>                volumetric scale      (also "volume", "volscale")
 //   cone <deg|off>         spot cone, a FULL angle; "off" makes it a point
@@ -86,10 +89,19 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 //   aim                    point it where the camera is looking
 //                                                (also "direction")
 //   origin                 move it to in front of the camera  (also "move")
-//   x <n> / y <n> / z <n>  nudge one coordinate
+//   x <n> / y <n> / z <n>  nudge it <n> units along that world axis (negative
+//                          goes back); "x =<n>" sets the coordinate outright.
+//                          With the crosshair on no light these move the light
+//                          last placed or moved, which a nudge can carry off
+//                          the crosshair
 //   trigger_on <name>      dark until the game fires <name>, then lit
 //   trigger_off <name>     lit until the game fires <name>, then dark
 //                          ("light edit trigger_on default" clears either)
+//   glow <n|off>           draw a glowing core the size of the emitter, so the
+//                          light itself can be SEEN - the lights are otherwise
+//                          invisible, and a lamp in a glass bulb looks empty.
+//                          1 = as bright as a debug marker at brightness 255,
+//                          scaled with brightness; drawn only, lights nothing
 //
 // Every INHERITABLE attribute also takes "default", which unstates it and sends
 // it back where it came from: the entity for a replacement light, or the plain
@@ -179,6 +191,13 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define LE_HAVE_STYLE       (1u << 5)
 #define LE_HAVE_AIM         (1u << 6)
 #define LE_HAVE_TRIGGER     (1u << 7)
+// A VISIBLE core: the lights here are analytic, and no camera, reflection or
+// refraction ray ever sees one - a lamp in a clear glass bulb lights the room
+// while the bulb itself looks empty (Matt, 2026-11-16). With a glow the light
+// also draws a glowing ball of its emitter radius, in its colour, which those
+// rays do see - through glass and refracted by thick glass. Only drawn, never
+// lighting anything; the light itself still does that.
+#define LE_HAVE_GLOW        (1u << 8)
 
 // Longest targetname kept. The game's own are unbounded, but nothing in a
 // shipped map comes near this.
@@ -187,7 +206,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 typedef struct {
     vec3_t      origin;
     byte        rgb[3];         // 0..255, exactly as typed
-    float       brightness;     // 0..255 scale, fractions allowed, as typed
+    float       brightness;     // 255 = LE_LightScale(), fractions and > 255 allowed
+    float       glow;           // LE_HAVE_GLOW: visible core, 1 = matches brightness
     float       radius;         // world units - emitter size, marker, pick size
     float       vol_scale;      // LIGHT_VOLUMETRIC_SCALE_UNSET = class default
     float       cone;           // FULL cone angle in degrees; 0 = point light
@@ -216,6 +236,12 @@ typedef struct {
 static editlight_t  *le_lights;
 static int          le_num_lights;
 static bool         le_debug;
+
+// The light last placed or moved, -1 for none: "light edit x / y / z" fall back
+// to it when the crosshair is on no light, since a nudge can carry a light off
+// the crosshair and the next nudge would otherwise find nothing. An index, so
+// LE_Delete_f and LE_FreeLights keep it in step with the array.
+static int          le_moved = -1;
 
 // The map's entity lump, cut down to what probe_trigger and the trigger lookup
 // need. Parsed once per map in LE_LoadLights; the lump is never large enough
@@ -294,14 +320,28 @@ static byte LE_ParseByte(const char *s)
     return v;
 }
 
-// A typed brightness. Same 0..255 scale as the colour, but a real number: at a
-// small radius even 1 is plenty bright, and a big soft light that is barely
-// there needs .5 or .1. Clamped like LE_ParseByte.
+// A typed brightness. On the colour's 0..255 scale - 255 is LE_LightScale()
+// engine units - but a real number, and NOT capped at 255: at a small radius
+// even 1 is plenty bright and a big soft light that is barely there needs .5,
+// but a lamp inside glass or a fixture wants more than 255 (Matt, 2026-11-16).
+// The ceiling is only there to keep a typo from making an infinite light.
+#define LE_MAX_BRIGHTNESS   100000.0f
+
 static float LE_ParseBrightness(const char *s)
 {
     float v = atof(s);
 
-    clamp(v, 0.0f, 255.0f);
+    clamp(v, 0.0f, LE_MAX_BRIGHTNESS);
+    return v;
+}
+
+// A typed glow (see LE_HAVE_GLOW): "off" is 0, otherwise any non-negative
+// multiplier.
+static float LE_ParseGlow(const char *s)
+{
+    float v = Q_stricmp(s, "off") ? (float)atof(s) : 0.0f;
+
+    clamp(v, 0.0f, LE_MAX_BRIGHTNESS);
     return v;
 }
 
@@ -729,6 +769,12 @@ static int LE_ApplyKeyedToken(editlight_t *l, int argc, int i)
         l->have |= LE_HAVE_RADIUS;
         return 2;
     }
+    if (!strcmp(key, "glow")) {
+        NEED(1);
+        l->glow = LE_ParseGlow(Cmd_Argv(i + 1));
+        l->have |= LE_HAVE_GLOW;
+        return 2;
+    }
     if (!strcmp(key, "vol")) {
         NEED(1);
         if (!LE_IsDefaultWord(Cmd_Argv(i + 1))) {
@@ -802,7 +848,8 @@ void LE_LoadLights(void)
     if (!cl.mapname[0])
         return;
 
-    Q_concat(path, sizeof(path), "maps/lights/", cl.mapname, ".cfg");
+    // a Quake III map's from baseq3/, where LE_WriteLights puts them
+    Q_concat(path, sizeof(path), cl.bsp && cl.bsp->q3 ? "baseq3/" : "", "maps/lights/", cl.mapname, ".cfg");
 
     ret = FS_LoadFile(path, (void **)&buffer);
     if (!buffer) {
@@ -996,6 +1043,7 @@ void LE_FreeLights(void)
     Z_Free(le_lights);
     le_lights = NULL;
     le_num_lights = 0;
+    le_moved = -1;
 
     LE_FreeEnts();
 
@@ -1031,6 +1079,8 @@ static void LE_WriteKeyedTail(qhandle_t f, const editlight_t *l, unsigned skip)
     if (have & LE_HAVE_TRIGGER)
         FS_FPrintf(f, "  %s \"%s\"",
                    l->trigger_on ? "trigger_on" : "trigger_off", l->trigger);
+    if (have & LE_HAVE_GLOW)
+        FS_FPrintf(f, "  glow %g", l->glow);
 }
 
 /*
@@ -1051,14 +1101,18 @@ static void LE_WriteLights(void)
     qhandle_t   f;
     int         placed = 0, replacing = 0;
 
+    // a Quake III map's lights live with its data, in baseq3/ (files.c), where
+    // LE_LoadLights finds them again through the baseq3 search path
     f = FS_EasyOpenFile(buffer, sizeof(buffer), FS_MODE_WRITE | FS_FLAG_TEXT,
-                        "maps/lights/", cl.mapname, ".cfg");
+                        cl.bsp && cl.bsp->q3 ? "baseq3/maps/lights/" : "maps/lights/",
+                        cl.mapname, ".cfg");
     if (!f)
         return;
 
     FS_FPrintf(f, "// placed lights for %s - written by \"light place\"\n", cl.mapname);
     FS_FPrintf(f, "// x y z   r g b   brightness   radius   [volumetric scale]"
-                  "   [cone d] [style n] [aim x y z] [trigger_on|trigger_off name]\n");
+                  "   [cone d] [style n] [aim x y z] [trigger_on|trigger_off name]"
+                  " [glow n]\n");
 
     for (int i = 0; i < le_num_lights; i++) {
         const editlight_t *l = &le_lights[i];
@@ -1098,7 +1152,7 @@ static void LE_WriteLights(void)
         FS_FPrintf(f, "// Attributes not listed are inherited from the entity.\n");
         FS_FPrintf(f, "// maplight <entity x y z>  <x y z>  [rgb r g b] [bright n]"
                       " [radius r] [vol v] [cone d] [style n] [aim x y z]"
-                      " [trigger_on|trigger_off name]\n");
+                      " [trigger_on|trigger_off name] [glow n]\n");
 
         for (int i = 0; i < le_num_lights; i++) {
             const editlight_t *l = &le_lights[i];
@@ -1309,6 +1363,9 @@ static void LE_PrintLight(const editlight_t *l)
     if (r.is_spot)
         Com_Printf("    aim %.3f %.3f %.3f%s\n",
                    r.aim[0], r.aim[1], r.aim[2], LE_SRC(l, LE_HAVE_AIM));
+
+    if ((l->have & LE_HAVE_GLOW) && l->glow > 0.0f)
+        Com_Printf("    glow %g   (a visible core of the emitter radius)\n", l->glow);
 
     if (l->have & LE_HAVE_TRIGGER) {
         if (l->trigger_style >= 0)
@@ -1872,6 +1929,7 @@ static void LE_Place_f(void)
     LE_ParseCreateArgs(l, 2);
     LE_PlacementPoint(l->origin, LE_MarkerRadius(l));
 
+    le_moved = le_num_lights;   // the one x / y / z nudge next
     le_num_lights++;
 
     LE_PrintLight(l);
@@ -1932,6 +1990,7 @@ static void LE_Replace_f(void)
     VectorCopy(pick.ent->origin, l->ent_origin);
     LE_PlacementPoint(l->origin, LE_MarkerRadius(l));
 
+    le_moved = le_num_lights;   // the one x / y / z nudge next
     le_num_lights++;
     pick.ent->replaced = true;
 
@@ -1967,6 +2026,7 @@ typedef enum {
     LEA_ORIGIN,     // no value: re-place in front of the camera
     LEA_COORD,      // one float into origin[chan]
     LEA_TRIGGER,    // a targetname; chan 1 = trigger_on, 0 = trigger_off
+    LEA_GLOW,       // visible core multiplier, or "off"
 } leattrkind_t;
 
 typedef struct {
@@ -2003,6 +2063,7 @@ static const leattrdef_t le_attrs[] = {
     { "z",          LEA_COORD,   0,              2 },
     { "trigger_on", LEA_TRIGGER, LE_HAVE_TRIGGER, 1 },
     { "trigger_off", LEA_TRIGGER, LE_HAVE_TRIGGER, 0 },
+    { "glow",       LEA_GLOW,    LE_HAVE_GLOW,   0 },
 };
 
 /*
@@ -2031,6 +2092,16 @@ static void LE_Edit_f(void)
     }
 
     l = pick.light;
+
+    // x / y / z with the crosshair on no light: the light last placed or moved
+    // (le_moved), which a nudge may just have carried off the crosshair
+    if (!l && le_moved >= 0 && le_moved < le_num_lights &&
+        (!Q_stricmp(attr, "x") || !Q_stricmp(attr, "y") || !Q_stricmp(attr, "z"))) {
+        l = &le_lights[le_moved];
+        Com_Printf("Nothing under the crosshair - moving light %d, the last one "
+                   "placed or moved.\n", le_moved);
+    }
+
     if (!l) {
         Com_Printf("No light under the crosshair.\n");
         return;
@@ -2042,8 +2113,9 @@ static void LE_Edit_f(void)
                    Cmd_Argv(0));
         Com_Printf("Attributes: rgb r g b | red | green | blue | brightness |\n"
                    "            radius | vol | cone <deg|off> | style | aim |\n"
-                   "            origin | x | y | z | trigger_on <name> |\n"
-                   "            trigger_off <name>   (names: probe_trigger)\n");
+                   "            origin | x | y | z <+-units, or =coordinate> |\n"
+                   "            trigger_on <name> | trigger_off <name> |\n"
+                   "            glow <n|off>   (names: probe_trigger)\n");
         LE_PrintLight(l);
         return;
     }
@@ -2082,6 +2154,7 @@ static void LE_Edit_f(void)
             l->have |= LE_HAVE_AIM;
         } else if (a->kind == LEA_ORIGIN) {
             LE_PlacementPoint(l->origin, LE_MarkerRadius(l));
+            le_moved = (int)(l - le_lights);
         } else if (!has_value) {
             Com_Printf("Usage: %s edit %s <value%s>\n", Cmd_Argv(0), attr,
                        a->bit ? "|default" : "");
@@ -2144,9 +2217,41 @@ static void LE_Edit_f(void)
                 clamp(l->style, 0, MAX_LIGHTSTYLES - 1);
                 break;
 
-            case LEA_COORD:
-                l->origin[a->chan] = atof(Cmd_Argv(3));
+            case LEA_GLOW:
+                l->glow = LE_ParseGlow(Cmd_Argv(3));
                 break;
+
+            case LEA_COORD: {
+                // A NUDGE: "x 16" moves it 16 units along world X, "x -16"
+                // back. That is what the header always said this did, but it
+                // SET the coordinate, so "x 10" sent the light to x = 10 -
+                // usually far off in the level, and off the crosshair (Matt,
+                // 2026-11-16). "=" still sets it outright: "x =1024", or
+                // "x = 1024".
+                const char *v = Cmd_Argv(3);
+
+                if (*v == '=') {
+                    v = v[1] ? v + 1 : Cmd_Argv(4);
+                    if (!*v) {
+                        Com_Printf("Usage: %s edit %s =<coordinate>\n", Cmd_Argv(0), attr);
+                        return;
+                    }
+                    l->origin[a->chan] = atof(v);
+                } else {
+                    l->origin[a->chan] += atof(v);
+                }
+                le_moved = (int)(l - le_lights);
+
+                // which way the world axes run from here - nobody knows +x
+                {
+                    const float *f = cl.v_forward;
+                    int ax = fabsf(f[0]) >= fabsf(f[1]) ? 0 : 1;
+
+                    Com_Printf("You are facing %c%c (up is +z).\n",
+                               f[ax] >= 0.0f ? '+' : '-', "xy"[ax]);
+                }
+                break;
+            }
 
             case LEA_TRIGGER: {
                 leswitch_t sw;
@@ -2346,6 +2451,12 @@ static void LE_Delete_f(void)
     memmove(pick.light, pick.light + 1,
             sizeof(editlight_t) * (le_num_lights - index - 1));
     le_num_lights--;
+
+    // the lights after it moved down one
+    if (le_moved == index)
+        le_moved = -1;
+    else if (le_moved > index)
+        le_moved--;
 
     LE_WriteLights();
 }
@@ -2588,6 +2699,26 @@ void LE_AddLightsToScene(void)
 
         if (intensity <= 0.0f)
             continue;
+
+        // The visible core (LE_HAVE_GLOW): a glowing ball the size of the
+        // emitter, which camera rays and the rays through glass do see. Its
+        // brightness follows the light's - brightness 255 and glow 1 is as
+        // bright as a debug marker - and so its lightstyle and its trigger.
+        if ((l->have & LE_HAVE_GLOW) && l->glow > 0.0f) {
+            particle_t p;
+
+            memset(&p, 0, sizeof(p));
+            VectorCopy(l->origin, p.origin);
+            p.color = -1;
+            p.rgba.u8[0] = (byte)(r.color[0] * 255.0f);
+            p.rgba.u8[1] = (byte)(r.color[1] * 255.0f);
+            p.rgba.u8[2] = (byte)(r.color[2] * 255.0f);
+            p.rgba.u8[3] = 255;
+            p.alpha = 1.0f;
+            p.radius = r.radius;
+            p.brightness = l->glow * intensity / max(LE_LightScale(), 1.0f);
+            V_AddParticle(&p);
+        }
 
         if (r.is_spot) {
             // a targeted dynamic_light with no cone of its own is still a spot,

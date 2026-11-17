@@ -75,6 +75,7 @@ layout(set = FLOW_AMBIENT_DESC_SET_IDX, binding = 2, rgba32ui) uniform uimage3D 
 
 #define GLOBAL_TEXTURES_DESC_SET_IDX 3
 #include "global_textures.h"
+#include "q3_sky.glsl"
 
 #include "light_sampling.h"
 #include "flow_common.glsl"
@@ -138,6 +139,8 @@ vec3 flow_env_sky(vec3 direction)
 	else if (global_ubo.environment_type == ENVIRONMENT_STATIC)
 	{
 		envmap = textureLod(TEX_ENVMAP, direction.xzy, 0).rgb;
+		if (Q3_SHADERS && global_ubo.q3_sky_num_layers > 0)
+			envmap = q3_sky_clouds(direction, envmap);
 	}
 	return envmap * global_ubo.pt_env_scale;
 }
@@ -153,7 +156,9 @@ float flow_env_light_weight(uint light_idx, vec3 p)
 		return 0.0;
 
 	const LightPolygon light = get_light_polygon(light_idx);
-	if (light.color.r < 0.0 || !(light.volumetric_scale > 0.0))
+	// abs(): a Quake III map light at its class default carries it negated
+	// (resolve_volumetric_scale) - the fog's rule, not the smoke's
+	if (light.color.r < 0.0 || !(abs(light.volumetric_scale) > 0.0))
 		return 0.0;
 
 	float solid_angle;
@@ -181,7 +186,7 @@ float flow_env_light_weight(uint light_idx, vec3 p)
 		return 0.0;
 	}
 
-	return luminance(light.color) * light.light_style_scale * light.volumetric_scale * min(solid_angle, 2.0 * M_PI);
+	return luminance(light.color) * light.light_style_scale * abs(light.volumetric_scale) * min(solid_angle, 2.0 * M_PI);
 }
 
 // The mean radiance light `light_idx` brings to p, through its shadow, for a
@@ -226,7 +231,7 @@ vec3 flow_env_light(uint light_idx, vec3 p, float W)
 		return vec3(0);
 
 	// an even phase function: a 4 pi'th of it goes each way
-	return light.color * (spotlight * light.light_style_scale * light.volumetric_scale * W / (pdfw * 4.0 * M_PI));
+	return light.color * (spotlight * light.light_style_scale * abs(light.volumetric_scale) * W / (pdfw * 4.0 * M_PI));
 }
 
 void main()
@@ -281,7 +286,7 @@ void main()
 			bool front_sky;
 			const float t_sky = flow_env_trace(p, dir, FLOW_ENV_FAR, AS_FLAG_SKY | AS_FLAG_CUSTOM_SKY, front_sky);
 			if (t_sky >= 0.0 && front_sky && !flow_env_blocked(p, dir, t_sky))
-				radiance += sun_color_ubo.sun_color * (1.0 / (4.0 * M_PI));
+				radiance += SUN_COLOR_RESOLVED * (1.0 / (4.0 * M_PI));
 		}
 
 		// The cluster's lights.

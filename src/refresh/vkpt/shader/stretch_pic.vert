@@ -41,7 +41,8 @@ layout(location = 2) out vec2 tex_coord;
 // the bilinear footprint inside it. See stretch_pic.frag.
 layout(location = 3) out flat vec4 tex_rect;
 // Per-quad flags carried in the top two bits of tex_handle (STRETCH_PIC_FLAG_*
-// in draw.c - keep in sync). Bit 0 here: the image is a video frame.
+// in draw.c - keep in sync). Bit 0 here: the image is a video frame. Bit 1:
+// draw it opaque, its alpha ignored.
 layout(location = 4) out flat uint pic_flags;
 
 struct StretchPic {

@@ -622,8 +622,25 @@ typedef struct bsp_mesh_s {
 	int num_sky_clusters;
 	bool all_lava_emissive;
 
-	struct { vec3_t pos; vec3_t dir; } cameras[MAX_CAMERAS];
+	struct {
+		vec3_t pos; vec3_t dir;     // a security camera (maps/cameras/<map>.txt)
+
+		// Or a Quake III portal: the view through a misc_portal_surface onto
+		// its misc_portal_camera. See vkpt_cameras_load_q3 (cameras.c).
+		bool portal;
+		bool placed;                // a face found it, so the surface frame is set
+		vec3_t ent_origin;          // the misc_portal_surface
+		vec3_t surf_origin;         // ...onto the portal's plane
+		vec3_t surf_axis[3];        // the plane's normal and two in it
+		vec3_t cam_origin;
+		vec3_t cam_axis[3];         // as R_GetPortalOrientations turns it
+		float roll;                 // degrees
+		float rotate_speed;         // degrees per second, 0 none
+		bool swing;                 // rotates (speed) or swings round its roll
+	} cameras[MAX_CAMERAS];
 	int num_cameras;
+
+	bool q3;	// a Quake III Arena map: the material tools save into baseq3/
 
 	byte sky_visibility[VIS_MAX_BYTES];
 	// clusters that actually CONTAIN sky geometry, as opposed to sky_visibility
@@ -778,9 +795,24 @@ typedef struct vkpt_prep_backend_s {
 	// itself.
 	void (*wait_idle)(void);
 	void (*free_model)(int index);
+	// pt_q3_shaders (main.c, update_q3_shaders): the pipelines that read spec_q3
+	// made with `on` instead, and vkpt_spec_q3 set to it - true when they now are.
+	// Called only with a value different from vkpt_spec_q3, between frames' work.
+	bool (*set_q3_shaders)(bool on);
 } vkpt_prep_backend_t;
 
 extern const vkpt_prep_backend_t *vkpt_prep_backend;
+
+/* spec_q3 (shader/global_ubo.h) of the pipelines in use: 1 = with the Quake III
+   code, 0 = without it (a map with none of it - main.c, update_q3_shaders).
+   path_tracer.c, god_rays.c and flow.c make their pipelines with it; the D3D12
+   renderer picks its PSOs by it (world.c, pass sets). Starts at 0. */
+extern uint32_t vkpt_spec_q3;
+// a VkSpecializationInfo for a shader whose only constant set here is spec_q3
+const VkSpecializationInfo *vkpt_spec_q3_info(void);
+// vertex_buffer.c: this frame's material table has a Quake III shader program,
+// alpha_glass, or glass caustics (caustic / caustic_ripple) in it
+extern bool vkpt_q3_materials_in_use;
 
 /* R_SetSky for both renderers: the six faces, the sky rotation the UBO's
    environment matrix uses, the map's skybox scope; the cube map goes to the
@@ -928,6 +960,8 @@ enum {
 };
 int vkpt_image_sampler_kind(const image_t *q_img, int pt_nearest, int bilerp_chars, int bilerp_pics);
 image_t *vkpt_fake_emissive_texture(image_t *image, int bright_threshold_int);
+image_t *vkpt_alpha_mask_texture(image_t *image, int func);
+image_t *vkpt_solid_texture(image_t *image, const char *tag, byte r, byte g, byte b);
 void vkpt_extract_emissive_texture_info(image_t *image);
 void vkpt_fold_emissive_alpha(image_t *image);
 void vkpt_textures_prefetch(void);
@@ -1701,6 +1735,8 @@ bool R_InterceptKey_RTX(unsigned key, bool down);
 // scale, and puts it back - for drawing from inside R_RenderFrame_RTX.
 void vkpt_draw_push_state(float scale);
 void vkpt_draw_pop_state(void);
+// R_DrawStretchPic with the image's alpha ignored ('mat print', MAT_DrawPreview)
+void vkpt_draw_stretch_pic_opaque(int x, int y, int w, int h, qhandle_t pic);
 
 // cpu_trace.c - `cpu_bench`, the frame path traced on the CPU
 void vkpt_cpu_trace_init(void);

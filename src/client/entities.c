@@ -599,7 +599,12 @@ static void CL_AddPacketEntities(void)
         ent.scale = s1->scale;
 		
         effects = s1->effects;
-        renderfx = s1->renderfx;	
+        renderfx = s1->renderfx & ~(RF_Q3_QUAD | RF_CLOAK);	// ours alone, set below
+
+        // the invisibility powerup on a player (p_view.c's RF_TRANSLUCENT, which
+        // blinks off in its last three seconds): the RTX renderers draw the body
+        // and the weapon in its hands as water (RF_CLOAK). Matt, 2026-11-17.
+        const int cloak = ((renderfx & RF_TRANSLUCENT) && s1->modelindex == 255) ? RF_CLOAK : 0;
 
 
 	
@@ -635,7 +640,17 @@ static void CL_AddPacketEntities(void)
             effects &= ~EF_QUAD;
             effects |= EF_COLOR_SHELL;
             renderfx |= RF_SHELL_BLUE;
+            // Quake III's lightning look on its own maps (RF_Q3_QUAD)
+            if (cl.bsp && cl.bsp->q3)
+                renderfx |= RF_Q3_QUAD;
         }
+
+        // Quake III's quad pickup (g_q3.c Q3_QUAD_MODEL, placed or dropped) wears
+        // the lightning a quad player does, its chrome under it - the ring round
+        // it too, below (Matt, 2026-11-17). No shell: just the lightning.
+        if (cl.bsp && cl.bsp->q3 && s1->modelindex > 0 && s1->modelindex < 255
+            && !Q_strcasecmp(cl.configstrings[CS_MODELS + s1->modelindex], "models/powerups/instant/quad.md3"))
+            renderfx |= RF_Q3_QUAD;
 
         if (effects & EF_DOUBLE) {
             effects &= ~EF_DOUBLE;
@@ -949,7 +964,7 @@ static void CL_AddPacketEntities(void)
             ent.alpha = s1->alpha;
         }
 
-        ent.flags |= base_entity_flags;
+        ent.flags |= base_entity_flags | cloak;
 
 		// in rtx mode, the base entity has the renderfx for shells
 		if ((effects & EF_COLOR_SHELL) && CL_PathTraced()) {
@@ -1033,6 +1048,9 @@ static void CL_AddPacketEntities(void)
 			if ((effects & EF_COLOR_SHELL) && CL_PathTraced()) {
 				ent.flags |= renderfx;
 			}
+
+            ent.flags |= cloak;     // the cloaked player's weapon, as the body
+            ent.flags |= renderfx & RF_Q3_QUAD;     // the quad pickup's ring, as the quad
 
             V_AddEntity(&ent);
 
@@ -1258,8 +1276,11 @@ static int shell_effect_hack(void)
 
     if (ent->current.effects & EF_PENT)
         flags |= RF_SHELL_RED;
-    if (ent->current.effects & EF_QUAD)
+    if (ent->current.effects & EF_QUAD) {
         flags |= RF_SHELL_BLUE;
+        if (cl.bsp && cl.bsp->q3)
+            flags |= RF_Q3_QUAD;    // Quake III's lightning on the gun too
+    }
     if (ent->current.effects & EF_DOUBLE)
         flags |= RF_SHELL_DOUBLE;
     if (ent->current.effects & EF_HALF_DAMAGE)

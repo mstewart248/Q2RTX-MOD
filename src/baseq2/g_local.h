@@ -533,6 +533,7 @@ typedef struct {
     int         dynamiclight_bits;
     float       gravity;            // sv_gravity for this level (worldspawn, target_gravity)
     bool        is_n64;             // rerelease: map lives under q64/ - several entities behave differently
+    bool        q3map;              // a Quake III Arena map (sv_map_q3) - see g_q3.c
     char        *goals;             // rerelease N64: worldspawn "goals", tab-separated objectives
     int         goal_num;           // index of the current one, advanced by target_goal
     char        *start_items;       // worldspawn "start_items", see Player_GiveStartItems
@@ -694,7 +695,24 @@ typedef struct {
     int         hub_map;            // rerelease worldspawn: a hub, not part of any unit
     char        *style_on;          // rerelease light: lightstyle digit/string when on/off
     char        *style_off;
+
+    // Quake III Arena (g_q3.c)
+    int         notfree;            // not in free for all
+    int         notteam;            // not in the team games
+    int         notsingle;
+    char        *gametype;          // Team Arena's game type list
+    char        *model2;            // an md3 drawn with a brush entity
+    float       phase;              // func_bobbing / func_pendulum, 0..1
+    char        *music;             // worldspawn: "intro.wav [loop.wav]"
+    int         nobots;             // info_player_deathmatch: not for bots
+    int         nohumans;           // ... not for players
 } spawn_temp_t;
+
+// a Quake III info_player_deathmatch's flags, kept in its spawnflags by
+// g_q3.c - above any bit Quake II's spawning reads
+#define Q3_SPOT_INITIAL     0x10000     // the host's first spawn (spawnflag 1)
+#define Q3_SPOT_NOBOTS      0x20000
+#define Q3_SPOT_NOHUMANS    0x40000
 
 #define SPAWNKEY_SKY            1
 #define SPAWNKEY_SKYROTATE      2
@@ -1890,6 +1908,49 @@ const char *Team_Skin(edict_t *ent, const char *skin);
 void Team_Command(edict_t *ent);
 
 //
+// g_q3.c - Quake III Arena maps (level.q3map)
+//
+extern  cvar_t  *g_q3_items;
+extern  cvar_t  *g_q3_kit;
+
+void Q3_InitGame(void);
+void Q3_SpawnEntity(edict_t *ent);
+void Q3_LevelStart(void);
+int  Q3_SoundIndex(const char *name);
+void Q3_TeleportPlayer(edict_t *player, const vec3_t origin, const vec3_t angles);
+bool Q3_JumpPadLanding(edict_t *pad, vec3_t out);
+void q3_teleport_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf);
+void q3_jumppad_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf);
+bool Pickup_Q3Powerup(edict_t *ent, edict_t *other);
+bool Pickup_Q3Holdable(edict_t *ent, edict_t *other);
+void Use_Q3Medkit(edict_t *ent, gitem_t *item);
+void Use_Q3Teleporter(edict_t *ent, gitem_t *item);
+bool Q3_PickupHealth(edict_t *ent, edict_t *other);
+int  Q3_HealthSound(const edict_t *ent);
+void Q3_DroppedItem(edict_t *dropped);
+bool Q3_PowerupPickupSound(edict_t *ent, edict_t *other);
+int  Q3_QuadUseSound(void);
+int  Q3_QuadFireSound(void);
+void Q3_ItemRespawned(edict_t *ent);
+bool Q3_PickupArmor(edict_t *ent, edict_t *other);
+void Q3_GiveSpawnKit(gclient_t *client);
+short Q3_PmoveGravity(edict_t *ent, short gravity);
+bool Q3_HasteExtraThink(edict_t *ent);
+int  Q3_BattleSuitDamage(edict_t *targ, int damage, int dflags, int mod);
+bool Q3_BattleSuitActive(gclient_t *client);
+int  Q3_FallingDamage(float delta);
+void Q3_ClientFrame(edict_t *ent);
+void Q3_ClientEffects(edict_t *ent);
+void Q3_ClientSound(edict_t *ent);
+bool Q3_PowerupTimerStat(edict_t *ent);
+void Q3_ClearPowerups(gclient_t *client);
+
+// defined elsewhere, used by g_q3.c
+void InitTrigger(edict_t *self);
+void droptofloor(edict_t *ent);
+edict_t *SelectRandomDeathmatchSpawnPoint(void);
+
+//
 // g_ctf.c - capture the flag, `ctf 1` in deathmatch
 //
 extern  cvar_t  *ctf;
@@ -2085,6 +2146,8 @@ typedef struct {
     float       ctf_lastreturnedflag;
     float       ctf_lastfraggedcarrier;
     float       ctf_flagsince;
+
+    bool        q3_spawned;         // spawned once on this Quake III map
 } client_respawn_t;
 
 // this structure is cleared on each PutClientInServer(),
@@ -2173,6 +2236,17 @@ struct gclient_s {
     // ROGUE powerups. Framenums, 0 = inactive, same convention as the rest.
     int         ir_framenum;            // IR goggles: RDF_IRGOGGLES + a red tint
     int         invisible_framenum;     // Cloak: translucent, and monsters lose you
+
+    // Quake III Arena powerups and map state (g_q3.c)
+    int         q3_haste_framenum;
+    int         q3_regen_framenum;
+    int         q3_flight_framenum;
+    int         q3_battlesuit_framenum;
+    int         q3_tick_framenum;       // next once-a-second Regen / run-down
+    int         q3_suit_sound_framenum;
+    float       q3_haste_accum;         // Haste's extra weapon thinks
+    edict_t     *q3_jumppad;            // the pad touched last, and when:
+    int         q3_jumppad_framenum;    // it thumps once per jump
 
     bool        grenade_blew_up;
     int         grenade_framenum;

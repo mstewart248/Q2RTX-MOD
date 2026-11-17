@@ -248,6 +248,24 @@ static void abort_func(void *arg)
     CM_FreeMap(arg);
 }
 
+/*
+A Quake III arena has deathmatch starts only, and single player deletes those, so
+from a single-player game "map q3dm0" had nowhere to put the player (Matt,
+2026-11-16: base1 -> q3dm0 -> "Couldn't find spawn point"). Quake III has no
+single-player mode either: SV_Map starts such a game as deathmatch, for that game
+only (Cmd_SetGameCvar). Coop is left alone. The latched values count, as
+SV_InitGame applies them.
+*/
+static bool SV_SinglePlayerMode(void)
+{
+    cvar_t *dm = Cvar_FindVar("deathmatch");
+    cvar_t *co = Cvar_FindVar("coop");
+    const char *dm_s = dm ? (dm->latched_string ? dm->latched_string : dm->string) : "1";
+    const char *co_s = co ? (co->latched_string ? co->latched_string : co->string) : "0";
+
+    return !atoi(dm_s) && !atoi(co_s);
+}
+
 static void SV_Map(bool restart)
 {
     mapcmd_t    cmd;
@@ -266,14 +284,28 @@ static void SV_Map(bool restart)
     // save pending CM to be freed later if ERR_DROP is thrown
     Com_AbortFunc(abort_func, &cmd.cm);
 
+    // a single-player game going to a Quake III arena: a new game, as deathmatch
+    const bool q3_arena = cmd.state == ss_game && cmd.cm.cache && cmd.cm.cache->q3;
+    if (q3_arena && SV_SinglePlayerMode())
+        restart = true;
+
     // wipe savegames
     cmd.endofunit |= restart;
 
     SV_AutoSaveBegin(&cmd);
 
     // any error will drop from this point
-    if ((sv.state != ss_game && sv.state != ss_pic && sv.state != ss_cinematic) || restart)
+    if ((sv.state != ss_game && sv.state != ss_pic && sv.state != ss_cinematic) || restart) {
+        // the mode a Quake III arena was given last game, back to the player's
+        Cmd_RestoreGameCvars();
+
+        if (q3_arena && SV_SinglePlayerMode()) {
+            Com_Printf("%s is a Quake III arena: playing it as deathmatch.\n", cmd.server);
+            Cmd_SetGameCvar("deathmatch", "1");
+        }
+
         SV_InitGame(MVD_SPAWN_DISABLED);    // the game is just starting
+    }
 
     // clear pending CM
     Com_AbortFunc(NULL, NULL);

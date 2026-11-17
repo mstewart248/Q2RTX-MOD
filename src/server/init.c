@@ -198,8 +198,13 @@ void SV_SpawnServer(mapcmd_t *cmd, qboolean isMguMap)
     // one that connects later copies sv_pmp. The client derives the same flag
     // from the world model's name - keep the two rules identical.
     sv_pmp.n64 = Q_strHas(fs_gamedir, "rerelease") && !Q_strncasecmp(sv.name, "q64/", 4);
+    // Quake III map: pmove reads the Haste and Flight powerups out of the
+    // player's gravity (see pmove.c). The client sets the same flag from its
+    // own load of the map, in CL_RegisterBspModels.
+    sv_pmp.q3 = cmd->state == ss_game && cmd->cm.cache && cmd->cm.cache->q3;
     FOR_EACH_CLIENT(client) {
         client->pmp.n64 = sv_pmp.n64;
+        client->pmp.q3 = sv_pmp.q3;
     }
 
     // Publish the spawnpoint so a per-map cfg can vary by which entrance the
@@ -257,6 +262,12 @@ void SV_SpawnServer(mapcmd_t *cmd, qboolean isMguMap)
     // precache and static commands can be issued during
     // map initialization
     sv.state = ss_loading;
+
+    // A Quake III map (common/bsp_q3.c) is told to the game this way rather
+    // than through the game API, which stays the stock one: the game reads
+    // sv_map_q3 in SpawnEntities to translate the map's Quake III entities.
+    Cvar_FullSet("sv_map_q3", (cmd->state == ss_game && sv.cm.cache && sv.cm.cache->q3) ? "1" : "0",
+                 CVAR_ROM, FROM_CODE);
 
     // load and spawn all other entities
     ge->SpawnEntities(sv.name, entitystring, cmd->spawnpoint, isMguMap || (qboolean)Q_strHas(fs_gamedir, "rerelease"));

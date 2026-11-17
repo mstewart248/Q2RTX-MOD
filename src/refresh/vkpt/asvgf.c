@@ -656,14 +656,22 @@ VkResult vkpt_taa(VkCommandBuffer cmd_buf)
 		qvk.desc_set_vertex_buffer
 	};
 
-	BEGIN_PERF_MARKER(cmd_buf, PROFILER_ASVGF_TAA);
+	/* Photo mode: the dispatch is the running average and nothing else
+	   (asvgf_taau.comp's temporal_blend_factor branch; evaluate_taa_settings turns
+	   TAA off with the denoiser), so it is timed as PROFILER_ACCUMULATION rather
+	   than as the denoiser's TAA. Never folded: the fold needs
+	   temporal_blend_factor 0. */
+	const bool accumulating = vkpt_refdef.uniform_buffer.temporal_blend_factor > 0.f;
+	const int profiler_row = accumulating ? PROFILER_ACCUMULATION : PROFILER_ASVGF_TAA;
+
+	begin_perf_marker(cmd_buf, profiler_row, accumulating ? "PROFILER_ACCUMULATION" : "PROFILER_ASVGF_TAA");
 
 	/* Already done by the interleave pass - see taa_folded(). The history it
 	   would have written to ASVGF_TAA_A is never read: the fold needs
 	   flt_enable 0, which makes the next frame's flt_taa 0 (temporal_frame_valid). */
 	if (taa_folded())
 	{
-		END_PERF_MARKER(cmd_buf, PROFILER_ASVGF_TAA);
+		end_perf_marker(cmd_buf, profiler_row);
 		return VK_SUCCESS;
 	}
 
@@ -681,7 +689,7 @@ VkResult vkpt_taa(VkCommandBuffer cmd_buf)
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_ASVGF_TAA_A]);
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_ASVGF_TAA_B]);
 
-	END_PERF_MARKER(cmd_buf, PROFILER_ASVGF_TAA);
+	end_perf_marker(cmd_buf, profiler_row);
 
 	return VK_SUCCESS;
 }

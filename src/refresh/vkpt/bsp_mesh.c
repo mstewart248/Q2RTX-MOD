@@ -20,6 +20,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "vkpt.h"
 #include "shader/global_textures.h"
 #include "material.h"
+#include "q3stages.h"
+#include "q3deform.h"
 #include "cameras.h"
 #include "conversion.h"
 
@@ -152,6 +154,29 @@ static FILE* obj_dump_file = NULL;
 static int obj_vertex_num = 0;
 #endif
 
+/* SEEN FROM BOTH SIDES. A Quake III "cull none" surface - every torch flame,
+   banners, open frames - is drawn from both sides. World geometry is traced with
+   back faces culled: Quake II's brushes are closed, so a face is only ever seen
+   from the front, and only the masked BLAS (filter_static_masked) turns that off.
+   The material said double-sided (material.c, apply_q3_shader) and the face was
+   still one-sided: from behind, the torch flames were not there at all (Matt,
+   2026-11-16: "it works from one angle but not the other side"). So such a face
+   is written twice, the second time turned round. Not a masked one, which is
+   two-sided already; not water, slime or glass, whose rays tell going in from
+   coming out by the side they hit; not sky. The light polys get their back faces
+   in collect_light_polys (add_back_faces). Quake III maps only: double_sided on a
+   Quake II world texture keeps meaning what it always did. */
+static bool
+face_has_back(const bsp_t* bsp, const pbr_material_t* material, uint32_t material_id)
+{
+	if (!bsp->q3 || !(material_id & MATERIAL_FLAG_DOUBLE_SIDED))
+		return false;
+	if (material && material->image_mask)
+		return false;
+	return !MAT_IsKind(material_id, MATERIAL_KIND_WATER) && !MAT_IsKind(material_id, MATERIAL_KIND_SLIME)
+		&& !MAT_IsKind(material_id, MATERIAL_KIND_GLASS) && !MAT_IsKind(material_id, MATERIAL_KIND_SKY);
+}
+
 static uint32_t
 create_poly(
 	const bsp_t* bsp,
@@ -217,8 +242,14 @@ create_poly(
 			VectorMA(src_vert->point, d, surf->plane->normal, p);
 		}
 
-		t[0] = (DotProduct(p, texinfo->axis[0]) + texinfo->offset[0]) * sc[0];
-		t[1] = (DotProduct(p, texinfo->axis[1]) + texinfo->offset[1]) * sc[1];
+		if (surf->uv_mapped) {
+			// Quake III: the face's own mapping, already in image units
+			t[0] = DotProduct(p, surf->uv_axis[0]) + surf->uv_axis[0][3];
+			t[1] = DotProduct(p, surf->uv_axis[1]) + surf->uv_axis[1][3];
+		} else {
+			t[0] = (DotProduct(p, texinfo->axis[0]) + texinfo->offset[0]) * sc[0];
+			t[1] = (DotProduct(p, texinfo->axis[1]) + texinfo->offset[1]) * sc[1];
+		}
 
 		if (bsp->basisvectors)
 		{
@@ -259,15 +290,20 @@ create_poly(
 		return 0;
 	
 	const uint32_t num_triangles = (uint32_t)num_vertices - 2;
+	const bool back = face_has_back(bsp, material, material_id);
 
 	if (!primitives_out)
-		return num_triangles;
+		return back ? num_triangles * 2 : num_triangles;
 
 	const float emissive_factor = compute_emissive(texinfo, material);
 
 	float alpha = 1.f;
 	if (MAT_IsKind(material_id, MATERIAL_KIND_TRANSPARENT))
 		alpha = (texinfo->c.flags & SURF_TRANS33) ? 0.33f : (texinfo->c.flags & SURF_TRANS66) ? 0.66f : 1.0f;
+	// a Quake III effect that only adds light: nothing of it shows but the glow
+	// (material.h q3_additive), so the primary ray goes straight through it
+	if (material && material->q3_additive && MAT_IsKind(material_id, MATERIAL_KIND_TRANSPARENT))
+		alpha = 0.f;
 
 	const uint32_t emissive_and_alpha = floatToHalf(emissive_factor) | (floatToHalf(alpha) << 16);
 
@@ -337,11 +373,51 @@ create_poly(
 		primitives_out->texture_flags = texture_flags;
 		primitives_out->emissive_and_alpha = emissive_and_alpha;
 		primitives_out->instance = 0;
-		
+
 		++primitives_out;
 	}
-	
-	return num_triangles;
+
+	if (!back)
+		return num_triangles;
+
+	// the back (face_has_back): each triangle again, wound the other way round
+	// with its normals reversed, so it faces the other side; same texture
+	// coordinates and tangents, so it shows the same picture from there
+	const VboPrimitive* front = primitives_out - num_triangles;
+	for (uint32_t i = 0; i < num_triangles; i++)
+	{
+		if (primitive_index + num_triangles + i >= max_prim)
+		{
+			assert(!"Primitive buffer overflow - count_triangles missed a back face.");
+			return num_triangles + i;
+		}
+
+		*primitives_out = front[i];
+		VectorCopy(front[i].pos2, primitives_out->pos1);
+		VectorCopy(front[i].pos1, primitives_out->pos2);
+		primitives_out->uv1[0] = front[i].uv2[0];
+		primitives_out->uv1[1] = front[i].uv2[1];
+		primitives_out->uv2[0] = front[i].uv1[0];
+		primitives_out->uv2[1] = front[i].uv1[1];
+
+		if (write_normals)
+		{
+			// the front's corners were 0, (i + 2), (i + 1); the back's 0, (i + 1), (i + 2)
+			const int corner[3] = { 0, (int)(i + 1) % num_vertices, (int)(i + 2) % num_vertices };
+			for (int c = 0; c < 3; c++)
+			{
+				const mbasis_t* basis = bases + corner[c];
+				vec3_t normal;
+				VectorNegate(bsp->basisvectors[basis->normal], normal);
+				primitives_out->normals[c] = encode_normal(normal);
+				primitives_out->tangents[c] = encode_normal(bsp->basisvectors[basis->tangent]);
+			}
+		}
+
+		++primitives_out;
+	}
+
+	return num_triangles * 2;
 }
 
 static int
@@ -812,7 +888,13 @@ static int count_triangles(const bsp_t* bsp)
 		int num_vertices = surf->numsurfedges;
 
 		if (num_vertices >= 3)
-			num_tris += (num_vertices - 2);
+		{
+			// room for a double-sided face's back (create_poly), on the texture's
+			// own material - generously, before kinds and instances are settled
+			const pbr_material_t* mat = surf->texinfo ? surf->texinfo->material : NULL;
+			const bool back = bsp->q3 && mat && (mat->flags & MATERIAL_FLAG_DOUBLE_SIDED);
+			num_tris += (num_vertices - 2) * (back ? 2 : 1);
+		}
 	}
 
 	return num_tris;
@@ -1137,6 +1219,11 @@ collect_surfaces(uint32_t *prim_ctr, bsp_mesh_t *wm, bsp_t *bsp, int model_idx, 
 		uint32_t material_id = surf_material ? surf_material->flags : 0;
 		uint32_t surf_flags = surf->drawflags | surf->texinfo->c.flags;
 
+		/* kind INVISIBLE: not drawn at all, as for a model's mesh (main.c) - a
+		   Quake III shader whose alpha test passes nowhere (material.c,
+		   apply_q3_shader), or a .mat entry saying so */
+		if (MAT_IsKind(material_id, MATERIAL_KIND_INVISIBLE))
+			continue;
 
 		// ugly hacks for situations when the same texture is used with different effects
 
@@ -1182,7 +1269,14 @@ collect_surfaces(uint32_t *prim_ctr, bsp_mesh_t *wm, bsp_t *bsp, int model_idx, 
 		if (surf_flags & SURF_SKY)
 			material_id = MAT_SetKind(material_id, MATERIAL_KIND_SKY);
 
-		if (MAT_IsKind(material_id, MATERIAL_KIND_REGULAR) && (surf_flags & SURF_TRANS_MASK) && !(material_id & MATERIAL_FLAG_LIGHT))
+		/* On a Quake III map the TRANS bits are the shader's own "see-through"
+		   (bsp_q3.c translate_shaders), which apply_q3_shader already weighed in
+		   choosing the kind. An entry that STATES 'kind REGULAR' means a solid
+		   surface: Matt's slamp2 lamp shade, made REGULAR to reflect for real,
+		   went TRANSPARENT here and reflected nothing (2026-11-17). */
+		const bool q3_regular_stated = bsp->q3 && MAT_KindSpecified(surf_material);
+		if (MAT_IsKind(material_id, MATERIAL_KIND_REGULAR) && (surf_flags & SURF_TRANS_MASK) && !(material_id & MATERIAL_FLAG_LIGHT)
+			&& !q3_regular_stated)
 			material_id = MAT_SetKind(material_id, MATERIAL_KIND_TRANSPARENT);
 
 		if (MAT_IsKind(material_id, MATERIAL_KIND_SCREEN) && (surf_flags & SURF_TRANS_MASK))
@@ -1203,7 +1297,18 @@ collect_surfaces(uint32_t *prim_ctr, bsp_mesh_t *wm, bsp_t *bsp, int model_idx, 
 			material_id |= (light_style << MATERIAL_LIGHT_STYLE_SHIFT) & MATERIAL_LIGHT_STYLE_MASK;
 		}
 
-		if (MAT_IsKind(material_id, MATERIAL_KIND_CAMERA) && wm->num_cameras > 0)
+		if (MAT_IsKind(material_id, MATERIAL_KIND_CAMERA) && bsp->q3)
+		{
+			/* A Quake III portal shader: the view through the misc_portal_surface
+			   next to it (cameras.c), its slot fixed - animate_materials.comp leaves
+			   portals alone. With no portal camera there, Quake III draws a mirror. */
+			int portal = vkpt_cameras_q3_face(wm, surf);
+			if (portal < 0)
+				material_id = (material_id & ~(MATERIAL_KIND_MASK | MATERIAL_LIGHT_STYLE_MASK)) | MATERIAL_KIND_CHROME;
+			else
+				material_id = (material_id & ~MATERIAL_LIGHT_STYLE_MASK) | (((portal * 4) << MATERIAL_LIGHT_STYLE_SHIFT) & MATERIAL_LIGHT_STYLE_MASK);
+		}
+		else if (MAT_IsKind(material_id, MATERIAL_KIND_CAMERA) && wm->num_cameras > 0)
 		{
 			/* Pick the camera slot (camera = slot / 4; animate_materials.comp steps the slot
 			   every half second). It used to be a random slot PER FACE, but the BSP cuts one
@@ -1338,6 +1443,16 @@ collect_surfaces(uint32_t *prim_ctr, bsp_mesh_t *wm, bsp_t *bsp, int model_idx, 
 			}
 			else
 				surface_prims[k].cluster = -1;
+		}
+
+		/* deformVertexes: a Quake III face that moves is drawn as a model
+		   (q3deform.c). Its triangles - the front ones; the model's material is
+		   two-sided by itself - go there, and the world keeps none of them. */
+		if (model_idx < 0 && vkpt_q3_deform_wants(surf_material, material_id, surf_flags))
+		{
+			const uint32_t front = face_has_back(bsp, surf_material, material_id) ? prims_in_surface / 2 : prims_in_surface;
+			vkpt_q3_deform_collect(surf_material, surface_prims, (int)front);
+			continue;
 		}
 
 		*prim_ctr += prims_in_surface;
@@ -1497,12 +1612,42 @@ is_light_material(uint32_t material)
 	return (material & MATERIAL_FLAG_LIGHT) != 0;
 }
 
+/* A Quake III program's glow (light_poly_t q3_glow): copy_light takes the
+   light's colour from the program every frame, averaged over the triangle with
+   these texture coordinates (1 = one repeat). Every light made here goes
+   through this, so the fields are never left as the stack had them. */
+static void
+set_light_q3_glow(light_poly_t *light, bool q3_glow, const float *uv0, const float *uv1, const float *uv2)
+{
+	light->q3_glow = q3_glow;
+	light->q3_glow_key = 0;
+	VectorClear(light->q3_glow_rgb);
+	light->q3_samples = 1;
+	memset(light->q3_uv, 0, sizeof(light->q3_uv));
+	if (!q3_glow)
+		return;
+
+	light->q3_uv[0] = uv0[0]; light->q3_uv[1] = uv0[1];
+	light->q3_uv[2] = uv1[0]; light->q3_uv[3] = uv1[1];
+	light->q3_uv[4] = uv2[0]; light->q3_uv[5] = uv2[1];
+
+	// a sample grid two to a repeat along the longest side, 1 to 4 a side
+	float longest = 0.f;
+	for (int e = 0; e < 3; e++)
+	{
+		const float *a = light->q3_uv + e * 2, *b = light->q3_uv + ((e + 1) % 3) * 2;
+		longest = max(longest, sqrtf((b[0] - a[0]) * (b[0] - a[0]) + (b[1] - a[1]) * (b[1] - a[1])));
+	}
+	light->q3_samples = (uint8_t)max(1, min(4, (int)ceilf(2.f * longest)));
+}
+
 static void
 collect_one_light_poly_entire_texture(bsp_t *bsp, mface_t *surf, mtexinfo_t *texinfo, pbr_material_t *material, int model_idx,
-									  const vec3_t light_color, float emissive_factor, int light_style,
+									  const vec3_t light_color, float emissive_factor, int light_style, bool q3_glow,
 									  int *num_lights, int *allocated_lights, light_poly_t **lights)
 {
 	float positions[3 * /*max_vertices*/ 32];
+	float tex_coords[2 * /*max_vertices*/ 32];
 
 	for (int i = 0; i < surf->numsurfedges; i++)
 	{
@@ -1511,12 +1656,22 @@ collect_one_light_poly_entire_texture(bsp_t *bsp, mface_t *surf, mtexinfo_t *tex
 		mvertex_t   *src_vert = src_edge->v[src_surfedge->vert];
 
 		float *p = positions + i * 3;
+		float *t = tex_coords + i * 2;
 
 		VectorCopy(src_vert->point, p);
+
+		// in texture repeats, as the light reads them (only a glow needs them)
+		if (surf->uv_mapped) {
+			t[0] = DotProduct(p, surf->uv_axis[0]) + surf->uv_axis[0][3];
+			t[1] = DotProduct(p, surf->uv_axis[1]) + surf->uv_axis[1][3];
+		} else {
+			t[0] = (DotProduct(p, texinfo->axis[0]) + texinfo->offset[0]) / (float)max(1, material->original_width);
+			t[1] = (DotProduct(p, texinfo->axis[1]) + texinfo->offset[1]) / (float)max(1, material->original_height);
+		}
 	}
 
 	int num_vertices = surf->numsurfedges;
-	remove_collinear_edges(positions, NULL, NULL, &num_vertices);
+	remove_collinear_edges(positions, tex_coords, NULL, &num_vertices);
 
 	const int num_triangles = surf->numsurfedges - 2;
 
@@ -1532,6 +1687,7 @@ collect_one_light_poly_entire_texture(bsp_t *bsp, mface_t *surf, mtexinfo_t *tex
 		VectorCopy(positions + i1 * 3, light.positions + 3);
 		VectorCopy(positions + i2 * 3, light.positions + 6);
 		VectorScale(light_color, emissive_factor, light.color);
+		set_light_q3_glow(&light, q3_glow, tex_coords, tex_coords + i1 * 2, tex_coords + i2 * 2);
 
 		light.material = material;
 		light.style = light_style;
@@ -1563,15 +1719,21 @@ collect_one_light_poly_entire_texture(bsp_t *bsp, mface_t *surf, mtexinfo_t *tex
 static void
 collect_one_light_poly(bsp_t *bsp, mface_t *surf, mtexinfo_t *texinfo, pbr_material_t *material, int model_idx, const vec4_t plane,
 					   const float tex_scale[], const vec2_t min_light_texcoord, const vec2_t max_light_texcoord,
-					   const vec3_t light_color, float emissive_factor, int light_style,
+					   const vec3_t light_color, float emissive_factor, int light_style, bool q3_glow,
 					   int* num_lights, int* allocated_lights, light_poly_t** lights)
 {
 	// Scale the texture axes according to the original resolution of the game's .wal textures
 	vec4_t tex_axis0, tex_axis1;
-	VectorScale(texinfo->axis[0], tex_scale[0], tex_axis0);
-	VectorScale(texinfo->axis[1], tex_scale[1], tex_axis1);
-	tex_axis0[3] = texinfo->offset[0] * tex_scale[0];
-	tex_axis1[3] = texinfo->offset[1] * tex_scale[1];
+	if (surf->uv_mapped) {
+		// Quake III: the face's own mapping, already in image units
+		Vector4Copy(surf->uv_axis[0], tex_axis0);
+		Vector4Copy(surf->uv_axis[1], tex_axis1);
+	} else {
+		VectorScale(texinfo->axis[0], tex_scale[0], tex_axis0);
+		VectorScale(texinfo->axis[1], tex_scale[1], tex_axis1);
+		tex_axis0[3] = texinfo->offset[0] * tex_scale[0];
+		tex_axis1[3] = texinfo->offset[1] * tex_scale[1];
+	}
 
 	// The texture basis is not normalized, so we need the lengths of the axes to convert
 	// texture coordinates back into world space
@@ -1702,6 +1864,8 @@ collect_one_light_poly(bsp_t *bsp, mface_t *surf, mtexinfo_t *texinfo, pbr_mater
 				VectorCopy(instance_positions[i1], light->positions + 3);
 				VectorCopy(instance_positions[i2], light->positions + 6);
 				VectorScale(light_color, emissive_factor, light->color);
+				// the clipped polygon is in texture space already, in repeats
+				set_light_q3_glow(light, q3_glow, &instance.v[0].x, &instance.v[i1].x, &instance.v[i2].x);
 				
 				get_triangle_off_center(light->positions, light->off_center, NULL, 1.f);
 
@@ -1763,6 +1927,48 @@ collect_frames_emissive_info(pbr_material_t* material, bool* entire_texture_emis
 	return any_emissive_valid;
 }
 
+/* A light poly shines from its front face only (light_lists.h), and is listed
+   in the cluster in front of it. A double-sided glow - Quake III's "cull none",
+   q3dm0's console orb, a flat card Quake III turned to face the viewer - shines
+   from both. So each of its light polys [first, *num_lights) gets a twin facing
+   the other way, listed in the cluster on that side. */
+static void
+add_back_faces(bsp_t *bsp, int model_idx, int first, int *num_lights, int *allocated_lights, light_poly_t **lights)
+{
+	const int last = *num_lights;
+	for (int i = first; i < last; i++)
+	{
+		// a copy: append_light_poly may move the array
+		light_poly_t light = (*lights)[i];
+
+		// two corners swapped: the normal turns over
+		vec3_t corner;
+		VectorCopy(light.positions + 3, corner);
+		VectorCopy(light.positions + 6, light.positions + 3);
+		VectorCopy(corner, light.positions + 6);
+		// and their texture coordinates with them
+		const float u1 = light.q3_uv[2], v1 = light.q3_uv[3];
+		light.q3_uv[2] = light.q3_uv[4];
+		light.q3_uv[3] = light.q3_uv[5];
+		light.q3_uv[4] = u1;
+		light.q3_uv[5] = v1;
+
+		if (!get_triangle_off_center(light.positions, light.off_center, NULL, 1.f))
+			continue;
+
+		if (model_idx >= 0)
+			light.cluster = -1;     // as its front: set when the model is instanced
+		else
+		{
+			light.cluster = BSP_PointLeaf(bsp->nodes, light.off_center)->cluster;
+			if (light.cluster < 0)
+				continue;
+		}
+
+		*append_light_poly(num_lights, allocated_lights, lights) = light;
+	}
+}
+
 static void
 collect_light_polys(bsp_mesh_t *wm, bsp_t *bsp, int model_idx, int* num_lights, int* allocated_lights, light_poly_t** lights)
 {
@@ -1802,6 +2008,10 @@ collect_light_polys(bsp_mesh_t *wm, bsp_t *bsp, int model_idx, int* num_lights, 
 		if (is_invisible_lava(flags, material))
 			continue;
 
+		// not drawn, so no light either (collect_surfaces)
+		if (MAT_IsKind(material->flags, MATERIAL_KIND_INVISIBLE))
+			continue;
+
 		// Check if any animation frame is a light material
 		bool any_light_frame = false;
 		{
@@ -1821,13 +2031,27 @@ collect_light_polys(bsp_mesh_t *wm, bsp_t *bsp, int model_idx, int* num_lights, 
 		vec2_t max_light_texcoord;
 		vec3_t light_color;
 
+		/* A Quake III shader drawn stage by stage: what it emits, and when, is
+		   the program's (q3stages.c vkpt_q3_light_glow), worked out every frame
+		   for each light poly. The emissive image only says where on a tile the
+		   glow is - and when it moves, or there is more than one (a pulse
+		   sweeping along a trim over a glow), it does not say that either, so
+		   the whole face is the light. */
+		const bool q3_glow = material->q3_program != 0;
+
 		if (!collect_frames_emissive_info(material, &entire_texture_emissive, min_light_texcoord, max_light_texcoord, light_color))
 		{
 			// This algorithm relies on information from the emissive texture,
 			// specifically the extents of the emissive pixels in that texture.
 			// Ignore surfaces that don't have an emissive texture attached.
-			continue;
+			if (!q3_glow)
+				continue;
+			entire_texture_emissive = true;
+			VectorClear(light_color);
 		}
+
+		if (q3_glow && vkpt_q3_program_glow_moves(material))
+			entire_texture_emissive = true;
 
 		float emissive_factor = compute_emissive(texinfo, material);
 		if(emissive_factor == 0)
@@ -1835,10 +2059,15 @@ collect_light_polys(bsp_mesh_t *wm, bsp_t *bsp, int model_idx, int* num_lights, 
 
 		int light_style = (material->light_styles) ? get_surf_light_style(surf) : 0;
 
+		const int first_light = *num_lights;
+		const bool both_faces = (material->flags & MATERIAL_FLAG_DOUBLE_SIDED) != 0;
+
 		if (entire_texture_emissive)
 		{
 			collect_one_light_poly_entire_texture(bsp, surf, texinfo, material, model_idx, light_color, emissive_factor, light_style,
-												  num_lights, allocated_lights, lights);
+												  q3_glow, num_lights, allocated_lights, lights);
+			if (both_faces)
+				add_back_faces(bsp, model_idx, first_light, num_lights, allocated_lights, lights);
 			continue;
 		}
 
@@ -1853,8 +2082,10 @@ collect_light_polys(bsp_mesh_t *wm, bsp_t *bsp, int model_idx, int* num_lights, 
 
 		collect_one_light_poly(bsp, surf, texinfo, material, model_idx, plane,
 							   tex_scale, min_light_texcoord, max_light_texcoord,
-							   light_color, emissive_factor, light_style,
+							   light_color, emissive_factor, light_style, q3_glow,
 							   num_lights, allocated_lights, lights);
+		if (both_faces)
+			add_back_faces(bsp, model_idx, first_light, num_lights, allocated_lights, lights);
 	}
 }
 
@@ -1931,6 +2162,7 @@ collect_sky_and_lava_light_polys(bsp_mesh_t *wm, bsp_t* bsp)
 			light.style = 0;
 			light.type = DYNLIGHT_POLYGON;
 			light.volumetric_scale = LIGHT_VOLUMETRIC_SCALE_UNSET;
+			set_light_q3_glow(&light, false, NULL, NULL, NULL);
 
 			if (!get_triangle_off_center(light.positions, light.off_center, NULL, 1.f))
 				continue;
@@ -2438,6 +2670,7 @@ collect_fog_lava_lights(bsp_mesh_t *wm, bsp_t *bsp)
 			light.style = 0;
 			light.type = DYNLIGHT_POLYGON;
 			light.volumetric_scale = LIGHT_VOLUMETRIC_SCALE_UNSET;
+			set_light_q3_glow(&light, false, NULL, NULL, NULL);
 			light.cluster = leaf->cluster;
 
 			light_poly_t *dst = append_light_poly(&wm->num_fog_light_polys, &wm->allocated_fog_light_polys, &wm->fog_light_polys);
@@ -2540,6 +2773,7 @@ bsp_mesh_create_custom_sky_prims(uint32_t* prim_ctr, bsp_mesh_t* wm, const bsp_t
 		light->cluster = cluster;
 		light->type = DYNLIGHT_POLYGON;
 		light->volumetric_scale = LIGHT_VOLUMETRIC_SCALE_UNSET;
+		set_light_q3_glow(light, false, NULL, NULL, NULL);
 
 		++*prim_ctr;
 
@@ -2564,6 +2798,8 @@ bsp_mesh_create_from_bsp(bsp_mesh_t *wm, bsp_t *bsp, const char* map_name)
 
 	load_sky_and_lava_clusters(wm, full_game_map_name);
 	vkpt_cameras_load(wm, full_game_map_name);
+	vkpt_cameras_load_q3(wm, bsp);	// a Quake III map's portals
+	wm->q3 = bsp->q3;
 
 	wm->models = Z_Malloc(bsp->nummodels * sizeof(bsp_model_t));
 	memset(wm->models, 0, bsp->nummodels * sizeof(bsp_model_t));
@@ -2616,6 +2852,9 @@ bsp_mesh_create_from_bsp(bsp_mesh_t *wm, bsp_t *bsp, const char* map_name)
 	vkpt_init_model_geometry(&wm->geom_sky, 1);
 	vkpt_init_model_geometry(&wm->geom_custom_sky, 1);
 
+	// the faces that move go to q3deform.c instead (collect_surfaces)
+	vkpt_q3_deform_begin(bsp);
+
 	uint32_t first_prim = prim_ctr;
 	collect_surfaces(&prim_ctr, wm, bsp, -1, filter_static_opaque);
 	vkpt_append_model_geometry(&wm->geom_opaque, prim_ctr - first_prim, first_prim, "bsp");
@@ -2664,7 +2903,9 @@ bsp_mesh_create_from_bsp(bsp_mesh_t *wm, bsp_t *bsp, const char* map_name)
 	}
 
 	wm->num_primitives = prim_ctr;
-	
+
+	vkpt_q3_deform_build();
+
 	compute_world_tangents(bsp, wm);
 	
 	for(int i = 0; i < wm->num_models; i++) 
@@ -2777,6 +3018,10 @@ bsp_mesh_register_textures(bsp_t *bsp)
 			bool material_custom = !mat->source_matfile[0];
 			
 			synth_surface_material &= (cvar_pt_enable_surface_lights->integer >= 2) || material_custom;
+			/* A Quake III shader's light is settled in material.c (apply_q3_shader):
+			   its glow or a synthesized one, at the default_radiance it shows in
+			   'mat print'. This rule's default_radiance 0 would switch them off. */
+			synth_surface_material &= !bsp->q3;
 			if (cvar_pt_enable_surface_lights_warp->integer == 0)
 				synth_surface_material &= !is_warp_surface;
 			

@@ -1,0 +1,162 @@
+
+# instance of textures/base_wall/chrome_metal
+# q3dm12, created at (87 873 375)
+# Inherits everything from textures/base_wall/chrome_metal; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_wall/chrome_metal#9910cfc6:
+#	texture_base materialDev/textures/base_wall/chrome_metal*C.wal
+	texture_roughness 
+	roughness_override 0.1
+	specular_factor 1
+#	texture_metallic materialDev/textures/base_wall/chrome_metal*M1.wal
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 0
+#	specular_factor 0
+#	base_factor 1
+#	emissive_factor 1
+#	light_factor 1
+	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/base_wall/chrome_metal
+# q3dm12, created at (285 859 329)
+# Inherits everything from textures/base_wall/chrome_metal; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_wall/chrome_metal#41f80533:
+#	texture_base materialDev/textures/base_wall/chrome_metal*C.wal
+	texture_roughness 0
+#	texture_metallic materialDev/textures/base_wall/chrome_metal*M1.wal
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	light_factor 1
+	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+	roughness_override 0.1
+
+# instance of textures/base_wall/chrome_metal
+# q3dm12, created at (92 858 330)
+# Inherits everything from textures/base_wall/chrome_metal; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_wall/chrome_metal#bb0c7b12:
+#	texture_base materialDev/textures/base_wall/chrome_metal*C*C*C*C.wal
+	texture_roughness 0
+#	texture_metallic materialDev/textures/base_wall/chrome_metal*C*C*C*M1.wal
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	light_factor 1
+	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+	roughness_override 0.1
+
+# instance of textures/base_wall/chrome_metal
+# q3dm12, created at (287 858 355)
+# Inherits everything from textures/base_wall/chrome_metal; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_wall/chrome_metal#3c6efc2b:
+#	texture_base materialDev/textures/base_wall/chrome_metal*C*C*C*C*C*C.wal
+	texture_roughness 0
+#	texture_metallic materialDev/textures/base_wall/chrome_metal*C*C*C*C*C*M1.wal
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	light_factor 1
+	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+	roughness_override 0.1
+
+# instance of textures/base_wall/chrome_metal
+# q3dm12, created at (96 861 360)
+# Inherits everything from textures/base_wall/chrome_metal; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_wall/chrome_metal#4e11e917:
+#	texture_base materialDev/textures/base_wall/chrome_metal*C*C*C*C*C*C*C.wal
+	texture_roughness 0
+#	texture_metallic materialDev/textures/base_wall/chrome_metal*C*C*C*C*C*C*M1.wal
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	light_factor 1
+	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+	roughness_override 0.1
+
+# instance of textures/base_wall/chrome_metal
+# q3dm12, created at (281 852 358)
+# Inherits everything from textures/base_wall/chrome_metal; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_wall/chrome_metal#f685de86:
+#	texture_base materialDev/textures/base_wall/chrome_metal*C*C*C*C*C*C*C*C*C.wal
+	texture_roughness 0
+#	texture_metallic materialDev/textures/base_wall/chrome_metal*C*C*C*C*C*C*C*C*M1.wal
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	light_factor 1
+	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+	roughness_override 0.1
+
+# instance of textures/base_wall/chrome_metal
+# q3dm12, created at (105 852 365)
+# Inherits everything from textures/base_wall/chrome_metal; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_wall/chrome_metal#1136cd06:
+#	texture_base materialDev/textures/base_wall/chrome_metal*C*C*C*C*C*C*C*C*C*C*C.wal
+	texture_roughness 0
+#	texture_metallic materialDev/textures/base_wall/chrome_metal*C*C*C*C*C*C*C*C*M1.wal
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	light_factor 1
+	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+	roughness_override 0.1

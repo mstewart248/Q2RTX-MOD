@@ -441,7 +441,7 @@ main()
 	if(is_readback_pixel)
 	{
 		// this needs to happen somewhere...
-		readback.sun_luminance = sun_color_ubo.sun_luminance;
+		readback.sun_luminance = SUN_LUMINANCE_RESOLVED;
 		readback.sky_luminance = sun_color_ubo.sky_luminance;
 	}
 
@@ -817,6 +817,24 @@ main()
     	primary_emissive,
     	primary_specular_factor);
 
+	// a see-through Quake III program says per pixel how much of it is there
+	if (q3_surface_alpha >= 0.0)
+		triangle.alpha = q3_surface_alpha;
+
+	// Alpha glass (alpha_glass_solid): the frame is an ordinary surface, the
+	// pane clear glass. Before the albedo and the kind are taken from these.
+	if (is_glass(triangle.material_id))
+	{
+		MaterialInfo glass_info = get_material_info(triangle.material_id);
+		if (glass_info.alpha_glass)
+		{
+			if (alpha_glass_solid(glass_info, tex_coord, tex_coord_x, tex_coord_y, -1))
+				triangle.material_id = (triangle.material_id & ~MATERIAL_KIND_MASK) | MATERIAL_KIND_REGULAR;
+			else
+				primary_base_color = vec3(clamp(glass_info.base_factor, 0.0, 1.0));
+		}
+	}
+
 	imageStore(IMG_PT_ROUGHNESS, ipos, vec4(primary_roughness));
 
 	vec3 primary_albedo, primary_base_reflectivity;
@@ -879,7 +897,14 @@ main()
 		responsivity_code = clamp(global_ubo.pt_dlss_animated_responsive, 0.0, 1.0);
 
 	vec2 cameraUV = vec2(0);
-	if(is_camera(material_id))
+	if(is_camera(material_id) && is_portal_camera(camera_id_of_material(material_id)))
+	{
+		/* A Quake III portal: all of the surface is the view through it, and
+		   reflect_refract.rgen carries the ray on as it would a mirror's - no
+		   split, no screen field, nothing of the surface's own. */
+		primary_emissive = vec3(0);
+	}
+	else if(is_camera(material_id))
 	{
 		if(get_camera_uv(tex_coord, cameraUV))
 		{
@@ -965,7 +990,17 @@ main()
 	// kind TRANSP_MODEL, not kind WATER.
 	bool alpha_is_refractive = is_water(material_id) || is_slime(material_id);
 
-	if (triangle.alpha < 1.0 && !alpha_is_refractive)
+	if (triangle.alpha <= 0.0 && !alpha_is_refractive
+		&& (triangle.material_id & MATERIAL_KIND_MASK) == MATERIAL_KIND_TRANSPARENT)
+	{
+		/* Nothing of the surface here, only light added over what is behind it
+		   (a Quake III additive effect, or the clear part of a layered one):
+		   no split - the whole pixel goes through, and the glow joins the
+		   transparency layer below as primary_emissive. The fields stay
+		   unsplit, so a surface behind it can still split them. */
+		material_id = (material_id & ~MATERIAL_KIND_MASK) | transparency_kind;
+	}
+	else if (triangle.alpha < 1.0 && !alpha_is_refractive)
 	{
 		// Translucent objects: split the path.
 		throughput *= split_weight;
@@ -1015,12 +1050,14 @@ main()
 		// forces the whole surface down the force-field path, which is both
 		// uniform AND the look that was wanted.  Note the water normal above is
 		// applied either way, so the warp survives the switch to glass.
-		if(abs(geo_normal.z) < 0.1 || (material_id & MATERIAL_FLAG_CURVED_WATER) != 0)
+		// A cloaked player (TEXTURE_FLAG_CLOAK) stays water all over.
+		if((abs(geo_normal.z) < 0.1 || (material_id & MATERIAL_FLAG_CURVED_WATER) != 0)
+			&& (triangle.texture_flags & TEXTURE_FLAG_CLOAK) == 0)
 			material_id = (material_id & ~MATERIAL_KIND_MASK) | MATERIAL_KIND_GLASS;
 
-		
-		
-	
+
+
+
 	}
 		
 	// Store the surface parameters into the G-buffer for the lighting shaders

@@ -41,6 +41,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "global_textures.h"
 
 #include "froxel_shared.h"
+#include "fog_q3.glsl"   // Quake III fog brushes: their transmittance
+#include "projection.glsl"   // the camera ray of a bent pixel, for the fog brushes
 
 // The integrated froxel volume, written by froxel_integrate.comp this frame.
 // rgb is in-scattered radiance from the eye to the far face of a slice, a is
@@ -400,15 +402,95 @@ void main()
 	// pt_fog_opacity trades between the two: 0 is the historical purely additive
 	// look, 1 is a full alpha blend.
 	float transmittance = 1.0;
-	if (global_ubo.fog_enable != 0 && global_ubo.pt_fog_extinction > 0.0)
+	bool  q3_fog = false;
+	vec3  q3_glow = vec3(0.0);
+	// A Quake III map's fog brushes have REAL extinction (fog_q3.glsl), which has
+	// to hide what is behind them even while the map fog itself is additive.
+	// Computed exactly from the boxes rather than taken from result.a: the grid's
+	// transmittance also carries the flat medium's token 0.0001 per unit, which
+	// over a long view would dim the whole far scene, fog brush or not.
+	if (global_ubo.fog_enable != 0 && global_ubo.pt_fog_extinction <= 0.0 && q3_fog_present())
+	{
+		vec3 q3_dir = texelFetch(TEX_PT_VIEW_DIRECTION, i_position.xy, 0).xyz;
+		vec4 q3_leg = texelFetch(TEX_PT_GODRAYS_THROUGHPUT_DIST, i_position.xy, 0);
+		if (dot(q3_dir, q3_dir) > 0.0)
+		{
+			q3_dir = normalize(q3_dir);
+
+			// Quake III's fog is its colour whatever the light: what the fog takes
+			// away comes back as that colour, at pt_fog_q3_ambient times the
+			// exposure's level, its brightness taken out (see global_ubo.h)
+			float q3_level = global_ubo.prev_adapted_luminance * max(global_ubo.pt_fog_q3_ambient, 0.0);
+			vec3 q3_color;
+
+			if (raw_view_depth >= 0.0)
+			{
+				// straight from the eye: the direction and distance are the camera ray's
+				transmittance = q3_fog_transmittance(global_ubo.cam_pos.xyz, q3_dir, q3_leg.w, q3_color);
+				q3_glow = (1.0 - transmittance) * q3_fog_tint(q3_color) * q3_level;
+			}
+			else
+			{
+				/* A BENT PATH: glass, water, a mirror, a portal. reflect_refract's bounce 0
+				   has already overwritten the direction and the distance with ITS leg - the
+				   bent ray from the surface to what it hit - and reading that from the eye
+				   measured a few units of fog next to the camera instead of the column out
+				   to the surface: the health orbs in q3dm4's fog pit stood out clear, and so
+				   did their whole see-through image (Matt, 2026-11-17). So two legs: the eye
+				   to the surface along the camera ray (PT_PRIMARY_DIST, kept from the primary
+				   rays), and bounce 0's own, from where it really began - its hit minus its
+				   length, which also holds at a camera portal, whose leg starts at the
+				   camera. Bounces 1-3 come after this pass and add their own legs
+				   (reflect_refract.rgen, fog_filter_active). */
+				int field_width = max(global_ubo.pt_field_offset, 1);
+				vec2 uv = (vec2(i_position - ivec2(field_left, 0)) + 0.5)
+				        / vec2(float(field_width), float(global_ubo.height));
+				vec3 dir0 = normalize((global_ubo.invV * vec4(projection_screen_to_view(uv, 1.0, false), 0.0)).xyz);
+				float dist0 = texelFetch(TEX_PT_PRIMARY_DIST, i_position.xy, 0).r;
+				float t0 = q3_fog_transmittance(global_ubo.cam_pos.xyz, dir0, dist0, q3_color);
+				vec3 glow0 = (1.0 - t0) * q3_fog_tint(q3_color);
+
+				vec3 hit1 = texelFetch(TEX_PT_SHADING_POSITION, i_position.xy, 0).xyz;
+				float t1 = q3_fog_transmittance(hit1 - q3_dir * q3_leg.w, q3_dir, q3_leg.w, q3_color);
+				vec3 glow1 = (1.0 - t1) * q3_fog_tint(q3_color);
+
+				/* The eye's column is shared by both layers of a split pixel, which the
+				   combine pass SUMS - each takes half, as the grid's column does above
+				   (pt_fog_split_once). The leg past the surface is this layer's own, at
+				   its throughput (Fresnel share, glass tint), as the march weights it. */
+				float share0 = 1.0;
+				if (global_ubo.pt_fullres_fields != 0 && global_ubo.pt_fog_split_once != 0.0)
+				{
+					int field0_flags = int(texelFetch(TEX_PT_VIEW_DIRECTION, ivec2(i_position.x - field_left, i_position.y), 0).w);
+					if (bitCount(field0_flags & CHECKERBOARD_FLAG_FIELD_MASK) > 1)
+						share0 = 0.5;
+				}
+
+				transmittance = t0 * t1;
+				q3_glow = (share0 * glow0 + t0 * q3_leg.rgb * glow1) * q3_level;
+			}
+			q3_fog = transmittance < 1.0;
+		}
+	}
+	else if (global_ubo.fog_enable != 0 && global_ubo.pt_fog_extinction > 0.0)
 	{
 		transmittance = mix(1.0, clamp(result.a, 0.0, 1.0),
 		                    clamp(global_ubo.pt_fog_opacity, 0.0, 1.0));
 	}
 
-	vec3 composition = originalColor.rgb * transmittance + result.rgb;
+	vec3 composition = originalColor.rgb * transmittance + result.rgb + q3_glow;
 
-	imageStore(IMG_PT_TRANSPARENT, ivec2(gl_GlobalInvocationID.xy), vec4(composition.rgb, originalColor.a));
+	/* The SCENE behind a fog brush has to go too, not only this overlay. The
+	   overlay is laid over the scene as scene * (1 - alpha) + overlay
+	   (brdf.glsl composite_color), and the alpha used to go back untouched - so a
+	   fog brush dimmed the sky, the glows and the effects in front of the walls and
+	   never the walls themselves, and read as a faint haze however thick it was
+	   (Matt, 2026-11-17, q3dm4). 1 - (1 - alpha) * T takes the scene's share down
+	   by T as well. The other extinction path below (pt_fog_extinction > 0) keeps
+	   the old alpha: changing what it hides is a separate decision. */
+	float alpha = q3_fog ? 1.0 - (1.0 - originalColor.a) * transmittance : originalColor.a;
+
+	imageStore(IMG_PT_TRANSPARENT, ivec2(gl_GlobalInvocationID.xy), vec4(composition.rgb, alpha));
 
 	/* pt_dlss_particle_layer: the effects are in RR's transparency layer now, not in
 	   PT_TRANSPARENT, so the fog's dimming has to reach them there - by the same

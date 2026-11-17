@@ -17,6 +17,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 */
 
 #include "physical_sky.h"
+#include "q3stages.h"	// a Quake III sky's q3map_sun
 #include "precomputed_sky.h"
 #include "system/system.h"
 #include "../../client/client.h"
@@ -1377,6 +1378,15 @@ vkpt_physical_sky_load_preset(int preset)
 	SkyLoadScatterParameters((SkyPreset)preset);
 }
 
+// light->direction from light->direction_envmap
+static void sun_direction_to_world(sun_light_t *light, const vec3_t sky_matrix[3])
+{
+	const float *d = light->direction_envmap;
+
+	for (int i = 0; i < 3; i++)
+		light->direction[i] = d[0] * sky_matrix[i][0] + d[1] * sky_matrix[i][1] + d[2] * sky_matrix[i][2];
+}
+
 void
 vkpt_evaluate_sun_light(sun_light_t* light, const vec3_t sky_matrix[3], float time)
 {
@@ -1397,6 +1407,29 @@ vkpt_evaluate_sun_light(sun_light_t* light, const vec3_t sky_matrix[3], float ti
 	{
 		// physical sky is disabled - no direct sun light in this mode
 		memset(light, 0, sizeof(*light));
+
+		/* ...unless the map's own sky brings one. A Quake III sky shader can
+		   name its sun (q3map_sun): q3map lit the map with it, and the map was
+		   built to be seen in that light. Its angles are Quake III's world
+		   angles - 0 degrees from +x, 90 from +y, elevation above the horizon -
+		   which is this envmap's frame too; no Quake III sky turns. Its light
+		   comes straight from here, as there is no sky pass to sum it from
+		   (map_sun_active, SUN_COLOR_RESOLVED in vertex_buffer.h). */
+		vec3_t q3_light;
+		float q3_degrees, q3_elevation;
+		if (vkpt_q3_sky_sun(q3_light, &q3_degrees, &q3_elevation))
+		{
+			const float az = DEG2RAD(q3_degrees), el = DEG2RAD(q3_elevation);
+
+			light->direction_envmap[0] = cosf(az) * cosf(el);
+			light->direction_envmap[1] = sinf(az) * cosf(el);
+			light->direction_envmap[2] = sinf(el);
+			light->angular_size_rad = max(1.f, min(10.f, sun_angle->value)) * M_PI / 180.f;
+			light->use_physical_sky = false;
+			VectorCopy(q3_light, light->color);
+			light->visible = light->direction_envmap[2] > 0.f && VectorLength(q3_light) > 0.f;
+			sun_direction_to_world(light, sky_matrix);
+		}
 		return;
 	}
 
@@ -1640,11 +1673,7 @@ vkpt_evaluate_sun_light(sun_light_t* light, const vec3_t sky_matrix[3], float ti
 	else
 		light->visible = (light->direction_envmap[2] >= -sinf(light->angular_size_rad * 0.5f));
 
-	vec3_t sun_direction_world = { 0.f };
-	sun_direction_world[0] = light->direction_envmap[0] * sky_matrix[0][0] + light->direction_envmap[1] * sky_matrix[0][1] + light->direction_envmap[2] * sky_matrix[0][2];
-	sun_direction_world[1] = light->direction_envmap[0] * sky_matrix[1][0] + light->direction_envmap[1] * sky_matrix[1][1] + light->direction_envmap[2] * sky_matrix[1][2];
-	sun_direction_world[2] = light->direction_envmap[0] * sky_matrix[2][0] + light->direction_envmap[1] * sky_matrix[2][1] + light->direction_envmap[2] * sky_matrix[2][2];
-	VectorCopy(sun_direction_world, light->direction);
+	sun_direction_to_world(light, sky_matrix);
 }
 
 VkResult
@@ -1754,7 +1783,11 @@ vkpt_physical_sky_update_ubo(QVKUniformBuffer_t * ubo, const sun_light_t* light,
 
 	ubo->sun_visible = light->visible;
 
-	if (render_world && !vkpt_physical_sky_uses_skybox())
+	// the map's own sun (q3map_sun) under its skybox - see vkpt_evaluate_sun_light
+	ubo->map_sun_active = (!light->use_physical_sky && VectorLength(light->color) > 0.f) ? 1 : 0;
+
+	// the sun's shadow map, for the god rays: the physical sky's sun, or the map's
+	if (render_world && (!vkpt_physical_sky_uses_skybox() || ubo->map_sun_active))
 	{
 
 		vec3_t forward;

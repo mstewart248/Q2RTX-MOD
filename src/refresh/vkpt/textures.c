@@ -970,7 +970,7 @@ image_t *vkpt_fake_emissive_texture(image_t *image, int bright_threshold_int)
 
 	// Construct a new name for the fake emissive image
 	const char emissive_image_suffix[] = "*E.wal"; // 'fake' extension needed for image lookup logic
-	char emissive_image_name[MAX_QPATH];
+	char emissive_image_name[MAX_IMAGE_PATH];
 	Q_strlcpy(emissive_image_name, image->name, sizeof(emissive_image_name));
 	size_t pos = strlen(emissive_image_name) - 4;
 	if (pos + sizeof(emissive_image_suffix) > sizeof(emissive_image_name))
@@ -993,6 +993,130 @@ image_t *vkpt_fake_emissive_texture(image_t *image, int bright_threshold_int)
 	apply_fake_emissive_threshold(new_image, bright_threshold_int);
 
 	return new_image;
+}
+
+/*
+=================
+vkpt_alpha_mask_texture
+
+A mask image (texture_mask: white where the surface is, black where it is cut
+away) made from an image's ALPHA channel, for Quake III's alpha-tested
+shaders - grates, foliage, railings. The path tracer's mask reads RGB, and
+Quake III keeps the cut-out in the colour texture's alpha, so the alpha is
+copied into RGB of a clone named "<image>*M<func>.wal". Written as hard 0/255
+so it does not matter whether the clone is uploaded as sRGB.
+
+func is a Q3ALPHA_* value (common/q3shader.h). NULL if (image) has no pixels
+left to read and no mask was made from it before. The mask's alpha_mask_empty
+says no pixel passes - console/under in q3dm0, whose alpha is 0 all over, so
+Quake III never drew it.
+=================
+*/
+image_t *vkpt_alpha_mask_texture(image_t *image, int func)
+{
+	if (!image || image == R_NOTEXTURE)
+		return NULL;
+
+	char mask_name[MAX_IMAGE_PATH];
+	char suffix[8];
+	Q_snprintf(suffix, sizeof(suffix), "*M%d.wal", func);
+
+	Q_strlcpy(mask_name, image->name, sizeof(mask_name));
+	char *dot = strrchr(mask_name, '.');
+	if (dot && dot > strrchr(mask_name, '/'))
+		*dot = 0;
+	if (strlen(mask_name) + strlen(suffix) >= sizeof(mask_name))
+		mask_name[sizeof(mask_name) - strlen(suffix) - 1] = 0;
+	Q_strlcat(mask_name, suffix, sizeof(mask_name));
+
+	// made at an earlier load: by now the colour image's pixels are uploaded and
+	// gone, so this has to come before asking for them
+	image_t *prev_image = IMG_FindExisting(mask_name, image->type);
+	if (prev_image != R_NOTEXTURE)
+	{
+		prev_image->registration_sequence = registration_sequence;
+		return prev_image;
+	}
+
+	if (!image->pix_data)
+		return NULL;
+
+	image_t *mask = IMG_Clone(image, mask_name);
+	if (mask == R_NOTEXTURE || !mask->pix_data)
+		return NULL;
+
+	bool any_kept = false;
+	byte *pixel = mask->pix_data;
+	const int count = mask->upload_width * mask->upload_height;
+	for (int i = 0; i < count; i++, pixel += 4)
+	{
+		byte a = pixel[3];
+		bool keep;
+		switch (func)
+		{
+		case 1:  keep = a > 0;    break;   // GT0
+		case 2:  keep = a < 128;  break;   // LT128
+		default: keep = a >= 128; break;   // GE128
+		}
+		pixel[0] = pixel[1] = pixel[2] = keep ? 255 : 0;
+		pixel[3] = 255;
+		any_kept |= keep;
+	}
+	mask->alpha_mask_empty = !any_kept;
+
+	return mask;
+}
+
+/*
+=================
+vkpt_solid_texture
+
+One colour all over, in a clone of (image) named "<image>*<tag>.wal": the
+white base and the black roughness / white metallic maps of a Quake III
+mirror (material.c, apply_q3_shader), where the material has no maps of its
+own and would otherwise be pinned at roughness 1. NULL if (image) has no
+pixels left to clone.
+=================
+*/
+image_t *vkpt_solid_texture(image_t *image, const char *tag, byte r, byte g, byte b)
+{
+	if (!image || image == R_NOTEXTURE || !image->pix_data)
+		return NULL;
+
+	char name[MAX_IMAGE_PATH];
+	char suffix[16];
+	Q_snprintf(suffix, sizeof(suffix), "*%s.wal", tag);
+
+	Q_strlcpy(name, image->name, sizeof(name));
+	char *dot = strrchr(name, '.');
+	if (dot && dot > strrchr(name, '/'))
+		*dot = 0;
+	if (strlen(name) + strlen(suffix) >= sizeof(name))
+		name[sizeof(name) - strlen(suffix) - 1] = 0;
+	Q_strlcat(name, suffix, sizeof(name));
+
+	image_t *prev_image = IMG_FindExisting(name, image->type);
+	if (prev_image != R_NOTEXTURE)
+	{
+		prev_image->registration_sequence = registration_sequence;
+		return prev_image;
+	}
+
+	image_t *solid = IMG_Clone(image, name);
+	if (solid == R_NOTEXTURE || !solid->pix_data)
+		return NULL;
+
+	byte *pixel = solid->pix_data;
+	const int count = solid->upload_width * solid->upload_height;
+	for (int i = 0; i < count; i++, pixel += 4)
+	{
+		pixel[0] = r;
+		pixel[1] = g;
+		pixel[2] = b;
+		pixel[3] = 255;
+	}
+
+	return solid;
 }
 
 /*

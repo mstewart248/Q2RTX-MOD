@@ -706,6 +706,7 @@ bool CL_GetMapFog(mapfog_params_t *out)
     if (peak <= 0.0f) {
         out->density = MAPFOG_DISTANCEFOG_REFERENCE;    // density 1 everywhere
         VectorSet(out->color, 1, 1, 1);
+        out->no_map_fog = true;
         return true;
     }
 

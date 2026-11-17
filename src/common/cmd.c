@@ -1952,6 +1952,12 @@ typedef struct {
 static map_cvar_t  map_cvars[MAX_MAP_CVARS];
 static int         num_map_cvars;
 
+// the server's, for one game (Cmd_SetGameCvar)
+#define MAX_GAME_CVARS 4
+
+static map_cvar_t  game_cvars[MAX_GAME_CVARS];
+static int         num_game_cvars;
+
 /*
 =================
 Cmd_GetMapCvarSaved
@@ -1993,7 +1999,15 @@ void Cmd_ClearMapCvarOverride(const char *name)
     for (int i = 0; i < num_map_cvars; i++) {
         if (!Q_stricmp(map_cvars[i].name, name)) {
             map_cvars[i] = map_cvars[--num_map_cvars];
-            return;
+            break;
+        }
+    }
+
+    // and a game's (Cmd_SetGameCvar)
+    for (int i = 0; i < num_game_cvars; i++) {
+        if (!Q_stricmp(game_cvars[i].name, name)) {
+            game_cvars[i] = game_cvars[--num_game_cvars];
+            break;
         }
     }
 }
@@ -2006,20 +2020,66 @@ void Cmd_RestoreMapCvars(void)
     num_map_cvars = 0;
 }
 
+/*
+=================
+Cmd_SetGameCvar / Cmd_RestoreGameCvars
+
+The server's own mapcvar, for cvars the GAME reads when it starts (deathmatch):
+mapcvar's restore runs at the client's map load, after the server has already
+started the next game with the old value. Set with Cmd_SetGameCvar just before
+SV_InitGame; Cmd_RestoreGameCvars puts the player's value back before the next
+one. As with mapcvar, the player setting the cvar themselves - even to the same
+value, as the menus' "deathmatch 1" does - makes it theirs (Cmd_ClearMapCvarOverride).
+=================
+*/
+void Cmd_SetGameCvar(const char *name, const char *value)
+{
+    cvar_t *var = Cvar_FindVar(name);
+    int i;
+
+    if (!var)
+        return;
+
+    for (i = 0; i < num_game_cvars; i++)
+        if (!Q_stricmp(game_cvars[i].name, name))
+            break;
+
+    if (i == num_game_cvars && num_game_cvars < MAX_GAME_CVARS) {
+        Q_strlcpy(game_cvars[i].name, name, sizeof(game_cvars[i].name));
+        Q_strlcpy(game_cvars[i].saved, var->latched_string ? var->latched_string : var->string,
+                  sizeof(game_cvars[i].saved));
+        num_game_cvars++;
+    }
+
+    Cvar_SetEx(name, value, FROM_CODE);
+}
+
+void Cmd_RestoreGameCvars(void)
+{
+    for (int i = 0; i < num_game_cvars; i++)
+        Cvar_SetEx(game_cvars[i].name, game_cvars[i].saved, FROM_CODE);
+
+    num_game_cvars = 0;
+}
+
 static void Cmd_MapCvar_f(void)
 {
     const char *name, *value;
     cvar_t     *var;
     bool        latched = false;
 
-    if (Cmd_Argc() != 3) {
+    if (Cmd_Argc() < 3) {
         Com_Printf("Usage: mapcvar <name> <value>\n");
         Com_Printf("Sets a cvar until the next map load, then restores it.\n");
         return;
     }
 
     name  = Cmd_Argv(1);
-    value = Cmd_Argv(2);
+    // the rest of the line, as "set" takes it: "mapcvar pt_q3_sun_color 255 255
+    // 150" is one value of three words. Only exactly one word was taken before,
+    // and that line printed the usage and set nothing (Matt's q3dm6 and q3dm5
+    // sun colours, 2026-11-17).
+    value = Cmd_ArgsFrom(2);
 
     var = Cvar_FindVar(name);
     if (!var) {

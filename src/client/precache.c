@@ -23,6 +23,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #include "client.h"
 #include "client/sound/vorbis.h"
+#include "common/q3shader.h"
 
 /*
 ================
@@ -246,6 +247,10 @@ void CL_RegisterBspModels(void)
         }
     }
 
+    // Quake III map: Haste and Flight ride in the player's gravity - the same
+    // flag SV_SpawnServer sets from its load of the map (pmove.c)
+    cl.pmp.q3 = cl.bsp->q3;
+
     for (i = 1; i < MAX_MODELS; i++) {
         name = cl.configstrings[CS_MODELS + i];
         if (!name[0]) {
@@ -302,6 +307,115 @@ void CL_RegisterVWepModels(void)
 
 /*
 =================
+CL_Q3SkyShader
+
+A Quake III map has no sky name: its sky is the shader on its sky surfaces
+(bsp_q3.c names a texinfo after its shader, less "textures/"). Writes
+"*<shader>" for R_SetSky, which bakes it into a cube map (vkpt main.c,
+q3_sky_faces).
+=================
+*/
+static bool CL_Q3SkyShader(char *out, size_t size)
+{
+    char    name[MAX_QPATH];
+    int     i;
+
+    if (!cl.bsp || !cl.bsp->q3)
+        return false;
+
+    Q3Shader_Load();
+    for (i = 0; i < cl.bsp->numtexinfo; i++) {
+        const mtexinfo_t *ti = &cl.bsp->texinfo[i];
+        const q3shader_t *sh;
+
+        if (!(ti->c.flags & SURF_SKY))
+            continue;
+        if (!strncmp(ti->name, "../", 3))
+            Q_strlcpy(name, ti->name + 3, sizeof(name));
+        else
+            Q_concat(name, sizeof(name), "textures/", ti->name);
+
+        sh = Q3Shader_Find(name);
+        if (sh && sh->sky) {
+            Q_concat(out, size, "*", name);
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
+=================
+CL_PlayMapMusic
+
+CS_CDTRACK: a track number, or on a Quake III map its worldspawn "music" -
+one .wav, or an intro and a loop (g_spawn.c passes the key on as it is). Its
+paths name Quake III's own files, so they are looked up there ("baseq3/",
+files.c), and Quake III's maps write some of them with backslashes.
+=================
+*/
+static void CL_PlayMapMusic(const char *s)
+{
+    char    intro[MAX_QPATH], loop[MAX_QPATH];
+    char    *tok;
+    const char *p = s;
+
+    while (*p == ' ')
+        p++;
+    if (!*p || Q_isdigit(*p) || *p == '-') {
+        OGG_PlayTrack(atoi(s));
+        return;
+    }
+
+    intro[0] = loop[0] = 0;
+    tok = COM_Parse(&p);
+    if (*tok)
+        Q_concat(intro, sizeof(intro), cl.bsp && cl.bsp->q3 ? "baseq3/" : "", tok);
+    tok = COM_Parse(&p);
+    if (*tok)
+        Q_concat(loop, sizeof(loop), cl.bsp && cl.bsp->q3 ? "baseq3/" : "", tok);
+
+    FS_NormalizePath(intro);
+    FS_NormalizePath(loop);
+    OGG_PlayMusicFiles(intro, loop);
+}
+
+/*
+=================
+SKY OVERRIDE
+
+sky_override <name>: a sky in place of the map's own, for a map's cfg - with
+"mapcvar sky_override space1" baseq3/maps/q3tourney1.cfg gives that Quake III
+map the space sky of Quake II's boss2 (Matt, 2026-11-16). sky_override_rotate
+and sky_override_axis are a worldspawn's skyrotate (degrees a second) and
+skyaxis; boss2's turn is "3" about "1 1 0". Typed in the console, they change
+the sky at once. "" = the map's own.
+=================
+*/
+static cvar_t   *sky_override;
+static cvar_t   *sky_override_rotate;
+static cvar_t   *sky_override_axis;
+static bool     prep_refresh_running;
+
+static void sky_override_changed(cvar_t *self)
+{
+    // a map load sets the sky itself once its cfgs have run (CL_PrepRefresh)
+    if (cls.state >= ca_precached && cls.ref_initialized && cl.mapname[0] && !prep_refresh_running)
+        CL_SetSky();
+}
+
+void CL_InitSkyOverride(void)
+{
+    sky_override = Cvar_Get("sky_override", "", 0);
+    sky_override_rotate = Cvar_Get("sky_override_rotate", "0", 0);
+    sky_override_axis = Cvar_Get("sky_override_axis", "0 0 1", 0);
+    sky_override->changed = sky_override_changed;
+    sky_override_rotate->changed = sky_override_changed;
+    sky_override_axis->changed = sky_override_changed;
+}
+
+/*
+=================
 CL_SetSky
 
 =================
@@ -311,6 +425,8 @@ void CL_SetSky(void)
     float       rotate = 0;
     int         autorotate = 1;
     vec3_t      axis;
+    const char  *sky = cl.configstrings[CS_SKY];
+    char        q3sky[MAX_QPATH];
 
     sscanf(cl.configstrings[CS_SKYROTATE], "%f %d", &rotate, &autorotate);
     if (sscanf(cl.configstrings[CS_SKYAXIS], "%f %f %f",
@@ -319,7 +435,21 @@ void CL_SetSky(void)
         VectorClear(axis);
     }
 
-    R_SetSky(cl.configstrings[CS_SKY], rotate, autorotate, axis);
+    // a Quake III map with no "sky" key of its own (g_spawn.c leaves the
+    // name empty): its sky shader
+    if (!sky[0] && CL_Q3SkyShader(q3sky, sizeof(q3sky)))
+        sky = q3sky;
+
+    // a map cfg's sky in place of all of that (SKY OVERRIDE)
+    if (sky_override && sky_override->string[0]) {
+        sky = sky_override->string;
+        rotate = sky_override_rotate->value;
+        autorotate = 1;
+        if (sscanf(sky_override_axis->string, "%f %f %f", &axis[0], &axis[1], &axis[2]) != 3)
+            VectorSet(axis, 0, 0, 1);
+    }
+
+    R_SetSky(sky, rotate, autorotate, axis);
 }
 
 /*
@@ -338,6 +468,9 @@ void CL_PrepRefresh(void)
         return;
     if (!cl.mapname[0])
         return;     // no map loaded
+
+    // its cfgs' mapcvars must not set the sky half way through (SKY OVERRIDE)
+    prep_refresh_running = true;
 
     // register models, pics, and skins
     Com_LoadMark("precache");
@@ -401,6 +534,7 @@ void CL_PrepRefresh(void)
     // Rerelease maps used to be forced onto a dummy "base" sky here so that the
     // procedural sky was always used; the renderer now decides that itself from
     // the map's own skybox and the sky_use_map_skybox cvar.
+    prep_refresh_running = false;
     CL_SetSky();
 
     // the renderer can now free unneeded stuff
@@ -412,8 +546,7 @@ void CL_PrepRefresh(void)
 
     SCR_UpdateScreen();
 
-	int cdtrack = atoi(cl.configstrings[CS_CDTRACK]);
-    OGG_PlayTrack(cdtrack);
+    CL_PlayMapMusic(cl.configstrings[CS_CDTRACK]);
 }
 
 /*
@@ -478,7 +611,7 @@ void CL_UpdateConfigstring(int index)
     // the same case; this fork's music code predates it. OGG_PlayTrack leaves a
     // track that is already playing alone.
     if (index == CS_CDTRACK) {
-        OGG_PlayTrack(atoi(s));
+        CL_PlayMapMusic(s);
         return;
     }
 

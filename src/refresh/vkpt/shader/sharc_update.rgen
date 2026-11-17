@@ -244,6 +244,7 @@ main()
 		vec3 emissive = sample_emissive_texture(hit_material, minfo, tex_coord, vec2(0), vec2(0), 3);
 		emissive *= triangle.emissive_factor;
 		emissive += get_emissive_shell(hit_material) * base_color;
+		emissive += get_emissive_q3_quad(hit_material, triangle.texture_flags, hit_normal, direction);
 		// spotlight term that matches sample_light_lists() in light_lists.h
 		emissive *= sqrt(max(0, -dot(direction, hit_normal)));
 		if (sharc_is_analytic_light(hit_material))

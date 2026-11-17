@@ -1751,7 +1751,7 @@ void Prox_Explode(edict_t *ent)
     }
 
     if (ent->dmg > PROX_DAMAGE)
-        gi.sound(ent, CHAN_ITEM, gi.soundindex("items/damage3.wav"), 1, ATTN_NORM, 0);
+        gi.sound(ent, CHAN_ITEM, Q3_QuadFireSound(), 1, ATTN_NORM, 0);
 
     ent->takedamage = DAMAGE_NO;
     T_RadiusDamage(ent, owner, (float)ent->dmg, ent, PROX_DAMAGE_RADIUS, MOD_PROX);
@@ -2376,7 +2376,7 @@ void tesla_remove(edict_t *self)
 
     // play the quad sound if quadded and it is an underwater explosion
     if (self->dmg_radius && self->dmg > TESLA_DAMAGE * TESLA_EXPLOSION_DAMAGE_MULT)
-        gi.sound(self, CHAN_ITEM, gi.soundindex("items/damage3.wav"), 1, ATTN_NORM, 0);
+        gi.sound(self, CHAN_ITEM, Q3_QuadFireSound(), 1, ATTN_NORM, 0);
 
     Grenade_Explode(self);
 }
@@ -2444,7 +2444,7 @@ void tesla_think_active(edict_t *self)
 
             // play the quad sound if it is above the "normal" damage
             if (self->dmg > TESLA_DAMAGE)
-                gi.sound(self, CHAN_ITEM, gi.soundindex("items/damage3.wav"), 1, ATTN_NORM, 0);
+                gi.sound(self, CHAN_ITEM, Q3_QuadFireSound(), 1, ATTN_NORM, 0);
 
             // don't do knockback to walking monsters
             if ((hit->svflags & SVF_MONSTER) && !(hit->flags & (FL_FLY | FL_SWIM)))

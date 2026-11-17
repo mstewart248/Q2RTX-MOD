@@ -929,6 +929,9 @@ extern cvar_t *cvar_tm_debug;
 
 void d3d12_frontend_draw_debug(void)
 {
+    // 'mat print's picture of the material, over the console (R_EndFrame_RTX's)
+    MAT_DrawPreview();
+
     if (cvar_tm_debug && cvar_tm_debug->integer)
         vkpt_tone_mapping_draw_debug();
 }
@@ -1063,6 +1066,7 @@ static const vkpt_prep_backend_t d3d12_backend = {
     .read_sky_envmap = d3d12_world_read_sky_envmap,
     .wait_idle = d3d12_wait_idle,
     .free_model = d3d12_backend_free_model,
+    .set_q3_shaders = d3d12_world_set_q3_shaders,
 };
 
 /* ------------------------------------------------------------------------- */
@@ -1590,6 +1594,7 @@ bool d3d12_frontend_prepare_frame(refdef_t *fd, int waterLevel, d3d12_world_fram
         }
     }
     frame->taa_folded = vkpt_taa_folded();
+    frame->accumulating = prep->ref_mode.enable_accumulation;
     // bloom.c's pass: over TAA_OUTPUT, or with DLSS over DLSS_OUTPUT at the output size
     frame->bloom = vkpt_bloom_will_run();
     {

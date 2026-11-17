@@ -817,6 +817,9 @@ void InitClientPersistant(gclient_t *client)
     client->pers.max_flechettes = 200;
     client->pers.max_prox       = 50;
 
+    // Quake III map: the spawn weapons the bot match menu chose (g_q3.c)
+    Q3_GiveSpawnKit(client);
+
     client->pers.connected = true;
 
     // [Paril-KEX] worldspawn start_items, given at the same point the
@@ -935,6 +938,34 @@ go to a random point, but NOT the two points closest
 to other players
 ================
 */
+// the player SelectSpawnPoint is placing, for SpotAllowed
+static edict_t *spawn_for;
+// and where it put them: a Quake III spot fires its targets
+static edict_t *spawn_spot;
+
+// Quake III's nobots / nohumans (g_q3.c keeps them in the spot's spawnflags)
+static bool SpotAllowed(const edict_t *spot)
+{
+    bool bot;
+
+    if (!spawn_for || !(spot->spawnflags & (Q3_SPOT_NOBOTS | Q3_SPOT_NOHUMANS)))
+        return true;
+    bot = Bot_IsBot(spawn_for);
+    if ((spot->spawnflags & Q3_SPOT_NOBOTS) && bot)
+        return false;
+    if ((spot->spawnflags & Q3_SPOT_NOHUMANS) && !bot)
+        return false;
+    return true;
+}
+
+static edict_t *NextDeathmatchSpot(edict_t *spot)
+{
+    while ((spot = G_Find(spot, FOFS(classname), "info_player_deathmatch")) != NULL)
+        if (SpotAllowed(spot))
+            return spot;
+    return NULL;
+}
+
 edict_t *SelectRandomDeathmatchSpawnPoint(void)
 {
     edict_t *spot, *spot1, *spot2;
@@ -946,7 +977,7 @@ edict_t *SelectRandomDeathmatchSpawnPoint(void)
     range1 = range2 = 99999;
     spot1 = spot2 = NULL;
 
-    while ((spot = G_Find(spot, FOFS(classname), "info_player_deathmatch")) != NULL) {
+    while ((spot = NextDeathmatchSpot(spot)) != NULL) {
         count++;
         range = PlayersRangeFromSpot(spot);
         if (range < range1) {
@@ -970,7 +1001,7 @@ edict_t *SelectRandomDeathmatchSpawnPoint(void)
 
     spot = NULL;
     do {
-        spot = G_Find(spot, FOFS(classname), "info_player_deathmatch");
+        spot = NextDeathmatchSpot(spot);
         if (spot == spot1 || spot == spot2)
             selection++;
     } while (selection--);
@@ -994,7 +1025,7 @@ edict_t *SelectFarthestDeathmatchSpawnPoint(void)
     spot = NULL;
     bestspot = NULL;
     bestdistance = 0;
-    while ((spot = G_Find(spot, FOFS(classname), "info_player_deathmatch")) != NULL) {
+    while ((spot = NextDeathmatchSpot(spot)) != NULL) {
         bestplayerdistance = PlayersRangeFromSpot(spot);
 
         if (bestplayerdistance > bestdistance) {
@@ -1009,17 +1040,60 @@ edict_t *SelectFarthestDeathmatchSpawnPoint(void)
 
     // if there is a player just spawned on each and every start spot
     // we have no choice to turn one into a telefrag meltdown
-    spot = G_Find(NULL, FOFS(classname), "info_player_deathmatch");
+    spot = NextDeathmatchSpot(NULL);
 
     return spot;
 }
 
 edict_t *SelectDeathmatchSpawnPoint(void)
 {
+    edict_t *spot;
+
     if ((int)(dmflags->value) & DF_SPAWN_FARTHEST)
-        return SelectFarthestDeathmatchSpawnPoint();
+        spot = SelectFarthestDeathmatchSpawnPoint();
     else
-        return SelectRandomDeathmatchSpawnPoint();
+        spot = SelectRandomDeathmatchSpawnPoint();
+
+    // every spot barred to this kind of player: any spot at all
+    if (!spot && spawn_for) {
+        edict_t *saved = spawn_for;
+
+        spawn_for = NULL;
+        spot = SelectDeathmatchSpawnPoint();
+        spawn_for = saved;
+    }
+    return spot;
+}
+
+/*
+================
+SelectInitialSpawnPoint
+
+Quake III's: the host's first spawn on a map is at the spot marked INITIAL -
+q3dm0's intro room, the start of most of its arenas - unless someone is
+standing on it. Its team games (CTF) have their own spots and skip this.
+================
+*/
+static edict_t *SelectInitialSpawnPoint(edict_t *ent)
+{
+    edict_t     *spot = NULL;
+    const char  *ip;
+
+    if (!level.q3map || G_CTF() || Bot_IsBot(ent) || ent->client->resp.q3_spawned)
+        return NULL;
+    ent->client->resp.q3_spawned = true;
+
+    // Quake III's localClient: the one playing on this machine
+    ip = Info_ValueForKey(ent->client->pers.userinfo, "ip");
+    if (dedicated->value || Q_strncasecmp(ip, "loopback", 8))
+        return NULL;
+
+    while ((spot = NextDeathmatchSpot(spot)) != NULL)
+        if (spot->spawnflags & Q3_SPOT_INITIAL)
+            break;
+    if (spot && PlayersRangeFromSpot(spot) < 64)
+        return NULL;    // SpotWouldTelefrag: a random spot instead
+    return spot;
 }
 
 
@@ -1070,14 +1144,18 @@ void    SelectSpawnPoint(edict_t *ent, vec3_t origin, vec3_t angles)
 {
     edict_t *spot = NULL;
 
+    spawn_for = ent;
     if (G_CTF())
         spot = CTF_SpawnPoint(ent);
     if (spot)
         ;
-    else if (deathmatch->value)
-        spot = SelectDeathmatchSpawnPoint();
-    else if (coop->value)
+    else if (deathmatch->value) {
+        spot = SelectInitialSpawnPoint(ent);
+        if (!spot)
+            spot = SelectDeathmatchSpawnPoint();
+    } else if (coop->value)
         spot = SelectCoopSpawnPoint(ent);
+    spawn_for = NULL;
 
     // find a single player start spot
     if (!spot) {
@@ -1140,6 +1218,7 @@ void    SelectSpawnPoint(edict_t *ent, vec3_t origin, vec3_t angles)
     }
 
     VectorCopy(spot->s.angles, angles);
+    spawn_spot = spot;
 }
 
 //======================================================================
@@ -1489,6 +1568,13 @@ void PutClientInServer(edict_t *ent)
     // force the current weapon up
     client->newweapon = client->pers.weapon;
     ChangeWeapon(ent);
+
+    // Quake III's ClientSpawn: a spot's targets fire on whoever spawns there
+    // (q3dm10's target_give hands out its weapons this way)
+    if (level.q3map && spawn_spot && spawn_spot->inuse && spawn_spot->target &&
+        !strcmp(spawn_spot->classname, "info_player_deathmatch"))
+        G_UseTargets(spawn_spot, ent);
+    spawn_spot = NULL;
 }
 
 /*
@@ -1905,6 +1991,8 @@ void ClientThink(edict_t *ent, usercmd_t *ucmd)
         // one shipped map that sets it (0.5), and without this the long floaty
         // jump under the ring is just a normal jump.
         client->ps.pmove.gravity = sv_gravity->value * ent->gravity;
+        // Quake III: Haste and Flight travel in the gravity (g_q3.c)
+        client->ps.pmove.gravity = Q3_PmoveGravity(ent, client->ps.pmove.gravity);
         pm.s = client->ps.pmove;
 
         for (i = 0 ; i < 3 ; i++) {

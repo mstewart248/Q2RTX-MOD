@@ -155,19 +155,26 @@ int main(int argc, char **argv)
 
     printf("\n%d of %d compute shaders have a layout\n", matched, total);
 
-    // the pass table, each against its own layout (world.c's compute_pso)
-    int passes_ok = 0;
-    for (int i = 0; i < D3D12_NUM_PASSES; i++) {
+    // the pass table, each against its own layout (world.c's compute_pso), and the
+    // passes' spec_q3 0 builds (q2_shader, world.c's pass sets) the same way
+    int passes_ok = 0, passes_total = 0;
+    for (int n = 0; n < 2 * D3D12_NUM_PASSES; n++) {
+        const int i = n % D3D12_NUM_PASSES;
         const d3d12_pass_info_t *pi = &d3d12_pass_info[i];
-        if (!pi->shader) {
+        if (n < D3D12_NUM_PASSES && !pi->shader) {
+            passes_total++;
             printf("FAIL  pass %d has no shader\n", i);
             continue;
         }
-        snprintf(path, sizeof(path), "%sbaseq2\\shader_d3d12\\%s.dxil", root, pi->shader);
+        const char *shader = n < D3D12_NUM_PASSES ? pi->shader : pi->q2_shader;
+        if (!shader)
+            continue;
+        passes_total++;
+        snprintf(path, sizeof(path), "%sbaseq2\\shader_d3d12\\%s.dxil", root, shader);
         size_t size = 0;
         void *code = load(path, &size);
         if (!code) {
-            printf("FAIL  pass %d: no %s.dxil\n", i, pi->shader);
+            printf("FAIL  pass %d: no %s.dxil\n", i, shader);
             continue;
         }
         messages_len = 0; messages[0] = 0;
@@ -180,12 +187,13 @@ int main(int argc, char **argv)
             passes_ok++;
             ID3D12PipelineState_Release(pso);
         } else {
-            printf("FAIL  pass %d %s against %s:\n%s", i, pi->shader, d3d12_pipeline_layouts[pi->layout].name,
+            printf("FAIL  pass %d %s against %s:\n%s", i, shader, d3d12_pipeline_layouts[pi->layout].name,
                    messages_len ? messages : "      (no message)\n");
         }
         free(code);
     }
-    printf("%d of %d passes made against their own layouts\n", passes_ok, (int)D3D12_NUM_PASSES);
+    printf("%d of %d passes made against their own layouts (%d passes, and their Quake III-less builds)\n",
+           passes_ok, passes_total, (int)D3D12_NUM_PASSES);
 
     // the SER A/B's (world.c's ser_ready): needs shader model 6.9
     D3D12_FEATURE_DATA_SHADER_MODEL sm = { D3D_SHADER_MODEL_6_9 };
@@ -270,5 +278,5 @@ int main(int argc, char **argv)
     printf("%d of %d graphics pipelines made\n", gfx_ok, gfx_total);
 
     d3d12_bindings_destroy_root_signatures();
-    return matched == total && gfx_ok == gfx_total && rg_ok == rg_total && passes_ok == D3D12_NUM_PASSES ? 0 : 1;
+    return matched == total && gfx_ok == gfx_total && rg_ok == rg_total && passes_ok == passes_total ? 0 : 1;
 }

@@ -66,6 +66,12 @@ averages, draws the table and answers profiler_dump for both.
 	PROFILER_DO(PROFILER_FLOW_MARCH,                 1) \
 	PROFILER_DO(PROFILER_SHADOW_MAP,                 1) \
 	PROFILER_DO(PROFILER_COMPOSITING,                1) \
+	/* Photo mode's running average: the TAA pass's dispatch, which in photo \
+	   mode does no TAA (evaluate_taa_settings turns it off with the denoiser) \
+	   and only runs asvgf_taau.comp's temporal_blend_factor branch. A row of \
+	   its own, so the profiler does not count it as the denoiser (Matt, \
+	   2026-11-17: "photo mode should never have denoising or TAA"). */ \
+	PROFILER_DO(PROFILER_ACCUMULATION,               1) \
 	/* What the D3D12 renderer's GPU frame held besides the passes above, timed \
 	   so profiler 3/4's "other" is a measurement (11-14; Vulkan leaves them \
 	   unmarked): DLSS 5's neural passes; the copies - the textures and models \

@@ -133,6 +133,21 @@ typedef struct light_poly_s {
 	// EVERY site that creates a light_poly_t must set this - the struct is not
 	// zero-initialised on any of the paths that build one on the stack.
 	float volumetric_scale;
+	// A Quake III program's glow (q3stages.c vkpt_q3_light_glow): copy_light
+	// takes the light's colour from the program every frame - what the surface
+	// shows at this moment, averaged over the triangle - instead of `color`,
+	// which only stands in until the program's images are in memory. q3_uv is
+	// the texture coordinate at each corner (1 = one repeat), q3_samples the
+	// sample grid (n x n). Only read when `material` has a program, so the
+	// sites that make lights without a material need not set it; bsp_mesh.c's
+	// do, and the model-light copy carries it.
+	bool q3_glow;
+	uint8_t q3_samples;
+	float q3_uv[6];
+	// a still program's glow, worked out once (q3_glow_key = the program's
+	// vkpt_q3_program_key when it was; 0 = not yet)
+	uint32_t q3_glow_key;
+	vec3_t q3_glow_rgb;
 } light_poly_t;
 
 typedef struct model_s {
@@ -211,6 +226,13 @@ the model system and pointed nowhere near the caller that was at fault.
 model_t *MOD_ForHandle_(qhandle_t h, const char *file, int line);
 #define MOD_ForHandle(h)    MOD_ForHandle_(h, __FILE__, __LINE__)
 qhandle_t R_RegisterModel(const char *name);
+
+// A model the renderer builds in memory instead of reading a file (vkpt
+// q3deform.c): a free slot, named and registered for the map being loaded, of
+// type MOD_ALIAS, its hunk begun with room for `hunk_size` bytes. The caller
+// fills it with MOD_Malloc and ends the hunk; MOD_FreeUnused drops it with the
+// map like any other. NULL if every slot is taken.
+model_t *MOD_AllocProcedural(const char *name, size_t hunk_size);
 
 /*
 Tracing a ray against an alias model's actual triangles.

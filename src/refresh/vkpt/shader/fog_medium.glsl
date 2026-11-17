@@ -100,6 +100,8 @@ one.
 #define FOG_HEIGHTFOG_REFERENCE 0.025
 #define FOG_DISTANCEFOG_REFERENCE 2.0
 
+#include "fog_q3.glsl"   // Quake III fog brushes
+
 // How much total decay is allowed from the bottom of the band to the top.
 //
 // heightfog_falloff CANNOT be used as a per-world-unit exponent, which is what
@@ -702,7 +704,7 @@ vec3 getClusterLightInscatter(uint cluster_idx, vec3 p, vec3 sky_p, float rand01
 		   `emit_area / dist2`, which is what the polygon path always computed
 		   (`area / dist2`) and is therefore bit-identical for the emissive
 		   surfaces that were already working. */
-		float vol_scale = light.volumetric_scale;
+		float vol_scale = fog_light_vol_scale(light.volumetric_scale, p);
 
 		// resolved on the CPU in copy_light(), so 0 here really does mean "this
 		// light lights the room and makes no fog" - skip it before spending a ray
@@ -1121,7 +1123,7 @@ float volume_light_estimate(LightPolygon light, vec3 p, vec3 view_dir, float g)
 	if (any(lessThan(light.color, vec3(0.0))))
 		return 0.0;
 
-	float vol_scale = light.volumetric_scale;
+	float vol_scale = fog_light_vol_scale(light.volumetric_scale, p);
 	if (vol_scale <= 0.0)
 		return 0.0;
 
@@ -1661,7 +1663,7 @@ vec3 fog_shade_chosen(vec3 p, vec3 view_dir, float g, vec3 rnd, uint chosen_idx,
 	float phase = ScatterPhase_HenyeyGreenstein(dot(view_dir, L), g);
 
 	vec3 contribution = light.color
-	                  * (profile * phase * light.volumetric_scale
+	                  * (profile * phase * fog_light_vol_scale(light.volumetric_scale, p)
 	                     * light.light_style_scale * W / pdfw);
 
 	/* FIREFLY CLAMP.
@@ -1773,7 +1775,7 @@ vec3 getVolumeLightInscatter(uint cluster_idx, vec3 p, vec3 sky_p, vec3 view_dir
 // density band, or under cl_fog_rerelease KEX's ramp (see mapfog.c), blended
 // then with the distance fog's fog_color by how much of each fog is at p. Maps
 // that define only the plain distance fog use fog_color alone.
-vec3 getFogColor(vec3 p)
+vec3 getFogColorMap(vec3 p)
 {
 	if (global_ubo.fog_enable == 0)
 		return vec3(1.0);
@@ -1819,7 +1821,7 @@ vec3 getFogColor(vec3 p)
 	return (color * hf_d + dist_color * dist_d) / (hf_d + dist_d);
 }
 
-float getDensity(vec3 p)
+float getDensityMap(vec3 p)
 {
 	// function that is 1.0 within the world box, and trails off to 0 by 25% of world size outside the box
 	vec3 bounds = clamp(3.0 - 2.0 * abs((p - global_ubo.world_center.xyz) * global_ubo.world_half_size_inv.xyz), vec3(0), vec3(1));
@@ -1882,6 +1884,33 @@ float getDensity(vec3 p)
 	// is NOT free in brightness - in-scatter is linear in density with no
 	// meaningful extinction in open air, so this scales the fog glow directly.
 	return world_box * clamp(density, 0.0, max(0.0, global_ubo.pt_fog_density_max));
+}
+
+/* The medium at p: the map's own fog (getDensityMap / getFogColorMap), plus
+   any Quake III fog brush p is in, in that brush's colour - each colour
+   weighted by how much of the medium at p is that fog. */
+float q3_fog_density(vec3 p, out vec3 color)
+{
+	return q3_fog_at(p, color) * max(global_ubo.pt_fog_q3_density, 0.0);
+}
+
+float getDensity(vec3 p)
+{
+	vec3 c;
+	float q3 = q3_fog_density(p, c);
+	float d = getDensityMap(p);
+	return (q3 > 0.0) ? min(d + q3, max(global_ubo.pt_fog_density_max, d)) : d;
+}
+
+vec3 getFogColor(vec3 p)
+{
+	vec3 qc;
+	float q3 = q3_fog_density(p, qc);
+	vec3 base = getFogColorMap(p);
+	if (q3 <= 0.0)
+		return base;
+	float d = getDensityMap(p);
+	return (base * d + qc * q3) / (d + q3);
 }
 
 /*

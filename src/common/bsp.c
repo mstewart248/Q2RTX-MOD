@@ -30,6 +30,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "common/math.h"
 #include "common/utils.h"
 #include "common/mdfour.h"
+#include "format/bsp3.h"
 #include "system/hunk.h"
 
 extern mtexinfo_t nulltexinfo;
@@ -122,8 +123,9 @@ LOAD(Texinfo)
     for (i = 0; i < count; i++, in++, out++) {
         memcpy(out->c.name, in->texture, sizeof(out->c.name));
         out->c.name[sizeof(out->c.name) - 1] = 0;
-        memcpy(out->name, in->texture, sizeof(out->name));
-        out->name[sizeof(out->name) - 1] = 0;
+        // the on-disk name is MAX_TEXNAME, shorter than ours
+        memcpy(out->name, in->texture, sizeof(in->texture));
+        out->name[sizeof(in->texture) - 1] = 0;
         out->c.flags = LittleLong(in->flags);
         out->c.value = LittleLong(in->value);
 
@@ -676,6 +678,8 @@ LOAD(Leafs)
     for (i = 0; i < count; i++, in++, out++) {
         out->plane = NULL;
         out->contents = LittleLong(in->contents);
+        out->brushcontents = 0;     // Quake III only, see mleaf_t
+        out->pointtest = false;
         cluster = LittleShort(in->cluster);
         if (cluster == (uint16_t)-1) {
             // solid leafs use special -1 cluster
@@ -763,6 +767,8 @@ LOAD_EXT(Leafs)
     for (i = 0; i < count; i++, in++, out++) {
         out->plane = NULL;
         out->contents = LittleLong(in->contents);
+        out->brushcontents = 0;     // Quake III only, see mleaf_t
+        out->pointtest = false;
         cluster = LittleLong(in->cluster);
         if (cluster == (uint32_t)-1) {
             // solid leafs use special -1 cluster
@@ -1640,6 +1646,33 @@ int BSP_Load(const char *name, bsp_t **bsp_p)
 
     // byte swap and validate the header
     header = (dheader_t *)buf;
+
+    // a Quake III Arena map: bsp_q3.c transcodes it, the rest is shared
+    if (LittleLong(header->ident) == IDBSPHEADER && LittleLong(header->version) == Q3_BSPVERSION) {
+        len = strlen(name);
+        bsp = Z_Mallocz(sizeof(*bsp) + len);
+        memcpy(bsp->name, name, len + 1);
+        bsp->refcount = 1;
+        bsp->checksum = Com_BlockChecksum(buf, filelen);
+
+        ret = BSP_LoadQ3(bsp, buf, filelen);
+        if (ret)
+            goto fail1;
+
+        ret = BSP_ValidateTree(bsp);
+        if (ret)
+            goto fail1;
+
+        BSP_BuildPvsMatrix(bsp);
+
+        Hunk_End(&bsp->hunk);
+        List_Append(&bsp_cache, &bsp->entry);
+        FS_FreeFile(buf);
+
+        *bsp_p = bsp;
+        return Q_ERR_SUCCESS;
+    }
+
     if (LittleLong(header->ident) != IDBSPHEADER &&
         LittleLong(header->ident) != QBSPHEADER) {
         ret = Q_ERR_UNKNOWN_FORMAT;
@@ -2036,6 +2069,7 @@ mmodel_t *BSP_InlineModel(bsp_t *bsp, const char *name)
 void BSP_Init(void)
 {
     map_visibility_patch = Cvar_Get("map_visibility_patch", "1", 0);
+    BSP_Q3_Init();
 
     Cmd_AddCommand("bsplist", BSP_List_f);
 

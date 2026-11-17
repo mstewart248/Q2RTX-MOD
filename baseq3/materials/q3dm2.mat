@@ -1,0 +1,24 @@
+
+# instance of textures/gothic_floor/q1metal7_99spot
+# q3dm2, created at (-1887 -2072 4)
+# Inherits everything from textures/gothic_floor/q1metal7_99spot; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/gothic_floor/q1metal7_99spot#4da1531e:
+#	texture_base materialDev/textures/liquids/proto_grueldark2.jpg
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	roughness_override 0.2
+#	metalness_factor 0.9
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	light_factor 1
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+	stage2_roughness_override 1
+	stage2_specular_factor 1
+	stage2_metalness_factor 0

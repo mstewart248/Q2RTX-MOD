@@ -787,6 +787,10 @@ void froxel_cell_scatter(
 	float sigma = (global_ubo.pt_fog_extinction > 0.0)
 	            ? global_ubo.pt_fog_extinction : 0.0001;
 	result.a = density * sigma;
+
+	// A Quake III fog brush's extinction is real, not this medium's token one:
+	// it is what lets the brush hide what is behind it (fog_medium.glsl).
+	result.a += q3_fog_sigma(world_pos_history);
 #if FOG_DEBUG_SAMPLE
 	dbg_g_insc = inscatter;
 	dbg_g_alb = albedo;
@@ -888,7 +892,7 @@ void main()
 #else
 	bool fog_lights = (global_ubo.fog_enable != 0) && (global_ubo.fog_mode >= 2);
 #endif
-	vec3 sun_color = sun_color_ubo.sun_color;
+	vec3 sun_color = SUN_COLOR_RESOLVED;
 
 	// Same bail as the march: nothing to scatter means an empty volume rather
 	// than a wasted pass. The integrate pass reads what this writes, so the

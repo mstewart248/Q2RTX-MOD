@@ -43,7 +43,7 @@ layout(location = 0) in vec4 color;
 layout(location = 1) in flat uint tex_id;
 layout(location = 2) in vec2 tex_coord;
 layout(location = 3) in flat vec4 tex_rect;
-layout(location = 4) in flat uint pic_flags;  // bit 0: video frame
+layout(location = 4) in flat uint pic_flags;  // bit 0: video frame; bit 1: ignore alpha
 
 layout(location = 0) out vec4 outColor;
 
@@ -87,6 +87,10 @@ main()
 		vec2 half_texel = 0.5 / vec2(max(global_textureSize(tex_id, 0), ivec2(1)));
 		vec2 tc = clamp(tex_coord, tex_rect.xy + half_texel, tex_rect.zw - half_texel);
 		vec4 t = global_textureLod(tex_id, tc, 0);
+
+		// 'mat print' showing a map as stored, whatever its alpha holds
+		if ((pic_flags & 2u) != 0u)
+			t.a = 1.0;
 
 		/* A video frame on an HDR screen: undo the piecewise sRGB decode the
 		   sampler did and apply the power curve an SDR monitor shows instead.

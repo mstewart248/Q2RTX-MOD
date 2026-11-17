@@ -2709,60 +2709,69 @@ vkpt_pt_destroy()
 VkResult
 vkpt_pt_create_pipelines()
 {
-	VkSpecializationMapEntry specEntry = {
-		.constantID = 0,
-		.offset = 0,
-		.size = sizeof(uint32_t),
+	// Every ray generation shader also gets constant SPEC_Q3_CONSTANT_ID, spec_q3
+	// (global_ubo.h): vkpt_spec_q3, 0 on a map with no Quake III code to run
+	// (main.c, update_q3_shaders). Each keeps only the other constants it had, so
+	// no constant a shader was left at its default for changes.
+	const uint32_t q3 = vkpt_spec_q3;
+
+	// direct / indirect lighting: constant 0 = the bounce (caustics for direct)
+	const VkSpecializationMapEntry specEntry[2] = {
+		{ .constantID = 0,                   .offset = 0,                .size = sizeof(uint32_t) },
+		{ .constantID = SPEC_Q3_CONSTANT_ID, .offset = sizeof(uint32_t), .size = sizeof(uint32_t) },
 	};
 
-	uint32_t numbers[2] = { 0, 1 };
+	uint32_t numbers[2][2] = { { 0, q3 }, { 1, q3 } };
 
-	VkSpecializationInfo specInfo[2] = {
-		{
-			.mapEntryCount = 1,
-			.pMapEntries = &specEntry,
-			.dataSize = sizeof(uint32_t),
-			.pData = &numbers[0],
-		},
-		{
-			.mapEntryCount = 1,
-			.pMapEntries = &specEntry,
-			.dataSize = sizeof(uint32_t),
-			.pData = &numbers[1],
-		}
-	};
+	VkSpecializationInfo specInfo[2];
+	for (int i = 0; i < 2; i++)
+	{
+		specInfo[i] = (VkSpecializationInfo) {
+			.mapEntryCount = 2,
+			.pMapEntries = specEntry,
+			.dataSize = sizeof(numbers[i]),
+			.pData = numbers[i],
+		};
+	}
 
 	// reflect_refract.rgen: constant 0 = spec_bounce_index, constant 1 = spec_flow.
 	// Indexed [bounce != 0][no flow].
-	const VkSpecializationMapEntry specEntriesRR[2] = {
-		{ .constantID = 0, .offset = 0,                .size = sizeof(uint32_t) },
-		{ .constantID = 1, .offset = sizeof(uint32_t), .size = sizeof(uint32_t) },
+	const VkSpecializationMapEntry specEntriesRR[3] = {
+		{ .constantID = 0,                   .offset = 0,                    .size = sizeof(uint32_t) },
+		{ .constantID = 1,                   .offset = sizeof(uint32_t),     .size = sizeof(uint32_t) },
+		{ .constantID = SPEC_Q3_CONSTANT_ID, .offset = 2 * sizeof(uint32_t), .size = sizeof(uint32_t) },
 	};
-	const uint32_t numbersRR[4][2] = { { 0, 1 }, { 0, 0 }, { 1, 1 }, { 1, 0 } };
+	uint32_t numbersRR[4][3] = { { 0, 1, q3 }, { 0, 0, q3 }, { 1, 1, q3 }, { 1, 0, q3 } };
 
 	// primary_rays.rgen: constant 1 = spec_flow_mode (0 inline, 1 split primary, 2 flow pass)
-	const VkSpecializationMapEntry specEntryFlow = { .constantID = 1, .offset = 0, .size = sizeof(uint32_t) };
-	const uint32_t numbersFlow[3] = { 0, 1, 2 };
+	const VkSpecializationMapEntry specEntryFlow[2] = {
+		{ .constantID = 1,                   .offset = 0,                .size = sizeof(uint32_t) },
+		{ .constantID = SPEC_Q3_CONSTANT_ID, .offset = sizeof(uint32_t), .size = sizeof(uint32_t) },
+	};
+	uint32_t numbersFlow[3][2] = { { 0, q3 }, { 1, q3 }, { 2, q3 } };
 	VkSpecializationInfo specInfoFlow[3];
 	for (int i = 0; i < 3; i++)
 	{
 		specInfoFlow[i] = (VkSpecializationInfo) {
-			.mapEntryCount = 1,
-			.pMapEntries = &specEntryFlow,
-			.dataSize = sizeof(uint32_t),
-			.pData = &numbersFlow[i],
+			.mapEntryCount = 2,
+			.pMapEntries = specEntryFlow,
+			.dataSize = sizeof(numbersFlow[i]),
+			.pData = numbersFlow[i],
 		};
 	}
 	VkSpecializationInfo specInfoRR[4];
 	for (int i = 0; i < 4; i++)
 	{
 		specInfoRR[i] = (VkSpecializationInfo) {
-			.mapEntryCount = 2,
+			.mapEntryCount = 3,
 			.pMapEntries = specEntriesRR,
 			.dataSize = sizeof(numbersRR[i]),
 			.pData = numbersRR[i],
 		};
 	}
+
+	// SHaRC's update and ReSTIR GI: spec_q3 alone
+	const VkSpecializationInfo *specInfoQ3 = vkpt_spec_q3_info();
 
 	uint32_t num_shader_groups = SBT_ENTRIES_PER_PIPELINE * PIPELINE_COUNT;
 	char* shader_handles = alloca(num_shader_groups * shaderGroupHandleSize);
@@ -2844,11 +2853,11 @@ vkpt_pt_create_pipelines()
 			break;
 		case PIPELINE_SHARC_UPDATE:
 			shader_stages[0].module = qvk.shader_modules[QVK_MOD_SHARC_UPDATE_RGEN];
-			shader_stages[0].pSpecializationInfo = NULL;
+			shader_stages[0].pSpecializationInfo = specInfoQ3;
 			break;
 		case PIPELINE_RESTIR_GI:
 			shader_stages[0].module = qvk.shader_modules[QVK_MOD_RESTIR_GI_RGEN];
-			shader_stages[0].pSpecializationInfo = NULL;
+			shader_stages[0].pSpecializationInfo = specInfoQ3;
 			break;
 		default:
 			assert(!"invalid pipeline index");

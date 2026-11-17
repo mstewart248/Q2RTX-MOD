@@ -838,7 +838,9 @@ void G_SetStats(edict_t *ent)
     //
     // timers
     //
-    if (G_RereleaseHud(ent)) {
+    if (Q3_PowerupTimerStat(ent)) {
+        // a Quake III powerup (g_q3.c) - set already
+    } else if (G_RereleaseHud(ent)) {
         G_SetPowerupTimer(ent);
     } else if (ent->client->quad_framenum > level.framenum) {
         ent->client->ps.stats[STAT_TIMER_ICON] = gi.imageindex("p_quad");
