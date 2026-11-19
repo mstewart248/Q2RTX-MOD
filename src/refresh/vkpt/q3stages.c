@@ -1055,6 +1055,151 @@ static void eval_tcmods(const q3pstage_t *ps, float time, float m1[6], float m2[
     }
 }
 
+/*
+MOTION (pt_scroll_mv; primary_rays.rgen texture_scroll_prev_offset)
+
+A stage whose tcMods turn or slide its picture over a surface that stays put -
+the q3dm11 fan, rotate 256 - leaves that surface a geometry motion vector of
+zero. DLSS-RR then blends each frame's blades with the history of the same
+pixels, where other blades were, and smears them round (Matt, 2026-11-19). The
+vector has to follow the picture.
+
+The pixel at surface coordinates uv shows the texel T(uv), T this frame's
+tcMods. Last frame that texel was drawn at uv' with T'(uv') = T(uv), T' last
+frame's, so uv' = T'^-1(T(uv)) = D(uv): one affine map per program per frame.
+The GPU turns D(uv) - uv into a step along the surface, as it does a scroll.
+
+Worked in doubles and unwrapped. eval_tcmods wraps a scroll into 0..1 to keep
+the GPU's numbers small, and a wrap between the two frames would read as a jump
+of a whole texture. The turb is left out: it wobbles the picture in place.
+*/
+
+// m = n after m, as affine_then
+static void affine_then_d(double m[6], const double n[6])
+{
+    double r[6];
+    r[0] = n[0] * m[0] + n[1] * m[2];
+    r[1] = n[0] * m[1] + n[1] * m[3];
+    r[2] = n[2] * m[0] + n[3] * m[2];
+    r[3] = n[2] * m[1] + n[3] * m[3];
+    r[4] = n[0] * m[4] + n[1] * m[5] + n[4];
+    r[5] = n[2] * m[4] + n[3] * m[5] + n[5];
+    memcpy(m, r, sizeof(r));
+}
+
+// both of eval_tcmods' matrices in one, without the turb or the wrapping
+static void tcmod_transform_d(const q3pstage_t *ps, double time, double m[6])
+{
+    m[0] = 1; m[1] = 0; m[2] = 0; m[3] = 1; m[4] = 0; m[5] = 0;
+
+    for (int i = 0; i < ps->num_tcmods; i++) {
+        const q3tcmod_t *mod = &ps->tcmods[i];
+        double n[6] = { 1, 0, 0, 1, 0, 0 };
+
+        switch (mod->type) {
+        case Q3TCMOD_SCROLL:
+            n[4] = mod->v[0] * time;
+            n[5] = mod->v[1] * time;
+            break;
+        case Q3TCMOD_SCALE:
+            n[0] = mod->v[0];
+            n[3] = mod->v[1];
+            break;
+        case Q3TCMOD_ROTATE: {
+            double rad = -mod->v[0] * time * (M_PI / 180.0);
+            double s = sin(rad), c = cos(rad);
+            n[0] = c;  n[1] = -s;
+            n[2] = s;  n[3] = c;
+            n[4] = 0.5 - 0.5 * c + 0.5 * s;
+            n[5] = 0.5 - 0.5 * s - 0.5 * c;
+            break;
+        }
+        case Q3TCMOD_STRETCH: {
+            double w = Q3Shader_EvalWave(&mod->wave, (float)time);
+            double p = fabs(w) > 1e-4 ? 1.0 / w : 1.0;
+            n[0] = p;
+            n[3] = p;
+            n[4] = 0.5 - 0.5 * p;
+            n[5] = 0.5 - 0.5 * p;
+            break;
+        }
+        case Q3TCMOD_TRANSFORM:
+            n[0] = mod->v[0];
+            n[1] = mod->v[2];
+            n[2] = mod->v[1];
+            n[3] = mod->v[3];
+            n[4] = mod->v[4];
+            n[5] = mod->v[5];
+            break;
+        default:
+            continue;
+        }
+
+        affine_then_d(m, n);
+    }
+}
+
+/* The stage the surface's picture is: the first drawn from an image lying on
+   the surface - not the light, $whiteimage, a reflection map (which follows
+   the view, not the surface) or one left out. A glow or a pulse added over a
+   still base therefore keeps the base's zero, as before. */
+static const q3pstage_t *motion_stage(const q3program_t *p)
+{
+    for (int s = 0; s < p->num_stages; s++) {
+        const q3pstage_t *ps = &p->stages[s];
+        if (ps->flags & (Q3P_STAGE_LIGHTMAP | Q3P_STAGE_WHITE | Q3P_STAGE_ENV |
+                         Q3P_STAGE_NO_IMAGE | Q3P_STAGE_HIGHLIGHT))
+            continue;
+        if (ps->num_images > 0)
+            return ps;
+    }
+    return NULL;
+}
+
+/* D - identity for the program's picture between time_prev and time, the
+   linear part then the offset, so a still picture is exactly zero. False when
+   it did not move (or last frame's transform cannot be undone). */
+static bool program_motion(const q3program_t *p, double time, double time_prev, float out[6])
+{
+    if (time == time_prev)
+        return false;
+
+    const q3pstage_t *ps = motion_stage(p);
+    if (!ps || ps->num_tcmods == 0)
+        return false;
+
+    double d[6], prev[6];
+    tcmod_transform_d(ps, time, d);
+    tcmod_transform_d(ps, time_prev, prev);
+
+    double det = prev[0] * prev[3] - prev[1] * prev[2];
+    if (fabs(det) < 1e-12)
+        return false;
+
+    double inv[6];
+    inv[0] = prev[3] / det;
+    inv[1] = -prev[1] / det;
+    inv[2] = -prev[2] / det;
+    inv[3] = prev[0] / det;
+    inv[4] = -(inv[0] * prev[4] + inv[1] * prev[5]);
+    inv[5] = -(inv[2] * prev[4] + inv[3] * prev[5]);
+    affine_then_d(d, inv);     // last frame's undone, after this frame's
+
+    d[0] -= 1.0;
+    d[3] -= 1.0;
+
+    double largest = 0;
+    for (int i = 0; i < 6; i++)
+        if (fabs(d[i]) > largest)
+            largest = fabs(d[i]);
+    if (largest < 1e-7)
+        return false;          // a scale or a transform: still
+
+    for (int i = 0; i < 6; i++)
+        out[i] = (float)d[i];
+    return true;
+}
+
 static uint32_t float_bits(float f)
 {
     uint32_t u;
@@ -1175,7 +1320,7 @@ static cvar_t *cvar_pt_q3_env_shine;
 // the clock the last vkpt_q3_upload drew at, for 'mat print' (vkpt_q3_print_program)
 static float last_upload_time;
 
-void vkpt_q3_upload(vec4 *dst, float time)
+void vkpt_q3_upload(vec4 *dst, float time, float time_prev)
 {
     uint32_t used = 0;
     static bool warned;
@@ -1190,7 +1335,13 @@ void vkpt_q3_upload(vec4 *dst, float time)
 
     // Quake III's shader clock: the tables repeat, so only its phase matters,
     // but floats lose the fraction after a long session - keep it under a day
-    time = fmodf(time, 86400.f);
+    // last frame's, the same step back from the wrapped clock (MOTION). The
+    // UBO's time_prev is already this frame's time after a jump.
+    const float wrapped = fmodf(time, 86400.f);
+    time_prev = wrapped + (time_prev - time);
+    if (!(fabsf(wrapped - time_prev) < 1.f))
+        time_prev = wrapped;
+    time = wrapped;
     last_upload_time = time;
 
     for (int i = 0; i < MAX_Q3_PROGRAMS; i++) {
@@ -1206,7 +1357,10 @@ void vkpt_q3_upload(vec4 *dst, float time)
         }
 
         const uint32_t stages_size = 1 + (uint32_t)p->num_stages * Q3P_STAGE_VEC4S;
-        const uint32_t size = stages_size + (p->has_props ? (uint32_t)p->num_stages * Q3P_PROP_VEC4S : 0);
+        const uint32_t props_size = p->has_props ? (uint32_t)p->num_stages * Q3P_PROP_VEC4S : 0;
+        float motion[6];
+        const bool moves = program_motion(p, time, time_prev, motion);
+        const uint32_t size = stages_size + props_size + (moves ? Q3P_MOTION_VEC4S : 0);
         if (used + size > MAX_Q3_STAGE_VEC4S) {
             if (!warned) {
                 Com_WPrintf("Quake III shaders: the stage table is full (%d vec4s); some surfaces draw still.\n",
@@ -1222,11 +1376,17 @@ void vkpt_q3_upload(vec4 *dst, float time)
             header |= Q3P_PROG_SHINE | (p->shine_metal ? Q3P_PROG_SHINE_METAL : 0);
         if (p->has_props)
             header |= Q3P_PROG_PROPS;
-        put_uvec4(&out[0], header, 0, 0, 0);
+        // .y: where the MOTION block is, from this vec4 (0 = the picture is still)
+        const uint32_t motion_at = moves ? stages_size + props_size : 0;
+        put_uvec4(&out[0], header, motion_at, 0, 0);
         for (int s = 0; s < p->num_stages; s++)
             write_stage(out + 1 + s * Q3P_STAGE_VEC4S, &p->stages[s], time);
         for (int s = 0; p->has_props && s < p->num_stages; s++)
             write_stage_props(out + stages_size + s * Q3P_PROP_VEC4S, &p->stages[s]);
+        if (moves) {
+            put_vec4(&out[motion_at], motion[0], motion[1], motion[2], motion[3]);
+            put_vec4(&out[motion_at + 1], motion[4], motion[5], 0, 0);
+        }
 
         p->offset = used + 1;
         used += size;

@@ -1194,7 +1194,9 @@ void Cmd_Say_f(edict_t *ent, bool team, bool arg0)
     if (gi.argc() < 2 && !arg0)
         return;
 
-    if (!((int)(dmflags->value) & (DF_MODELTEAMS | DF_SKINTEAMS)))
+    // team deathmatch and CTF have red and blue (g_bot.c); otherwise only
+    // model/skin teams make say_team a team message
+    if (!G_TeamPlay() && !((int)(dmflags->value) & (DF_MODELTEAMS | DF_SKINTEAMS)))
         team = false;
 
     if (team)

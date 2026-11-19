@@ -231,6 +231,30 @@ static void BotChar_AIFile(const char *name, char *out, size_t size)
     gi.TagFree(text);
 }
 
+/*
+=================
+BotChar_EngineFile
+
+The same file as Quake III's bot library opens it, under botfiles/
+("bots/crash_c.c"): for the bot engine (g_q3bot.c). NULL `name`, a bot
+that is not one of Quake III's, plays on its default character.
+=================
+*/
+void BotChar_EngineFile(const char *name, char *out, size_t size)
+{
+    char path[MAX_QPATH];
+
+    if (!name) {
+        Q_strlcpy(out, "bots/default_c.c", size);
+        return;
+    }
+    BotChar_AIFile(name, path, sizeof(path));
+    if (!Q_strncasecmp(path, "baseq3/botfiles/", 16))
+        Q_strlcpy(out, path + 16, size);
+    else
+        Q_strlcpy(out, path, size);
+}
+
 // BotLoadCharacterSkill: one of the file's own skills, gaps from default_c.c
 static void BotChar_Skill(const botchar_file_t *bot, const botchar_file_t *def, int skill, float *out)
 {

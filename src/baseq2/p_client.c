@@ -282,6 +282,10 @@ void ClientObituary(edict_t *self, edict_t *inflictor, edict_t *attacker)
     if (coop->value && attacker->client)
         meansOfDeath |= MOD_FRIENDLY_FIRE;
 
+    // Quake III's bots keep count of who killed whom, and with what (g_q3bot.c)
+    if (deathmatch->value)
+        BotEngine_Obituary(self, attacker, meansOfDeath);
+
     if (deathmatch->value || coop->value) {
         ff = meansOfDeath & MOD_FRIENDLY_FIRE;
         mod = meansOfDeath & ~MOD_FRIENDLY_FIRE;

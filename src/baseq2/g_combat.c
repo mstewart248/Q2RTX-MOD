@@ -743,7 +743,7 @@ void T_Damage(edict_t *targ, edict_t *inflictor, edict_t *attacker, const vec3_t
     // knockback still occurs
     if ((targ != attacker) && ((deathmatch->value && (G_TeamPlay() || ((int)(dmflags->value) & (DF_MODELTEAMS | DF_SKINTEAMS)))) || (coop->value && targ->client))) {
         if (OnSameTeam(targ, attacker)) {
-            if ((int)(dmflags->value) & DF_NO_FRIENDLY_FIRE)
+            if (Team_NoFriendlyFire())  // dmflags, or a bot match's own setting (g_bot.c)
                 damage = 0;
             else
                 mod |= MOD_FRIENDLY_FIRE;

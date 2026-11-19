@@ -405,8 +405,23 @@ void Q3W_ItemModel(edict_t *ent)
             q2 = ent->q3_alt_item;
     }
 
-    if (!q3 || !(q3->flags & IT_WEAPON))
-        return;     // Quake II's gun, or ammo: always Quake II's models
+    if (!q3)
+        return;     // Quake II's gun or ammo
+
+    if (!(q3->flags & IT_WEAPON)) {
+        // Quake III's ammo, which wears Quake II's models but for the BFG's
+        // (g_items.c). Where they differ and a Quake II item rides along,
+        // each player sees their own game's box, as for the guns: s.scale 1
+        // keeps the client from drawing Quake III's half as big again, which
+        // Quake III does to its guns alone
+        if (q2 && q3->world_model && q2->world_model && strcmp(q3->world_model, q2->world_model)) {
+            ent->s.modelindex = gi.modelindex(q2->world_model);
+            ent->s.modelindex2 = gi.modelindex(q3->world_model);
+            ent->s.renderfx |= RF_Q3_ITEM;
+            ent->s.scale = 1.0f;
+        }
+        return;
+    }
 
     if (!q2) {
         ent->s.scale = 1.5f;

@@ -502,6 +502,15 @@ void UI_Draw(int realtime)
         }
     }
 
+    // a page's draw can close the menus - the postgame's does, as a tier
+    // done hands over to its video (q3sp.c SP_Post_TierVideo) - and the
+    // cursor below read the menu that was gone (fullscreen only)
+    if (!uis.activeMenu) {
+        R_ClearColor();
+        R_SetScale(1.0f);
+        return;
+    }
+
     // draw custom cursor in fullscreen mode - Quake III's on its pages (q3sp.c)
     if (r_config.flags & QVF_FULLSCREEN) {
         if (uis.activeMenu->q3_cursor) {

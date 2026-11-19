@@ -78,6 +78,57 @@ SET(SRC_BASEQ2
 	baseq2/p_trail.c
 	baseq2/p_view.c
 	baseq2/p_weapon.c
+	baseq2/g_q3bot.c
+	common/mdfour.c
+)
+
+# Quake III Arena's bot engine, from ioquake3 (GPL v2 or later): botlib, the
+# shared code it and the bot AI use, and the bot AI from Quake III's game
+# module. They are built against Quake III's own headers (baseq2/q3bot) and
+# meet this game only through baseq2/q3bot/q3bot_iface.h: g_q3bot.c on the
+# Quake II side, q3bot/game/ai_q2bridge.c on Quake III's.
+SET(SRC_BASEQ2_BOTLIB
+	baseq2/q3bot/botlib/be_aas_bspq3.c
+	baseq2/q3bot/botlib/be_aas_cluster.c
+	baseq2/q3bot/botlib/be_aas_debug.c
+	baseq2/q3bot/botlib/be_aas_entity.c
+	baseq2/q3bot/botlib/be_aas_file.c
+	baseq2/q3bot/botlib/be_aas_main.c
+	baseq2/q3bot/botlib/be_aas_move.c
+	baseq2/q3bot/botlib/be_aas_optimize.c
+	baseq2/q3bot/botlib/be_aas_reach.c
+	baseq2/q3bot/botlib/be_aas_route.c
+	baseq2/q3bot/botlib/be_aas_routealt.c
+	baseq2/q3bot/botlib/be_aas_sample.c
+	baseq2/q3bot/botlib/be_ai_char.c
+	baseq2/q3bot/botlib/be_ai_chat.c
+	baseq2/q3bot/botlib/be_ai_gen.c
+	baseq2/q3bot/botlib/be_ai_goal.c
+	baseq2/q3bot/botlib/be_ai_move.c
+	baseq2/q3bot/botlib/be_ai_weap.c
+	baseq2/q3bot/botlib/be_ai_weight.c
+	baseq2/q3bot/botlib/be_ea.c
+	baseq2/q3bot/botlib/be_interface.c
+	baseq2/q3bot/botlib/l_crc.c
+	baseq2/q3bot/botlib/l_libvar.c
+	baseq2/q3bot/botlib/l_log.c
+	baseq2/q3bot/botlib/l_memory.c
+	baseq2/q3bot/botlib/l_precomp.c
+	baseq2/q3bot/botlib/l_script.c
+	baseq2/q3bot/botlib/l_struct.c
+)
+
+SET(SRC_BASEQ2_Q3BOT
+	baseq2/q3bot/qcommon/q_shared.c
+	baseq2/q3bot/qcommon/q_math.c
+	baseq2/q3bot/game/ai_chat.c
+	baseq2/q3bot/game/ai_cmd.c
+	baseq2/q3bot/game/ai_dmnet.c
+	baseq2/q3bot/game/ai_dmq3.c
+	baseq2/q3bot/game/ai_main.c
+	baseq2/q3bot/game/ai_q2bridge.c
+	baseq2/q3bot/game/ai_team.c
+	baseq2/q3bot/game/ai_vcmd.c
 )
 
 SET(HEADERS_BASEQ2
@@ -629,7 +680,9 @@ if(NOT MSVC)
     # CCompilerFlagString(WARN_MISSING_PROTOTYPES "-Wmissing-prototypes")
 endif()
 
-ADD_LIBRARY(baseq2 SHARED ${SRC_BASEQ2} ${HEADERS_BASEQ2} ${SRC_SHARED})
+ADD_LIBRARY(baseq2 SHARED ${SRC_BASEQ2} ${SRC_BASEQ2_BOTLIB} ${SRC_BASEQ2_Q3BOT} ${HEADERS_BASEQ2} ${SRC_SHARED})
+# botlib is built as ioquake3 builds it (code/botlib: -DBOTLIB)
+set_source_files_properties(${SRC_BASEQ2_BOTLIB} PROPERTIES COMPILE_DEFINITIONS BOTLIB)
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     # Workaround for GCC 10 linking shared libgcc by default
     target_link_options(baseq2 PRIVATE "-static-libgcc")

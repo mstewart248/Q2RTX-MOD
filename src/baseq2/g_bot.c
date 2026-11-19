@@ -73,11 +73,19 @@ cvar_t  *teamplay;
 static cvar_t   *bot_match;
 static cvar_t   *bot_count;
 static cvar_t   *bot_debug;
+static cvar_t   *bot_friendly_fire;
 
 /*
-bot_q3_ai: who plays by Quake III's bot rules (Bot_Q3* below) - 0 nobody,
-1 Quake III's bots, each by its own character file (the default), 2 every
-bot, Quake II's on Quake III's default character. Read as a bot is added.
+bot_q3_ai: how the bots think, the menu's "bot ai".
+0 - Quake II's bots: the brain below, the rerelease's skill table.
+1 - Quake III characters (the default): the brain below, with Quake III's bots
+    playing by their own character files and Quake III's combat rules
+    (Bot_Q3* below, g_botchar.c).
+2 - Quake III's engine: Quake III's own bot AI and AAS navigation (q3bot/,
+    g_q3bot.c) for every bot - its bots as themselves, Quake II's on its
+    default character. Only on a map with an AAS (Quake III's maps); on
+    others, 1's brain and rules, Quake II's bots on that default character
+    too. Read as a bot joins a level.
 */
 static cvar_t   *bot_q3_ai;
 
@@ -306,6 +314,11 @@ typedef struct {
     float       q3_crouch_until;    // attackcrouch_time
     float       q3_jump_time;       // attackjump_time
     bool        q3_hurt;            // health went down since it last looked
+
+    // bot_q3_ai 2: Quake III's bot engine plays it this level (g_q3bot.c),
+    // at this Quake III skill
+    float       q3_skill;
+    bool        q3_engine;
 } bot_t;
 
 static bot_t    *bots;              // one per client slot
@@ -401,6 +414,7 @@ static void Bot_VecToAngles(const vec3_t v, vec3_t angles)
 static void (*real_unicast)(edict_t *ent, qboolean reliable);
 static void (*real_cprintf)(edict_t *ent, int printlevel, const char *fmt, ...);
 static void (*real_centerprintf)(edict_t *ent, const char *fmt, ...);
+static void (*real_bprintf)(int printlevel, const char *fmt, ...);
 
 static void Bot_Unicast(edict_t *ent, qboolean reliable)
 {
@@ -412,14 +426,32 @@ static void Bot_Cprintf(edict_t *ent, int printlevel, const char *fmt, ...)
     char    msg[MAX_STRING_CHARS];
     va_list argptr;
 
-    if (Bot_IsBot(ent))
+    va_start(argptr, fmt);
+    Q_vsnprintf(msg, sizeof(msg), fmt, argptr);
+    va_end(argptr);
+
+    // a line to one of Quake III's own bots is its to read: chat to answer,
+    // prints as its server sent them
+    if (Bot_IsBot(ent)) {
+        BotEngine_Print(ent, printlevel, msg);
         return;
+    }
+
+    real_cprintf(ent, printlevel, "%s", msg);
+}
+
+// to everyone, and so to Quake III's bots too (CTF's "got the flag" lines)
+static void Bot_Bprintf(int printlevel, const char *fmt, ...)
+{
+    char    msg[MAX_STRING_CHARS];
+    va_list argptr;
 
     va_start(argptr, fmt);
     Q_vsnprintf(msg, sizeof(msg), fmt, argptr);
     va_end(argptr);
 
-    real_cprintf(ent, printlevel, "%s", msg);
+    real_bprintf(printlevel, "%s", msg);
+    BotEngine_Print(NULL, printlevel, msg);
 }
 
 static void Bot_Centerprintf(edict_t *ent, const char *fmt, ...)
@@ -442,21 +474,41 @@ void Bot_WrapImports(void)
     real_unicast = gi.unicast;
     real_cprintf = gi.cprintf;
     real_centerprintf = gi.centerprintf;
+    real_bprintf = gi.bprintf;
     gi.unicast = Bot_Unicast;
     gi.cprintf = Bot_Cprintf;
     gi.centerprintf = Bot_Centerprintf;
+    gi.bprintf = Bot_Bprintf;
 }
 
 // ==========================================================================
 // TEAMS
 //
 // teamplay 1: two teams, red and blue, balanced as people join, scored
-// together. Friendly fire follows dmflags' DF_NO_FRIENDLY_FIRE.
+// together. Friendly fire: Team_NoFriendlyFire.
 
 // CTF plays in the same two teams
 bool G_TeamPlay(void)
 {
     return deathmatch->value && ((teamplay && teamplay->value) || G_CTF());
+}
+
+/*
+Whether teammates' shots leave each other unhurt (knockback still happens).
+dmflags' DF_NO_FRIENDLY_FIRE says so anywhere. A bot match also asks
+bot_friendly_fire, its menu's "friendly fire", saved and off unless turned on -
+Quake III's g_friendlyFire default. Its bots don't look out for a teammate
+standing near what they shoot (ioq3 BotCheckAttack: "FIXME: check if a
+teammate gets radial damage"), and the row used to write dmflags, which is
+never saved, so every launch played with friendly fire on: Matt, 2026-11-19,
+"my own team members were attacking and killing me".
+*/
+bool Team_NoFriendlyFire(void)
+{
+    if ((int)dmflags->value & DF_NO_FRIENDLY_FIRE)
+        return true;
+    return deathmatch->value && bot_match && bot_match->integer &&
+           bot_friendly_fire && !bot_friendly_fire->integer;
 }
 
 const char *Team_Name(int team)
@@ -909,8 +961,9 @@ static const char *Bot_Q3Character(const char *skin)
 Bot_SetCharacter
 
 Quake III's bots play as themselves at Quake III skill `q3skill` (1..5): their
-character file, Quake III's rules. Everyone else, and everyone when the data
-is not there, plays by the rerelease's skill table.
+character file, Quake III's rules. Under bot_q3_ai 2 everyone else does too,
+on Quake III's default character. The rest, and everyone when the data is
+not there, play by the rerelease's skill table.
 =================
 */
 static void Bot_SetCharacter(bot_t *b, float q3skill)
@@ -918,6 +971,9 @@ static void Bot_SetCharacter(bot_t *b, float q3skill)
     const char *name = Bot_Q3Character(b->skin);
 
     memset(&b->ch, 0, sizeof(b->ch));
+    b->q3_skill = q3skill;
+    // 2: Quake II's bots too, on Quake III's default character - what the
+    // engine plays them as, and what they keep on a map with no AAS
     if (!bot_q3_ai->integer || (!name && bot_q3_ai->integer < 2))
         return;
     if (BotChar_Load(name, q3skill, &b->ch) && bot_debug->integer)
@@ -987,6 +1043,23 @@ static bool Bot_Spawn(int i)
     VectorCopy(ent->client->v_angle, b->view);
     memcpy(b->delta, ent->client->ps.pmove.delta_angles, sizeof(b->delta));
     VectorCopy(ent->s.origin, b->last_origin);
+
+    // Quake III's own bots, where the map has its AAS
+    b->q3_engine = false;
+    if (bot_q3_ai->integer >= 2) {
+        if (BotEngine_Load()) {
+            char charfile[MAX_QPATH];
+
+            BotChar_EngineFile(Bot_Q3Character(b->skin), charfile, sizeof(charfile));
+            b->q3_engine = BotEngine_Add(ent, charfile, b->q3_skill > 0 ? b->q3_skill : 3, b->name);
+            if (!b->q3_engine)
+                gi.dprintf("Bots: Quake III's engine couldn't take %s (%s), Quake II's brain plays it\n",
+                           b->name, charfile);
+            else if (bot_debug->integer)
+                gi.dprintf("Bots: %s plays on Quake III's engine as %s, skill %.2f\n",
+                           b->name, charfile, b->q3_skill);
+        }
+    }
     return true;
 }
 
@@ -1042,6 +1115,11 @@ static void Bot_Remove(int i, const char *why)
     if (!b->active)
         return;
 
+    if (b->q3_engine) {
+        BotEngine_Remove(ent);
+        b->q3_engine = false;
+    }
+
     if (b->spawned && ent->inuse) {
         if (why)
             gi.bprintf(PRINT_HIGH, "%s %s\n", b->name, why);
@@ -1087,6 +1165,11 @@ void Bot_Init(void)
     bot_count = gi.cvar("bot_count", "3", 0);
     bot_debug = gi.cvar("bot_debug", "0", 0);
     bot_q3_ai = gi.cvar("bot_q3_ai", "1", CVAR_ARCHIVE);
+    // the menu's "team leader" (q3bot/game/ai_team.c FindHumanTeamLeader),
+    // made here so it is there for the menu before Quake III's AI first runs
+    gi.cvar("bot_q3_human_leader", "0", CVAR_ARCHIVE);
+    // the menu's "friendly fire" for team bot matches (Team_NoFriendlyFire)
+    bot_friendly_fire = gi.cvar("bot_friendly_fire", "0", CVAR_ARCHIVE);
 
     bots = gi.TagMalloc(game.maxclients * sizeof(*bots), TAG_GAME);
     memset(bots, 0, game.maxclients * sizeof(*bots));
@@ -1172,6 +1255,7 @@ void Bot_LevelStart(void)
 
     for (i = 0; i < game.maxclients; i++) {
         bots[i].spawned = false;
+        bots[i].q3_engine = false;      // SpawnEntities dropped the last map's
         if (bots[i].active && !deathmatch->value)
             bots[i].active = false;
         if (bots[i].active)
@@ -1236,8 +1320,10 @@ void Bot_LevelStart(void)
     for (i = 0; i < game.maxclients; i++) {
         if (bots[i].active) {
             // map load is the time to spend building a navmesh, not the
-            // first frame someone is playing
+            // first frame someone is playing - and loading Quake III's AAS
             Nav_PrepareForBots();
+            if (bot_q3_ai->integer >= 2)
+                BotEngine_Load();
             break;
         }
     }
@@ -1483,10 +1569,15 @@ void Bot_Damaged(edict_t *self, edict_t *attacker)
     bot_t   *b;
     int     i;
 
+    // who hurt whom, for Quake III's bots (theirs or anyone's)
+    BotEngine_Damaged(self, attacker);
+
     if (!Bot_IsBot(self) || !attacker || !Bot_ValidTarget(self, attacker))
         return;
 
     b = &bots[self - g_edicts - 1];
+    if (b->q3_engine)
+        return;
 
     // Quake III's: only that its health went down, which opens its view all
     // round next time it looks - if it has no fight on (Bot_Q3Sees). Hit
@@ -3524,8 +3615,20 @@ void Bot_RunFrame(void)
 
         if (!bots[i].active || !bots[i].spawned || !ent->inuse || !ent->client)
             continue;
+        // Quake III's engine plays its own, all at once, below - unless it
+        // has let go of this one, when Quake II's brain takes over
+        if (bots[i].q3_engine) {
+            if (BotEngine_Running(ent))
+                continue;
+            bots[i].q3_engine = false;
+            Bot_ResetBrain(&bots[i]);
+            VectorCopy(ent->client->v_angle, bots[i].view);
+            memcpy(bots[i].delta, ent->client->ps.pmove.delta_angles, sizeof(bots[i].delta));
+        }
         Bot_Think(ent, &bots[i]);
     }
+
+    BotEngine_Frame();
 }
 
 // ==========================================================================
@@ -3550,9 +3653,10 @@ static void Bot_List(void)
     for (i = 0; i < game.maxclients; i++) {
         if (!bots[i].active)
             continue;
-        gi.cprintf(NULL, PRINT_HIGH, "%2d %-16s %-10s %-18s%s%s\n", i, bots[i].name,
+        gi.cprintf(NULL, PRINT_HIGH, "%2d %-16s %-10s %-18s%s%s%s\n", i, bots[i].name,
                    bot_skills[bots[i].skill].name, bots[i].skin,
                    G_TeamPlay() ? Team_Name(Bot_Edict(i)->inuse ? Bot_Edict(i)->client->resp.team : bots[i].team) : "",
+                   bots[i].q3_engine ? " (Quake III engine)" : bots[i].ch.loaded ? " (Quake III character)" : "",
                    bots[i].spawned ? "" : " (waiting)");
         n++;
     }

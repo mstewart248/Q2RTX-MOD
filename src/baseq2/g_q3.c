@@ -1485,9 +1485,12 @@ int Q3_QuadFireSound(void)
 // DoRespawn: an item is back on its spot
 void Q3_ItemRespawned(edict_t *ent)
 {
-    if (q3_powerup_pickup_sound(ent->item))
+    if (q3_powerup_pickup_sound(ent->item)) {
         gi.positioned_sound(ent->s.origin, ent, CHAN_AUTO,
                             Q3_SoundIndex("items/poweruprespawn.wav"), 1, ATTN_NONE, 0);
+        // Quake III's bots hear it too, and go for it (g_q3bot.c)
+        BotEngine_PowerupRespawned();
+    }
 }
 
 /*

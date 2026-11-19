@@ -13,7 +13,7 @@ textures/base_light/s_proto_light#75129922:
 #	specular_factor 0
 #	base_factor 1
 	emissive_factor 2
-	light_factor 10
+	light_factor 5
 #	kind REGULAR
 #	is_light 1
 #	light_styles 1
@@ -34,7 +34,7 @@ textures/base_light/s_proto_light#dfb3b78a:
 #	specular_factor 0
 #	base_factor 1
 	emissive_factor 2
-	light_factor 10
+	light_factor 5
 #	kind REGULAR
 #	is_light 1
 #	light_styles 1
@@ -55,7 +55,7 @@ textures/base_light/s_proto_light#5365ad7a:
 #	specular_factor 0
 #	base_factor 1
 	emissive_factor 2
-	light_factor 10
+	light_factor 5
 #	kind REGULAR
 #	is_light 1
 #	light_styles 1
@@ -76,7 +76,7 @@ textures/base_light/s_proto_light#3ad2b002:
 #	specular_factor 0
 #	base_factor 1
 	emissive_factor 2
-	light_factor 10
+	light_factor 5
 #	kind REGULAR
 #	is_light 1
 #	light_styles 1
@@ -97,7 +97,7 @@ textures/base_light/s_proto_light#cc44bfee:
 #	specular_factor 0
 #	base_factor 1
 	emissive_factor 2
-	light_factor 10
+	light_factor 5
 #	kind REGULAR
 #	is_light 1
 #	light_styles 1
@@ -118,7 +118,7 @@ textures/base_light/s_proto_light#eb3ea562:
 #	specular_factor 0
 #	base_factor 1
 	emissive_factor 2
-	light_factor 10
+	light_factor 5
 #	kind REGULAR
 #	is_light 1
 #	light_styles 1

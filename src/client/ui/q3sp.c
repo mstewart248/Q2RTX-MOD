@@ -1776,6 +1776,8 @@ static struct {
 } sp_post;
 
 static bool sp_post_opening;    // inside UI_PushMenu of the postgame (SP_Postgame)
+static bool     sp_post_photo;          // photo mode over it (UI_SP_PodiumPhoto*)
+static unsigned sp_post_photo_time;     // since when
 
 static void SP_Post_DrawMedals(int max)
 {
@@ -1960,6 +1962,7 @@ static void SP_Postgame(void)
         return;
 
     memset(&sp_post, 0, sizeof(sp_post));
+    sp_post_photo = false;
     sp_post.num = a->num;
     sp_post.rank = SP_Clip(atoi(Cmd_Argv(3)), 1, 8);
     accuracy = atoi(Cmd_Argv(5));
@@ -2058,6 +2061,74 @@ bool UI_SP_KeepsGameRunning(void)
     if (!uis.initialized || !(Key_GetDest() & KEY_MENU))
         return false;
     return sp_post_opening || uis.activeMenu == &m_post.menu;
+}
+
+/*
+=================
+UI_SP_PodiumPhoto*
+
+Photo mode over the podium (11-19). The postgame screen holds the keys, so the
+pause key - photo mode - only ever reached it as "hurry along" (and on a map
+that finishes a tier, hurried it into the tier video). Now the key bound to
+"pause" sets the screen aside: the menu gives up the keys but stays the active
+menu, so photo mode runs exactly as it does in play - its free camera and
+mouse, its own text from the renderer - while the screen is not drawn (UI_Draw
+draws only with KEY_MENU), nor the HUD and notify lines (SCR_Draw2D,
+Con_DrawNotify). Pause again, or Escape, ends it, and the screen comes back as
+it was: its clock is held while it is away, so the medals pick up where they
+were and no tier video starts behind the photo.
+=================
+*/
+static bool SP_PostgameUp(void)
+{
+    return uis.initialized && uis.activeMenu == &m_post.menu && !sp_post.left && cls.state == ca_active;
+}
+
+// asked every frame by the HUD: checked against the screen itself, so a flag
+// left behind by a level that went away mid-photo can never hide a later HUD
+bool UI_SP_PodiumPhoto(void)
+{
+    return sp_post_photo && cl_paused->integer == 2 && SP_PostgameUp();
+}
+
+bool UI_SP_PodiumPhotoStart(void)
+{
+    if (UI_SP_PodiumPhoto() || !SP_PostgameUp())
+        return false;
+
+    // paused first: the key handover below asks CL_CheckForPause, which
+    // would take a photo mode that has not begun yet as one that has ended
+    Cvar_Set("cl_paused", "2");
+    sp_post_photo = true;
+    sp_post_photo_time = cls.realtime;
+    Key_SetDest(Key_GetDest() & ~KEY_MENU);
+    CL_CheckForPause();
+    return true;
+}
+
+void UI_SP_PodiumPhotoEnd(void)
+{
+    if (!UI_SP_PodiumPhoto())
+        return;
+    Cvar_Set("cl_paused", "0");
+    CL_CheckForPause();     // which brings the screen back
+}
+
+void UI_SP_PodiumPhotoCheck(void)
+{
+    unsigned away;
+
+    if (!sp_post_photo || (cl_paused->integer == 2 && cls.state == ca_active))
+        return;
+
+    sp_post_photo = false;
+    if (!SP_PostgameUp())
+        return;     // the level went away meanwhile (a disconnect, a map)
+
+    away = cls.realtime - sp_post_photo_time;
+    sp_post.start_time += away;
+    sp_post.ignore_keys += away;
+    Key_SetDest(Key_GetDest() | KEY_MENU);  // an open console keeps the keys till it closes
 }
 
 /*

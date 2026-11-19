@@ -4226,6 +4226,15 @@ static void SCR_Draw2D(void)
     // crosshair has its own color and alpha
     SCR_DrawCrosshair();
 
+    // photo mode over the Quake III podium (ui/q3sp.c): nothing but photo mode's
+    // own text, which the renderer draws - and the crosshair, to aim the mat and
+    // light tools by, gone with the rest of the HUD once the photo has settled
+    if (UI_SP_PodiumPhoto()) {
+        R_SetScale(1.0f);
+        R_SetAlphaScale(1.0f);
+        return;
+    }
+
     // the rest of 2D elements share common alpha
     R_ClearColor();
     R_SetAlpha(Cvar_ClampValue(scr_alpha, 0, 1));

@@ -56,6 +56,12 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define Q3P_MAX_STAGES      8
 #define Q3P_STAGE_VEC4S     5
 
+/* MOTION (q3stages.c, pt_scroll_mv): a program whose picture moves this frame
+   has Q3P_MOTION_VEC4S at the end, header .y vec4s after the header (0 =
+   still): where last frame showed each texel, as surface coordinates
+   uv' = uv + (A - I) uv + e - (A - I) row by row, then e, 0, 0. */
+#define Q3P_MOTION_VEC4S    2
+
 // header .x: stage count in the low byte, then these
 #define Q3P_PROG_TRANSLUCENT    0x100   // what is behind shows through: alpha comes from the program
 #define Q3P_PROG_IMPLICIT_LIT   0x200   // no lightmap stage: the colour stages are lit anyway

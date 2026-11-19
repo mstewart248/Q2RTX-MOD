@@ -870,6 +870,9 @@ static void CL_AddPacketEntities(void)
                     if (!ent.scale)
                         ent.scale = 1.5f;
                 }
+                // and Quake III's railgun drawn as Q2RTX's (cl_classic_railgun 0)
+                if (cl.q3_weapons)
+                    CL_Q3W_ItemModel(&ent);
             }
         }
 

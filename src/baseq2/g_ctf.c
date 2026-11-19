@@ -371,6 +371,7 @@ bool CTFPickup_Flag(edict_t *ent, edict_t *other)
             ctfgame.last_capture_time = level.time;
             ctfgame.last_capture_team = team;
             ctfgame.caps[team]++;
+            BotEngine_FlagCaptured(team);   // Quake III's bots: both flags home
 
             gi.sound(ent, CHAN_RELIABLE | CHAN_NO_PHS_ADD | CHAN_ITEM, gi.soundindex("ctf/flagcap.wav"), 1, ATTN_NONE, 0);
 
@@ -410,11 +411,13 @@ bool CTFPickup_Flag(edict_t *ent, edict_t *other)
         other->client->resp.ctf_lastreturnedflag = level.time;
         gi.sound(ent, CHAN_RELIABLE | CHAN_NO_PHS_ADD | CHAN_ITEM, gi.soundindex("ctf/flagret.wav"), 1, ATTN_NONE, 0);
         CTF_ResetFlag(team);
+        BotEngine_FlagReturned(team);
         return false;
     }
 
     // theirs: take it
     gi.bprintf(PRINT_HIGH, "%s got the %s flag!\n", other->client->pers.netname, CTF_FlagName(team));
+    BotEngine_FlagTaken(team);
 
     other->client->pers.inventory[CTF_FlagIndex(team)] = 1;
     other->client->resp.ctf_flagsince = level.time;
@@ -437,6 +440,7 @@ static void CTF_DropFlagThink(edict_t *ent)
     // back to its stand on its own; this frees the dropped one
     CTF_ResetFlag(team);
     gi.bprintf(PRINT_HIGH, "The %s flag has returned!\n", CTF_FlagName(team));
+    BotEngine_FlagReturned(team);
 }
 
 static void CTF_DropFlagTouch(edict_t *ent, edict_t *other, cplane_t *plane, csurface_t *surf)

@@ -3498,6 +3498,9 @@ CL_CheckForPause
 */
 void CL_CheckForPause(void)
 {
+    // photo mode over the Quake III podium ended? its screen comes back (ui/q3sp.c)
+    UI_SP_PodiumPhotoCheck();
+
     if (cls.state != ca_active) {
         // only pause when active
         Cvar_Set("cl_paused", "0");

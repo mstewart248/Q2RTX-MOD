@@ -117,6 +117,9 @@ void ShutdownGame(void)
     // does not find Nav_Loaded() true with dangling pointers behind it
     Nav_Free();
 
+    // Quake III's bot library keeps its memory on the C heap (g_q3bot.c)
+    BotEngine_Shutdown();
+
     gi.FreeTags(TAG_LEVEL);
     gi.FreeTags(TAG_GAME);
 }

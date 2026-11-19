@@ -114,6 +114,9 @@ static struct {
     qhandle_t   plasma_sprite, plasma_boom, electric, bullet_flash[3];
     qhandle_t   lightning;
     qhandle_t   sfx_ric[3], sfx_lghit[3], sfx_plasmaexp, sfx_rockexp;
+    // Q2RTX's railgun in Quake III's place, view and pickup (0 = Quake III's
+    // own): see q3w_want_rtx_rail
+    qhandle_t   rtx_rail_view, rtx_rail_world;
 } q3w;
 
 static cvar_t   *cl_brass_time;
@@ -357,6 +360,29 @@ static qhandle_t q3w_sound(const char *name)
 
 /*
 =================
+q3w_want_rtx_rail
+
+Whether Q2RTX's redesigned railgun stands in for Quake III's, in the view
+and on the ground (Matt, 11-19: "When use rtx rail gun is true can we show
+that weapon instead of the quake 3 rail gun. If use classic rail gun is true
+we can show the quake 3 version"). cl_classic_railgun 0 does it, and only
+where the renderer takes the redesign's .md3s (refresh/models.c's try_md3):
+without them v_rail is the 1997 gun, and Quake III's own is the better one
+to keep. A Quake III body still holds Quake III's: Quake II's view and
+pickup models have no grip on its tag_weapon (q3player.c).
+=================
+*/
+static bool q3w_want_rtx_rail(void)
+{
+    if (Cvar_VariableInteger("cl_classic_railgun"))
+        return false;
+    if (!CL_PathTraced() && !(cls.ref_type == REF_TYPE_GL && Cvar_VariableInteger("gl_use_hd_assets")))
+        return false;
+    return FS_FileExists("models/weapons/v_rail/tris.md3") && FS_FileExists("models/weapons/g_rail/tris.md3");
+}
+
+/*
+=================
 CL_Q3W_RegisterMedia
 
 CL_RegisterTEntModels, at each level's start: the brass whenever the Quake
@@ -403,6 +429,12 @@ void CL_Q3W_RegisterMedia(void)
         g->flash = R_RegisterModel(path);
     }
     q3w.guns = true;
+
+    // (cl_classic_railgun is CVAR_FILES: flipping it re-registers, and lands here)
+    if (q3w_want_rtx_rail()) {
+        q3w.rtx_rail_view = R_RegisterModel("models/weapons/v_rail/tris.md2");
+        q3w.rtx_rail_world = R_RegisterModel("models/weapons/g_rail/tris.md2");
+    }
 
     q3w.mark_bullet = q3w_image("gfx/damage/bullet_mrk.jpg");
     q3w.mark_burn = q3w_image("gfx/damage/burn_med_mrk.jpg");
@@ -461,6 +493,23 @@ static float q3w_flash_scale(const q3wgun_t *g, float scale)
 bool CL_Q3W_IsGun(qhandle_t model)
 {
     return q3w_gun_for_model(model) != NULL;
+}
+
+/*
+=================
+CL_Q3W_ItemModel
+
+entities.c, a pickup's model once chosen: Quake III's railgun becomes Q2RTX's
+redesign when that stands in for it (q3w_want_rtx_rail), at Quake II's size -
+the 1.5 Quake III draws its guns at on the ground goes with it.
+=================
+*/
+void CL_Q3W_ItemModel(entity_t *ent)
+{
+    if (q3w.rtx_rail_world && ent->model && ent->model == q3w_guns[Q3W_RAILGUN].world) {
+        ent->model = q3w.rtx_rail_world;
+        ent->scale = 0;
+    }
 }
 
 /*
@@ -689,6 +738,83 @@ static float q3w_hand_frame(const q3wgun_t *g, int state, const q3wshooter_t *sh
 
 /*
 =================
+q3w_add_rtx_rail
+
+The view weapon when it is Quake III's railgun and Q2RTX's redesign stands in
+for it (q3w_want_rtx_rail). Quake II's view model goes where Quake II draws
+one - `gun` as placed, no hand tag - and plays Weapon_Railgun's frames
+(p_weapon.c: 0-3 raise, 4-18 the shot, 19-56 idle, 57-61 drop) from Quake
+III's state, on Quake III's clock: a 250 ms raise, a 200 ms drop, and 1500
+ms a shot, which is what Quake II's fifteen fire frames take anyway. The
+model has no flash of its own; the shot's light is CL_Q3W_MuzzleFlash's.
+=================
+*/
+#define RTX_RAIL_RAISE_LAST 3
+#define RTX_RAIL_FIRE       4
+#define RTX_RAIL_IDLE       19
+#define RTX_RAIL_IDLE_LAST  56
+#define RTX_RAIL_DROP       57
+#define RTX_RAIL_LAST       61
+#define RTX_RAIL_SHOT_MS    1500    // frames 4 to 19 at Quake II's 10 a second
+
+static void q3w_add_rtx_rail(const entity_t *gun, int state, const q3wshooter_t *sh)
+{
+    entity_t    e;
+    vec3_t      forward, right, up;
+    int         t = cl.time - q3v.state_time, idle_start, a, b;
+    bool        railed = sh && sh->weapon == Q3W_RAILGUN && sh->fire_time && cl.time >= sh->fire_time;
+    float       pos, frac;
+
+    if (state == Q3_GUNFRAME_RAISING) {
+        // 0 to 3, then on into the idle's first frame as Quake II does
+        pos = (RTX_RAIL_RAISE_LAST + 1) * min(t, 250) / 250.0f;
+    } else if (state == Q3_GUNFRAME_DROPPING) {
+        pos = RTX_RAIL_DROP + (RTX_RAIL_LAST - RTX_RAIL_DROP) * min(t, 200) / 200.0f;
+    } else if (railed && cl.time - sh->fire_time < RTX_RAIL_SHOT_MS) {
+        pos = RTX_RAIL_FIRE + (cl.time - sh->fire_time) * 0.01f;
+    } else {
+        // the idle loop, 19 to 56 and round, from when the gun came up or the
+        // last shot's frames ran out, whichever was later
+        idle_start = q3v.state_time;
+        if (railed && sh->fire_time + RTX_RAIL_SHOT_MS > idle_start)
+            idle_start = sh->fire_time + RTX_RAIL_SHOT_MS;
+        pos = RTX_RAIL_IDLE + fmodf(max(cl.time - idle_start, 0) * 0.01f,
+                                    RTX_RAIL_IDLE_LAST + 1 - RTX_RAIL_IDLE);
+    }
+
+    a = (int)pos;
+    frac = pos - a;
+    b = a + 1;
+    if (state == Q3_GUNFRAME_RAISING && a >= RTX_RAIL_RAISE_LAST) {
+        a = RTX_RAIL_RAISE_LAST;
+        b = RTX_RAIL_IDLE;
+        frac = min(pos - RTX_RAIL_RAISE_LAST, 1.0f);
+    } else if (a == RTX_RAIL_IDLE_LAST) {
+        b = RTX_RAIL_IDLE;      // the idle loop closes
+    } else if (a >= RTX_RAIL_LAST) {
+        a = b = RTX_RAIL_LAST;
+        frac = 0;
+    }
+
+    e = *gun;
+    e.model = q3w.rtx_rail_view;
+    e.oldframe = a;
+    e.frame = b;
+    e.backlerp = 1.0f - frac;
+    V_AddEntity(&e);
+
+    // where the rail starts (CL_Q3W_RailStart): Quake II's own for this gun,
+    // weapon_railgun_fire's 7 right and 8 down from the eye, so the beam
+    // leaves the redesign as it does in Quake II - on the gun's axes, so it
+    // rides the bob, kick and pullback the model does
+    AngleVectors(gun->angles, forward, right, up);
+    VectorMA(gun->origin, (gun->flags & RF_LEFTHAND) ? -7 : 7, right, q3v.muzzle);
+    VectorMA(q3v.muzzle, -8, up, q3v.muzzle);
+    q3v.muzzle_time = cl.time;
+}
+
+/*
+=================
 CL_Q3W_AddViewWeapon
 
 CL_AddViewWeapon, with `gun` placed (bob, kick, pullback and all) and its
@@ -715,6 +841,12 @@ bool CL_Q3W_AddViewWeapon(const entity_t *gun, int gunframe)
         q3v.state_time = cl.time;
     }
     firing = state == Q3_GUNFRAME_FIRING;
+
+    // Q2RTX's railgun in its place (cl_classic_railgun 0)
+    if (g == &q3w_guns[Q3W_RAILGUN] && q3w.rtx_rail_view) {
+        q3w_add_rtx_rail(gun, state, sh);
+        return true;
+    }
 
     // the gun on the hand's tag_weapon (the hand itself draws nothing)
     AnglesToAxis(gun->angles, hand_axis);

@@ -62,8 +62,9 @@ bool vkpt_q3_program_shines(const pbr_material_t *mat, bool *metal);
 void vkpt_q3_touch_program(const pbr_material_t *mat);
 
 // Evaluates every live program at `time` (seconds) into `dst` (LightBuffer
-// q3_stages). Call before the material table is filled.
-void vkpt_q3_upload(vec4 *dst, float time);
+// q3_stages). Call before the material table is filled. `time_prev` is last
+// frame's (the UBO's): a moving picture's motion vectors (q3stages.c MOTION).
+void vkpt_q3_upload(vec4 *dst, float time, float time_prev);
 
 // Where `mat`'s program landed in this frame's upload: its first vec4 + 1, or
 // 0 when it has none - for word 9 of the material table.

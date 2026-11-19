@@ -1948,6 +1948,7 @@ void ClientUserinfoChanged(edict_t *ent, char *userinfo);
 extern  cvar_t  *teamplay;
 
 bool G_TeamPlay(void);
+bool Team_NoFriendlyFire(void);
 const char *Team_Name(int team);
 int  Team_Score(int team);
 void Team_Assign(edict_t *ent);
@@ -2132,6 +2133,7 @@ typedef struct {
 } bot_character_t;
 
 bool  BotChar_Load(const char *name, float skill, bot_character_t *out);
+void  BotChar_EngineFile(const char *name, char *out, size_t size);
 float BotChar_BFloat(const bot_character_t *ch, int index, float lo, float hi);
 int  SP_BotHandicap(void);
 void SP_BotJoined(const char *skin);
@@ -2155,6 +2157,27 @@ bool Bot_IsBot(const edict_t *ent);
 void Bot_Damaged(edict_t *self, edict_t *attacker);
 void Bot_ClientConnecting(edict_t *ent);
 bool Bot_ServerCommand(const char *cmd);
+
+//
+// g_q3bot.c - Quake III's own bot engine (q3bot/), bot_q3_ai 2
+//
+void BotEngine_SaveEntities(const char *entities);
+bool BotEngine_Load(void);
+bool BotEngine_Ready(void);
+void BotEngine_Shutdown(void);
+bool BotEngine_Add(edict_t *ent, const char *charfile, float skill, const char *name);
+void BotEngine_Remove(edict_t *ent);
+bool BotEngine_Running(const edict_t *ent);
+void BotEngine_Frame(void);
+void BotEngine_Chat(edict_t *to, const char *msg);
+void BotEngine_Damaged(edict_t *targ, edict_t *attacker);
+int  BotEngine_MeansOfDeath(int mod);
+void BotEngine_Obituary(edict_t *self, edict_t *attacker, int mod);
+void BotEngine_PowerupRespawned(void);
+void BotEngine_Print(edict_t *to, int printlevel, const char *msg);
+void BotEngine_FlagTaken(int flagteam);
+void BotEngine_FlagReturned(int flagteam);
+void BotEngine_FlagCaptured(int team);
 
 //
 // g_svcmds.c

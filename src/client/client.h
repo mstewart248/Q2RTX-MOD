@@ -876,6 +876,7 @@ void CL_Q3W_RegisterMedia(void);
 void CL_Q3W_Clear(void);
 void CL_Q3W_AddEntities(void);
 bool CL_Q3W_IsGun(qhandle_t model);
+void CL_Q3W_ItemModel(entity_t *ent);
 const char *CL_Q3W_VWepFallback(const char *vwep);
 bool CL_Q3W_AddViewWeapon(const entity_t *gun, int gunframe);
 bool CL_Q3W_ViewMuzzle(vec3_t out);

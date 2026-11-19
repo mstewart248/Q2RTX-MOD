@@ -746,7 +746,7 @@ begin effects
         range --status "how far a triangle may lean away from the normal the model file stored at a corner before it counts as a different surface and is left out of that corner's average. LOW keeps more hard edges and smooths less; HIGH rounds everything off. 60 smooths a gun barrel while leaving the edge where it meets the receiver (pt_model_smooth_angle)" \
             -f "%.0f deg" "smoothing crease angle" pt_model_smooth_angle 10 120 5
         endif
-        toggle --status "(cl_classic_railgun)" "classic railgun" cl_classic_railgun
+        toggle --status "off: Q2RTX's redesigned railgun - and with Quake III's guns in a bot match it stands in for Quake III's railgun too, in your hand and on the ground. On: the classic railgun, and Quake III's own with Quake III's guns (cl_classic_railgun)" "classic railgun" cl_classic_railgun
         blank
     endif
     ifeqor vid_rtx 1 vid_rtx 3
@@ -1397,24 +1397,25 @@ begin singleplayer
     background #212F3CD0
     style --compact
     banner m_banner_game
-    ifneq fs_rerelease 1
-        action "quake ii" "set _ui_campaign newgame; pushmenu skill"
-        ifeq fs_shareware 0
-            action "bot match" "set _ui_botpack 0; bot_lineup; pushmenu botmatch"
-        endif
-    endif
+    action "quake ii" "set _ui_campaign newgame; pushmenu skill"
     ifeq fs_rerelease 1
-        action "quake ii" "set _ui_campaign newgame; pushmenu skill"
         action "call of the machine" "set _ui_campaign newgame_mg2; pushmenu skill"
         action "the reckoning" "set _ui_campaign newgame_xatrix; pushmenu skill"
         action "ground zero" "set _ui_campaign newgame_rogue; pushmenu skill"
+    endif
+    // Quake III Arena's own single player game, in its own menus
+    // (src/client/ui/q3sp.c, src/baseq2/g_sp.c) - above Quake II 64
+    ifeq fs_quake3 1
+        action "quake iii arena" levelselect
+    endif
+    ifeq fs_rerelease 1
         action "quake ii 64" "set _ui_campaign newgame_n64; pushmenu skill"
         action "bot match" "bot_lineup; pushmenu botmatch"
     endif
-    // Quake III Arena's own single player game, in its own menus
-    // (src/client/ui/q3sp.c, src/baseq2/g_sp.c)
-    ifeq fs_quake3 1
-        action "quake iii arena" levelselect
+    ifneq fs_rerelease 1
+        ifeq fs_shareware 0
+            action "bot match" "set _ui_botpack 0; bot_lineup; pushmenu botmatch"
+        endif
     endif
     blank
     action "load game..." pushmenu loadgame
@@ -1537,7 +1538,7 @@ begin botmatch
     endif
     pairs --status "quake iii arena: its faster running, air control, jumps and knockback, for everyone (g_q3_physics)" "movement" g_q3_physics "quake ii" 0 "quake iii arena" 1
     ifge bot_mode 1
-        toggle --status "(dmflags)" "friendly fire" dmflags ~8
+        toggle --status "your team's shots hurt you, and yours hurt them. off as in quake iii arena (bot_friendly_fire)" "friendly fire" bot_friendly_fire
     endif
     ifneq bot_mode 2
         field --integer --status "0 - no frag limit" --width 3 "frag limit" fraglimit
@@ -1558,6 +1559,12 @@ begin botmatch
     ifge bot_count 1
     ifeq fs_quake3 1
         pairs --live --status "whose player models the bots wear: quake ii's, quake iii arena's, or both" "bot models" bot_models "quake ii" 0 "quake iii arena" 1 both 2
+        pairs --status "how bots think. quake ii: its own bots. quake iii characters: quake iii's bots aim, fight and move by their own characters and rules. quake iii engine: quake iii's whole bot ai and navigation, on maps with its .aas (quake iii's own), and quake iii characters elsewhere (bot_q3_ai)" "bot ai" bot_q3_ai "quake ii" 0 "quake iii characters" 1 "quake iii engine" 2
+        ifeq bot_q3_ai 2
+        ifge bot_mode 1
+            pairs --status "who leads your team. bots: a bot leads and gives the orders - say i am the leader in team chat to take over, i quit being the leader to hand it back. you: quake iii's rule - your bots defend until you order them (bot_q3_human_leader)" "team leader" bot_q3_human_leader bots 0 you 1
+        endif
+        endif
     endif
     endif
     ifge bot_count 1

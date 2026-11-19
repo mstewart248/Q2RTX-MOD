@@ -683,6 +683,14 @@ void Key_Event(unsigned key, bool down, unsigned time)
             return;
         }
 
+        // photo mode over the Quake III podium: Escape goes back to its screen
+        // (ui/q3sp.c) - the game menu would have replaced it
+        if (cls.key_dest == KEY_GAME && UI_SP_PodiumPhoto()) {
+            if (keydown[key] == 1)
+                UI_SP_PodiumPhotoEnd();
+            return;
+        }
+
         if (cls.key_dest == KEY_GAME &&
             cl.frame.ps.stats[STAT_LAYOUTS] &&
             cls.demo.playback == false) {
@@ -744,6 +752,15 @@ void Key_Event(unsigned key, bool down, unsigned time)
 		if(R_InterceptKey(key, down))
 			return;
 	}
+
+    // the key bound to "pause" (photo mode) on the Quake III postgame screen,
+    // which would only have hurried the podium along: photo mode, the screen set
+    // aside till it ends (ui/q3sp.c)
+    if (cls.key_dest == KEY_MENU && down && keydown[key] == 1 &&
+        keybindings[key] && !Q_stricmp(keybindings[key], "pause") &&
+        UI_SP_PodiumPhotoStart()) {
+        return;
+    }
 
     // The item wheel is HELD open, and the dispatch below cannot do that for
     // it: a binding that does not start with a '+' never sees the key come

@@ -3765,7 +3765,10 @@ gitem_t itemlist[] = {
         AMMO_Q3_LIGHTNING,
         /* precache */ ""
     },
-    // Quake II's cells box: Matt's rule, ammo pickups always wear Quake II's models
+    // Quake III's own box, turning as Quake III's items do: the exception to
+    // Matt's rule that ammo pickups wear Quake II's models, since no Quake II
+    // pickup is BFG ammo (Matt, 11-19). In a match by player model Quake II's
+    // players still see the cells box they get from it (Q3W_ItemModel).
     {
         "ammo_q3_bfg",
         Pickup_Ammo,
@@ -3773,7 +3776,7 @@ gitem_t itemlist[] = {
         Drop_Ammo,
         NULL,
         "#baseq3/sound/misc/am_pkup.wav",
-        "models/items/ammo/cells/medium/tris.md2", 0,
+        "models/powerups/ammo/bfgam.md3", EF_ROTATE,
         NULL,
         /* icon */      "/icons/icona_bfg.tga",
         /* pickup */    "Bfg Ammo",

@@ -1191,7 +1191,12 @@ vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp
 	// Quake III shader stages for this frame's time (q3stages.c), first: the
 	// table below records where each material's program landed. Straight into
 	// the mapped staging, each vec4 written once.
-	vkpt_q3_upload(lbo->q3_stages, vkpt_refdef.fd ? vkpt_refdef.fd->time : 0.f);
+	// time_prev: the UBO's, set earlier in vkpt_prepare_frame, so a moving
+	// picture's vector runs on the same clock as everything else's
+	{
+		const float now = vkpt_refdef.fd ? vkpt_refdef.fd->time : 0.f;
+		vkpt_q3_upload(lbo->q3_stages, now, vkpt_refdef.fd ? vkpt_refdef.uniform_buffer.time_prev : now);
+	}
 
 	// whether any row below uses what spec_q3 0 compiles out (main.c, update_q3_shaders)
 	bool q3_materials = false;

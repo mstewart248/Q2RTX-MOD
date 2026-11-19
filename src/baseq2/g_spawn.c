@@ -1325,6 +1325,9 @@ void SpawnEntities(const char *mapname, const char *entities, const char *spawnp
 
     Q_strlcpy(level.mapname, mapname, sizeof(level.mapname));
     Q_strlcpy(game.spawnpoint, spawnpoint, sizeof(game.spawnpoint));
+    // Quake III's bot engine: the last map's AAS goes, this map's entities
+    // are kept for its next (g_q3bot.c)
+    BotEngine_SaveEntities(entities);
     level.is_n64 = !strncmp(level.mapname, "q64/", 4);
     // a Quake III Arena map, as the server found it when it loaded the BSP
     level.q3map = gi.cvar("sv_map_q3", "0", 0)->integer != 0;

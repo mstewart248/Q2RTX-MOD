@@ -1,0 +1,84 @@
+
+# instance of textures/base_light/proto_light_2k
+# q3dm5, created at (-1055 -1953 291)
+# Inherits everything from textures/base_light/proto_light_2k; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_light/proto_light_2k#6b5bcbec:
+#	texture_base materialDev/textures/base_light/proto_light.jpg
+#	texture_emissive materialDev/textures/base_light/proto_lightmap.jpg
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 0
+#	specular_factor 0
+#	base_factor 1
+#	emissive_factor 0
+	light_factor 5
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 0
+#	default_radiance 2
+
+# instance of textures/base_light/proto_light_2k
+# q3dm5, created at (-1048 -2021 297)
+# Inherits everything from textures/base_light/proto_light_2k; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_light/proto_light_2k#c569cf7c:
+#	texture_base materialDev/textures/base_light/proto_light.jpg
+#	texture_emissive materialDev/textures/base_light/proto_lightmap.jpg
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 0
+#	specular_factor 0
+#	base_factor 1
+#	emissive_factor 0
+	light_factor 5
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 0
+#	default_radiance 2
+
+# instance of textures/base_light/proto_light_2k
+# q3dm5, created at (-718 -2042 279)
+# Inherits everything from textures/base_light/proto_light_2k; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_light/proto_light_2k#8ad22260:
+#	texture_base materialDev/textures/base_light/proto_light.jpg
+#	texture_emissive materialDev/textures/base_light/proto_lightmap.jpg
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 0
+#	specular_factor 0
+#	base_factor 1
+#	emissive_factor 0
+	light_factor 5
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 0
+#	default_radiance 2
+
+# instance of textures/base_light/proto_light_2k
+# q3dm5, created at (-705 -1960 296)
+# Inherits everything from textures/base_light/proto_light_2k; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/base_light/proto_light_2k#6b827d20:
+#	texture_base materialDev/textures/base_light/proto_light.jpg
+#	texture_emissive materialDev/textures/base_light/proto_lightmap.jpg
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 0
+#	specular_factor 0
+#	base_factor 1
+#	emissive_factor 0
+	light_factor 5
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 0
+#	default_radiance 2

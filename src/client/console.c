@@ -767,6 +767,9 @@ static void Con_DrawNotify(void)
     if (con.currentHeight) {
         return;
     }
+    if (UI_SP_PodiumPhoto()) {
+        return;     // photo mode over the Quake III podium shows only itself
+    }
 
     j = con_notifylines->integer;
     if (j > CON_TIMES) {

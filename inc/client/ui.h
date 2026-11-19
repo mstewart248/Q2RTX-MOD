@@ -45,9 +45,17 @@ bool        UI_IsTransparent(void);
 // the Quake III campaign (client/ui/q3sp.c)
 void        UI_SP_DrawHUD(void);            // its reward medals, over the HUD
 bool        UI_SP_KeepsGameRunning(void);   // its postgame screen: no auto-pause
+bool        UI_SP_PodiumPhoto(void);        // photo mode over that screen, which is set aside
+bool        UI_SP_PodiumPhotoStart(void);   // the pause key on that screen (keys.c)
+void        UI_SP_PodiumPhotoEnd(void);     // Escape in it (keys.c)
+void        UI_SP_PodiumPhotoCheck(void);   // CL_CheckForPause: over? the screen comes back
 #else
 #define     UI_SP_DrawHUD()         (void)0
 #define     UI_SP_KeepsGameRunning() false
+#define     UI_SP_PodiumPhoto()     false
+#define     UI_SP_PodiumPhotoStart() false
+#define     UI_SP_PodiumPhotoEnd()  (void)0
+#define     UI_SP_PodiumPhotoCheck() (void)0
 #define     UI_Init()               (void)0
 #define     UI_Shutdown()           (void)0
 #define     UI_ModeChanged()        (void)0

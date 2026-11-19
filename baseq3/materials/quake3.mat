@@ -769,6 +769,9 @@ models/mapobjects/flag/banner_strgg:
 # scripts/models.shader
 #	stage0: map models/mapobjects/flag/banner_strgg.tga; blendfunc gl_src_alpha gl_one_minus_src_alpha; alphaFunc GE128; rgbGen vertex
 	stage0_map materialDev/models/mapobjects/flag/banner_strgg.tga
+	kind REGULAR
+	specular_factor 1
+	double_sided 0
 #	texture_normals materialDev/models/mapobjects/flag/banner_strgg_n.png
 #	texture_roughness materialDev/models/mapobjects/flag/banner_strgg_rough.png
 #	texture_metallic materialDev/models/mapobjects/flag/banner_strgg_metal.png
@@ -1235,6 +1238,11 @@ models/mapobjects/podium/podium:
 	stage2_map materialDev/models/mapobjects/podium/podium.tga
 #	stage3: map models/mapobjects/podium/podiumglo.tga; blendFunc GL_ONE GL_ONE; rgbGen wave sin 1 1 0 .2
 	stage3_map materialDev/models/mapobjects/podium/podiumglo.tga
+	emissive_factor 0
+	stage3_emissive_factor 1
+	roughness_override 0.1
+	stage0_roughness_override 0.1
+	stage2_roughness_override 0.1
 #	texture_normals materialDev/models/mapobjects/podium/podium_n.png
 #	texture_roughness materialDev/models/mapobjects/podium/podium_rough.png
 #	texture_metallic materialDev/models/mapobjects/podium/podium_metal.png
@@ -1293,6 +1301,8 @@ models/mapobjects/podium/podskull:
 	stage2_map materialDev/models/mapobjects/podium/podskull.tga
 #	stage3: map models/mapobjects/podium/podskullfx.tga; blendFunc GL_ONE GL_ONE; rgbGen wave sin 1 1 0 .2
 	stage3_map materialDev/models/mapobjects/podium/podskullfx.jpg
+	emissive_factor 0
+	stage3_emissive_factor 1
 #	texture_normals materialDev/models/mapobjects/podium/podskull_n.png
 #	texture_roughness materialDev/models/mapobjects/podium/podskull_rough.png
 #	texture_metallic materialDev/models/mapobjects/podium/podskull_metal.png
@@ -4390,7 +4400,7 @@ models/weapons2/bfg/bfg:
 	stage1_roughness_override 0
 	texture_metallic materialDev/models/weapons2/bfg/bfg_metal.tga
 	stage1_texture_metallic materialDev/models/weapons2/bfg/bfg_metal.tga
-	base_factor 2.5
+	base_factor 1
 #	texture_height materialDev/models/weapons2/bfg/bfg_height.png
 #	texture_emissive materialDev/models/weapons2/bfg/bfg_light.png
 
@@ -5980,6 +5990,8 @@ textures/base_floor/skylight1:
 	stage2_map materialDev/textures/base_floor/skylight1_lm.jpg
 #	stage3: map textures/base_floor/skylight1_lm.tga; blendfunc GL_ONE GL_ONE; rgbgen wave triangle .2 5 1 5.1
 	stage3_map materialDev/textures/base_floor/skylight1_lm.jpg
+	light_factor 2
+	stage2_emissive_factor 5
 #	texture_normals materialDev/textures/base_floor/skylight1_n.png
 #	texture_roughness materialDev/textures/base_floor/skylight1_rough.png
 #	texture_metallic materialDev/textures/base_floor/skylight1_metal.png
@@ -6051,6 +6063,7 @@ textures/base_floor/tilefloor5:
 
 textures/base_floor/tilefloor7:
 	texture_base materialDev/textures/base_floor/tilefloor7.jpg
+	specular_factor 0
 #	texture_normals materialDev/textures/base_floor/tilefloor7_n.png
 #	texture_roughness materialDev/textures/base_floor/tilefloor7_rough.png
 #	texture_metallic materialDev/textures/base_floor/tilefloor7_metal.png
@@ -6066,6 +6079,9 @@ textures/base_floor/tilefloor7_ow:
 	stage2_map materialDev/textures/base_floor/tilefloor7_owfx.jpg
 #	stage3: map textures/base_floor/tilefloor7_owfx.tga; blendfunc GL_ONE GL_ONE; rgbgen wave triangle 1 5 1 3
 	stage3_map materialDev/textures/base_floor/tilefloor7_owfx.jpg
+	specular_factor 0
+	light_factor 4
+	stage2_emissive_factor 3
 #	texture_normals materialDev/textures/base_floor/tilefloor7_ow_n.png
 #	texture_roughness materialDev/textures/base_floor/tilefloor7_ow_rough.png
 #	texture_metallic materialDev/textures/base_floor/tilefloor7_ow_metal.png
@@ -7112,6 +7128,8 @@ textures/base_light/proto_light_2k:
 	stage3_map materialDev/textures/base_light/proto_light2.jpg
 #	stage4: map textures/base_light/proto_light2.tga; blendfunc GL_ONE GL_ONE; tcmod scale -1 -1; rgbgen wave triangle 1 2 0 7
 	stage4_map materialDev/textures/base_light/proto_light2.jpg
+	emissive_factor 0
+	stage2_emissive_factor 5
 #	texture_normals materialDev/textures/base_light/proto_light_2k_n.png
 #	texture_roughness materialDev/textures/base_light/proto_light_2k_rough.png
 #	texture_metallic materialDev/textures/base_light/proto_light_2k_metal.png
@@ -8216,10 +8234,11 @@ textures/base_trim/panel_glo:
 textures/base_trim/panel_shiny:
 # scripts/base_trim.shader
 #	stage0: map textures/effects/tinfx.tga; tcGen environment; rgbGen identity
-	stage0_map materialDev/textures/effects/tinfx.jpg
+	stage0_map off
 #	stage1: map textures/base_trim/panel_shiny.tga; blendFunc GL_SRC_ALPHA GL_ONE_MINUS_SRC_ALPHA; rgbGen identity
 	stage1_map materialDev/textures/base_trim/panel_shiny.tga
 	emissive_factor 0
+	roughness_override 0.1
 #	stage2: map $lightmap; blendFunc GL_DST_COLOR GL_ONE_MINUS_DST_ALPHA; rgbGen identity
 #	texture_normals materialDev/textures/base_trim/panel_shiny_n.png
 #	texture_roughness materialDev/textures/base_trim/panel_shiny_rough.png
@@ -8446,6 +8465,8 @@ textures/base_trim/spiderbite:
 	stage2_map materialDev/textures/base_trim/spiderbite.tga
 #	stage3: map textures/base_trim/spiderbite.tga; blendFunc GL_SRC_ALPHA GL_ONE_MINUS_SRC_ALPHA; rgbGen identity
 	stage3_map materialDev/textures/base_trim/spiderbite.tga
+	emissive_factor 0
+	stage0_emissive_factor 1
 #	stage4: map $lightmap; blendFunc GL_DST_COLOR GL_ONE_MINUS_DST_ALPHA; rgbGen identity
 #	texture_normals materialDev/textures/base_trim/spiderbite_n.png
 #	texture_roughness materialDev/textures/base_trim/spiderbite_rough.png
@@ -8777,7 +8798,7 @@ textures/base_wall/basewall01:
 	texture_base materialDev/textures/base_wall/basewall01.jpg
 #	texture_normals materialDev/textures/base_wall/basewall01_n.png
 #	texture_roughness materialDev/textures/base_wall/basewall01_rough.png
-#	texture_metallic materialDev/textures/base_wall/basewall01_metal.png
+	texture_metallic materialDev/textures/base_wall/basewall01_metal.jpg
 #	texture_height materialDev/textures/base_wall/basewall01_height.png
 #	texture_emissive materialDev/textures/base_wall/basewall01_light.png
 
@@ -8788,6 +8809,9 @@ textures/base_wall/basewall01_ow:
 	stage1_map materialDev/textures/base_wall/basewall01_ow.jpg
 #	stage2: map textures/base_wall/basewall01_owfx.tga; blendfunc GL_ONE GL_ONE; rgbGen wave sin .5 0.5 0 .5
 	stage2_map materialDev/textures/base_wall/basewall01_owfx.jpg
+	emissive_factor 0
+	light_factor 2
+	stage2_emissive_factor 1
 #	texture_normals materialDev/textures/base_wall/basewall01_ow_n.png
 #	texture_roughness materialDev/textures/base_wall/basewall01_ow_rough.png
 #	texture_metallic materialDev/textures/base_wall/basewall01_ow_metal.png
@@ -8804,6 +8828,7 @@ textures/base_wall/basewall01bit:
 	stage2_map materialDev/textures/effects/envmap2.jpg
 #	stage3: map textures/base_wall/basewall01bit.tga; blendFunc GL_SRC_ALPHA GL_ONE_MINUS_SRC_ALPHA; rgbGen identity
 	stage3_map materialDev/textures/base_wall/basewall01bit.tga
+	stage1_emissive_factor 5
 #	stage4: map $lightmap; blendFunc GL_DST_COLOR GL_ONE_MINUS_DST_ALPHA; rgbGen identity
 #	texture_normals materialDev/textures/base_wall/basewall01bit_n.png
 #	texture_roughness materialDev/textures/base_wall/basewall01bit_rough.png
@@ -8821,7 +8846,7 @@ textures/base_wall/basewall02:
 
 textures/base_wall/basewall03:
 	texture_base materialDev/textures/base_wall/basewall03.jpg
-	roughness_override 0
+	roughness_override 1
 #	texture_normals materialDev/textures/base_wall/basewall03_n.png
 #	texture_roughness materialDev/textures/base_wall/basewall03_rough.png
 #	texture_metallic materialDev/textures/base_wall/basewall03_metal.png
@@ -12081,8 +12106,11 @@ textures/gothic_block/gkcspinemove:
 #	stage0: map $lightmap; rgbGen identity
 #	stage1: map textures/gothic_block/gkc17d.tga; blendFunc GL_DST_COLOR GL_SRC_ALPHA; rgbGen identity; alphaGen lightingSpecular
 	stage1_map materialDev/textures/gothic_block/gkc17d.tga
-#	texture_normals materialDev/textures/gothic_block/gkcspinemove_n.png
-#	texture_roughness materialDev/textures/gothic_block/gkcspinemove_rough.png
+	texture_normals materialDev/textures/gothic_block/gkc17d_n.png
+	texture_roughness materialDev/textures/gothic_block/gkc17d_rough.tga
+	metalness_factor 0
+	bump_scale 2
+	base_factor 0.5
 #	texture_metallic materialDev/textures/gothic_block/gkcspinemove_metal.png
 #	texture_height materialDev/textures/gothic_block/gkcspinemove_height.png
 #	texture_emissive materialDev/textures/gothic_block/gkcspinemove_light.png
@@ -12342,6 +12370,8 @@ textures/gothic_button/timbutton:
 #	stage1: map $lightmap; blendfunc gl_dst_color gl_zero; rgbgen identity
 #	stage2: map textures/gothic_button/timbutton2.tga; blendfunc gl_one gl_one; rgbgen wave sin .5 .5 0 1
 	stage2_map materialDev/textures/gothic_button/timbutton2.jpg
+	emissive_factor 0
+	stage2_emissive_factor 0.2
 #	texture_normals materialDev/textures/gothic_button/timbutton_n.png
 #	texture_roughness materialDev/textures/gothic_button/timbutton_rough.png
 #	texture_metallic materialDev/textures/gothic_button/timbutton_metal.png
@@ -13242,6 +13272,7 @@ textures/gothic_floor/largerblock3b_ow:
 	stage0_map materialDev/textures/sfx/firegorre.tga
 #	stage1: map textures/gothic_floor/largerblock3b_ow.tga; blendFunc GL_SRC_ALPHA GL_ONE_MINUS_SRC_ALPHA; rgbGen identity
 	stage1_map materialDev/textures/gothic_floor/largerblock3b_ow.tga
+	specular_factor 1
 #	stage2: map $lightmap; blendFunc GL_DST_COLOR GL_ONE_MINUS_DST_ALPHA; rgbGen identity
 #	texture_normals materialDev/textures/gothic_floor/largerblock3b_ow_n.png
 #	texture_roughness materialDev/textures/gothic_floor/largerblock3b_ow_rough.png
@@ -17813,6 +17844,7 @@ textures/sfx/blocks18ccomputer:
 # scripts/sfx.shader
 #	stage0: map textures/sfx/blocks18ccomputer.tga; rgbGen identity
 	stage0_map materialDev/textures/sfx/blocks18ccomputer.jpg
+	specular_factor 1
 #	stage1: map $lightmap; blendfunc gl_dst_color gl_zero; rgbGen identity
 #	stage2 (animMap - one stage2_map would stop it): animMap 2 textures/sfx/compscreen/letters1.tga textures/sfx/compscreen/letters2.tga textures/sfx/compscreen/letters3.tga textures/sfx/compscreen/letters5.tga textures/sfx/compscreen/letters4.tga textures/sfx/compscreen/letters5.tga textures/sfx/compscreen/letters5.tga; blendFunc GL_ONE GL_ONE; rgbGen wave inverseSawtooth 0 1 0 2
 #		materialDev/textures/sfx/compscreen/letters1.tga
