@@ -625,6 +625,10 @@ bool Add_Ammo(edict_t *ent, gitem_t *item, int count)
         max = ent->client->pers.max_flechettes;
     else if (item->tag == AMMO_PROX)
         max = ent->client->pers.max_prox;
+    else if (item->tag == AMMO_Q3_LIGHTNING)
+        max = ent->client->pers.max_q3_lightning;
+    else if (item->tag == AMMO_Q3_BFG)
+        max = ent->client->pers.max_q3_bfg;
     else
         return false;
 
@@ -670,6 +674,10 @@ bool Pickup_Ammo(edict_t *ent, edict_t *other)
     int         oldcount;
     int         count;
     bool        weapon;
+
+    // Quake III's guns take Quake III's amounts from the box (g_q3weap.c)
+    if (level.q3_weapons && Q3W_PlayerQ3(other))
+        return Q3W_PickupAmmo(ent, other);
 
     weapon = (ent->item->flags & IT_WEAPON);
     if ((weapon) && ((int)dmflags->value & DF_INFINITE_AMMO))
@@ -943,6 +951,7 @@ Touch_Item
 void Touch_Item(edict_t *ent, edict_t *other, cplane_t *plane, csurface_t *surf)
 {
     bool    taken;
+    gitem_t *native = ent->item;
 
     if (!other->client)
         return;
@@ -950,6 +959,10 @@ void Touch_Item(edict_t *ent, edict_t *other, cplane_t *plane, csurface_t *surf)
         return;     // dead people can't pickup
     if (!ent->item->pickup)
         return;     // not a grabbable item?
+
+    // a bot match's guns by player model: a pickup carrying both games' guns
+    // gives each player their own (g_q3weap.c). Put back below.
+    ent->item = Q3W_ItemFor(ent, other);
 
     taken = ent->item->pickup(ent, other);
 
@@ -986,6 +999,8 @@ void Touch_Item(edict_t *ent, edict_t *other, cplane_t *plane, csurface_t *surf)
             gi.sound(other, CHAN_ITEM, gi.soundindex(ent->item->pickup_sound), 1, ATTN_NORM, 0);
         }
     }
+
+    ent->item = native;
 
     if (!(ent->spawnflags & ITEM_TARGETS_USED)) {
         G_UseTargets(ent, other);
@@ -1039,6 +1054,8 @@ edict_t *Drop_Item(edict_t *ent, gitem_t *item)
     VectorSet(dropped->maxs, 15, 15, 15);
     gi.setmodel(dropped, dropped->item->world_model);
     Q3_DroppedItem(dropped);    // Quake III's quad model on its maps
+    Q3W_DroppedItem(dropped);   // a gun in a match by player model: both games'
+    Q3W_ItemModel(dropped);
     dropped->solid = SOLID_TRIGGER;
     dropped->movetype = MOVETYPE_TOSS;
     dropped->touch = drop_temp_touch;
@@ -1157,6 +1174,7 @@ void droptofloor(edict_t *ent)
         gi.setmodel(ent, ent->model);
     else
         gi.setmodel(ent, ent->item->world_model);
+    Q3W_ItemModel(ent);     // Quake III's guns: bigger, or both games' (g_q3weap.c)
     ent->solid = SOLID_TRIGGER;
     ent->movetype = MOVETYPE_TOSS;
     ent->touch = Touch_Item;
@@ -3539,6 +3557,236 @@ gitem_t itemlist[] = {
         /* precache */ "#baseq3/sound/world/telein.wav #baseq3/sound/world/teleout.wav"
     },
 
+    //
+    // QUAKE III ARENA'S WEAPONS - the bot match's g_q3_weapons (g_q3weap.c),
+    // after everything else so every item before them keeps its index. Where
+    // Quake III names a gun as Quake II does ("Rocket Launcher", "BFG10K"),
+    // `use` and `give` pick the player's own game's (Q3W_FindItem). Their ammo
+    // is Quake II's, apart from the Lightning Gun's and the BFG10K's below.
+    //
+    {
+        "weapon_q3_gauntlet",
+        Pickup_Q3Weapon,
+        Use_Weapon,
+        NULL,
+        Weapon_Q3,
+        "#baseq3/sound/misc/w_pkup.wav",
+        "models/weapons2/gauntlet/gauntlet.md3", EF_ROTATE,
+        "models/weapons2/gauntlet/gauntlet.md3",
+        /* icon */      "/icons/iconw_gauntlet.tga",
+        /* pickup */    "Gauntlet",
+        0,
+        0,
+        NULL,
+        IT_WEAPON | IT_MELEE | IT_Q3,
+        WEAP_Q3_GAUNTLET,
+        NULL,
+        Q3W_GAUNTLET,
+        /* precache */ "#baseq3/sound/weapons/melee/fstrun.wav #baseq3/sound/weapons/melee/fstatck.wav"
+    },
+    {
+        "weapon_q3_machinegun",
+        Pickup_Q3Weapon,
+        Use_Weapon,
+        Drop_Weapon,
+        Weapon_Q3,
+        "#baseq3/sound/misc/w_pkup.wav",
+        "models/weapons2/machinegun/machinegun.md3", EF_ROTATE,
+        "models/weapons2/machinegun/machinegun.md3",
+        /* icon */      "/icons/iconw_machinegun.tga",
+        /* pickup */    "Machinegun",
+        0,
+        1,
+        "Bullets",
+        IT_WEAPON | IT_Q3,
+        WEAP_Q3_MACHINEGUN,
+        NULL,
+        Q3W_MACHINEGUN,
+        /* precache */ "#baseq3/sound/weapons/machinegun/ric1.wav #baseq3/sound/weapons/machinegun/ric2.wav #baseq3/sound/weapons/machinegun/ric3.wav"
+    },
+    {
+        "weapon_q3_shotgun",
+        Pickup_Q3Weapon,
+        Use_Weapon,
+        Drop_Weapon,
+        Weapon_Q3,
+        "#baseq3/sound/misc/w_pkup.wav",
+        "models/weapons2/shotgun/shotgun.md3", EF_ROTATE,
+        "models/weapons2/shotgun/shotgun.md3",
+        /* icon */      "/icons/iconw_shotgun.tga",
+        /* pickup */    "Shotgun",
+        0,
+        1,
+        "Shells",
+        IT_WEAPON | IT_Q3,
+        WEAP_Q3_SHOTGUN,
+        NULL,
+        Q3W_SHOTGUN,
+        /* precache */ ""
+    },
+    {
+        "weapon_q3_grenadelauncher",
+        Pickup_Q3Weapon,
+        Use_Weapon,
+        Drop_Weapon,
+        Weapon_Q3,
+        "#baseq3/sound/misc/w_pkup.wav",
+        "models/weapons2/grenadel/grenadel.md3", EF_ROTATE,
+        "models/weapons2/grenadel/grenadel.md3",
+        /* icon */      "/icons/iconw_grenade.tga",
+        /* pickup */    "Grenade Launcher",
+        0,
+        1,
+        "Grenades",
+        IT_WEAPON | IT_Q3,
+        WEAP_Q3_GRENADELAUNCHER,
+        NULL,
+        Q3W_GRENADE,
+        /* precache */ "models/ammo/grenade1.md3 #baseq3/sound/weapons/rocket/rocklx1a.wav"
+    },
+    {
+        "weapon_q3_rocketlauncher",
+        Pickup_Q3Weapon,
+        Use_Weapon,
+        Drop_Weapon,
+        Weapon_Q3,
+        "#baseq3/sound/misc/w_pkup.wav",
+        "models/weapons2/rocketl/rocketl.md3", EF_ROTATE,
+        "models/weapons2/rocketl/rocketl.md3",
+        /* icon */      "/icons/iconw_rocket.tga",
+        /* pickup */    "Rocket Launcher",
+        0,
+        1,
+        "Rockets",
+        IT_WEAPON | IT_Q3,
+        WEAP_Q3_ROCKETLAUNCHER,
+        NULL,
+        Q3W_ROCKET,
+        /* precache */ "models/ammo/rocket/rocket.md3 #baseq3/sound/weapons/rocket/rocklx1a.wav"
+    },
+    {
+        "weapon_q3_lightning",
+        Pickup_Q3Weapon,
+        Use_Weapon,
+        Drop_Weapon,
+        Weapon_Q3,
+        "#baseq3/sound/misc/w_pkup.wav",
+        "models/weapons2/lightning/lightning.md3", EF_ROTATE,
+        "models/weapons2/lightning/lightning.md3",
+        /* icon */      "/icons/iconw_lightning.tga",
+        /* pickup */    "Lightning Gun",
+        0,
+        1,
+        "Lightning",
+        IT_WEAPON | IT_Q3,
+        WEAP_Q3_LIGHTNING,
+        NULL,
+        Q3W_LIGHTNING,
+        /* precache */ "#baseq3/sound/weapons/lightning/lg_hit.wav #baseq3/sound/weapons/lightning/lg_hit2.wav #baseq3/sound/weapons/lightning/lg_hit3.wav"
+    },
+    {
+        "weapon_q3_railgun",
+        Pickup_Q3Weapon,
+        Use_Weapon,
+        Drop_Weapon,
+        Weapon_Q3,
+        "#baseq3/sound/misc/w_pkup.wav",
+        "models/weapons2/railgun/railgun.md3", EF_ROTATE,
+        "models/weapons2/railgun/railgun.md3",
+        /* icon */      "/icons/iconw_railgun.tga",
+        /* pickup */    "Railgun",
+        0,
+        1,
+        "Slugs",
+        IT_WEAPON | IT_Q3,
+        WEAP_Q3_RAILGUN,
+        NULL,
+        Q3W_RAILGUN,
+        /* precache */ "#baseq3/sound/weapons/plasma/plasmx1a.wav"
+    },
+    {
+        "weapon_q3_plasmagun",
+        Pickup_Q3Weapon,
+        Use_Weapon,
+        Drop_Weapon,
+        Weapon_Q3,
+        "#baseq3/sound/misc/w_pkup.wav",
+        "models/weapons2/plasma/plasma.md3", EF_ROTATE,
+        "models/weapons2/plasma/plasma.md3",
+        /* icon */      "/icons/iconw_plasma.tga",
+        /* pickup */    "Plasma Gun",
+        0,
+        1,
+        "Cells",
+        IT_WEAPON | IT_Q3,
+        WEAP_Q3_PLASMAGUN,
+        NULL,
+        Q3W_PLASMA,
+        /* precache */ "#baseq3/sound/weapons/plasma/plasmx1a.wav"
+    },
+    {
+        "weapon_q3_bfg",
+        Pickup_Q3Weapon,
+        Use_Weapon,
+        Drop_Weapon,
+        Weapon_Q3,
+        "#baseq3/sound/misc/w_pkup.wav",
+        "models/weapons2/bfg/bfg.md3", EF_ROTATE,
+        "models/weapons2/bfg/bfg.md3",
+        /* icon */      "/icons/iconw_bfg.tga",
+        /* pickup */    "BFG10K",
+        0,
+        1,
+        "Bfg Ammo",
+        IT_WEAPON | IT_Q3,
+        WEAP_Q3_BFG,
+        NULL,
+        Q3W_BFG,
+        /* precache */ "sprites/s_bfg1.sp2 #baseq3/sound/weapons/rocket/rocklx1a.wav"
+    },
+    // Quake II's cells box: Matt's rule, ammo pickups always wear Quake II's models
+    {
+        "ammo_q3_lightning",
+        Pickup_Ammo,
+        NULL,
+        Drop_Ammo,
+        NULL,
+        "#baseq3/sound/misc/am_pkup.wav",
+        "models/items/ammo/cells/medium/tris.md2", 0,
+        NULL,
+        /* icon */      "/icons/icona_lightning.tga",
+        /* pickup */    "Lightning",
+        /* width */     3,
+        60,
+        NULL,
+        IT_AMMO | IT_Q3,
+        0,
+        NULL,
+        AMMO_Q3_LIGHTNING,
+        /* precache */ ""
+    },
+    // Quake II's cells box: Matt's rule, ammo pickups always wear Quake II's models
+    {
+        "ammo_q3_bfg",
+        Pickup_Ammo,
+        NULL,
+        Drop_Ammo,
+        NULL,
+        "#baseq3/sound/misc/am_pkup.wav",
+        "models/items/ammo/cells/medium/tris.md2", 0,
+        NULL,
+        /* icon */      "/icons/icona_bfg.tga",
+        /* pickup */    "Bfg Ammo",
+        /* width */     3,
+        15,
+        NULL,
+        IT_AMMO | IT_Q3,
+        0,
+        NULL,
+        AMMO_Q3_BFG,
+        /* precache */ ""
+    },
+
     // end of list marker
     {NULL}
 };
@@ -3646,6 +3894,16 @@ static const char *const rerelease_weapon_order[] = {
     "weapon_phalanx",
     "weapon_bfg",
     "weapon_disintegrator",
+    // Quake III's, in its own weapon number order (g_q3weap.c)
+    "weapon_q3_gauntlet",
+    "weapon_q3_machinegun",
+    "weapon_q3_shotgun",
+    "weapon_q3_grenadelauncher",
+    "weapon_q3_rocketlauncher",
+    "weapon_q3_lightning",
+    "weapon_q3_railgun",
+    "weapon_q3_plasmagun",
+    "weapon_q3_bfg",
 };
 
 int weapon_cycle[MAX_ITEMS];        // itemlist indices, in weapon bar order

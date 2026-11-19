@@ -24,6 +24,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "device_memory_allocator.h"
 
 #include <assert.h>
+#include <time.h>
 
 #include "color.h"
 #include "material.h"
@@ -1260,16 +1261,50 @@ IMG_Unload_RTX(image_t *image)
 // with it the texture index that materials and uploaded geometry refer to, is
 // kept. Exactly that file - not another format of the same name, which load_img
 // would otherwise fall back to. Returns true if it was loaded.
+//
+// THE SEARCH PATH, THEN THE DISK. Matt, 2026-11-18, painting the Quake III
+// guns' maps (baseq3/materialDev/models/weapons2/...) with the game open:
+// "it's only reloading textures if I edit the material". The time check saw
+// each save ('reload_textures machinegun_rough': "read 20:16:55, on disk
+// 20:43:53"), but this read failed on every try and said nothing, while a
+// fresh load of the same name worked. So a failed read now says why, and the
+// file is then read straight from where FS_LastModified found it.
 bool IMG_ReloadFrom(image_t *image, const char *filepath)
 {
     image_t new_image;
-    if (load_img(filepath, &new_image) != Q_ERR_SUCCESS)
-        return false;
+    char    ospath[MAX_OSPATH];
+    int     ret;
 
-    if (FS_pathcmp(new_image.filepath, filepath))
+    memset(&new_image, 0, sizeof(new_image));
+    ret = load_img(filepath, &new_image);
+    if (ret == Q_ERR_SUCCESS && (!new_image.pix_data || FS_pathcmp(new_image.filepath, filepath)))
     {
+        Com_WPrintf("Re-reading '%s': the search path gave '%s' instead\n",
+                    filepath, new_image.filepath[0] ? new_image.filepath : "no pixels");
         Z_Free(new_image.pix_data);
-        return false;
+        ret = Q_ERR(ENOENT);
+    }
+    else if (ret != Q_ERR_SUCCESS)
+    {
+        Com_WPrintf("Re-reading '%s' through the search path failed: %s\n", filepath, Q_ErrorString(ret));
+    }
+
+    if (ret != Q_ERR_SUCCESS)
+    {
+        if (FS_RealPath(filepath, 0, ospath, sizeof(ospath)) == FS_REALPATH_PACK)
+            Com_WPrintf("  a pack has a copy that comes first: %s\n", ospath);
+        if (FS_RealPath(filepath, FS_TYPE_REAL, ospath, sizeof(ospath)) != FS_REALPATH_DISK)
+        {
+            Com_WPrintf("  and there is no loose file of that name\n");
+            return false;
+        }
+        ret = load_img_from_disk(ospath, filepath, &new_image);
+        if (ret != Q_ERR_SUCCESS)
+        {
+            Com_WPrintf("  and %s could not be read either: %s\n", ospath, Q_ErrorString(ret));
+            return false;
+        }
+        Com_Printf("  read it from %s instead\n", ospath);
     }
 
     uint64_t last_modifed = 0;
@@ -1316,6 +1351,10 @@ bool IMG_ReloadFrom(image_t *image, const char *filepath)
 // Re-reads (image) from disk if its file was saved since it was loaded - see
 // IMG_ReloadFrom. Loose files only: a file in a pak has no modification time.
 // Returns true if it was reloaded.
+//
+// "Saved since" is a file time that DIFFERS from the one read, not only a later
+// one: a file copied in over it (Explorer, a backup/ folder put back) keeps its
+// own time, which can be older than the copy that was loaded.
 bool IMG_ReloadIfModified(image_t *image)
 {
     char const * filepath = image->filepath[0] ? image->filepath : image->name;
@@ -1324,29 +1363,137 @@ bool IMG_ReloadIfModified(image_t *image)
     if (FS_LastModified(filepath, &last_modifed) != Q_ERR_SUCCESS)
         return false;
 
-    if (last_modifed <= image->last_modified)
+    if (last_modifed == image->last_modified)
         return false; // skip if file has not been modified since last read
 
     return IMG_ReloadFrom(image, filepath);
 }
 
-void IMG_ReloadAll(void)
+static const char *reload_time_string(uint64_t t, char *buf, size_t size)
 {
-    int i, reloaded=0;
-    image_t * image;
+    time_t tt = (time_t)t;
+    struct tm *tm = t ? localtime(&tt) : NULL;
+    if (!tm || !strftime(buf, size, "%m-%d %H:%M:%S", tm))
+        Q_strlcpy(buf, "-", size);
+    return buf;
+}
+
+static const char *reload_type_string(imagetype_t type)
+{
+    switch (type) {
+    case IT_PIC:    return "pic";
+    case IT_FONT:   return "font";
+    case IT_SKIN:   return "skin";
+    case IT_SPRITE: return "sprite";
+    case IT_WALL:   return "wall";
+    case IT_SKY:    return "sky";
+    default:        return "?";
+    }
+}
+
+/*
+=================
+IMG_ReloadModified
+
+Re-reads every live texture whose file on disk was saved since it was read -
+the textures of a material or a model edited in a paint program while the game
+runs. (filter): only the ones whose path has that in it, each with a line
+saying what was found, so a texture that does not come back can be told apart
+from one that is not loaded, not a loose file, or not this file at all.
+(force): re-read the filtered ones whatever their file's time says.
+
+Returns how many were re-read.
+=================
+*/
+int IMG_ReloadModified(const char *filter, bool force, bool verbose)
+{
+    int i, reloaded = 0, matched = 0;
+    image_t *image;
 
     for (i = 1, image = r_images + 1; i < r_numImages; i++, image++)
     {
         if (!image->registration_sequence)
             continue;
 
-        if (image->type == IT_FONT || image->type == IT_PIC)
+        if (!filter && (image->type == IT_FONT || image->type == IT_PIC))
             continue;
 
-        if (IMG_ReloadIfModified(image))
-            ++reloaded;
+        char const *filepath = image->filepath[0] ? image->filepath : image->name;
+
+        if (filter && !Q_stristr(filepath, filter) && !Q_stristr(image->name, filter))
+            continue;
+        matched++;
+
+        uint64_t on_disk = 0;
+        const bool loose = FS_LastModified(filepath, &on_disk) == Q_ERR_SUCCESS;
+        const bool changed = loose && on_disk != image->last_modified;
+
+        bool done = false;
+        if (changed || (force && loose))
+            done = IMG_ReloadFrom(image, filepath);
+        if (done)
+            reloaded++;
+
+        if (!verbose)
+            continue;
+
+        char read_at[32], disk_at[32], users[256];
+        const char *outcome;
+        if (!loose)
+            outcome = "not a loose file (in a pak, or made in memory): nothing to re-read";
+        else if (done)
+            outcome = changed ? "saved since it was read: re-read" : "forced: re-read";
+        else if (changed || force)
+            outcome = "re-read FAILED (see above)";
+        else
+            outcome = "unchanged since it was read ('reload_textures force <name>' re-reads it anyway)";
+
+        Com_Printf("  #%d %s %s%s%s\n      read %s, on disk %s - %s\n",
+                   i, reload_type_string(image->type), filepath,
+                   FS_pathcmp(filepath, image->name) ? " asked for as " : "",
+                   FS_pathcmp(filepath, image->name) ? image->name : "",
+                   reload_time_string(image->last_modified, read_at, sizeof(read_at)),
+                   loose ? reload_time_string(on_disk, disk_at, sizeof(disk_at)) : "-",
+                   outcome);
+        if (MAT_ImageUsers(image, users, sizeof(users)))
+            Com_Printf("      in material%s %s\n", strchr(users, ',') ? "s" : "", users);
+        else
+            Com_Printf("      in no loaded material's seven maps\n");
     }
-    Com_Printf("Reloaded %d textures\n", reloaded);
+
+    if (filter && verbose)
+        MAT_ReportImages(filter);
+
+    if (reloaded)
+        MAT_ImagesReloaded();
+
+    if (filter && verbose && !matched)
+        Com_Printf("No loaded texture has '%s' in its path.\n", filter);
+
+    return reloaded;
+}
+
+// reload_textures [force] [<part of a path>]
+void IMG_ReloadAll(void)
+{
+    const char *filter = NULL;
+    bool force = false;
+
+    for (int a = 1; a < Cmd_Argc(); a++) {
+        if (!Q_stricmp(Cmd_Argv(a), "force"))
+            force = true;
+        else
+            filter = Cmd_Argv(a);
+    }
+
+    if (force && !filter) {
+        Com_Printf("'reload_textures force' needs part of a path - e.g. 'reload_textures force doom_rough' - "
+                   "re-reading every texture would take a long while.\n");
+        return;
+    }
+
+    int reloaded = IMG_ReloadModified(filter, force, filter != NULL);
+    Com_Printf("Reloaded %d texture%s\n", reloaded, reloaded == 1 ? "" : "s");
 }
 
 void create_invalid_texture(void)

@@ -791,7 +791,12 @@ void T_Damage(edict_t *targ, edict_t *inflictor, edict_t *attacker, const vec3_t
         knockback = 0;
 
 // figure momentum add
-    if (!(dflags & DAMAGE_NO_KNOCKBACK)) {
+    if (!(dflags & DAMAGE_NO_KNOCKBACK) && level.q3_physics && client) {
+        // the bot match's Quake III physics: Quake III's push, the same for
+        // your own rockets as anyone's, and its no-friction window
+        if (knockback && targ->movetype != MOVETYPE_NONE)
+            Q3_Knockback(targ, dir, knockback);
+    } else if (!(dflags & DAMAGE_NO_KNOCKBACK)) {
         if ((knockback) && (targ->movetype != MOVETYPE_NONE) && (targ->movetype != MOVETYPE_BOUNCE) && (targ->movetype != MOVETYPE_PUSH) && (targ->movetype != MOVETYPE_STOP)) {
             vec3_t  kvel;
             float   mass;
@@ -810,6 +815,14 @@ void T_Damage(edict_t *targ, edict_t *inflictor, edict_t *attacker, const vec3_t
 
             VectorAdd(targ->velocity, kvel, targ->velocity);
         }
+    }
+
+    // Quake III physics: always half damage when hurting yourself, worked out
+    // after the knockback so a rocket jump still gets the whole push
+    if (level.q3_physics && client && targ == attacker && damage > 0) {
+        damage /= 2;
+        if (damage < 1)
+            damage = 1;
     }
 
     // Quake III's Battle Suit: after the knockback, so rocket jumps still go
@@ -1145,11 +1158,16 @@ void T_RadiusDamage(edict_t *inflictor, edict_t *attacker, float damage, edict_t
         VectorMA(ent->s.origin, 0.5f, v, v);
         VectorSubtract(inflictor->s.origin, v, v);
         points = damage - 0.5f * VectorLength(v);
-        if (ent == attacker)
+        // Quake III physics halves your own damage in T_Damage, after the
+        // knockback - halving it here as well would halve the rocket jump
+        if (ent == attacker && !(level.q3_physics && ent->client))
             points = points * 0.5f;
         if (points > 0) {
             if (CanDamage(ent, inflictor)) {
                 VectorSubtract(ent->s.origin, inflictor->s.origin, dir);
+                // Quake III pushes splash a little upwards: rocket jumps
+                if (level.q3_physics && ent->client)
+                    dir[2] += 24;
                 T_Damage(ent, inflictor, attacker, dir, inflictor->s.origin, vec3_origin, (int)points, (int)points, DAMAGE_RADIUS, mod);
             }
         }

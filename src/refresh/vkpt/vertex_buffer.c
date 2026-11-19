@@ -29,6 +29,7 @@ static VkDescriptorPool desc_pool_vertex_buffer;
 static VkPipeline       pipeline_instance_geometry;
 static VkPipeline       pipeline_animate_materials;
 static VkPipeline       pipeline_sharc_resolve;
+static VkPipeline       pipeline_caustic_resolve;
 static VkPipeline       pipeline_blood_move;
 static VkPipelineLayout pipeline_layout_instance_geometry;
 
@@ -951,31 +952,40 @@ static float light_time;
 
 /* A Quake III program's glow (light_poly_t q3_glow): its colour now, from the
    program - NULL while its images are not in memory, when `color` stands in.
-   A still program's is worked out once and kept on the light. */
+   A still program's is worked out once and kept on the light. `mat_scale` is
+   the material's emissive_factor x light_factor, which scales the program's
+   own glow; its stage<N>_emissive_factor stages' glow takes light_factor only
+   (q3stages.h STAGE SETTINGS). */
 static const float*
-q3_glow_color(light_poly_t* light, vec3_t out)
+q3_glow_color(light_poly_t* light, float mat_scale, vec3_t out)
 {
 	if (!light->q3_glow || light->type != DYNLIGHT_POLYGON || !light->material || !light->material->q3_program)
 		return NULL;
 
+	const float stage_scale = light->material->light_factor;
 	const uint32_t key = vkpt_q3_program_key(light->material);
 	if (key && light->q3_glow_key == key)
 	{
-		VectorScale(light->q3_glow_rgb, light->emissive_factor, out);
+		VectorScale(light->q3_glow_rgb, mat_scale, out);
+		VectorMA(out, stage_scale, light->q3_glow_stages_rgb, out);
+		VectorScale(out, light->emissive_factor, out);
 		return out;
 	}
 
-	vec3_t rgb;
-	const int result = vkpt_q3_light_glow(light->material, light->q3_uv, light->q3_samples, light_time, rgb);
+	vec3_t rgb, stages;
+	const int result = vkpt_q3_light_glow(light->material, light->q3_uv, light->q3_samples, light_time, rgb, stages);
 	if (result == 0)
 		return NULL;
 	if (result == 2)
 	{
 		light->q3_glow_key = key;
 		VectorCopy(rgb, light->q3_glow_rgb);
+		VectorCopy(stages, light->q3_glow_stages_rgb);
 	}
 
-	VectorScale(rgb, light->emissive_factor, out);
+	VectorScale(rgb, mat_scale, out);
+	VectorMA(out, stage_scale, stages, out);
+	VectorScale(out, light->emissive_factor, out);
 	return out;
 }
 
@@ -1009,12 +1019,15 @@ copy_light(light_poly_t* light, float* vblight, const float* sky_radiance)
 	else
 	{
 		vec3_t glow;
-		const float* color = q3_glow_color(light, glow);
-		if (!color)
+		const float* color = q3_glow_color(light, mat_scale, glow);
+		float scale = mat_scale;
+		if (color)
+			scale = 1.f;    // scaled in q3_glow_color
+		else
 			color = light->color;
-		vblight[3] = color[0] * mat_scale;
-		vblight[7] = color[1] * mat_scale;
-		vblight[11] = color[2] * mat_scale;
+		vblight[3] = color[0] * scale;
+		vblight[7] = color[1] * scale;
+		vblight[11] = color[2] * scale;
 	}
 
 	vblight[12] = style_scale;
@@ -1277,6 +1290,9 @@ vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp
 	memcpy(lbo->cluster_debug_mask, cluster_debug_mask, MAX_LIGHT_LISTS / 8);
 	memcpy(lbo->sky_visibility, bsp_mesh->sky_visibility, MAX_LIGHT_LISTS / 8);
 	memcpy(lbo->sky_cluster_mask, bsp_mesh->sky_cluster_mask, MAX_LIGHT_LISTS / 8);
+
+	// pt_caustics 2's (light, caustic glass) pairs - by the light indices written above
+	vkpt_caustics_build(lbo, render_world, bsp_mesh, num_model_lights, transformed_model_lights);
 
 	vkpt_prep_backend->unmap_staging(VKPT_STAGING_LIGHTS);
 	lbo = NULL;
@@ -2001,6 +2017,24 @@ vkpt_vertex_buffer_create()
 		{
 			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 			.descriptorCount = 1,
+			.binding = CAUSTIC_KEY_BUFFER_BINDING_IDX,
+			.stageFlags = VK_SHADER_STAGE_ALL,
+		},
+		{
+			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.descriptorCount = 1,
+			.binding = CAUSTIC_ACCUM_BUFFER_BINDING_IDX,
+			.stageFlags = VK_SHADER_STAGE_ALL,
+		},
+		{
+			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.descriptorCount = 1,
+			.binding = CAUSTIC_RESOLVED_BUFFER_BINDING_IDX,
+			.stageFlags = VK_SHADER_STAGE_ALL,
+		},
+		{
+			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.descriptorCount = 1,
 			.binding = BLOOD_MOVE_BUFFER_BINDING_IDX,
 			.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
 		},
@@ -2074,6 +2108,17 @@ vkpt_vertex_buffer_create()
 		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 	buffer_create(&qvk.buf_sharc_resolved, sizeof(float) * 4 * SHARC_RESOLVED_VEC4S * SHARC_CAPACITY,
+		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+	// Photon-traced caustics' grid (pt_caustics 2), 36 MB. Zeroed by vkpt_caustics_clear before first use.
+	buffer_create(&qvk.buf_caustic_keys, sizeof(uint32_t) * CAUSTIC_CAPACITY,
+		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	buffer_create(&qvk.buf_caustic_accum, sizeof(uint32_t) * CAUSTIC_ACCUM_UINTS * CAUSTIC_CAPACITY,
+		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	buffer_create(&qvk.buf_caustic_resolved, sizeof(float) * 4 * CAUSTIC_RESOLVED_VEC4S * CAUSTIC_CAPACITY,
 		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
@@ -2177,6 +2222,21 @@ vkpt_vertex_buffer_create()
 	buf_info.range = qvk.buf_sharc_resolved.size;
 	vkUpdateDescriptorSets(qvk.device, 1, &output_buf_write, 0, NULL);
 
+	output_buf_write.dstBinding = CAUSTIC_KEY_BUFFER_BINDING_IDX;
+	buf_info.buffer = qvk.buf_caustic_keys.buffer;
+	buf_info.range = qvk.buf_caustic_keys.size;
+	vkUpdateDescriptorSets(qvk.device, 1, &output_buf_write, 0, NULL);
+
+	output_buf_write.dstBinding = CAUSTIC_ACCUM_BUFFER_BINDING_IDX;
+	buf_info.buffer = qvk.buf_caustic_accum.buffer;
+	buf_info.range = qvk.buf_caustic_accum.size;
+	vkUpdateDescriptorSets(qvk.device, 1, &output_buf_write, 0, NULL);
+
+	output_buf_write.dstBinding = CAUSTIC_RESOLVED_BUFFER_BINDING_IDX;
+	buf_info.buffer = qvk.buf_caustic_resolved.buffer;
+	buf_info.range = qvk.buf_caustic_resolved.size;
+	vkUpdateDescriptorSets(qvk.device, 1, &output_buf_write, 0, NULL);
+
 	output_buf_write.dstBinding = BLOOD_MOVE_BUFFER_BINDING_IDX;
 	buf_info.buffer = qvk.buf_blood_moves.buffer;
 	buf_info.range = qvk.buf_blood_moves.size;
@@ -2248,6 +2308,9 @@ vkpt_vertex_buffer_destroy()
 	buffer_destroy(&qvk.buf_sharc_keys);
 	buffer_destroy(&qvk.buf_sharc_accum);
 	buffer_destroy(&qvk.buf_sharc_resolved);
+	buffer_destroy(&qvk.buf_caustic_keys);
+	buffer_destroy(&qvk.buf_caustic_accum);
+	buffer_destroy(&qvk.buf_caustic_resolved);
 	buffer_destroy(&qvk.buf_blood_moves);
 	buffer_destroy(&qvk.buf_blood_skin);
 	vkpt_blood_skin_destroy_vk();
@@ -2384,15 +2447,21 @@ vkpt_vertex_buffer_create_pipelines()
 			.stage = SHADER_STAGE(QVK_MOD_BLOOD_MOVE_COMP, VK_SHADER_STAGE_COMPUTE_BIT),
 			.layout = pipeline_layout_instance_geometry
 		},
+		{
+			.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+			.stage = SHADER_STAGE(QVK_MOD_CAUSTIC_RESOLVE_COMP, VK_SHADER_STAGE_COMPUTE_BIT),
+			.layout = pipeline_layout_instance_geometry
+		},
 	};
 
-	VkPipeline pipelines[4];
+	VkPipeline pipelines[5];
 	_VK(vkCreateComputePipelines(qvk.device, 0, LENGTH(compute_pipeline_info), compute_pipeline_info, 0, pipelines));
 
 	pipeline_instance_geometry = pipelines[0];
 	pipeline_animate_materials = pipelines[1];
 	pipeline_sharc_resolve = pipelines[2];
 	pipeline_blood_move = pipelines[3];
+	pipeline_caustic_resolve = pipelines[4];
 
 	return VK_SUCCESS;
 }
@@ -2408,12 +2477,14 @@ vkpt_vertex_buffer_destroy_pipelines()
 	vkDestroyPipeline(qvk.device, pipeline_animate_materials, NULL);
 	vkDestroyPipeline(qvk.device, pipeline_sharc_resolve, NULL);
 	vkDestroyPipeline(qvk.device, pipeline_blood_move, NULL);
+	vkDestroyPipeline(qvk.device, pipeline_caustic_resolve, NULL);
 	vkDestroyPipelineLayout(qvk.device, pipeline_layout_instance_geometry, NULL);
 
 	pipeline_instance_geometry = VK_NULL_HANDLE;
 	pipeline_animate_materials = VK_NULL_HANDLE;
 	pipeline_sharc_resolve = VK_NULL_HANDLE;
 	pipeline_blood_move = VK_NULL_HANDLE;
+	pipeline_caustic_resolve = VK_NULL_HANDLE;
 	pipeline_layout_instance_geometry = VK_NULL_HANDLE;
 
 	return VK_SUCCESS;
@@ -2526,6 +2597,42 @@ vkpt_sharc_resolve(VkCommandBuffer cmd_buf)
 		pipeline_layout_instance_geometry, 0, LENGTH(desc_sets), desc_sets, 0, 0);
 
 	vkCmdDispatch(cmd_buf, SHARC_CAPACITY / 256, 1, 1);
+}
+
+/* Photon-traced caustics' grid (pt_caustics 2, shader/caustics.h): zero every cell.
+   First use, a new map, or back on after being off - the same reasons as SHaRC's. */
+void
+vkpt_caustics_clear(VkCommandBuffer cmd_buf)
+{
+	vkCmdFillBuffer(cmd_buf, qvk.buf_caustic_keys.buffer, 0, VK_WHOLE_SIZE, 0);
+	vkCmdFillBuffer(cmd_buf, qvk.buf_caustic_accum.buffer, 0, VK_WHOLE_SIZE, 0);
+	vkCmdFillBuffer(cmd_buf, qvk.buf_caustic_resolved.buffer, 0, VK_WHOLE_SIZE, 0);
+
+	VkMemoryBarrier barrier = {
+		.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+		.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+		.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+	};
+
+	vkCmdPipelineBarrier(cmd_buf,
+		VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+		VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+		0, 1, &barrier, 0, NULL, 0, NULL);
+}
+
+// Folds this frame's photons into each cell's running mean - see caustic_resolve.comp.
+void
+vkpt_caustics_resolve(VkCommandBuffer cmd_buf)
+{
+	VkDescriptorSet desc_sets[] = {
+		qvk.desc_set_ubo,
+		qvk.desc_set_vertex_buffer
+	};
+	vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_caustic_resolve);
+	vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE,
+		pipeline_layout_instance_geometry, 0, LENGTH(desc_sets), desc_sets, 0, 0);
+
+	vkCmdDispatch(cmd_buf, CAUSTIC_CAPACITY / 256, 1, 1);
 }
 
 /*

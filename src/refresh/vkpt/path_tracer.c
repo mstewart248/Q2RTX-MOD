@@ -70,6 +70,10 @@ typedef enum {
     PIPELINE_INDIRECT_LIGHTING_SECOND,
 	PIPELINE_SHARC_UPDATE,
 	PIPELINE_RESTIR_GI,
+	PIPELINE_CAUSTIC_PHOTONS,   // pt_caustics 2 (shader/caustics.h)
+	// direct lighting with pt_caustics 2's grid lookup (spec_enable_caustics 2), on
+	// frames the photon pass runs - the CAUSTICS one is pt_caustics 1's
+	PIPELINE_DIRECT_LIGHTING_PHOTONS,
 
 	PIPELINE_COUNT
 } pipeline_index_t;
@@ -1702,8 +1706,14 @@ vkpt_pt_append_dynamic_instances(const uint64_t blas[VKPT_NUM_DYN], const Entity
 	append_blas(g_instances, &g_num_instances, blas[VKPT_DYN_OPAQUE], VERTEX_BUFFER_INSTANCED, 0,
 		AS_FLAG_OPAQUE, VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR, SBTO_OPAQUE);
 
+	/* Two-sided: a see-through model mesh that is double-sided (Quake III "cull
+	   disable") goes here, not to the masked BLAS that would have made it so -
+	   Slash's skate blades, flat additive quads under her feet, showed only from
+	   behind (Matt, 2026-11-17). Nothing else changes: the transparent layer is
+	   the one nearest hit, and the nearest hit on a closed mesh seen from outside
+	   is a front face either way. Shared with D3D12, whose bit is the same. */
 	append_blas(g_instances, &g_num_instances, blas[VKPT_DYN_TRANSPARENT], VERTEX_BUFFER_INSTANCED, upload_info->transparent_prim_offset,
-		AS_FLAG_TRANSPARENT, VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR, SBTO_OPAQUE);
+		AS_FLAG_TRANSPARENT, VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR | VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR, SBTO_OPAQUE);
 
 	append_blas(g_instances, &g_num_instances, blas[VKPT_DYN_MASKED], VERTEX_BUFFER_INSTANCED, upload_info->masked_prim_offset,
 		AS_FLAG_OPAQUE, VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR | VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR, SBTO_MASKED);
@@ -1711,12 +1721,21 @@ vkpt_pt_append_dynamic_instances(const uint64_t blas[VKPT_NUM_DYN], const Entity
     append_blas(g_instances, &g_num_instances, blas[VKPT_DYN_VIEWER_WEAPON], VERTEX_BUFFER_INSTANCED, upload_info->viewer_weapon_prim_offset,
 		AS_FLAG_VIEWER_WEAPON, VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR | (weapon_left_handed ? VK_GEOMETRY_INSTANCE_TRIANGLE_FRONT_COUNTERCLOCKWISE_BIT_KHR : 0), SBTO_OPAQUE);
 
-	// also without a world: the player setup menu's bounce card is a viewer model
+	/* also without a world: the player setup menu's bounce card is a viewer model.
+
+	   Through the MASKED hit, not the opaque one. main.c puts every mesh of your own
+	   body here (MESH_FILTER_ALL), alpha-tested skins included, and a forced-opaque
+	   instance never asks pt_logic_masked: Lucy's angel skin (alphaFunc GE128, a
+	   hologram mostly cut away) showed in the mirror as solid black where it should
+	   have been see-through, while the same skin on a bot - which goes to the
+	   masked BLAS - was right (Matt, 2026-11-18). pt_logic_masked accepts every hit
+	   on a material with no mask, so the opaque meshes are as they were; the cost is
+	   a candidate test per triangle of one body, on rays that reach it. */
 	if (CL_PlayerModel() == CL_PLAYER_MODEL_FIRST_PERSON
 		|| (vkpt_refdef.fd && (vkpt_refdef.fd->rdflags & RDF_NOWORLDMODEL)))
 	{
 		append_blas(g_instances, &g_num_instances, blas[VKPT_DYN_VIEWER_MODELS], VERTEX_BUFFER_INSTANCED, upload_info->viewer_model_prim_offset,
-			AS_FLAG_VIEWER_MODELS, VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR | VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR, SBTO_OPAQUE);
+			AS_FLAG_VIEWER_MODELS, VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR | VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR, SBTO_MASKED);
 	}
 	
 	// Blood droplets ride in the GEOMETRY TLAS, not the effects one - that is the
@@ -2457,6 +2476,40 @@ vkpt_pt_sharc_update(VkCommandBuffer cmd_buf, bool clear)
 	return VK_SUCCESS;
 }
 
+/* Photon-traced caustics (pt_caustics 2, shader/caustics.h): shoot this frame's
+   photons into the caustic grid and resolve it, ready for direct_lighting.rgen.
+   Needs this frame's acceleration structures and light buffer (the emitters ride in
+   it), nothing of the G-buffer. caustics.c says how many photons. */
+VkResult
+vkpt_pt_caustic_photons(VkCommandBuffer cmd_buf, bool clear, uint32_t num_photons)
+{
+	BEGIN_PERF_MARKER(cmd_buf, PROFILER_CAUSTIC_PHOTONS);
+
+	if (clear)
+		vkpt_caustics_clear(cmd_buf);
+
+	if (num_photons > 0)
+	{
+		pt_push_constants_t push = { 0 };
+		push.gpu_index = -1;
+		push.bounce = 0;
+
+		dispatch_rays(cmd_buf, PIPELINE_CAUSTIC_PHOTONS, push,
+			CAUSTIC_LAUNCH_WIDTH, (num_photons + CAUSTIC_LAUNCH_WIDTH - 1) / CAUSTIC_LAUNCH_WIDTH, 1);
+
+		sharc_barrier(cmd_buf);
+	}
+
+	// every frame, photons or not: a cell no photon reached this frame still takes a 0
+	vkpt_caustics_resolve(cmd_buf);
+
+	sharc_barrier(cmd_buf);
+
+	END_PERF_MARKER(cmd_buf, PROFILER_CAUSTIC_PHOTONS);
+
+	return VK_SUCCESS;
+}
+
 VkResult
 vkpt_pt_trace_lighting(VkCommandBuffer cmd_buf, float num_bounce_rays)
 {
@@ -2475,7 +2528,13 @@ vkpt_pt_trace_lighting(VkCommandBuffer cmd_buf, float num_bounce_rays)
 	{
 		set_current_gpu(cmd_buf, i);
 
-		pipeline_index_t pipeline = (cvar_pt_caustics->value != 0) ? PIPELINE_DIRECT_LIGHTING_CAUSTICS : PIPELINE_DIRECT_LIGHTING;
+		/* pt_caustics 2's lookup goes with its photon pass: the shadow rays give no diffuse
+		   for the lights the emitter list names, so the grid must be read whenever there is
+		   one. The list (caustics.c) is this frame's, built before any tracing. */
+		uint32_t num_photons;
+		pipeline_index_t pipeline = (cvar_pt_caustics->value == 0) ? PIPELINE_DIRECT_LIGHTING
+			: vkpt_caustics_frame(&num_photons) ? PIPELINE_DIRECT_LIGHTING_PHOTONS
+			: PIPELINE_DIRECT_LIGHTING_CAUSTICS;
 
 		pt_push_constants_t push = { 0 };
 		push.gpu_index = qvk.device_count == 1 ? -1 : i;
@@ -2721,10 +2780,10 @@ vkpt_pt_create_pipelines()
 		{ .constantID = SPEC_Q3_CONSTANT_ID, .offset = sizeof(uint32_t), .size = sizeof(uint32_t) },
 	};
 
-	uint32_t numbers[2][2] = { { 0, q3 }, { 1, q3 } };
+	uint32_t numbers[3][2] = { { 0, q3 }, { 1, q3 }, { 2, q3 } };
 
-	VkSpecializationInfo specInfo[2];
-	for (int i = 0; i < 2; i++)
+	VkSpecializationInfo specInfo[3];
+	for (int i = 0; i < 3; i++)
 	{
 		specInfo[i] = (VkSpecializationInfo) {
 			.mapEntryCount = 2,
@@ -2843,6 +2902,10 @@ vkpt_pt_create_pipelines()
 			shader_stages[0].module = qvk.shader_modules[QVK_MOD_DIRECT_LIGHTING_RGEN];
 			shader_stages[0].pSpecializationInfo = &specInfo[1];
 			break;
+		case PIPELINE_DIRECT_LIGHTING_PHOTONS:
+			shader_stages[0].module = qvk.shader_modules[QVK_MOD_DIRECT_LIGHTING_RGEN];
+			shader_stages[0].pSpecializationInfo = &specInfo[2];
+			break;
 		case PIPELINE_INDIRECT_LIGHTING_FIRST:
 			shader_stages[0].module = qvk.shader_modules[QVK_MOD_INDIRECT_LIGHTING_RGEN];
 			shader_stages[0].pSpecializationInfo = &specInfo[0];
@@ -2857,6 +2920,10 @@ vkpt_pt_create_pipelines()
 			break;
 		case PIPELINE_RESTIR_GI:
 			shader_stages[0].module = qvk.shader_modules[QVK_MOD_RESTIR_GI_RGEN];
+			shader_stages[0].pSpecializationInfo = specInfoQ3;
+			break;
+		case PIPELINE_CAUSTIC_PHOTONS:
+			shader_stages[0].module = qvk.shader_modules[QVK_MOD_CAUSTIC_PHOTONS_RGEN];
 			shader_stages[0].pSpecializationInfo = specInfoQ3;
 			break;
 		default:

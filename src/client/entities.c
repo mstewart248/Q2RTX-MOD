@@ -543,12 +543,23 @@ static int adjust_shell_fx(int renderfx)
 	return renderfx;
 }
 
-// [Q2RTX] Your own player model's held weapon exactly as it was drawn this
-// frame - origin, angles, frame pair and lerp - for CL_AddPlayerModelFlash to
-// find the barrel on. Stamped with cls.framecount like the view gun, because
-// there are frames with no player model or no weapon model at all.
-static entity_t cl_player_gun_ent;
-static int      cl_player_gun_framecount = -1;
+// [Q2RTX] Every player model's held weapon exactly as it was drawn this frame -
+// origin, angles, frame pair and lerp - by client, for the muzzle flashes to
+// find the barrel on (CL_ClientGunMuzzle). Yours used to be the only one kept;
+// everyone else's flash sat on a fixed point (Matt, 11-18: bots' flashes off
+// to the side of them). Stamped with cls.framecount + 1 (0 = never drawn) like
+// the view gun, because there are frames with no player model or no weapon
+// model at all.
+static entity_t cl_client_gun_ent[MAX_CLIENTS];
+static int      cl_client_gun_drawn[MAX_CLIENTS];
+
+static void CL_RecordClientGun(int entnum, const entity_t *gun)
+{
+    if (entnum < 1 || entnum > cl.maxclients || entnum > MAX_CLIENTS)
+        return;
+    cl_client_gun_ent[entnum - 1] = *gun;
+    cl_client_gun_drawn[entnum - 1] = cls.framecount + 1;
+}
 
 /*
 ===============
@@ -586,6 +597,12 @@ static void CL_AddPacketEntities(void)
         ent.id = cent->id + RESERVED_ENTITIY_COUNT;
         ent.blood_key = 0;  // only the main model's add below sets it
 
+        // a Quake III player model (q3player.c): drawn as its parts and the
+        // gun in its hand instead of the main model and modelindex2
+        const clientinfo_t  *q3ci = NULL;
+        entity_t            q3parts[Q3P_NUM_PARTS];
+        int                 q3n = 0, q3gun = -1;
+
         // (ent) is memset once before this loop, not per entity, so anything
         // only some entity kinds assign leaks into every later entity of the
         // same frame. misc_flare sets ent.scale and brush models never do,
@@ -599,7 +616,11 @@ static void CL_AddPacketEntities(void)
         ent.scale = s1->scale;
 		
         effects = s1->effects;
-        renderfx = s1->renderfx & ~(RF_Q3_QUAD | RF_CLOAK);	// ours alone, set below
+        renderfx = s1->renderfx & ~(RF_Q3_QUAD | RF_CLOAK | RF_Q3_ITEM | RF_DECAL);	// ours alone, set below
+
+        // the bot match's Quake III guns (q3weapons.c): a pickup with both
+        // games' guns, or with no model Quake III's plasma ball
+        const bool q3item = (s1->renderfx & RF_Q3_ITEM) != 0;
 
         // the invisibility powerup on a player (p_view.c's RF_TRANSLUCENT, which
         // blinks off in its last three seconds): the RTX renderers draw the body
@@ -782,6 +803,9 @@ static void CL_AddPacketEntities(void)
             ent.rgba.u32 = (s1->skinnum & 0xffffff00u) | 0xffu;
             ent.alpha = alpha * (((s1->skinnum) & 0xff) / 255.0f);
             ent.flags = renderfx;
+            // the sprite pass turns a flare by angles[ROLL] (the Quake III
+            // plasma ball's spin), and `ent` still holds the last entity's
+            VectorClear(ent.angles);
 
             if (!ent.frame || ent.alpha <= 0.0f)
                 goto skip;
@@ -810,12 +834,16 @@ static void CL_AddPacketEntities(void)
                 ci = &cl.clientinfo[s1->skinnum & 0xff];
                 ent.skin = ci->skin;
                 ent.model = ci->model;
-                if (!ent.skin || !ent.model) {
+                if (ci->q3.q3 && ci->model) {
+                    // its skin is a skinnum on each part (Q3P_PatchMD3);
+                    // there is no disguise skin to wear
+                    q3ci = ci;
+                } else if (!ent.skin || !ent.model) {
                     ent.skin = cl.baseclientinfo.skin;
                     ent.model = cl.baseclientinfo.model;
                     ci = &cl.baseclientinfo;
                 }
-                if (renderfx & RF_USE_DISGUISE) {
+                if ((renderfx & RF_USE_DISGUISE) && !q3ci) {
                     char buffer[MAX_QPATH];
 
                     Q_concat(buffer, sizeof(buffer), "players/", ci->model_name, "/disguise.pcx");
@@ -828,6 +856,15 @@ static void CL_AddPacketEntities(void)
                 ent.model = cl.model_draw[s1->modelindex];
                 if (ent.model == cl_mod_laser || ent.model == cl_mod_dmspot)
                     renderfx |= RF_NOSHADOW;
+
+                // a pickup with Quake II's gun in modelindex and Quake III's
+                // in modelindex2: our own game's, Quake III's half as big
+                // again as Quake III draws its guns on the ground
+                if (q3item && s1->modelindex2 && cl.model_draw[s1->modelindex2] && CL_Q3W_Self()) {
+                    ent.model = cl.model_draw[s1->modelindex2];
+                    if (!ent.scale)
+                        ent.scale = 1.5f;
+                }
             }
         }
 
@@ -907,6 +944,8 @@ static void CL_AddPacketEntities(void)
 
         // if set to invisible, skip
         if (!s1->modelindex) {
+            if (q3item)
+                CL_Q3W_AddSprite(s1, ent.origin);
             goto skip;
         }
 
@@ -915,7 +954,8 @@ static void CL_AddPacketEntities(void)
         if (effects & EF_BFG) {
             ent.flags |= RF_TRANSLUCENT;
             ent.alpha = 0.30f;
-            flow_bfg = CL_FlowBfgBall(s1->number, ent.origin, effects & EF_ANIM_ALLFAST);
+            flow_bfg = CL_FlowBfgBall(s1->number, ent.origin, effects & EF_ANIM_ALLFAST,
+                                      s1->scale > 0 ? s1->scale : 1.0f);
         }
 
         if (effects & EF_PLASMA) {
@@ -973,12 +1013,23 @@ static void CL_AddPacketEntities(void)
 		}
 
         // cl_blood_skin: the main model's key into the renderer's blood masks,
-        // and the body blood can land on (effects.c)
-        CL_BloodNoteBody(cent, &ent, effects, renderfx, s1->number == cl.frame.clientNum + 1);
+        // and the body blood can land on (effects.c). Not a Quake III body:
+        // the blood code knows one model per body, and it is three.
+        if (!q3ci)
+            CL_BloodNoteBody(cent, &ent, effects, renderfx, s1->number == cl.frame.clientNum + 1);
 
         // add to refresh list
-        if (!(flow_bfg & CL_FLOW_HIDE))
+        if (q3ci) {
+            q3n = CL_AddQ3Player(cent, q3ci, &ent, s1->number == cl.frame.clientNum + 1, q3parts, &q3gun);
+            for (int k = 0; k < q3n; k++)
+                V_AddEntity(&q3parts[k]);
+            // a Quake III gun's barrel and flash, in its hand
+            if (q3gun >= 0)
+                CL_Q3W_AddGunParts(&q3parts[q3gun], s1->number);
+        } else if (!(flow_bfg & CL_FLOW_HIDE)) {
             V_AddEntity(&ent);
+            CL_Q3W_AddGunParts(&ent, 0);    // on the ground: its barrel
+        }
         ent.blood_key = 0;  // not the linked models, shells and the rest
 
 		// add dlights for flares
@@ -1005,9 +1056,22 @@ static void CL_AddPacketEntities(void)
         // color shells generate a separate entity for the main model
         if ((effects & EF_COLOR_SHELL) && !CL_PathTraced()) {
 			renderfx = adjust_shell_fx(renderfx);
-            ent.flags = renderfx | RF_TRANSLUCENT | base_entity_flags;
-            ent.alpha = 0.30f;
-            V_AddEntity(&ent);
+            if (q3ci) {
+                // a shell on each body part, none on the gun - as the md2
+                for (int k = 0; k < q3n; k++) {
+                    if (k == q3gun)
+                        continue;
+                    entity_t shell = q3parts[k];
+
+                    shell.flags = renderfx | RF_TRANSLUCENT | base_entity_flags;
+                    shell.alpha = 0.30f;
+                    V_AddEntity(&shell);
+                }
+            } else {
+                ent.flags = renderfx | RF_TRANSLUCENT | base_entity_flags;
+                ent.alpha = 0.30f;
+                V_AddEntity(&ent);
+            }
         }
 
         ent.skin = 0;       // never use a custom skin on others
@@ -1016,7 +1080,12 @@ static void CL_AddPacketEntities(void)
         ent.alpha = 0;
 
         // duplicate for linked models
-        if (s1->modelindex2) {
+        if (s1->modelindex2 && q3ci) {
+            // the gun went in with the Quake III parts, in its hand; the
+            // player's flash comes off it (CL_ClientGunMuzzle)
+            if (q3gun >= 0)
+                CL_RecordClientGun(s1->number, &q3parts[q3gun]);
+        } else if (s1->modelindex2 && !q3item) {
             if (s1->modelindex2 == 255) {
                 // custom weapon
                 ci = &cl.clientinfo[s1->skinnum & 0xff];
@@ -1054,10 +1123,7 @@ static void CL_AddPacketEntities(void)
 
             V_AddEntity(&ent);
 
-            if (s1->number == cl.frame.clientNum + 1) {
-                cl_player_gun_ent = ent;
-                cl_player_gun_framecount = cls.framecount;
-            }
+            CL_RecordClientGun(s1->number, &ent);
 
             //PGM - make sure these get reset.
             ent.flags = base_entity_flags;
@@ -1675,6 +1741,30 @@ void CL_PlayerModelMuzzleFlash(void)
     cl_player_flash_roll = frand() * 360.0f;
 }
 
+// Everyone else's flash, the same way: stamped here, drawn on their gun every
+// frame of its life (CL_AddOtherPlayerFlashes). It used to be spawned once
+// as an explosion 18 forward and 16 right of the player's LAST SERVER
+// position - not where the body is drawn (that is lerped between server
+// frames), not where the gun is (that animates and differs per weapon and per
+// model, a Quake III model holding it in its hand), and left in the air while
+// the player ran on at 300 units a second (Matt, 11-18, bot match: the flash
+// floated off to the side of the bots).
+static int   cl_client_flash_time[MAX_CLIENTS];
+static float cl_client_flash_roll[MAX_CLIENTS];
+
+// called from CL_MuzzleFlash for any other entity; false when it is not a
+// player, and the caller spawns the old world-space flash
+bool CL_OtherPlayerMuzzleFlash(int entnum)
+{
+    if (entnum < 1 || entnum > cl.maxclients || entnum > MAX_CLIENTS ||
+        entnum == cl.frame.clientNum + 1)
+        return false;
+
+    cl_client_flash_time[entnum - 1] = cl.time;
+    cl_client_flash_roll[entnum - 1] = frand() * 360.0f;
+    return true;
+}
+
 /*
 THE PLAYER MODEL'S FLASH COMES OFF THE GUN THE MODEL IS HOLDING, and that gun
 moves. Every players/<model>/w_<weapon>.md2 is drawn with the body's frame, and
@@ -1699,7 +1789,7 @@ and its barrel end agrees with the md2's to within two units, so the md2 stands
 in for both.
 */
 #define PLAYER_GUN_MUZZLE_DEPTH 1.5f
-#define MAX_PLAYER_GUNS         64
+#define MAX_PLAYER_GUNS         128     // every bot model's guns now, not just yours
 
 typedef struct {
     char    name[MAX_QPATH];
@@ -1837,16 +1927,23 @@ static const player_gun_t *CL_PlayerGun(qhandle_t handle)
 // - third person and its mirror twin (tent.c) - which used to come from the
 // eye, 15 units in front of the body your model is drawn with, and so started
 // out ahead of the gun (Matt, 11-09).
-bool CL_PlayerGunMuzzlePoint(vec3_t muzzle, int max_age)
+//
+// CL_ClientGunMuzzle is the same for any player, by entity number, and also
+// gives the angles the gun was drawn with (`angles` may be NULL): the barrel
+// points down their +X.
+static bool CL_ClientGunMuzzle(int entnum, vec3_t muzzle, vec3_t angles, int max_age)
 {
-    const entity_t      *ent = &cl_player_gun_ent;
+    const entity_t      *ent;
     const player_gun_t  *gun;
     vec3_t              local, f, r, u;
-    int                 frame, oldframe;
+    int                 frame, oldframe, drawn;
 
-    if (!cl_muzzleflash_world_track->integer || cl_player_gun_framecount < 0 ||
-        cls.framecount - cl_player_gun_framecount > max_age ||
-        cls.framecount < cl_player_gun_framecount)
+    if (!cl_muzzleflash_world_track->integer || entnum < 1 || entnum > MAX_CLIENTS)
+        return false;
+
+    ent = &cl_client_gun_ent[entnum - 1];
+    drawn = cl_client_gun_drawn[entnum - 1] - 1;
+    if (drawn < 0 || cls.framecount - drawn > max_age || cls.framecount < drawn)
         return false;
 
     gun = CL_PlayerGun(ent->model);
@@ -1868,7 +1965,14 @@ bool CL_PlayerGunMuzzlePoint(vec3_t muzzle, int max_age)
     VectorMA(muzzle,  local[0], f, muzzle);
     VectorMA(muzzle, -local[1], r, muzzle);
     VectorMA(muzzle,  local[2], u, muzzle);
+    if (angles)
+        VectorCopy(ent->angles, angles);
     return true;
+}
+
+bool CL_PlayerGunMuzzlePoint(vec3_t muzzle, int max_age)
+{
+    return CL_ClientGunMuzzle(cl.frame.clientNum + 1, muzzle, NULL, max_age);
 }
 
 // Runs after CL_AddPacketEntities, so cl.playerEntityOrigin/Angles and
@@ -1916,6 +2020,53 @@ void CL_AddPlayerModelFlash(void)
                               cl.thirdPersonView ? 0 : RF_REFLECTION_FX,
                               cl_mod_muzzleflash);
     V_AddEntity(&ent);
+}
+
+// Every other player's flash (CL_OtherPlayerMuzzleFlash), on the end of the
+// barrel of the gun their model holds this frame, pointing down it. Runs
+// after CL_AddPacketEntities, like yours.
+static void CL_AddOtherPlayerFlashes(void)
+{
+    int     window = Cvar_ClampValue(cl_muzzleflash_time, 10, 200);
+    bool    draw = cl_muzzleflash_models->integer && cl_mod_muzzleflash && cls.ref_type != REF_TYPE_SW;
+    int     i;
+
+    for (i = 0; i < MAX_CLIENTS; i++) {
+        const centity_t *cent;
+        vec3_t  muzzle, angles, f, r;
+        entity_t ent;
+        int     entnum = i + 1;
+
+        if (!cl_client_flash_time[i])
+            continue;
+        // same staleness rules as yours, including cl.time going backwards
+        if (cl.time < cl_client_flash_time[i] || cl.time - cl_client_flash_time[i] >= window ||
+            entnum > cl.maxclients || entnum == cl.frame.clientNum + 1) {
+            cl_client_flash_time[i] = 0;
+            continue;
+        }
+        if (!draw)
+            continue;
+
+        if (!CL_ClientGunMuzzle(entnum, muzzle, angles, 0)) {
+            // No gun drawn this frame. Out of the frame: nothing to draw.
+            // In it but holding no weapon model (none sent, or a model with
+            // no barrel to find): the old point, but off where the body is
+            // drawn now rather than its last server position.
+            cent = &cl_entities[entnum];
+            if (cent->serverframe != cl.frame.number)
+                continue;
+            LerpAngles(cent->prev.angles, cent->current.angles, cl.lerpfrac, angles);
+            LerpVector(cent->prev.origin, cent->current.origin, cl.lerpfrac, muzzle);
+            AngleVectors(angles, f, r, NULL);
+            VectorMA(muzzle, 18, f, muzzle);
+            VectorMA(muzzle, 16, r, muzzle);
+        }
+
+        CL_SetupMuzzleFlashEntity(&ent, muzzle, angles, cl_client_flash_roll[i], 0,
+                                  cl_mod_muzzleflash);
+        V_AddEntity(&ent);
+    }
 }
 
 static void CL_AddViewWeaponFlash(const entity_t *gun)
@@ -2149,6 +2300,11 @@ static void CL_AddViewWeapon(void)
     VectorCopy(gun.origin, cl_view_gun_origin);
     VectorCopy(gun.angles, cl_view_gun_angles);
     cl_view_gun_framecount = cls.framecount;
+
+    // the bot match's Quake III guns: the gun on its hand's tag, with its
+    // barrel and flash (q3weapons.c); ps->gunframe is the gun's state
+    if (!gun_model && !gun_frame && CL_Q3W_AddViewWeapon(&gun, ps->gunframe))
+        return;
 
     V_AddEntity(&gun);
 
@@ -2577,6 +2733,7 @@ void CL_AddEntities(void)
         CPUPROF_DETAIL_END(ENTITIES);
     }
     CL_AddPlayerModelFlash();
+    CL_AddOtherPlayerFlashes();
     CL_AddTEnts();
     {
         CPUPROF_DETAIL_BEGIN(PARTICLES);

@@ -39,8 +39,37 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "restir.h"
 #include "restir_gi.h"
 #include "projection.glsl"
+#include "caustics.h"
 
+// 0 = no caustics, 1 = pt_caustics 1's shadow-ray factor, 2 = that and the photon
+// grid's light (pt_caustics 2, on frames its photon pass runs - path_tracer.c)
 layout(constant_id = 0) const uint spec_enable_caustics = 0;
+
+/* pt_caustics 2: the light the photons brought through caustic glass (caustics.h).
+   The shadow rays toward those lights gave no diffuse where it crossed that glass.
+   Called from main() once the lighting is done, reading back the three G-buffer
+   values it needs: inside the lighting functions, with their reservoirs and light
+   samples live, the lookup spilled 128 B more to local memory (11-18, spvstats). */
+void
+add_caustic_photons(ivec2 ipos, inout vec3 high_freq)
+{
+	if (spec_enable_caustics != 2 || !caustics_photons_active())
+		return;
+
+	vec4 position_material = texelFetch(TEX_PT_SHADING_POSITION, ipos, 0);
+	uint material_id = floatBitsToUint(position_material.w);
+	if (material_id == 0 || (material_id & MATERIAL_FLAG_WEAPON) != 0)
+		return;
+
+	vec3 view_direction = texelFetch(TEX_PT_VIEW_DIRECTION, ipos, 0).xyz;
+	vec3 geo_normal = decode_normal(texelFetch(TEX_PT_GEO_NORMAL_A, ipos, 0).x);
+
+	// the side the camera sees - the photon landed on the side the light came from
+	vec3 n = dot(geo_normal, view_direction) > 0.0 ? -geo_normal : geo_normal;
+	vec3 light = caustic_lookup(position_material.xyz, n);
+
+	high_freq = clamp_output((global_ubo.pt_caustics_debug != 0) ? light : high_freq + light);
+}
 
 
 
@@ -1235,6 +1264,8 @@ main()
 		direct_lighting_restir(ipos, is_odd_checkerboard, high_freq, specular);
 	else
 		direct_lighting(ipos, is_odd_checkerboard, high_freq, specular);
+
+	add_caustic_photons(ipos, high_freq);
 
 	high_freq *= STORAGE_SCALE_HF;
 	specular *= STORAGE_SCALE_SPEC;

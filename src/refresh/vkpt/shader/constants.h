@@ -64,6 +64,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define Q3P_PROG_SELF_LIT       0x1000  // q3map_surfacelight, but every stage is multiplied by the light: it emits its fully lit colour (q3stages.c program_emits)
 #define Q3P_PROG_GLOW           0x2000  // a stage is Q3P_STAGE_GLOW
 #define Q3P_PROG_PROPS          0x4000  // .mat stage<N>_* settings: Q3P_PROP_VEC4S per stage follow the stages
+#define Q3P_PROG_STAGE_EMIT     0x8000  // a stage<N>_emissive_factor: half float in the top of a stage's word 1
 
 /* A stage's own surface (q3stages.h STAGE SETTINGS, q3_stages.glsl): two vec4s
    per stage after all the stages - .x roughness | metallic map << 16 and .y
@@ -108,7 +109,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define Q3P_STAGE_ENV_EFFECT    0x0200  // a reflection map that scrolls or spins: an effect, drawn as it is even under Q3P_PROG_SHINE
 #define Q3P_STAGE_GLOW          0x0400  // the .mat entry's texture_emissive is this stage's image: what shows of it, fully lit, is emitted too
 
-// stage word 1: source factor, destination factor (Q3BF_* in q3shader.h), alpha test
+// stage word 1: source factor, destination factor (Q3BF_* in q3shader.h), alpha
+// test; top 16 bits stage<N>_emissive_factor as a half float (0 = none)
 #define Q3P_BF_NONE                 0
 #define Q3P_BF_ONE                  1
 #define Q3P_BF_ZERO                 2

@@ -255,7 +255,15 @@ bool q3_program_has_props(uint material_id)
    the first pass, the sums stayed live through the colour loop and the rest of
    get_material, and pushed the path tracers past 128 registers into local
    memory (2026-11-16: primary_rays 16 -> 64 bytes, indirect_lighting 96 -> 160)
-   on every surface, for the few that have them. */
+   on every surface, for the few that have them.
+
+   `emission` is what the surface emits as drawn: correct_emissive's bias and
+   the material's emissive_factor (light style included, as get_material_info)
+   applied here, because the stage<N>_emissive_factor stages' glow
+   (Q3P_PROG_STAGE_EMIT) is added to it unscaled by the latter. That glow rides
+   the entry glow's composite (CG) in the one pass: as a pass of its own it
+   pushed reflect_refract from 32 to 48 bytes of local memory, folded into the
+   want_props pass primary_rays from 16 to 32 (11-18). */
 bool q3_program_material(
 	uint material_id,
 	vec3 position,
@@ -297,7 +305,9 @@ bool q3_program_material(
 	uint props_base = base + 1u + num_stages * uint(Q3P_STAGE_VEC4S);
 	bool shine = (header & Q3P_PROG_SHINE) != 0u;
 	bool shine_metal = (header & Q3P_PROG_SHINE_METAL) != 0u;
-	bool glow = (header & Q3P_PROG_GLOW) != 0u;
+	// the stages' own glow, in CG in place of the entry's
+	bool stage_emit = (header & Q3P_PROG_STAGE_EMIT) != 0u;
+	bool glow = (header & (Q3P_PROG_GLOW | Q3P_PROG_STAGE_EMIT)) != 0u;
 	float share = 0.0;      // how much of c10 a reflection map made
 
 	// RB_CalcEnvironmentTexCoords: the reflected view direction, in the
@@ -312,7 +322,10 @@ bool q3_program_material(
 	vec4 c10 = vec4(0, 0, 0, 1);
 	vec4 c11 = vec4(1, 1, 1, 1);
 	// Q3P_PROG_GLOW: C10 with the Q3P_STAGE_GLOW stages black - so C10 - CG is
-	// what of them shows, fully lit
+	// what of them shows, fully lit. Q3P_PROG_STAGE_EMIT instead: C10 with
+	// each stage's colour x (1 - its stage<N>_emissive_factor) - C10 - CG is
+	// what of them shows, fully lit, x their factors. (The entry's glow stage
+	// then glows only by a factor of its own.)
 	vec4 cg = vec4(0, 0, 0, 1);
 
 	for (uint i = 0u; i < num_stages; i++)
@@ -402,7 +415,9 @@ bool q3_program_material(
 		if (glow)
 		{
 			vec4 sg = s1;
-			if ((flags & Q3P_STAGE_GLOW) != 0u)
+			if (stage_emit)
+				sg.rgb *= 1.0 - unpackHalf2x16(info.y).y;
+			else if ((flags & Q3P_STAGE_GLOW) != 0u)
 				sg.rgb = vec3(0);
 			cg = sg * q3_blend_factor(src_f, sg, cg) + cg * q3_blend_factor(dst_f, sg, cg);
 		}
@@ -414,8 +429,23 @@ bool q3_program_material(
 	emission = max((header & Q3P_PROG_SELF_LIT) != 0u ? c10.rgb : c00.rgb, vec3(0));
 	// Q3P_PROG_GLOW: the stage the .mat's texture_emissive names glows with what
 	// shows of it - the max, not the sum, as a stage that already emits is in C00
-	if (glow)
+	if (glow && !stage_emit)
 		emission = max(emission, c10.rgb - cg.rgb);
+	{
+		// the material's emissive_factor x its light style, as get_material_info
+		// - read again here rather than passed in and held through the loop
+		uint index = material_id & MATERIAL_INDEX_MASK;
+		float style = 1.0;
+		uint light_style = (material_id & MATERIAL_LIGHT_STYLE_MASK) >> MATERIAL_LIGHT_STYLE_SHIFT;
+		if ((material_id & MATERIAL_KIND_MASK) != MATERIAL_KIND_CAMERA && light_style != 0u)
+			style = light_buffer.light_styles[light_style];
+		float factor = unpackHalf2x16(light_buffer.material_table[index * MATERIAL_UINTS + 3]).y * style;
+		// correct_emissive (path_tracer_rgen.h)
+		emission = max(emission + vec3(EMISSIVE_TRANSFORM_BIAS), vec3(0)) * factor;
+		// stage<N>_emissive_factor: added, the material's factor left out
+		if (stage_emit)
+			emission += max(c10.rgb - cg.rgb + vec3(EMISSIVE_TRANSFORM_BIAS), vec3(0)) * style;
+	}
 	albedo = max(c10.rgb - c00.rgb, vec3(0));
 
 	if (translucent)

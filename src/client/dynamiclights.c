@@ -315,6 +315,9 @@ void CL_LoadDynamicLights(void)
 
     CL_FreeDynamicLights();
 
+    // the Quake III skull lamps' spot lights come out of the map too
+    CL_LoadQ3Lamps();
+
     // cl.mapname is set by now, so settle the cl_dynamic_lights 2 exclusion
     // for this map once here rather than per frame
     CL_CheckDynamicLightExclusion();
@@ -446,6 +449,8 @@ void CL_FreeDynamicLights(void)
     Z_Free(cl_dynamiclights);
     cl_dynamiclights = NULL;
     cl_num_dynamiclights = 0;
+
+    CL_FreeQ3Lamps();
 }
 
 /*
@@ -462,11 +467,14 @@ void CL_AddDynamicLightsToScene(void)
     float scale;
     bool emit_unadopted;
 
-    if (!cl_num_dynamiclights)
-        return;
-
     // the analytic light types only exist in the path tracers
     if (!CL_PathTraced())
+        return;
+
+    // the Quake III skull lamps' spot lights (q3lamps.c)
+    CL_AddQ3LampsToScene();
+
+    if (!cl_num_dynamiclights)
         return;
 
     // mode 2: on everywhere except the maps in cl_dynamic_lights_exclude.
@@ -585,4 +593,6 @@ void CL_InitDynamicLights(void)
     // Full cone angle, in degrees, for a light that aims at something but
     // sets no shadowlightconeangle of its own.
     cl_dynamic_light_cone = Cvar_Get("cl_dynamic_light_cone", "45", CVAR_ARCHIVE);
+
+    CL_InitQ3Lamps();
 }

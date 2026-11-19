@@ -675,6 +675,11 @@ static void check_player(const char *name)
 
     CL_ParsePlayerSkin(NULL, model, skin, name);
 
+    // a Quake III model we have (baseq3): nothing of it is on a Quake II
+    // server to download, and asking for it would only fail, slowly
+    if (CL_Q3PlayersEnabled() && Q3P_ModelExists(model))
+        return;
+
     // model
     len = Q_concat(fn, sizeof(fn), "players/", model, "/tris.md2");
     check_file_len(fn, len, DL_OTHER);

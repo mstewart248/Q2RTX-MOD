@@ -216,6 +216,16 @@ pbr_material_t* MAT_ForIndex(int index);
 // 'mat print's picture of the material's albedo (or another map) in the top-right
 // corner; both renderers' R_EndFrame call it before drawing the 2D layer
 void MAT_DrawPreview(void);
+// The materials of the view weapon this frame draws, for 'mat view_weapon':
+// the crosshair cannot reach the gun in your hands. vkpt_prepare_frame, both
+// renderers.
+void MAT_NoteViewWeapon(const refdef_t* fd);
+// reload_textures (textures.c): the live materials whose maps include (image),
+// as "a, b, ..." - how many; every live material with (filter) in its name and
+// the image each map is; and what has to follow images re-read in place
+int MAT_ImageUsers(const image_t* image, char* out, size_t size);
+void MAT_ReportImages(const char* filter);
+void MAT_ImagesReloaded(void);
 // The index of a live material (one of r_materials), or -1 for a definition.
 int MAT_IndexOf(const pbr_material_t* mat);
 

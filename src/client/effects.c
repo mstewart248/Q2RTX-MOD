@@ -240,6 +240,16 @@ void CL_MuzzleFlash(void)
         && mz.weapon != MZ_NUKE1 && mz.weapon != MZ_NUKE2
         && mz.weapon != MZ_NUKE4 && mz.weapon != MZ_NUKE8) {
 
+    // a Quake III player model's torso plays its attack (q3player.c)
+    CL_Q3PlayerFired(mz.entity);
+
+    // the bot match's Quake III guns flash on their own tag_flash
+    // (q3weapons.c): in the view, and in a Quake III body's hand. A Quake II
+    // body holds Quake II's counterpart, which flashes as Quake II's do.
+    const bool q3gun = mz.weapon >= MZ_Q3_GAUNTLET && mz.weapon <= MZ_Q3_BFG;
+    const bool q3body = q3gun && mz.entity >= 1 && mz.entity <= MAX_CLIENTS &&
+                        cl.clientinfo[mz.entity - 1].q3.q3;
+
     // Rerelease: the flash model, at the same place the dlight was just put.
     // Our own gun in first person is handled separately - CL_AddViewWeapon is
     // the only place that knows where the view model actually ended up.
@@ -268,9 +278,10 @@ void CL_MuzzleFlash(void)
         // CL_AddPlayerModelFlash in entities.c.
         vec3_t  yaw_only;
 
-        if (!cl.thirdPersonView)
+        if (!cl.thirdPersonView && !q3gun)
             CL_ViewMuzzleFlash();
-        CL_PlayerModelMuzzleFlash();
+        if (!q3body)
+            CL_PlayerModelMuzzleFlash();
 
         // The light keeps its classic 18-forward/16-right placement - it
         // stays clear of the body that way - but measured from the predicted
@@ -280,7 +291,12 @@ void CL_MuzzleFlash(void)
         VectorCopy(cl.playerEntityOrigin, dl->origin);
         VectorMA(dl->origin, 18, fv, dl->origin);
         VectorMA(dl->origin, 16, rv, dl->origin);
-    } else {
+    } else if (q3body) {
+        // its gun's own flash
+    } else if (!CL_OtherPlayerMuzzleFlash(mz.entity)) {
+        // Another player's flash is drawn on their gun every frame
+        // (CL_AddOtherPlayerFlashes in entities.c); anything else that sends
+        // one keeps the flash spawned here, at the light.
         CL_MuzzleFlashModel(dl->origin, pl->current.angles, 0);
     }
 
@@ -479,6 +495,33 @@ void CL_MuzzleFlash(void)
 		dl->die = cl.time + 200;
 		break;
 	// Q2RTX
+
+    // The bot match's Quake III guns: the light in each gun's colour and its
+    // brass (q3weapons.c). Their sounds are the game's (g_q3weap.c).
+    case MZ_Q3_GAUNTLET:
+    case MZ_Q3_MACHINEGUN:
+    case MZ_Q3_SHOTGUN:
+    case MZ_Q3_GRENADE:
+    case MZ_Q3_ROCKET:
+    case MZ_Q3_LIGHTNING:
+    case MZ_Q3_RAILGUN:
+    case MZ_Q3_PLASMAGUN:
+    case MZ_Q3_BFG:
+        CL_Q3W_MuzzleFlash(mz.entity, mz.weapon, dl);
+        break;
+    }
+
+    // Quake III's spent brass from Quake II's shotguns, machinegun and
+    // chaingun too, when the Quake III data is there (Matt, 11-18)
+    switch (mz.weapon) {
+    case MZ_MACHINEGUN:
+    case MZ_SHOTGUN:
+    case MZ_SSHOTGUN:
+    case MZ_CHAINGUN1:
+    case MZ_CHAINGUN2:
+    case MZ_CHAINGUN3:
+        CL_Q3W_EjectBrass(mz.entity, mz.weapon);
+        break;
     }
 
 	//if (vid_rtx->integer)

@@ -253,6 +253,10 @@ void ChangeWeapon(edict_t *ent)
         && ent->client->newweapon != ent->client->pers.weapon)
         gi.sound(ent, CHAN_WEAPON, gi.soundindex("weapons/change.wav"), 1, ATTN_NORM, 0);
 
+    // a Quake III gun's hum or whir stops with it (g_q3weap.c)
+    if (ent->client->pers.weapon && (ent->client->pers.weapon->flags & IT_Q3))
+        ent->client->weapon_sound = 0;
+
     ent->client->pers.lastweapon = ent->client->pers.weapon;
     ent->client->pers.weapon = ent->client->newweapon;
     ent->client->newweapon = NULL;
@@ -281,6 +285,10 @@ void ChangeWeapon(edict_t *ent)
     ent->client->weaponstate = WEAPON_ACTIVATING;
     ent->client->ps.gunframe = 0;
     ent->client->ps.gunindex = gi.modelindex(ent->client->pers.weapon->view_model);
+
+    // a Quake III gun is raised on its own clock
+    if (ent->client->pers.weapon->flags & IT_Q3)
+        Q3W_WeaponChanged(ent);
 
     ent->client->anim_priority = ANIM_PAIN;
     if (ent->client->ps.pmove.pm_flags & PMF_DUCKED) {
@@ -439,6 +447,16 @@ void Use_Weapon(edict_t *ent, gitem_t *item)
     // see if we're already using it
     if (item == ent->client->pers.weapon)
         return;
+
+    /* A bot match's Quake III guns (g_q3weap.c): a weapon of the other game is
+       used like any other, if it is carried. This used to refuse it, which
+       left a Quake III player's hand grenades, traps and teslas (Quake II's
+       ammo that are weapons too) on the weapon bar with no way to raise them
+       (Matt, 2026-11-18: "If you have them you should be able to use them").
+       Pickups still hand each player their own game's gun (Q3W_ItemFor), and
+       "use <name>" still picks the player's own one where both games have a
+       gun of that name (Q3W_FindItem). Holding a Quake II weapon, Q3W_Think
+       stands aside and Think_Weapon runs it; ChangeWeapon raises either. */
 
     if (item->ammo && !g_select_empty->value && !(item->flags & IT_AMMO)) {
         ammo_item = FindItem(item->ammo);

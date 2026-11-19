@@ -50,6 +50,8 @@ a Quake II sound that would otherwise win.
 
 cvar_t  *g_q3_items;    // 1: Quake III health/armor amounts and the Battle Suit
 cvar_t  *g_q3_kit;      // what a player spawns holding, see Q3_GiveSpawnKit
+cvar_t  *g_q3_weapons;  // bot match: 0 Quake II's guns, 1 Quake III's, 2 by player model (g_q3weap.c)
+cvar_t  *g_q3_physics;  // bot match: 1 Quake III's movement and knockback (pmove.c q3move)
 
 // Quake III item spawnflag
 #define Q3_ITEM_SUSPENDED   1
@@ -74,6 +76,31 @@ void Q3_InitGame(void)
 {
     g_q3_items = gi.cvar("g_q3_items", "1", CVAR_ARCHIVE);
     g_q3_kit = gi.cvar("g_q3_kit", "0", CVAR_ARCHIVE);
+    g_q3_weapons = gi.cvar("g_q3_weapons", "0", CVAR_ARCHIVE);
+    g_q3_physics = gi.cvar("g_q3_physics", "0", CVAR_ARCHIVE);
+}
+
+/*
+=================
+Q3_LevelRules
+
+The bot match's weapons and physics for the level about to spawn, into
+level.q3_weapons / level.q3_physics, and on to the engine and the clients as
+CS_Q3RULES (written by SP_worldspawn). Deathmatch only; Quake III's weapons
+also need Quake III's data (fs_quake3), and fall back to Quake II's without.
+=================
+*/
+void Q3_LevelRules(void)
+{
+    level.q3_weapons = 0;
+    level.q3_physics = false;
+
+    if (!deathmatch->value)
+        return;
+
+    if (gi.cvar("fs_quake3", "0", 0)->integer == 1 && g_q3_weapons)
+        level.q3_weapons = (g_q3_weapons->integer >= 0 && g_q3_weapons->integer <= 2) ? g_q3_weapons->integer : 0;
+    level.q3_physics = g_q3_physics && g_q3_physics->integer;
 }
 
 static bool Q3_Amounts(void)
@@ -400,6 +427,44 @@ hurts a lot more, and Quake III's jump pads drop players from heights its
 maps were built for.
 =================
 */
+/*
+=================
+Q3_Knockback
+
+The bot match's Quake III physics (level.q3_physics): Quake III's push for a
+hit player - g_knockback 1000 over its fixed mass of 200, a knockback of at
+most 200, the same for your own rockets as anyone's - and the timer during
+which the player has no ground friction and only air control, so the push
+carries (pmove.c: PMF_TIME_LAND stands for PMF_TIME_KNOCKBACK in q3move).
+The timer is set only when none runs, so another hit can't cut one short.
+=================
+*/
+void Q3_Knockback(edict_t *targ, const vec3_t dir, int knockback)
+{
+    gclient_t   *client = targ->client;
+    vec3_t      kvel;
+    int         t;
+
+    if (knockback > 200)
+        knockback = 200;
+    if (knockback <= 0)
+        return;
+
+    VectorNormalize2(dir, kvel);
+    VectorMA(targ->velocity, 1000.0f * knockback / 200.0f, kvel, targ->velocity);
+
+    if (!client || client->ps.pmove.pm_time)
+        return;
+
+    t = knockback * 2;      // milliseconds
+    if (t < 50)
+        t = 50;
+    if (t > 200)
+        t = 200;
+    client->ps.pmove.pm_time = t >> 3;      // pmove's 8 ms units
+    client->ps.pmove.pm_flags |= PMF_TIME_LAND;
+}
+
 int Q3_FallingDamage(float delta)
 {
     if (delta > 60)
@@ -708,7 +773,69 @@ static void SP_q3_trigger_push(edict_t *self)
     gi.linkentity(self);
 }
 
-// where a pad's player comes down: under its target (for the bot navmesh)
+/*
+Where a pad's player comes down, as a standing player's origin (for the bots:
+the navmesh's link, and where they lean in the air). The target is the top of
+the arc, not its end - the player carries on past it at the same speed across
+- so the flight is followed, a player's box from the pad on the pad's
+velocity under gravity, sliding off walls as movement does, to the first
+floor it lands on. Under the target, if that finds none.
+*/
+#define PAD_SIM_STEP    0.025f
+#define PAD_SIM_STEPS   320     // 8 seconds
+#define PAD_SIM_MASK    (MASK_PLAYERSOLID & ~CONTENTS_MONSTER)   // the map, not who is in it
+
+static bool q3_jumppad_fly(edict_t *pad, vec3_t out)
+{
+    static const vec3_t mins = { -16, -16, -24 }, maxs = { 16, 16, 32 };
+    vec3_t  pos, vel, end;
+    trace_t tr;
+    float   gravity = sv_gravity->value;
+    int     i;
+
+    if (!q3_jumppad_aim(pad) || gravity <= 0)
+        return false;
+
+    // standing on the pad, under the middle of its trigger
+    VectorAdd(pad->absmin, pad->absmax, pos);
+    VectorScale(pos, 0.5f, pos);
+    VectorSet(end, pos[0], pos[1], pos[2] - 512);
+    tr = gi.trace(pos, NULL, NULL, end, NULL, PAD_SIM_MASK);
+    if (tr.startsolid || tr.fraction == 1.0f)
+        return false;
+    VectorCopy(tr.endpos, pos);
+    pos[2] -= mins[2] - 1;
+    tr = gi.trace(pos, mins, maxs, pos, NULL, PAD_SIM_MASK);
+    if (tr.startsolid)
+        return false;
+
+    VectorCopy(pad->movedir, vel);
+    for (i = 0; i < PAD_SIM_STEPS; i++) {
+        vel[2] -= gravity * PAD_SIM_STEP;
+        VectorMA(pos, PAD_SIM_STEP, vel, end);
+        tr = gi.trace(pos, mins, maxs, end, NULL, PAD_SIM_MASK);
+        if (tr.allsolid)
+            return false;
+        VectorCopy(tr.endpos, pos);
+        if (tr.fraction == 1.0f)
+            continue;
+
+        if (tr.plane.normal[2] >= 0.7f && vel[2] <= 0) {
+            VectorCopy(pos, out);
+            return true;
+        }
+
+        // a wall or a ceiling: along it
+        {
+            float back = DotProduct(vel, tr.plane.normal) * 1.001f;
+
+            VectorMA(vel, -back, tr.plane.normal, vel);
+        }
+    }
+
+    return false;
+}
+
 bool Q3_JumpPadLanding(edict_t *pad, vec3_t out)
 {
     edict_t *target;
@@ -717,6 +844,9 @@ bool Q3_JumpPadLanding(edict_t *pad, vec3_t out)
 
     if (pad->touch != q3_jumppad_touch || !pad->target)
         return false;
+    if (q3_jumppad_fly(pad, out))
+        return true;
+
     target = G_PickTarget(pad->target);
     if (!target)
         return false;
@@ -1388,6 +1518,25 @@ void Q3_SpawnEntity(edict_t *ent)
         if (!Q_stricmp(cn, q3_dropped[i])) {
             G_FreeEdict(ent);
             return;
+        }
+    }
+
+    // the bot match's Quake III guns (g_q3weap.c): the map's own, keeping the
+    // Quake II item each would be otherwise - the renames below - for Quake
+    // II's players in a match by player model
+    if (level.q3_weapons) {
+        const char  *q2 = cn, *q3;
+
+        for (i = 0; i < q_countof(q3_renames); i++) {
+            if (!Q_stricmp(cn, q3_renames[i].from)) {
+                q2 = q3_renames[i].to;
+                break;
+            }
+        }
+        q3 = Q3W_MapClassname(ent, cn, q2);
+        if (q3 != cn) {
+            cn = q3;
+            ent->classname = (char *)cn;
         }
     }
 

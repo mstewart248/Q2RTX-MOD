@@ -45,7 +45,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
    could not move.
 
    Collision is untouched; as in Quake III the deformation is only drawn. Not
-   moved: liquids, lights, see-through surfaces, brush models. pt_q3_deform 0
+   moved: liquids, lights, see-through surfaces other than pure additive glows
+   (the bot lamps' jets), brush models. pt_q3_deform 0
    (read at map load) leaves them all in the world, still, as before. */
 
 #ifndef Vector2Copy
@@ -247,7 +248,12 @@ bool vkpt_q3_deform_wants(const pbr_material_t *material, uint32_t material_id, 
 		return false;
 	if (surf_flags & (SURF_WARP | SURF_FLOWING | SURF_SKY | SURF_NODRAW))
 		return false;
-	if (!MAT_IsKind(material_id, MATERIAL_KIND_REGULAR) && !MAT_IsKind(material_id, MATERIAL_KIND_CHROME))
+	/* A see-through glow (q3_additive, alpha 0 on a model too: main.c
+	   fill_model_instance) rides along as well, so the flying skull lamps'
+	   jets (bot_flare2) stay on the lamp. No light material gets here, see
+	   material.c travelling_glow. */
+	const bool glow_only = MAT_IsKind(material_id, MATERIAL_KIND_TRANSPARENT) && material->q3_additive;
+	if (!MAT_IsKind(material_id, MATERIAL_KIND_REGULAR) && !MAT_IsKind(material_id, MATERIAL_KIND_CHROME) && !glow_only)
 		return false;
 	// the model draws with the material's own flags, so collect_surfaces must
 	// not have changed the face's kind from them

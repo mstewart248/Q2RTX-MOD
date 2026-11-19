@@ -262,6 +262,23 @@ void V_MarkLightFixture(void)
 	r_dlights[r_numdlights - 1].fixture = true;
 }
 
+/*
+=====================
+V_SetLightId
+
+Give the light that was just added an identity that holds while it moves (see
+dlight_t.id), so the path tracer's ReSTIR keeps its reservoir. Called right
+after the add, like V_SetLightVolumetricScale.
+=====================
+*/
+void V_SetLightId(uint32_t id)
+{
+	if (r_numdlights <= 0)
+		return;
+
+	r_dlights[r_numdlights - 1].id = id;
+}
+
 // whether the game's trigger_flashlight state says the light is on
 static bool V_MapFlashlight(void)
 {
@@ -711,7 +728,19 @@ void V_RenderView(void)
     CPUPROF_END(VIEW_PREP);
 
     CPUPROF_BEGIN(R_RENDER);
-    R_RenderFrame(&cl.refdef, waterLevel);
+    {
+        vec3_t  asked_org, asked_angles;
+
+        VectorCopy(cl.refdef.vieworg, asked_org);
+        VectorCopy(cl.refdef.viewangles, asked_angles);
+        R_RenderFrame(&cl.refdef, waterLevel);
+
+        // where the picture came from, free camera included (see client.h)
+        VectorCopy(cl.refdef.vieworg, cl.render_vieworg);
+        VectorCopy(cl.refdef.viewangles, cl.render_viewangles);
+        cl.render_view_moved = !VectorCompare(asked_org, cl.refdef.vieworg) ||
+                               !VectorCompare(asked_angles, cl.refdef.viewangles);
+    }
     CPUPROF_END(R_RENDER);
     // a map load's timing line ends with this frame's R_EndFrame (SCR_UpdateScreen)
     if (!(cl.refdef.rdflags & RDF_NOWORLDMODEL) && Com_LoadActive())

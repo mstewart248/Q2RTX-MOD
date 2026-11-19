@@ -75,6 +75,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define SHARC_RESOLVED_BUFFER_BINDING_IDX 12
 #define BLOOD_MOVE_BUFFER_BINDING_IDX 13      // BloodMove[], blood_move.comp's only
 #define BLOOD_SKIN_BUFFER_BINDING_IDX 14      // cl_blood_skin's masks (blood_skin.c)
+#define CAUSTIC_KEY_BUFFER_BINDING_IDX 15      // pt_caustics 2 - see shader/caustics.h
+#define CAUSTIC_ACCUM_BUFFER_BINDING_IDX 16
+#define CAUSTIC_RESOLVED_BUFFER_BINDING_IDX 17
 
 // cl_blood_skin: one mask is BLOOD_SKIN_RES x BLOOD_SKIN_RES bytes over a mesh's
 // texture space (0..1, wrapped), amount 0..255; mask s starts at byte s * RES * RES
@@ -84,6 +87,18 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define SHARC_CAPACITY          (1 << 20)
 #define SHARC_ACCUM_UINTS       8   // per entry: indirect rgb, sample count, direct rgb, unused
 #define SHARC_RESOLVED_VEC4S    2   // per entry: indirect rgb + sample count, direct rgb + last frame
+
+// Photon-traced caustics (pt_caustics 2) - see shader/caustics.h. Must be a power of two.
+#define CAUSTIC_CAPACITY        (1 << 20)
+#define CAUSTIC_ACCUM_UINTS     4   // per entry: this frame's light rgb (fixed point), photon count
+#define CAUSTIC_RESOLVED_VEC4S  2   // per entry: the running mean rgb + frames behind it, then photons per frame
+// (light, caustic glass) pairs the photons are shot for, written by caustics.c each
+// frame into LightBuffer.caustic_emitters: vec4 0 = the glass's bounding sphere,
+// vec4 1 = light index, first photon, photon count (as uint bits), expected count.
+#define MAX_CAUSTIC_EMITTERS    2048
+#define CAUSTIC_EMITTER_VEC4S   2
+// The photon pass's launch is CAUSTIC_LAUNCH_WIDTH wide and as tall as it needs.
+#define CAUSTIC_LAUNCH_WIDTH    1024
 
 #define VERTEX_BUFFER_WORLD 0
 #define VERTEX_BUFFER_INSTANCED 1
@@ -137,6 +152,11 @@ BEGIN_SHADER_STRUCT( LightBuffer )
 	uint cluster_debug_mask[MAX_LIGHT_LISTS / 32];
 	uint sky_visibility[MAX_LIGHT_LISTS / 32];
 	uint sky_cluster_mask[MAX_LIGHT_LISTS / 32];
+	// pt_caustics 2 (caustics.c): x = emitters in caustic_emitters, y = photons
+	// this frame, z = 1 when the photon pass runs and its grid is to be read.
+	// Inside the light upload's always-copied tail (vkpt_light_upload_regions).
+	uvec4 caustic_header;
+	vec4 caustic_emitters[MAX_CAUSTIC_EMITTERS * CAUSTIC_EMITTER_VEC4S];
 	// per-cluster lists of the fog-only lights; the fog walks light_list_* and
 	// then these, the path tracer never sees them
 	uint fog_light_list_offsets[MAX_LIGHT_LISTS];

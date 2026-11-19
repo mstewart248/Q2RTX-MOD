@@ -852,15 +852,20 @@ static void q3_analyze(q3shader_t *s)
     //    lamp it sits on is a light already;
     //  - a light shaft: additive, non-solid cards ("beam") standing in for the
     //    volumetric light the fog draws from the lamp itself.
+    //  Not a glow that travels with its lamp and is no sprite: bot_flare2, the
+    //  jets streaming down from the flying skull lamps (q3dm16/17/19,
+    //  q3tourney6) - cards moved by "deformVertexes move" with the lamp, part
+    //  of its look. Its sprite, bot_flare (autoSprite), stays a fake: the
+    //  client puts a spot light where it was (q3lamps.c).
     if (s->additive) {
         bool all_add = true;
-        bool flare = Q_stristr(s->name, "flare") != NULL;
+        bool flare = Q_stristr(s->name, "flare") != NULL && !Q3Shader_IsTravellingGlow(s);
         bool beam = Q_stristr(s->name, "beam") != NULL;
         for (int i = 0; i < s->num_stages; i++) {
             const q3stage_t *st = &s->stages[i];
             if (st->blend != Q3BLEND_ADD)
                 all_add = false;
-            if (Q_stristr(st->map, "flare"))
+            if (Q_stristr(st->map, "flare") && !Q3Shader_IsTravellingGlow(s))
                 flare = true;
             if (Q_stristr(st->map, "beam"))
                 beam = true;
@@ -951,6 +956,38 @@ float Q3Shader_EvalWave(const q3wave_t *wave, float time)
     }
 
     return wave->base + v * wave->amp;
+}
+
+static bool move_deform_moves(const q3deform_t *d)
+{
+    return d->type == Q3DEFORM_MOVE && VectorLength(d->move) > 0.f &&
+           d->wave.amp != 0.f && d->wave.freq != 0.f &&
+           d->wave.func != Q3WAVE_NONE && d->wave.func != Q3WAVE_NOISE;
+}
+
+bool Q3Shader_Travels(const q3shader_t *s)
+{
+    if (!s)
+        return false;
+    for (int i = 0; i < s->num_deforms; i++)
+        if (move_deform_moves(&s->deforms[i]))
+            return true;
+    return false;
+}
+
+bool Q3Shader_IsTravellingGlow(const q3shader_t *s)
+{
+    return s && s->additive && !s->deform_autosprite && Q3Shader_Travels(s);
+}
+
+void Q3Shader_MoveOffset(const q3deform_t *deforms, int num_deforms, float time, vec3_t out)
+{
+    VectorClear(out);
+    for (int i = 0; i < num_deforms; i++) {
+        const q3deform_t *d = &deforms[i];
+        if (d->type == Q3DEFORM_MOVE)
+            VectorMA(out, Q3Shader_EvalWave(&d->wave, time), d->move, out);
+    }
 }
 
 static q3shader_t *parse_shader(const q3entry_t *e)
@@ -1095,9 +1132,6 @@ bool Q3Shader_ResolveImage(const char *path, char *out, size_t size)
         if (*p == '\\')
             *p = '/';
 
-    char named[MAX_OSPATH];  // as written, extension and all
-    Q_strlcpy(named, base, sizeof(named));
-
     char *dot = strrchr(base, '.');
     char *slash = strrchr(base, '/');
     if (dot && (!slash || dot > slash))
@@ -1111,19 +1145,6 @@ bool Q3Shader_ResolveImage(const char *path, char *out, size_t size)
             Q_strlcpy(out, candidate, size);
             return true;
         }
-    }
-
-    /* A .mat line into materialDev/ (quake3.mat's stage<N>_map) names a copy
-       q3matdev.py extracted from the paks, at the pak's own path. Only the
-       copies that were edited are in git, so on a checkout without the rest
-       the pak file the copy came from is the same picture: its exact name
-       first, then the other formats. */
-    if (!Q_strncasecmp(named, "materialDev/", 12) && named[12]) {
-        if (strchr(COM_SkipPath(named), '.') && FS_FileExists(named + 12)) {
-            Q_strlcpy(out, named + 12, size);
-            return true;
-        }
-        return Q3Shader_ResolveImage(named + 12, out, size);
     }
 
     return false;

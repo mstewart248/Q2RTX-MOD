@@ -113,6 +113,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	SHADER_MODULE_DO(QVK_MOD_COMPOSITING_COMP)                       \
 	SHADER_MODULE_DO(QVK_MOD_NORMALIZE_NORMAL_MAP_COMP)              \
 	SHADER_MODULE_DO(QVK_MOD_SHARC_RESOLVE_COMP)                     \
+	SHADER_MODULE_DO(QVK_MOD_CAUSTIC_RESOLVE_COMP)                   \
 	SHADER_MODULE_DO(QVK_MOD_SOUND_TRACE_COMP)                       \
 	SHADER_MODULE_DO(QVK_MOD_SOUND_DIFFRACT_COMP)                    \
 	SHADER_MODULE_DO(QVK_MOD_FLOW_LIGHTS_COMP)                       \
@@ -125,6 +126,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	SHADER_MODULE_DO(QVK_MOD_DIRECT_LIGHTING_RGEN)                   \
 	SHADER_MODULE_DO(QVK_MOD_INDIRECT_LIGHTING_RGEN)                 \
 	SHADER_MODULE_DO(QVK_MOD_SHARC_UPDATE_RGEN)                      \
+	SHADER_MODULE_DO(QVK_MOD_CAUSTIC_PHOTONS_RGEN)                   \
 	SHADER_MODULE_DO(QVK_MOD_RESTIR_GI_RGEN)                         \
 
 #define LIST_RT_PIPELINE_SHADER_MODULES \
@@ -367,6 +369,9 @@ typedef struct QVK_s {
 	BufferResource_t            buf_sharc_keys;
 	BufferResource_t            buf_sharc_accum;
 	BufferResource_t            buf_sharc_resolved;
+	BufferResource_t            buf_caustic_keys;      // pt_caustics 2 (shader/caustics.h)
+	BufferResource_t            buf_caustic_accum;
+	BufferResource_t            buf_caustic_resolved;
 	BufferResource_t            buf_light_counts_history[LIGHT_COUNT_HISTORY];
 	
 	BufferResource_t            buf_iqm_matrices;
@@ -847,6 +852,10 @@ typedef struct vkpt_frame_prep_s {
 	// the radiance cache (pt_sharc): whether its update runs this frame, and
 	// whether it starts from empty (first use, a new map, back on after a gap)
 	bool sharc_active, sharc_clear;
+	// pt_caustics 2's photon pass (caustics.c): whether it runs, whether its grid
+	// starts from empty, and how many photons it shoots
+	bool caustics_active, caustics_clear;
+	uint32_t caustic_photons;
 } vkpt_frame_prep_t;
 
 bool vkpt_prepare_frame(refdef_t *fd, int waterLevel, vkpt_frame_prep_t *prep);
@@ -1123,10 +1132,20 @@ void vkpt_blood_skin_record(VkCommandBuffer cmd);
 void vkpt_blood_skin_destroy_vk(void);
 void vkpt_sharc_clear(VkCommandBuffer cmd_buf);
 void vkpt_sharc_resolve(VkCommandBuffer cmd_buf);
+void vkpt_caustics_clear(VkCommandBuffer cmd_buf);
+void vkpt_caustics_resolve(VkCommandBuffer cmd_buf);
 void vkpt_vertex_buffer_invalidate_static_model_vbos(int material_index);
 VkResult vkpt_vertex_buffer_upload_models(void);
 void vkpt_light_buffer_reset_counts(void);
 VkResult vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp_t* bsp, int num_model_lights, light_poly_t* transformed_model_lights, const float* sky_radiance);
+
+// caustics.c - pt_caustics 2's emitters (shader/caustics.h)
+void vkpt_caustics_begin_frame(void);
+void vkpt_caustics_add_model(const entity_t *entity, const model_t *model, const float transform[16]);
+void vkpt_caustics_build(LightBuffer *lbo, bool render_world, const bsp_mesh_t *wm,
+	int num_model_lights, const light_poly_t *model_lights);
+bool vkpt_caustics_frame(uint32_t *num_photons);
+bool vkpt_caustics_material(const struct pbr_material_s *mat);
 VkResult vkpt_light_buffer_upload_staging(VkCommandBuffer cmd_buf);
 VkResult vkpt_light_buffers_create(bsp_mesh_t *bsp_mesh);
 VkResult vkpt_light_buffers_destroy(void);
@@ -1190,6 +1209,7 @@ VkResult vkpt_pt_trace_primary_rays(VkCommandBuffer cmd_buf);
 VkResult vkpt_pt_trace_reflections(VkCommandBuffer cmd_buf, int bounce);
 VkResult vkpt_pt_trace_lighting(VkCommandBuffer cmd_buf, float num_bounce_rays);
 VkResult vkpt_pt_sharc_update(VkCommandBuffer cmd_buf, bool clear);
+VkResult vkpt_pt_caustic_photons(VkCommandBuffer cmd_buf, bool clear, uint32_t num_photons);
 VkResult vkpt_pt_update_descripter_set_bindings(int idx);
 VkAccelerationStructureKHR vkpt_pt_get_geometry_tlas(int idx);
 /* A descriptor write of frame slot idx's geometry TLAS: the classic one's handle,
@@ -1383,6 +1403,7 @@ void vkpt_shadow_map_add_instance(const float* model_matrix, uint32_t buffer_idx
 uint32_t vkpt_shadow_map_instances(const vkpt_shadow_map_instance_t** list);
 
 int load_img(const char *name, image_t *image);
+int load_img_from_disk(const char *ospath, const char *name, image_t *image);
 // Transparency module API
 
 bool initialize_transparency(void);
@@ -1759,6 +1780,8 @@ void IMG_Load_RTX(image_t *image, byte *pic);
 void IMG_Unload_RTX(image_t *image);
 bool IMG_ReloadFrom(image_t *image, const char *filepath);
 bool IMG_ReloadIfModified(image_t *image);
+// re-read the live textures saved since they were read (reload_textures, mat reload)
+int IMG_ReloadModified(const char *filter, bool force, bool verbose);
 byte *IMG_ReadPixels_RTX(int *width, int *height, int *rowbytes);
 float *IMG_ReadPixelsHDR_RTX(int *width, int *height);
 

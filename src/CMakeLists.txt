@@ -34,6 +34,7 @@ SET(SRC_BASEQ2
 	baseq2/g_bot.c
 	baseq2/g_ctf.c
 	baseq2/g_q3.c
+	baseq2/g_q3weap.c
 	baseq2/g_xatrix.c
 	baseq2/g_weapon.c
 	baseq2/m_actor.c
@@ -116,6 +117,7 @@ SET(SRC_CLIENT
 	client/demo.c
 	client/download.c
 	client/dynamiclights.c
+	client/q3lamps.c
 	client/lightedit.c
 	client/mapfog.c
 	client/effects.c
@@ -133,6 +135,8 @@ SET(SRC_CLIENT
 	client/parse.c
 	client/precache.c
 	client/predict.c
+	client/q3player.c
+	client/q3weapons.c
 	client/refresh.c
 	client/screen.c
 	client/tent.c
@@ -162,6 +166,7 @@ SET(SRC_CLIENT_HTTP
 
 SET(HEADERS_CLIENT
 	client/client.h
+	client/q3player.h
 	client/ui/ui.h
 	client/sound/sound.h
 	client/sound/qal/dynamic.h
@@ -366,6 +371,7 @@ SET(SRC_VKPT
 	refresh/vkpt/blood.c
 	refresh/vkpt/blood_skin.c
 	refresh/vkpt/bsp_mesh.c
+	refresh/vkpt/caustics.c
 	refresh/vkpt/draw.c
 	refresh/vkpt/fog.c
 	refresh/vkpt/jobs.c
@@ -435,6 +441,7 @@ SET(HEADERS_VKPT
 set(SRC_SHADERS
 	refresh/vkpt/shader/animate_materials.comp
 	refresh/vkpt/shader/sharc_resolve.comp
+	refresh/vkpt/shader/caustic_resolve.comp
 	refresh/vkpt/shader/god_rays_filter.comp
 	refresh/vkpt/shader/god_rays.comp
 	refresh/vkpt/shader/froxel_reservoir.comp
@@ -487,6 +494,7 @@ set(SRC_RT_SHADERS
 	refresh/vkpt/shader/direct_lighting.rgen
 	refresh/vkpt/shader/indirect_lighting.rgen
 	refresh/vkpt/shader/sharc_update.rgen
+	refresh/vkpt/shader/caustic_photons.rgen
 	refresh/vkpt/shader/restir_gi.rgen
 	refresh/vkpt/shader/path_tracer.rchit
 	refresh/vkpt/shader/path_tracer.rmiss
@@ -769,6 +777,7 @@ IF (TARGET client)
         compile_shader_d3d12_variant(BASE_NAME reflect_refract.rgen.query   SPEC 1=0     OUTPUT_FILE_LIST d3d12_dxil) # 1st, no flow
         compile_shader_d3d12_variant(BASE_NAME reflect_refract.rgen.query   SPEC 0=1 1=0 OUTPUT_FILE_LIST d3d12_dxil) # 2nd, no flow
         compile_shader_d3d12_variant(BASE_NAME direct_lighting.rgen.query   SPEC 0=1     OUTPUT_FILE_LIST d3d12_dxil) # caustics
+        compile_shader_d3d12_variant(BASE_NAME direct_lighting.rgen.query   SPEC 0=2     OUTPUT_FILE_LIST d3d12_dxil) # + photon grid
         compile_shader_d3d12_variant(BASE_NAME indirect_lighting.rgen.query SPEC 0=1     OUTPUT_FILE_LIST d3d12_dxil) # 2nd bounce
         # the SER A/B (pt_ser): indirect lighting as ray generation shaders, without
         # the reorder (1st bounce, 2nd) and with it
@@ -791,6 +800,7 @@ IF (TARGET client)
         compile_shader_d3d12_variant(BASE_NAME reflect_refract.rgen.query   SPEC 0=1 1=0 7=0     OUTPUT_FILE_LIST d3d12_dxil)
         compile_shader_d3d12_variant(BASE_NAME direct_lighting.rgen.query   SPEC 7=0             OUTPUT_FILE_LIST d3d12_dxil)
         compile_shader_d3d12_variant(BASE_NAME direct_lighting.rgen.query   SPEC 0=1 7=0         OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME direct_lighting.rgen.query   SPEC 0=2 7=0         OUTPUT_FILE_LIST d3d12_dxil)
         compile_shader_d3d12_variant(BASE_NAME indirect_lighting.rgen.query SPEC 7=0             OUTPUT_FILE_LIST d3d12_dxil)
         compile_shader_d3d12_variant(BASE_NAME indirect_lighting.rgen.query SPEC 0=1 7=0         OUTPUT_FILE_LIST d3d12_dxil)
         compile_shader_d3d12_variant(BASE_NAME indirect_lighting.rgen.query SPEC 7=0         ENTRY raygen OUTPUT_FILE_LIST d3d12_dxil)
@@ -801,6 +811,7 @@ IF (TARGET client)
         compile_shader_d3d12_variant(BASE_NAME indirect_lighting.rgen.query SPEC 0=1 1=1 7=0 ENTRY ser    OUTPUT_FILE_LIST d3d12_dxil)
         compile_shader_d3d12_variant(BASE_NAME restir_gi.rgen.query         SPEC 7=0             OUTPUT_FILE_LIST d3d12_dxil)
         compile_shader_d3d12_variant(BASE_NAME sharc_update.rgen.query      SPEC 7=0             OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME caustic_photons.rgen.query   SPEC 7=0             OUTPUT_FILE_LIST d3d12_dxil)
         compile_shader_d3d12_variant(BASE_NAME god_rays.comp                SPEC 7=0             OUTPUT_FILE_LIST d3d12_dxil)
         compile_shader_d3d12_variant(BASE_NAME god_rays_filter.comp         SPEC 7=0             OUTPUT_FILE_LIST d3d12_dxil)
         compile_shader_d3d12_variant(BASE_NAME froxel_reservoir.comp        SPEC 7=0             OUTPUT_FILE_LIST d3d12_dxil)

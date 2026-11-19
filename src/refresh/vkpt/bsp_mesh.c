@@ -1622,6 +1622,7 @@ set_light_q3_glow(light_poly_t *light, bool q3_glow, const float *uv0, const flo
 	light->q3_glow = q3_glow;
 	light->q3_glow_key = 0;
 	VectorClear(light->q3_glow_rgb);
+	VectorClear(light->q3_glow_stages_rgb);
 	light->q3_samples = 1;
 	memset(light->q3_uv, 0, sizeof(light->q3_uv));
 	if (!q3_glow)

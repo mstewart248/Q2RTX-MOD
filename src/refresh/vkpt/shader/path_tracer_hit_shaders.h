@@ -61,6 +61,52 @@ void pt_logic_rchit(inout RayPayloadGeometry ray_payload, int primitiveID, int i
 	ray_payload.hit_distance = hitT;
 }
 
+/* A Quake III shader's cut-out moves with its stage. The mask is the colour
+   stage's alpha (material.c, apply_q3_shader), but that stage draws its image
+   through tcMods: q3dm11's fan (textures/sfx/fan: clampmap, tcMod rotate 256,
+   alphaFunc GE128) turned its blades while the holes stayed put, so the slime
+   showed through the spinning blades and the gaps came out black (Matt,
+   2026-11-18: "the mask needs to spin too"). So: the mask is read where the
+   program's first alpha-tested stage reads its image - its matrices
+   (re-written each frame), its turb, its clamp - as q3_stage_coords does. */
+void q3_mask_coords(uint material_id, vec3 position, inout vec2 tex_coord)
+{
+	if (!Q3_SHADERS)
+		return;
+	uint prog = light_buffer.material_table[(material_id & MATERIAL_INDEX_MASK) * MATERIAL_UINTS + 9] >> 16;
+	if (prog == 0u)
+		return;
+
+	uint base = prog - 1u;
+	uint num_stages = min(floatBitsToUint(light_buffer.q3_stages[base].x) & 0xffu, uint(Q3P_MAX_STAGES));
+	for (uint i = 0u; i < num_stages; i++)
+	{
+		uint o = base + 1u + i * uint(Q3P_STAGE_VEC4S);
+		uvec4 info = floatBitsToUint(light_buffer.q3_stages[o]);
+		uint flags = info.x >> 16;
+		if (((info.y >> 8) & 3u) == 0u ||
+			(flags & (Q3P_STAGE_LIGHTMAP | Q3P_STAGE_WHITE | Q3P_STAGE_ENV | Q3P_STAGE_NO_IMAGE)) != 0u)
+			continue;
+
+		vec4 m1 = light_buffer.q3_stages[o + 1u];     // a1 b1 c1 d1
+		vec4 m12 = light_buffer.q3_stages[o + 2u];    // e1 f1 a2 b2
+		vec4 m2 = light_buffer.q3_stages[o + 3u];     // c2 d2 e2 f2
+		vec2 st = vec2(m1.x * tex_coord.x + m1.y * tex_coord.y + m12.x, m1.z * tex_coord.x + m1.w * tex_coord.y + m12.y);
+		if ((flags & Q3P_STAGE_TURB) != 0u)
+		{
+			float amp = uintBitsToFloat(info.z);
+			float now = uintBitsToFloat(info.w);
+			st.x += sin(2.0 * M_PI * ((position.x + position.z) * (1.0 / 1024.0) + now)) * amp;
+			st.y += sin(2.0 * M_PI * (position.y * (1.0 / 1024.0) + now)) * amp;
+		}
+		st = vec2(m12.z * st.x + m12.w * st.y + m2.z, m2.x * st.x + m2.y * st.y + m2.w);
+		if ((flags & Q3P_STAGE_CLAMP) != 0u)
+			st = clamp(st, vec2(0), vec2(1));
+		tex_coord = st;
+		return;
+	}
+}
+
 bool pt_logic_masked(int primitiveID, int instanceID, int geometryIndex, uint instanceCustomIndex, vec2 bary)
 {
 	int model_index;
@@ -79,7 +125,8 @@ bool pt_logic_masked(int primitiveID, int instanceID, int geometryIndex, uint in
 	
 	vec2 tex_coord = triangle.tex_coords * vec3(1.0 - bary.x - bary.y, bary.x, bary.y);
 
-	perturb_tex_coord(triangle.material_id, triangle.texture_flags, global_ubo.time, tex_coord);	
+	perturb_tex_coord(triangle.material_id, triangle.texture_flags, global_ubo.time, tex_coord);
+	q3_mask_coords(triangle.material_id, triangle.positions * vec3(1.0 - bary.x - bary.y, bary.x, bary.y), tex_coord);
 
 	vec4 mask_value = global_textureLod(minfo.mask_texture, tex_coord, /* mip_level = */ 0);
 
@@ -203,6 +250,13 @@ vec4 pt_logic_sprite(int primitiveID, vec2 bary)
 		                 float((info.z >>  8) & 0xffu)) / 255.0;
 		color.rgb *= tint;
 	}
+
+	// info.w bit 1: a Quake III mark - a bullet hole or a scorch (client
+	// q3weapons.c, RF_DECAL). Quake III blends them GL_ZERO
+	// GL_ONE_MINUS_SRC_COLOR: what is under one is darkened by its brightness
+	// and nothing is added, which is black over the surface at that coverage.
+	if ((info.w & 2u) != 0u)
+		return vec4(0.0, 0.0, 0.0, clamp(luminance(color.rgb) * alpha, 0.0, 1.0));
 
 	// info.w bit 0: the sprite is an additive corona - a rerelease misc_flare
 	// image is greyscale with no alpha channel at all, so its brightness is

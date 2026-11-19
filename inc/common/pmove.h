@@ -52,6 +52,12 @@ typedef struct {
     // gravity is Haste (x1.3 speed), and a gravity of 0 or 1 is Flight. 1/800
     // of gravity is the price. Ignored when false, so no other map changes.
     bool        q3;
+    // Quake III Arena's player movement (bg_pmove.c) in place of Quake II's -
+    // the bot match's "physics: Quake 3" (g_q3_physics). Both sides read it
+    // from CS_Q3RULES, which the game sets at every map start. In this mode
+    // PMF_TIME_LAND is Quake III's PMF_TIME_KNOCKBACK: no ground friction
+    // while pm_time runs (the game sets it on a hit), and no landing delay.
+    bool        q3move;
     float       speedmult;
     float       watermult;
     float       maxspeed;

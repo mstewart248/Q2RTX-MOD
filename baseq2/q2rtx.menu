@@ -131,6 +131,18 @@ begin environment
         pairs --status "how far the sun may move before the sky is re-rendered. Throttled is the old cadence, about a quarter of a degree - cheapest, and you can see it step. Smooth is a twentieth of the sun's disc, sub-pixel, and still only a couple of re-renders a second. Real time re-renders it continuously. Each re-render is spread over several frames (sky_update_slices), so none of them is a spike (sun_animate_step)"             "sky updates" sun_animate_step "throttled" 0.28 "smooth" 0.05 "real time" 0
         blank
     endif
+    // ...and on a time of day (night to dusk, 3-8), which since 11-17 is the hour
+    // the cycle starts from on each map (physical_sky.c sun_preset_day_start).
+    // The same two controls as above: ifeqor takes one pair of tests, and this
+    // case never overlaps that one (sky type not rerelease, preset not Custom).
+    // Current time and 12x current time follow the clock, so neither shows them.
+    ifneq sky_type 0
+    ifge sun_preset 3
+        range -f "%.0fx" --status "0 = off. Speed of the day/night cycle, starting from the time of day above on every map - 1x is one full turn every ~86 minutes (sun_animate)" "sun animation speed" sun_animate 0 25 1
+        pairs --status "how far the sun may move before the sky is re-rendered. Throttled is the old cadence, about a quarter of a degree - cheapest, and you can see it step. Smooth is a twentieth of the sun's disc, sub-pixel, and still only a couple of re-renders a second. Real time re-renders it continuously. Each re-render is spread over several frames (sky_update_slices), so none of them is a spike (sun_animate_step)"             "sky updates" sun_animate_step "throttled" 0.28 "smooth" 0.05 "real time" 0
+        blank
+    endif
+    endif
     toggle --status "physical sky only (physical_sky_draw_clouds)" "physical sky clouds" physical_sky_draw_clouds
     blank
     range -f "%.1f deg" --status "physical sky only - latitude used to compute the sun position in automatic mode (sun_latitude)" "physical sky latitude" sun_latitude -90 90 2
@@ -441,7 +453,15 @@ begin video_renderer
         pairs --status "(pt_reflect_refract)" "reflection/refraction depth" pt_reflect_refract off 0 1 1 2 2 4 4 8 8
 		toggle --status "turn some monitors in the game into security camera views (pt_cameras)" \
             "security cameras" pt_cameras
-        toggle --status "(pt_caustics)" "caustics" pt_caustics
+        // pt_caustics: 1 = the shadow ray's brightness factor through caustic glass,
+        // 2 = photon tracing (caustics.c, shader/caustics.h) for lamps and orbs - the
+        // sun and water keep 1's
+        pairs --status "light through glass: approximate brightens or darkens what a shadow ray sees through it; ray traced shoots photons from each lamp through its bulb or orb and gathers where they land, so the light is focused into real caustic patterns (the sun and water stay approximate). Ray traced costs more (pt_caustics)" \
+            "caustics" pt_caustics off 0 approximate 1 "ray traced" 2
+        ifeq pt_caustics 2
+        pairs --status "photons shot through lamp bulbs and orbs each frame, shared among those near the camera. More = less grain in the caustics and in a bulb lamp's light, at more cost (pt_caustics_photons)" \
+            "caustic photons" pt_caustics_photons 64K 65536 128K 131072 256K 262144 512K 524288 1M 1048576
+        endif
         toggle --status "(gr_enable)" "god rays" gr_enable
         pairs --status "light the map's own dynamic_lights that have NOT been adopted in the light editor. Off is normal; the other two are for comparing against the map's intended lighting (cl_dynamic_lights)" \
             "unadopted map lights" cl_dynamic_lights "off" 0 "all maps" 1 "all but excluded" 2
@@ -1411,7 +1431,9 @@ end
 // with nobody else in it - for walking a map. "allow cheats" (bot_cheats,
 // ui.c) is copied into the latched "cheats" by every start action, so
 // noclip and god work in the match. Each bot wears a random
-// stock skin (male, female, cyborg) and goes by its name: bot_lineup
+// stock skin (male, female, cyborg) - or with Quake III Arena installed, one
+// of its bots' models, or either, as "bot models" says (bot_models, ui.c;
+// the models are drawn by src/client/q3player.c) - and goes by its name: bot_lineup
 // (src/client/ui/ui.c) rolls them as the page opens, once a session, and
 // "shuffle" rolls again; a row labelled "$_ui_botnameN" shows that name.
 // Enter on a bot's row runs its --command, the bot picker ('botpick' in
@@ -1443,6 +1465,12 @@ end
 // Quake III's or Quake II's health and armor amounts (g_q3_items - the
 // Quake III amounts bring its Battle Suit, Quake II's the Environment Suit),
 // and what you spawn holding (g_q3_kit).
+//
+// On any map, "weapons" (g_q3_weapons, with Quake III installed) arms everyone
+// with Quake II's guns, Quake III's (src/baseq2/g_q3weap.c, drawn by
+// src/client/q3weapons.c), or each player with their own model's game's; and
+// "movement" (g_q3_physics) is Quake II's or Quake III's running, jumping and
+// knockback (src/common/pmove.c). Both take effect when the match starts.
 begin botmatch
     background #212F3CD0
     style --compact
@@ -1454,7 +1482,7 @@ begin botmatch
         pairs --live --status "team deathmatch: red against blue, teams kept even" "game mode" bot_mode deathmatch 0 "team deathmatch" 1
     endif
     ifeq fs_quake3 1
-        pairs --live --status "quake iii arena: its maps, with quake ii's weapons and items in its weapons' and items' places" "map set" bot_mapset "quake ii" 0 "quake iii arena" 1
+        pairs --live --status "quake iii arena: its maps, with the weapons chosen below and quake ii's items in its items' places" "map set" bot_mapset "quake ii" 0 "quake iii arena" 1
     endif
     ifeq bot_mapset 1
     ifeq bot_mode 2
@@ -1464,7 +1492,9 @@ begin botmatch
         pairs "map" bot_map_q3 "Introduction" q3dm0 "Arena Gate" q3dm1 "House Of Pain" q3dm2 "Arena Of Death" q3dm3 "The Place Of Many Deaths" q3dm4 "The Forgotten Place" q3dm5 "The Camping Grounds" q3dm6 "Temple of Retribution" q3dm7 "Brimstone Abbey" q3dm8 "Hero's Keep" q3dm9 "The Nameless Place" q3dm10 "Deva Station" q3dm11 "The Dredwerkz" q3dm12 "Lost World" q3dm13 "Grim Dungeons" q3dm14 "Demon Keep" q3dm15 "The Bouncy Map" q3dm16 "The Longest Yard" q3dm17 "Space Chamber" q3dm18 "Apocalypse Void" q3dm19 "Powerstation 0218" q3tourney1 "The Proving Grounds" q3tourney2 "Hell's Gate" q3tourney3 "Vertical Vengeance" q3tourney4 "Fatal Instinct" q3tourney5 "The Very End Of You" q3tourney6 "The Campgrounds II" pro-q3dm6 "Lost World II" pro-q3dm13 "The Proving Grounds II" pro-q3tourney2 "Vertical Vengeance II" pro-q3tourney4
     endif
         pairs --status "quake iii: 5 / 25 / 50 / 100 health, 5 / 50 / 100 armor, the battle suit. quake ii: its own, the environment suit" "health and armor" g_q3_items "quake iii arena" 1 "quake ii" 0
-        pairs --status "what every player spawns holding" "spawn with" g_q3_kit "blaster, machinegun" 0 "chainfist, machinegun" 1 "blaster" 2
+    ifneq g_q3_weapons 1
+        pairs --status "what every player with quake ii's weapons spawns holding" "spawn with" g_q3_kit "blaster, machinegun" 0 "chainfist, machinegun" 1 "blaster" 2
+    endif
     endif
     ifneq bot_mapset 1
     ifeq bot_mode 2
@@ -1497,6 +1527,10 @@ begin botmatch
     endif
     endif
     endif
+    ifeq fs_quake3 1
+        pairs --status "quake iii arena: its gauntlet, machinegun, shotgun, grenade and rocket launchers, lightning gun, railgun, plasma gun and bfg10k for everyone. by player model: quake iii's for quake iii models, quake ii's for quake ii models (g_q3_weapons)" "weapons" g_q3_weapons "quake ii" 0 "quake iii arena" 1 "by player model" 2
+    endif
+    pairs --status "quake iii arena: its faster running, air control, jumps and knockback, for everyone (g_q3_physics)" "movement" g_q3_physics "quake ii" 0 "quake iii arena" 1
     ifge bot_mode 1
         toggle --status "(dmflags)" "friendly fire" dmflags ~8
     endif
@@ -1508,9 +1542,19 @@ begin botmatch
     endif
     field --integer --status "0 - no time limit" --width 3 "time limit" timelimit
     toggle --status "noclip, god, notarget and give work in this match (cheats)" "allow cheats" bot_cheats
+    // the path tracer's tone mapping (vkpt/main.c prepare_ubo): bots are never
+    // dazzled by a flash, so the player's eye can recover faster to even it out
+    ifeqor vid_rtx 1 vid_rtx 3
+        pairs --status "how fast your eye recovers from an explosion's flash - bots are never dazzled. normal = as in single player (tm_exposure_speed_bots)" "eye adjustment" tm_exposure_speed_bots normal 1 fast 3 "very fast" 6
+    endif
     action --align "deathmatch flags..." pushmenu gameflags
     blank
     pairs --live --status "0: no bots, the map to yourself" "bots" bot_count 0 0 1 1 2 2 3 3 4 4 5 5 6 6 7 7 8 8 9 9 10 10 11 11 12 12 13 13 14 14 15 15
+    ifge bot_count 1
+    ifeq fs_quake3 1
+        pairs --live --status "whose player models the bots wear: quake ii's, quake iii arena's, or both" "bot models" bot_models "quake ii" 0 "quake iii arena" 1 both 2
+    endif
+    endif
     ifge bot_count 1
         action --align --status "new faces: every bot in another skin" "shuffle bots" "bot_lineup shuffle"
     endif

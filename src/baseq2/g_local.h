@@ -161,7 +161,11 @@ typedef enum {
     AMMO_DISRUPTOR,
     AMMO_TRAP,
     AMMO_FLECHETTES,
-    AMMO_PROX
+    AMMO_PROX,
+    // Quake III's Lightning Gun and BFG10K ammo (g_q3weap.c); its other guns
+    // share Quake II's bullets, shells, grenades, rockets, slugs and cells
+    AMMO_Q3_LIGHTNING,
+    AMMO_Q3_BFG
 } ammo_t;
 
 
@@ -380,6 +384,22 @@ typedef struct {
 #define IT_POWERUP      32
 #define IT_MELEE        64      // no ammo, never auto-switched away from on empty
 #define IT_CTF          128     // a flag or a tech: CTF's, never handed out by `give all`
+#define IT_Q3           256     // Quake III's weapons and the two ammo only they use (g_q3weap.c)
+
+// gitem_t->tag of Quake III's guns: its weapon numbers (bg_public.h weapon_t)
+enum {
+    Q3W_NONE,
+    Q3W_GAUNTLET,
+    Q3W_MACHINEGUN,
+    Q3W_SHOTGUN,
+    Q3W_GRENADE,
+    Q3W_ROCKET,
+    Q3W_LIGHTNING,
+    Q3W_RAILGUN,
+    Q3W_PLASMA,
+    Q3W_BFG,
+    Q3W_NUM
+};
 
 // Rerelease generic monster spawnflag: the mapper placed this monster off
 // the floor deliberately (a ledge, a pipe, mid-air), so do not drop it.
@@ -414,6 +434,17 @@ typedef struct {
 #define WEAP_ETFRIFLE           18
 #define WEAP_PROXLAUNCHER       19
 #define WEAP_GRAPPLE            20      // CTF only: registered by CTF_Precache, after the rest
+// Quake III's weapons (g_q3weap.c), registered after the grapple's slot - which
+// is held for them when there is no CTF - in Quake III weapon games only
+#define WEAP_Q3_GAUNTLET        21
+#define WEAP_Q3_MACHINEGUN      22
+#define WEAP_Q3_SHOTGUN         23
+#define WEAP_Q3_GRENADELAUNCHER 24
+#define WEAP_Q3_ROCKETLAUNCHER  25
+#define WEAP_Q3_LIGHTNING       26
+#define WEAP_Q3_RAILGUN         27
+#define WEAP_Q3_PLASMAGUN       28
+#define WEAP_Q3_BFG             29
 
 typedef struct gitem_s {
     char        *classname; // spawning name
@@ -534,6 +565,8 @@ typedef struct {
     float       gravity;            // sv_gravity for this level (worldspawn, target_gravity)
     bool        is_n64;             // rerelease: map lives under q64/ - several entities behave differently
     bool        q3map;              // a Quake III Arena map (sv_map_q3) - see g_q3.c
+    int         q3_weapons;         // bot match: 0 Quake II's guns, 1 Quake III's, 2 by player model (g_q3weap.c)
+    bool        q3_physics;         // bot match: Quake III's movement and knockback (CS_Q3RULES)
     char        *goals;             // rerelease N64: worldspawn "goals", tab-separated objectives
     int         goal_num;           // index of the current one, advanced by target_goal
     char        *start_items;       // worldspawn "start_items", see Player_GiveStartItems
@@ -1118,6 +1151,20 @@ extern  int snd_fry;
 #define MOD_DOPPLE_VENGEANCE 54
 #define MOD_DOPPLE_HUNTER   55
 #define MOD_GRAPPLE         56
+// Quake III's weapons (g_q3weap.c)
+#define MOD_Q3_GAUNTLET     60
+#define MOD_Q3_MACHINEGUN   61
+#define MOD_Q3_SHOTGUN      62
+#define MOD_Q3_GRENADE      63
+#define MOD_Q3_G_SPLASH     64
+#define MOD_Q3_ROCKET       65
+#define MOD_Q3_R_SPLASH     66
+#define MOD_Q3_PLASMA       67
+#define MOD_Q3_P_SPLASH     68
+#define MOD_Q3_RAILGUN      69
+#define MOD_Q3_LIGHTNING    70
+#define MOD_Q3_BFG          71
+#define MOD_Q3_BFG_SPLASH   72
 #define MOD_FRIENDLY_FIRE   0x8000000
 
 extern  int meansOfDeath;
@@ -1912,8 +1959,11 @@ void Team_Command(edict_t *ent);
 //
 extern  cvar_t  *g_q3_items;
 extern  cvar_t  *g_q3_kit;
+extern  cvar_t  *g_q3_weapons;
+extern  cvar_t  *g_q3_physics;
 
 void Q3_InitGame(void);
+void Q3_LevelRules(void);
 void Q3_SpawnEntity(edict_t *ent);
 void Q3_LevelStart(void);
 int  Q3_SoundIndex(const char *name);
@@ -1939,6 +1989,31 @@ bool Q3_HasteExtraThink(edict_t *ent);
 int  Q3_BattleSuitDamage(edict_t *targ, int damage, int dflags, int mod);
 bool Q3_BattleSuitActive(gclient_t *client);
 int  Q3_FallingDamage(float delta);
+void Q3_Knockback(edict_t *targ, const vec3_t dir, int knockback);
+
+//
+// g_q3weap.c - Quake III's weapons in the bot match (level.q3_weapons)
+//
+bool Q3W_ClientQ3(const gclient_t *client);
+bool Q3W_PlayerQ3(const edict_t *ent);
+gitem_t *Q3W_Counterpart(const gitem_t *item);
+gitem_t *Q3W_FindItem(edict_t *ent, const char *name);
+gitem_t *Q3W_ItemFor(const edict_t *item_ent, const edict_t *player);
+const char *Q3W_SpawnClassname(edict_t *ent, const char *classname);
+const char *Q3W_MapClassname(edict_t *ent, const char *classname, const char *q2_name);
+void Q3W_ItemModel(edict_t *ent);
+void Q3W_DroppedItem(edict_t *dropped);
+bool Pickup_Q3Weapon(edict_t *ent, edict_t *other);
+bool Q3W_PickupAmmo(edict_t *ent, edict_t *other);
+void Q3W_GiveSpawnKit(gclient_t *client);
+void Q3W_Precache(void);
+void Q3W_WeaponChanged(edict_t *ent);
+void Weapon_Q3(edict_t *ent);
+void Q3W_Think(edict_t *ent, const usercmd_t *ucmd);
+bool Q3W_KeepsOnDeath(const gitem_t *item);
+const char *Q3W_Obituary(int mod, bool self_kill, const char **message2, edict_t *self);
+bool IsFemale(edict_t *ent);
+bool IsNeutral(edict_t *ent);
 void Q3_ClientFrame(edict_t *ent);
 void Q3_ClientEffects(edict_t *ent);
 void Q3_ClientSound(edict_t *ent);
@@ -2113,6 +2188,8 @@ typedef struct {
     int         max_trap;
     int         max_flechettes;
     int         max_prox;
+    int         max_q3_lightning;   // Quake III's Lightning Gun and BFG ammo
+    int         max_q3_bfg;
 
     gitem_t     *weapon;
     gitem_t     *lastweapon;
@@ -2247,6 +2324,13 @@ struct gclient_s {
     float       q3_haste_accum;         // Haste's extra weapon thinks
     edict_t     *q3_jumppad;            // the pad touched last, and when:
     int         q3_jumppad_framenum;    // it thumps once per jump
+
+    // Quake III's weapons (g_q3weap.c): bg_pmove.c's weaponTime, run per
+    // usercmd in milliseconds, and the shots fired, which the view weapon's
+    // flash and recoil key on (ps.gunframe)
+    int         q3_weapon_time;
+    int         q3_shots;
+    int         q3_lightning_framenum;  // the beam's one message a frame went out
 
     bool        grenade_blew_up;
     int         grenade_framenum;
@@ -2466,6 +2550,10 @@ struct edict_s {
     bmodel_anim_t bmodel_anim;
 
     gitem_t     *item;          // for bonus items
+    // a weapon pickup in a bot match whose guns go by player model
+    // (g_q3_weapons 2): what a player of the OTHER game takes from it - the
+    // Quake III gun for a Quake II player on a Quake II map and the reverse
+    gitem_t     *q3_alt_item;
 
     // common data blocks
     moveinfo_t      moveinfo;

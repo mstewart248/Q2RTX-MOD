@@ -373,6 +373,9 @@ void CL_RegisterTEntModels(void)
     		model->sprite_vertical = true;
         }
     }
+
+    // the bot match's Quake III guns, and the brass Quake II's throw too
+    CL_Q3W_RegisterMedia();
 }
 
 /*
@@ -558,7 +561,8 @@ static float CL_FlowReach(const vec3_t start, const vec3_t dir, float distance)
     return tr.startsolid ? 0.0f : tr.fraction * distance;
 }
 
-static int CL_FlowBfgBlast(const vec3_t origin)
+// `scale` 1 for Quake II's BFG, 0.5 for the bot match's Quake III one
+static int CL_FlowBfgBlast(const vec3_t origin, float scale)
 {
     if (!cl_flow_explosions->integer || !R_FlowEmit)
         return 0;
@@ -566,7 +570,7 @@ static int CL_FlowBfgBlast(const vec3_t origin)
     r_flow_emit_t emit = {
         .kind = R_FLOW_BLAST,
         .style = R_FLOW_PLASMA,
-        .scale = 1,
+        .scale = scale,
         .reach = CL_FlowReach,
     };
     VectorCopy(origin, emit.origin);
@@ -640,7 +644,7 @@ static bool CL_FlowBfgZap(void)
     return zaps++ < cl_flow_bfg_zaps->integer;
 }
 
-int CL_FlowBfgBall(int number, const vec3_t origin, bool flying)
+int CL_FlowBfgBall(int number, const vec3_t origin, bool flying, float scale)
 {
     if (!cl_flow_explosions->integer || !R_FlowEmit)
         return 0;
@@ -651,7 +655,7 @@ int CL_FlowBfgBall(int number, const vec3_t origin, bool flying)
         r_flow_emit_t emit = {
             .kind = R_FLOW_TRAIL,
             .style = R_FLOW_PLASMA,
-            .scale = 1,
+            .scale = scale,
             .key = number,
         };
         VectorCopy(origin, emit.origin);
@@ -3035,10 +3039,85 @@ void CL_ParseTEnt(void)
 
     case TE_BFG_BIGEXPLOSION:
         // The blast's sprite is the BFG ball's own entity: CL_FlowBfgBall.
-        if (CL_FlowBfgBlast(te.pos1))
+        if (CL_FlowBfgBlast(te.pos1, 1.0f))
             CL_FlowBfgSparks(te.pos1);
         else
             CL_BFGExplosionParticles(te.pos1);
+        break;
+
+    // The bot match's Quake III guns (q3weapons.c). Rockets, grenades, the
+    // rail and the BFG have Quake II's fire and Flow, as Matt asked (11-18),
+    // with Quake III's sounds and its scorches; the rest are Quake III's own.
+    case TE_Q3_BULLET:
+    case TE_Q3_SHOTGUN:
+    case TE_Q3_PLASMA_EXPLOSION:
+        CL_Q3W_Impact(te.type, te.pos1, te.dir);
+        break;
+
+    case TE_Q3_ROCKET_EXPLOSION:
+    case TE_Q3_GRENADE_EXPLOSION: {
+        const bool grenade = te.type == TE_Q3_GRENADE_EXPLOSION;
+
+        ex = CL_PlainExplosion(false);
+        if (grenade && !cl_explosion_sprites->integer) {
+            ex->frames = 19;
+            ex->baseframe = 30;
+        }
+        if (cl_disable_explosions->integer & (grenade ? NOEXP_GRENADE : NOEXP_ROCKET))
+            ex->type = ex_light;
+        CL_FlowExplosion(ex, 1.0f, R_FLOW_FIRE);
+        CL_FlowGibEvent(false, te.pos1, te.pos1);
+        if (!(cl_disable_particles->integer & (grenade ? NOPART_GRENADE_EXPLOSION : NOPART_ROCKET_EXPLOSION)))
+            CL_ExplosionParticles(te.pos1);
+        if (cl_dlight_hacks->integer & DLHACK_SMALLER_EXPLOSION)
+            ex->light = 200;
+        CL_Q3W_Explosion(te.type, te.pos1);
+        break;
+    }
+
+    case TE_Q3_BFG_EXPLOSION: {
+        // Quake II's big blast at half the size; without Flow, the smaller
+        // of its two sprites
+        const int flow = CL_FlowBfgBlast(te.pos1, 0.5f);
+
+        ex = CL_AllocExplosion();
+        VectorCopy(te.pos1, ex->ent.origin);
+        ex->type = ex_poly;
+        ex->ent.flags = RF_FULLBRIGHT | RF_TRANSLUCENT;
+        ex->ent.alpha = 0.80f;
+        ex->start = cl.servertime - CL_FRAMETIME;
+        ex->light = 300;
+        VectorSet(ex->lightcolor, 0.0f, 1.0f, 0.0f);
+        ex->ent.model = cl_mod_bfg_explo;
+        ex->frames = 4;
+        if (flow) {
+            ex->flow = flow;
+            if (cl_flow_explosions->integer == 2)
+                ex->flow |= CL_FLOW_HIDE;
+            CL_FlowBfgSparks(te.pos1);
+        }
+        CL_FlowGibEvent(false, te.pos1, te.pos1);
+        CL_Q3W_Explosion(te.type, te.pos1);
+        break;
+    }
+
+    case TE_Q3_RAILTRAIL: {
+        // Quake II's (Flow) rail from the view gun's muzzle; the shot's own
+        // sound is the gun's (railgf1a), so none here
+        color_t rail_color;
+        vec3_t  color;
+
+        CL_Q3W_RailStart(te.pos1);
+        CL_FlowGibEvent(true, te.pos1, te.pos2);
+        CL_RailTrail();
+        rail_color.u32 = cl_railtrail_type->integer ? railcore_color.u32 : d_8to24table[0x74];
+        VectorSet(color, rail_color.u8[0] / 255.0f, rail_color.u8[1] / 255.0f, rail_color.u8[2] / 255.0f);
+        CL_Q3W_RailImpact(te.pos1, te.pos2, color);
+        break;
+    }
+
+    case TE_Q3_LIGHTNING:
+        CL_Q3W_Lightning(te.entity1, te.entity2 != 0, te.pos1, te.pos2);
         break;
 
     case TE_BFG_LASER:
@@ -3367,6 +3446,7 @@ void CL_AddTEnts(void)
     CL_AddExplosions();
     CL_ProcessSustain();
     CL_AddLasers();
+    CL_Q3W_AddEntities();
 }
 
 /*
@@ -3381,6 +3461,7 @@ void CL_ClearTEnts(void)
     CL_ClearLasers();
     CL_ClearSustains();
     CL_ClearFlowBurns();
+    CL_Q3W_Clear();
 }
 
 // The plasma beam's own light (the renderer's pt_flow_heatbeam_light, not
@@ -3395,6 +3476,7 @@ static void cl_flow_heatbeam_fire_changed(cvar_t *self)
 
 void CL_InitTEnts(void)
 {
+    CL_Q3W_Init();
     s_flare_range = Cvar_Get("s_flare_range", "1.3", CVAR_ARCHIVE);
     cl_flow_explosions = Cvar_Get("cl_flow_explosions", "2", CVAR_ARCHIVE);     // Matt's setting, the default since 11-10
     cl_explosion_water = Cvar_Get("cl_explosion_water", "1", CVAR_ARCHIVE);

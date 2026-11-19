@@ -1,0 +1,85 @@
+/*
+Copyright (C) 2026
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along
+with this program; if not, write to the Free Software Foundation, Inc.,
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+*/
+
+// pt_caustics 2: folds this frame's photons into each caustic cell's running
+// mean, clears the sums, and frees cells no photon reaches that have faded to
+// nothing. See caustics.h.
+
+#version 460
+#extension GL_GOOGLE_include_directive    : enable
+#extension GL_EXT_nonuniform_qualifier    : enable
+
+#include "utils.glsl"
+
+#define GLOBAL_UBO_DESC_SET_IDX 0
+#include "global_ubo.h"
+
+#define VERTEX_BUFFER_DESC_SET_IDX 1
+#include "vertex_buffer.h"
+
+#include "caustics.h"
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+void
+main()
+{
+	uint idx = gl_GlobalInvocationID.x;
+	if (idx >= CAUSTIC_CAPACITY)
+		return;
+
+	if (caustic_keys[idx] == 0u)
+		return;
+
+	uint base = idx * CAUSTIC_ACCUM_UINTS;
+	uint photons = caustic_accum[base + 3];
+	vec3 frame_light = vec3(caustic_accum[base + 0], caustic_accum[base + 1], caustic_accum[base + 2])
+		* (1.0 / caustic_fixed_scale());
+
+	/* A frame's light in a cell is the sum of the photons that landed in it - a
+	   frame with none is a sample of 0, not a missing one - so every live cell
+	   takes every frame: a plain running mean up to pt_caustics_frames, then an
+	   exponential one with that time constant. Photo mode is the reference and
+	   the camera holds still, so there it never stops averaging. */
+	vec4 cell = caustic_resolved[idx * CAUSTIC_RESOLVED_VEC4S];
+	vec4 stats = caustic_resolved[idx * CAUSTIC_RESOLVED_VEC4S + 1];
+	float frames = cell.w + 1.0;
+	float weight = 1.0 / min(frames, caustic_frame_limit());
+	cell.rgb = mix(cell.rgb, frame_light, weight);
+	// photons per frame, averaged the same way: how many photons the mean stands on
+	// (caustic_cell_photons), which picks the cell size a lookup reads
+	stats.x = mix(stats.x, float(photons), weight);
+	cell.w = min(frames, 1e7);
+
+	// no photons any more, and faded below what could show or below a photon's
+	// worth behind it (no lookup would take it): free the slot
+	bool faded = luminance(cell.rgb) < 1e-4 * max(global_ubo.prev_adapted_luminance, 1e-5)
+		|| stats.x * min(frames, caustic_frame_limit()) < 0.25;
+	if (photons == 0u && faded)
+	{
+		caustic_keys[idx] = 0u;
+		cell = vec4(0);
+		stats = vec4(0);
+	}
+
+	caustic_resolved[idx * CAUSTIC_RESOLVED_VEC4S] = cell;
+	caustic_resolved[idx * CAUSTIC_RESOLVED_VEC4S + 1] = stats;
+
+	for (uint i = 0; i < CAUSTIC_ACCUM_UINTS; i++)
+		caustic_accum[base + i] = 0u;
+}

@@ -690,8 +690,9 @@ static void UI_BotModeChanged(cvar_t *var)
         UI_BotLabel(n);
 }
 
-// every installed skin a bot may wear, as "model/skin"
-static int UI_BotSkins(char (*out)[MAX_QPATH], int max)
+// every installed skin a bot may wear, as "model/skin": id's Quake II ones,
+// Quake III's bots (baseq3) or both, as bot_models says
+static int UI_BotSkinsFor(char (*out)[MAX_QPATH], int max, int models)
 {
     int i, j, n = 0;
 
@@ -703,12 +704,20 @@ static int UI_BotSkins(char (*out)[MAX_QPATH], int max)
 
         for (j = 0; j < pmi->nskins && n < max; j++) {
             Q_concat(out[n], MAX_QPATH, pmi->directory, "/", pmi->skindisplaynames[j]);
-            if (Bot_SkinUsable(out[n]))
+            if (Bot_SkinInPool(out[n], models))
                 n++;
         }
     }
 
     return n;
+}
+
+static int UI_BotSkins(char (*out)[MAX_QPATH], int max)
+{
+    int n = UI_BotSkinsFor(out, max, Cvar_VariableInteger("bot_models"));
+
+    // Quake III's asked for and not installed: Quake II's
+    return n ? n : UI_BotSkinsFor(out, max, BOT_MODELS_Q2);
 }
 
 // any installed skin, stock or not - what the bot picker can set
@@ -733,21 +742,28 @@ static bool UI_BotSkinInstalled(const char *value)
     return false;
 }
 
-static void UI_BotLineup_f(void)
+// how the line-up is rolled
+#define LINEUP_KEEP     0   // keep what was rolled or picked, where it is installed
+#define LINEUP_SHUFFLE  1   // all new faces
+#define LINEUP_POOL     2   // bot_models changed: new faces for the bots outside it
+
+static void UI_BotLineup(int how)
 {
     static char skins[UI_MAX_BOT_SKINS][MAX_QPATH];
     bool        used[UI_MAX_BOT_SKINS] = { false };
     bool        keep[BOT_MAX_MATCH + 1] = { false };
-    bool        shuffle = !Q_stricmp(Cmd_Argv(1), "shuffle");
     int         count = UI_BotSkins(skins, UI_MAX_BOT_SKINS);
+    int         models = Cvar_VariableInteger("bot_models");
     int         i, k, start, tries, left = count;
 
     // keep what was rolled or picked, where this game has it
-    if (!shuffle && ui_lineup_rolled) {
+    if (how != LINEUP_SHUFFLE && ui_lineup_rolled) {
         for (i = 1; i <= BOT_MAX_MATCH; i++) {
             cvar_t *var = Cvar_Get(va("bot_skin%d", i), "random", 0);
 
             if (!UI_BotSkinInstalled(var->string))
+                continue;
+            if (how == LINEUP_POOL && !Bot_SkinInPool(var->string, models))
                 continue;
             keep[i] = true;
             for (k = 0; k < count; k++) {
@@ -798,6 +814,17 @@ static void UI_BotLineup_f(void)
         Cvar_Set("bot_mapset", "0");
 }
 
+static void UI_BotLineup_f(void)
+{
+    UI_BotLineup(!Q_stricmp(Cmd_Argv(1), "shuffle") ? LINEUP_SHUFFLE : LINEUP_KEEP);
+}
+
+static void UI_BotModelsChanged(cvar_t *var)
+{
+    if (ui_lineup_rolled)
+        UI_BotLineup(LINEUP_POOL);
+}
+
 /*
 =================
 UI_BotInit
@@ -823,6 +850,12 @@ static void UI_BotInit(void)
     Cvar_Get("bot_player_team", "0", CVAR_ARCHIVE);
 
     Cvar_Get("bot_count", "3", CVAR_ARCHIVE);
+
+    // whose models the bots wear - 0 Quake II's, 1 Quake III's, 2 both
+    // (bot_roster.h); Quake III's only while baseq3 has them, so the menu
+    // shows the choice only then. Both by default: with no Quake III data
+    // that is Quake II's.
+    Cvar_Get("bot_models", "2", CVAR_ARCHIVE)->changed = UI_BotModelsChanged;
 
     // "cheats" is latched and not archived, so the menu keeps its own and
     // each start action copies it over - the map ... force applies it
@@ -880,6 +913,8 @@ static void UI_BotShutdown(void)
     }
     if ((var = Cvar_FindVar("bot_mode")) != NULL)
         var->changed = NULL;
+    if ((var = Cvar_FindVar("bot_models")) != NULL)
+        var->changed = NULL;
 }
 
 
@@ -925,6 +960,7 @@ void UI_Init(void)
 
     // load built-in menus
     M_Menu_PlayerConfig();
+    M_Menu_PlayerModelGrid();
     M_Menu_BotPick();
     M_Menu_Servers();
     M_Menu_Demos();

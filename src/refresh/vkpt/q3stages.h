@@ -79,10 +79,13 @@ void vkpt_q3_print_program(const pbr_material_t *mat);
 // What `mat`'s program emits - its stages blended with no light at the surface,
 // as q3_stages.glsl draws it - averaged over the triangle with texture
 // coordinates `uv` (three u,v pairs, 1 = one repeat) on an n x n grid of
-// `samples`, at the shader clock `time` (seconds), into `out`. 0 while the
-// program's images are not in memory yet (or there is no program), 1 when the
-// answer changes with time, 2 when it never does.
-int vkpt_q3_light_glow(const pbr_material_t *mat, const float uv[6], int samples, float time, vec3_t out);
+// `samples`, at the shader clock `time` (seconds), into `out`; and what its
+// stage<N>_emissive_factor stages glow, which the material's emissive_factor
+// does not scale, into `out_stages`. 0 while the program's images are not in
+// memory yet (or there is no program), 1 when the answer changes with time, 2
+// when it never does.
+int vkpt_q3_light_glow(const pbr_material_t *mat, const float uv[6], int samples, float time, vec3_t out,
+                       vec3_t out_stages);
 
 // Changes whenever `mat`'s program is rebuilt or what it emits could change
 // for another reason (pt_q3_env_shine); 0 for no program. A still glow is
@@ -97,6 +100,11 @@ bool vkpt_q3_program_glow_moves(const pbr_material_t *mat);
 // Frees the images the lights read (map change).
 void vkpt_q3_light_cache_clear(void);
 
+// 'mat reload': re-reads every image a stage draws from (programs, sky cloud
+// layers, the quad shell) whose file was saved since it was loaded. Returns
+// how many were.
+int vkpt_q3_refresh_stage_images(void);
+
 /* STAGE SETTINGS: .mat "stage<N>_<setting> <value>", and the console's
    'mat stage<N> <setting> <value>'. One stage of a Quake III shader set apart
    from the rest of it:
@@ -110,7 +118,14 @@ void vkpt_q3_light_cache_clear(void);
      _texture_normals. The maps are read through the stage's own texture
      coordinates (its tcMods), the values mean what the material's do, and
      where the stage covers the surface they replace the material's
-     (q3_stages.glsl STAGE SETTINGS).
+     (q3_stages.glsl STAGE SETTINGS);
+   - stage<N>_emissive_factor: what shows of the stage, fully lit, glows that
+     much (Matt, 2026-11-18: medal_impressive's medal alone at 5, the
+     material's emissive_factor 0). ADDED to the material's own glow, and not
+     scaled by its emissive_factor - only by default_radiance (or the bsp
+     radiance), light_factor for the light it casts, and its light style.
+     With any stage stating one, the entry's glow stage (texture_emissive
+     naming a stage's picture) glows only by a factor of its own.
    Kept apart from pbr_material_t (eight stages of paths would be a lot of
    memory for 8192 materials), keyed by material name, in three scopes: the
    global .mat files, the current map's, and what was typed in the console
@@ -128,6 +143,7 @@ enum {
     Q3SS_METALNESS_FACTOR,
     Q3SS_SPECULAR_FACTOR,
     Q3SS_BUMP_SCALE,
+    Q3SS_EMISSIVE_FACTOR,
     Q3SS_COUNT
 };
 

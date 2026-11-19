@@ -1810,6 +1810,8 @@ typedef struct {
     const char  *icon;      // pic name, minus the extension
     const char  *view;      // CS_MODELS path, which is how ps.gunindex names it
     const char  *ammo;      // CS_ITEMS pickup name of its ammo, NULL for none
+    bool        q3;         // Quake III's gun (see WB_NUM_Q3_SLOTS)
+    const char  *ammo_icon; // its ammo's pic, when iw_icons[] has none for it
 } wbslot_t;
 
 static const wbslot_t wb_slots[] = {
@@ -1836,11 +1838,33 @@ static const wbslot_t wb_slots[] = {
     { "Phalanx",          "w_phallanx",      "models/weapons/v_shotx/tris.md2",     "Mag Slug" },
     { "BFG10K",           "w_bfg",           "models/weapons/v_bfg/tris.md2",       "Cells" },
     { "Disruptor",        "w_disintegrator", "models/weapons/v_dist/tris.md2",      "Rounds" },
+
+    /* QUAKE III'S GUNS - the bot match's g_q3_weapons (baseq2 g_q3weap.c), in
+       Quake III's own weapon order, with its own HUD icons (baseq3 pak0,
+       32x32). Matt, 2026-11-18: "show the weapon wheel UI from the rerelease
+       with q3 weapon load out". The game lists them after every Quake II item
+       (g_items.c), and six share a Quake II gun's pickup name, so a Q3 slot is
+       the LAST item of its name (SCR_WeaponBarFindItem). "use <name>" gets the
+       player's own game's gun either way (Q3W_FindItem). They are looked at
+       only while the server runs Quake III's guns (cl.q3_weapons). */
+    { "Gauntlet",         "/icons/iconw_gauntlet.tga",   "models/weapons2/gauntlet/gauntlet.md3",   NULL,        true },
+    { "Machinegun",       "/icons/iconw_machinegun.tga", "models/weapons2/machinegun/machinegun.md3", "Bullets", true, "/icons/icona_machinegun.tga" },
+    { "Shotgun",          "/icons/iconw_shotgun.tga",    "models/weapons2/shotgun/shotgun.md3",     "Shells",    true, "/icons/icona_shotgun.tga" },
+    { "Grenade Launcher", "/icons/iconw_grenade.tga",    "models/weapons2/grenadel/grenadel.md3",   "Grenades",  true, "/icons/icona_grenade.tga" },
+    { "Rocket Launcher",  "/icons/iconw_rocket.tga",     "models/weapons2/rocketl/rocketl.md3",     "Rockets",   true, "/icons/icona_rocket.tga" },
+    { "Lightning Gun",    "/icons/iconw_lightning.tga",  "models/weapons2/lightning/lightning.md3", "Lightning", true, "/icons/icona_lightning.tga" },
+    { "Railgun",          "/icons/iconw_railgun.tga",    "models/weapons2/railgun/railgun.md3",     "Slugs",     true, "/icons/icona_railgun.tga" },
+    { "Plasma Gun",       "/icons/iconw_plasma.tga",     "models/weapons2/plasma/plasma.md3",       "Cells",     true, "/icons/icona_plasma.tga" },
+    { "BFG10K",           "/icons/iconw_bfg.tga",        "models/weapons2/bfg/bfg.md3",             "Bfg Ammo",  true, "/icons/icona_bfg.tga" },
 };
+
+// the Quake III slots, at the end of wb_slots[]
+#define WB_NUM_Q3_SLOTS     9
 
 // The same weapons in this tree's own itemlist order, which is the order a
 // weapnext walks outside the rerelease game.  Listed by pickup name so it can
-// only ever name a weapon wb_slots[] also has.
+// only ever name a weapon wb_slots[] also has.  Quake II's only: Quake III's
+// keep their own order after them.
 static const char *const wb_classic_order[] = {
     "Blaster", "Shotgun", "Super Shotgun", "Machinegun", "Chaingun",
     "Grenades", "Grenade Launcher", "Rocket Launcher", "HyperBlaster",
@@ -1850,8 +1874,10 @@ static const char *const wb_classic_order[] = {
 
 #define WB_NUM_SLOTS    ((int)q_countof(wb_slots))
 
-// the two lists have to hold the same weapons
-typedef char wb_orders_agree[q_countof(wb_classic_order) == q_countof(wb_slots) ? 1 : -1];
+#define WB_NUM_Q2_SLOTS (WB_NUM_SLOTS - WB_NUM_Q3_SLOTS)
+
+// the two lists have to hold the same Quake II weapons
+typedef char wb_orders_agree[q_countof(wb_classic_order) == WB_NUM_Q2_SLOTS ? 1 : -1];
 
 // the w_* pics are 24x24; the bar draws them a little larger, the way the
 // rerelease sits its own row over the status bar
@@ -1872,12 +1898,21 @@ static struct {
     unsigned    idle_time;              // cls.realtime the bar went idle
 } wb;
 
-static int SCR_WeaponBarFindItem(const char *name)
+// `last`: the last item of that name - Quake III's gun, where Quake II has one
+// of the same name before it
+static int SCR_WeaponBarFindItem(const char *name, bool last)
 {
     int     i;
 
     if (!name)
         return -1;
+
+    if (last) {
+        for (i = MAX_ITEMS - 1; i >= 0; i--)
+            if (!strcmp(cl.configstrings[CS_ITEMS + i], name))
+                return i;
+        return -1;
+    }
 
     for (i = 0; i < MAX_ITEMS; i++)
         if (!strcmp(cl.configstrings[CS_ITEMS + i], name))
@@ -1894,10 +1929,20 @@ static void SCR_WeaponBarResolve(void)
     int     i, j;
 
     for (i = 0; i < WB_NUM_SLOTS; i++) {
-        wb.item[i] = SCR_WeaponBarFindItem(wb_slots[i].item);
-        wb.ammo[i] = SCR_WeaponBarFindItem(wb_slots[i].ammo);
-        wb.pic[i] = wb.item[i] >= 0 ? R_RegisterPic2(wb_slots[i].icon) : 0;
         wb.order[i] = i;
+
+        // Quake III's guns only while the server deals them: otherwise their
+        // items exist but nobody carries one, and their icons are not looked
+        // up (a missing pic is a file search every time)
+        if (wb_slots[i].q3 && !cl.q3_weapons) {
+            wb.item[i] = wb.ammo[i] = -1;
+            wb.pic[i] = 0;
+            continue;
+        }
+
+        wb.item[i] = SCR_WeaponBarFindItem(wb_slots[i].item, wb_slots[i].q3);
+        wb.ammo[i] = SCR_WeaponBarFindItem(wb_slots[i].ammo, false);
+        wb.pic[i] = wb.item[i] >= 0 ? R_RegisterPic2(wb_slots[i].icon) : 0;
 
         // No icon, no slot.  baseq2 carries none of the rogue or xatrix art,
         // so a cheated-in Disruptor there would otherwise sit on the bar as an
@@ -1916,12 +1961,13 @@ static void SCR_WeaponBarResolve(void)
         wb.dir = 1;
     } else {
         wb.dir = -1;
-        for (i = 0; i < WB_NUM_SLOTS; i++)
-            for (j = 0; j < WB_NUM_SLOTS; j++)
+        for (i = 0; i < WB_NUM_Q2_SLOTS; i++)
+            for (j = 0; j < WB_NUM_Q2_SLOTS; j++)
                 if (!strcmp(wb_slots[j].item, wb_classic_order[i])) {
                     wb.order[i] = j;
                     break;
                 }
+        // Quake III's stay where they are, after them
     }
 
     for (i = 0; i < WB_NUM_SLOTS; i++)
@@ -2379,6 +2425,7 @@ static struct {
     int         item[MAX_ITEMS];        // CS_ITEMS indices, in inventory order
     qhandle_t   pic[MAX_ITEMS];
     const char  *ammo[MAX_ITEMS];
+    const char  *ammo_icon[MAX_ITEMS];  // the hub's ammo pic, NULL: iw_icons[]'s for ammo[]
     int         shown[MAX_ITEMS];       // CS_ITEMS index whose count goes under the icon
     int         count;
 
@@ -2529,6 +2576,7 @@ static void SCR_ItemWheelResolve(void)
 
             iw.item[iw.count] = wb.item[slot];
             iw.ammo[iw.count] = wb_slots[slot].ammo;
+            iw.ammo_icon[iw.count] = wb_slots[slot].ammo_icon;
             iw.shown[iw.count] = wb.ammo[slot];
             iw.pic[iw.count] = wb.pic[slot];
             iw.count++;
@@ -2552,6 +2600,7 @@ static void SCR_ItemWheelResolve(void)
 
         iw.item[iw.count] = i;
         iw.ammo[iw.count] = iw_icons[j].ammo;
+        iw.ammo_icon[iw.count] = NULL;
         iw.shown[iw.count] = i;
 
         // An item whose icon is missing still goes on the ring, drawn as an
@@ -3003,7 +3052,10 @@ static void SCR_DrawItemWheelHub(float cx, float cy, float alpha)
     if (ammo_item >= 0) {
         qhandle_t pic = 0;
 
-        for (i = 0; i < q_countof(iw_icons); i++)
+        // a Quake III gun's: Quake III's own ammo icon
+        if (iw.ammo_icon[iw.selected])
+            pic = R_RegisterPic2(iw.ammo_icon[iw.selected]);
+        else for (i = 0; i < q_countof(iw_icons); i++)
             if (!strcmp(iw_icons[i].item, ammo)) {
                 pic = R_RegisterPic2(iw_icons[i].icon);
                 break;
@@ -3512,7 +3564,11 @@ static void SCR_ExecuteLayoutString(const char *s)
             if (!ci->icon) {
                 ci = &cl.baseclientinfo;
             }
-            R_DrawPic(x, y, ci->icon);
+            // a Quake III icon is 64x64: in the Quake II one's 32x32
+            if (ci->q3.q3)
+                R_DrawStretchPic(x, y, 32, 32, ci->icon);
+            else
+                R_DrawPic(x, y, ci->icon);
             continue;
         }
 

@@ -25,6 +25,8 @@ const d3d12_pass_info_t d3d12_pass_info[D3D12_NUM_PASSES] = {
                                                 "direct_lighting.rgen.query.spec_7_0" },
     [D3D12_PASS_DIRECT_LIGHTING_CAUSTICS]   = { D3D12_PL_PATH_TRACER, "direct_lighting.rgen.query.spec_0_1",
                                                 "direct_lighting.rgen.query.spec_0_1_7_0" },
+    [D3D12_PASS_DIRECT_LIGHTING_PHOTONS]    = { D3D12_PL_PATH_TRACER, "direct_lighting.rgen.query.spec_0_2",
+                                                "direct_lighting.rgen.query.spec_0_2_7_0" },
     [D3D12_PASS_INDIRECT_LIGHTING_FIRST]    = { D3D12_PL_PATH_TRACER, "indirect_lighting.rgen.query",
                                                 "indirect_lighting.rgen.query.spec_7_0" },
     [D3D12_PASS_INDIRECT_LIGHTING_SECOND]   = { D3D12_PL_PATH_TRACER, "indirect_lighting.rgen.query.spec_0_1",
@@ -54,6 +56,10 @@ const d3d12_pass_info_t d3d12_pass_info[D3D12_NUM_PASSES] = {
     [D3D12_PASS_SHARC_UPDATE]               = { D3D12_PL_PATH_TRACER, "sharc_update.rgen.query",
                                                 "sharc_update.rgen.query.spec_7_0" },
     [D3D12_PASS_SHARC_RESOLVE]              = { D3D12_PL_UBO_VERTEX_BUFFER, "sharc_resolve.comp" },
+    // path_tracer.c's PIPELINE_CAUSTIC_PHOTONS, and vertex_buffer.c's caustic resolve
+    [D3D12_PASS_CAUSTIC_PHOTONS]            = { D3D12_PL_PATH_TRACER, "caustic_photons.rgen.query",
+                                                "caustic_photons.rgen.query.spec_7_0" },
+    [D3D12_PASS_CAUSTIC_RESOLVE]            = { D3D12_PL_UBO_VERTEX_BUFFER, "caustic_resolve.comp" },
     // vertex_buffer.c's vkpt_blood_move_dispatch
     [D3D12_PASS_BLOOD_MOVE]                 = { D3D12_PL_UBO_VERTEX_BUFFER, "blood_move.comp" },
     [D3D12_PASS_BLOOM_DOWNSCALE]            = { D3D12_PL_STANDARD, "bloom_downscale.comp" },
@@ -383,6 +389,23 @@ static void sharc_update(recorder_t *r, const d3d12_passes_frame_t *f)
     mark(r, PROFILER_SHARC, PROFILER_STOP);
 }
 
+// vkpt_pt_caustic_photons: the grid zeroed when it starts afresh, the frame's
+// photons CAUSTIC_LAUNCH_WIDTH to a row, then caustic_resolve over every cell -
+// every frame it runs, photons or not.
+static void caustic_photons(recorder_t *r, const d3d12_passes_frame_t *f)
+{
+    const d3d12_passes_t *p = r->p;
+    mark(r, PROFILER_CAUSTIC_PHOTONS, PROFILER_START);
+    if (f->caustic_clear)
+        for (int i = 0; i < 3; i++)
+            d3d12_clear_buffer(p->cmd, p->caustic_buffers[i], p->caustic_sizes[i], p->zero_buffer);
+    if (f->caustic_count && p->caustic_width)
+        trace_grid(r, D3D12_PASS_CAUSTIC_PHOTONS, 0, p->caustic_width,
+                   (f->caustic_count + p->caustic_width - 1) / p->caustic_width, 1);
+    geometry_pass(r, D3D12_PASS_CAUSTIC_RESOLVE, p->caustic_entries / 256);
+    mark(r, PROFILER_CAUSTIC_PHOTONS, PROFILER_STOP);
+}
+
 static void trace_paths(recorder_t *r, d3d12_pass_t pass, int bounce, uint32_t list, uint32_t append);
 
 // vkpt_pt_trace_lighting (`tiles`: the view has the tile lists, so maybe path lists)
@@ -394,7 +417,10 @@ static void trace_lighting(recorder_t *r, const d3d12_passes_frame_t *f, bool ti
        bounce. Without the list the shaders still skip the same pixels, one dispatch over
        the grid each. */
     const bool sparse = tiles && f->sparse;
-    const d3d12_pass_t direct = f->caustics ? D3D12_PASS_DIRECT_LIGHTING_CAUSTICS : D3D12_PASS_DIRECT_LIGHTING;
+    // pt_caustics 2's lookup whenever its photon pass runs (path_tracer.c says why)
+    const d3d12_pass_t direct = !f->caustics ? D3D12_PASS_DIRECT_LIGHTING
+                              : f->caustic_photons ? D3D12_PASS_DIRECT_LIGHTING_PHOTONS
+                              : D3D12_PASS_DIRECT_LIGHTING_CAUSTICS;
 
     mark(r, PROFILER_DIRECT_LIGHTING, PROFILER_START);
     if (sparse) {
@@ -912,6 +938,9 @@ void d3d12_record_passes(const d3d12_passes_t *p, const d3d12_passes_frame_t *f)
     // overwrites SHADING_POSITION when there is a second
     if (f->sharc && p->sharc_buffers[0] && p->sharc_buffers[1] && p->sharc_buffers[2])
         sharc_update(&r, f);
+    // the photons need only the acceleration structures and the light buffer
+    if (f->caustic_photons && p->caustic_buffers[0] && p->caustic_buffers[1] && p->caustic_buffers[2])
+        caustic_photons(&r, f);
     trace_lighting(&r, f, tiles);
 
     // ...and its post list

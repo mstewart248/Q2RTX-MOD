@@ -209,6 +209,10 @@ static struct {
     ID3D12Resource      *sharc[3];
     uint64_t            sharc_size[3];
     bool                sharc_dirty;
+    // photon-traced caustics' grid (pt_caustics 2), vertex_buffer.c's, 36 MB
+    ID3D12Resource      *caustic[3];
+    uint64_t            caustic_size[3];
+    bool                caustic_dirty;
 
     // the models
     world_model_t       models[D3D12_MAX_MODELS];
@@ -1912,6 +1916,23 @@ bool d3d12_world_init(void)
         }
         w.sharc_dirty = true;
     }
+    {
+        // vkpt_vertex_buffer_create's caustic grid. Without it the photon pass
+        // stays off (its header zeroed below) and pt_caustics 2 looks like 1.
+        static const char *names[3] = { "caustic keys", "caustic accumulators", "caustic resolved" };
+        w.caustic_size[0] = sizeof(uint32_t) * CAUSTIC_CAPACITY;
+        w.caustic_size[1] = sizeof(uint32_t) * CAUSTIC_ACCUM_UINTS * CAUSTIC_CAPACITY;
+        w.caustic_size[2] = sizeof(float) * 4 * CAUSTIC_RESOLVED_VEC4S * CAUSTIC_CAPACITY;
+        for (int i = 0; i < 3; i++)
+            w.caustic[i] = d3d12_create_buffer(w.caustic_size[i], D3D12_HEAP_TYPE_DEFAULT,
+                                               D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, names[i]);
+        if (!w.caustic[0] || !w.caustic[1] || !w.caustic[2]) {
+            Com_WPrintf("D3D12: no memory for the caustic grid - pt_caustics 2 stays off\n");
+            for (int i = 0; i < 3; i++)
+                D3D12_RELEASE(w.caustic[i]);
+        }
+        w.caustic_dirty = true;
+    }
     if (!w.light_buffer || !w.instance_buffer || !w.readback_buffer || !w.tonemap_buffer || !w.zero_buffer ||
         !w.iqm_buffer)
         return false;
@@ -1958,6 +1979,14 @@ bool d3d12_world_init(void)
                                w.sharc_size[1]);
         d3d12_set_write_buffer(&w.vertex_buffer_set, SHARC_RESOLVED_BUFFER_BINDING_IDX, 0, w.sharc[2], 0,
                                w.sharc_size[2]);
+    }
+    if (w.caustic[0]) {
+        d3d12_set_write_buffer(&w.vertex_buffer_set, CAUSTIC_KEY_BUFFER_BINDING_IDX, 0, w.caustic[0], 0,
+                               w.caustic_size[0]);
+        d3d12_set_write_buffer(&w.vertex_buffer_set, CAUSTIC_ACCUM_BUFFER_BINDING_IDX, 0, w.caustic[1], 0,
+                               w.caustic_size[1]);
+        d3d12_set_write_buffer(&w.vertex_buffer_set, CAUSTIC_RESOLVED_BUFFER_BINDING_IDX, 0, w.caustic[2], 0,
+                               w.caustic_size[2]);
     }
     // the instanced buffers come with frontend.c's d3d12_world_set_primbuf_size
 
@@ -2069,6 +2098,8 @@ void d3d12_world_shutdown(void)
     D3D12_RELEASE(w.blood_skin);
     for (int i = 0; i < 3; i++)
         D3D12_RELEASE(w.sharc[i]);
+    for (int i = 0; i < 3; i++)
+        D3D12_RELEASE(w.caustic[i]);
     D3D12_RELEASE(w.prims_instanced);
     D3D12_RELEASE(w.positions_instanced);
     w.primbuf_size = 0;
@@ -2806,6 +2837,13 @@ bool d3d12_world_render(ID3D12GraphicsCommandList4 *cmd, const d3d12_world_frame
     const bool sharc = frame->sharc_active && w.sharc[0];
     if (!sharc)
         gpu_ubo->pt_sharc = 0.f;
+    // photon caustics: no grid, no photons - and the header the shaders test says so,
+    // so nothing reads or writes the buffers that are not there
+    const bool caustic = frame->caustics_active && w.caustic[0];
+    if (!w.caustic[0] && fr->staging_map[D3D12_WORLD_STAGING_LIGHTS]) {
+        LightBuffer *lights = (LightBuffer *)fr->staging_map[D3D12_WORLD_STAGING_LIGHTS];
+        memset(&lights->caustic_header, 0, sizeof(lights->caustic_header));
+    }
     memcpy(fr->upload_map + UPLOAD_INSTANCE_OFFSET, frame->instance_buffer, sizeof(InstanceBuffer));
     memcpy(fr->upload_map + UPLOAD_TLAS_OFFSET, frame->instances,
            (size_t)num_instances * sizeof(D3D12_RAYTRACING_INSTANCE_DESC));
@@ -2920,6 +2958,10 @@ bool d3d12_world_render(ID3D12GraphicsCommandList4 *cmd, const d3d12_world_frame
         .sharc_buffers = { w.sharc[0], w.sharc[1], w.sharc[2] },
         .sharc_sizes = { w.sharc_size[0], w.sharc_size[1], w.sharc_size[2] },
         .sharc_entries = SHARC_CAPACITY,
+        .caustic_buffers = { w.caustic[0], w.caustic[1], w.caustic[2] },
+        .caustic_sizes = { w.caustic_size[0], w.caustic_size[1], w.caustic_size[2] },
+        .caustic_entries = CAUSTIC_CAPACITY,
+        .caustic_width = CAUSTIC_LAUNCH_WIDTH,
         .upscale = frame->dlss && !frame->dlss_bypass ? d3d12_frontend_dlss_record : NULL,
         .neural = frame->dlss5 ? d3d12_frontend_dlss5_record : NULL,
         .heaps = heaps,
@@ -3100,6 +3142,9 @@ bool d3d12_world_render(ID3D12GraphicsCommandList4 *cmd, const d3d12_world_frame
         .sharc = sharc,
         .sharc_clear = frame->sharc_clear || w.sharc_dirty,
         .sharc_stride = (uint32_t)max(1.f, min(16.f, ubo->pt_sharc_stride)),
+        .caustic_photons = caustic,
+        .caustic_clear = frame->caustics_clear || w.caustic_dirty,
+        .caustic_count = frame->caustic_photons,
         .bloom = frame->bloom,
         .bloom_argument_scale = frame->bloom_argument_scale,
         .bloom_normalization_scale = frame->bloom_normalization_scale,
@@ -3133,6 +3178,8 @@ bool d3d12_world_render(ID3D12GraphicsCommandList4 *cmd, const d3d12_world_frame
         w.tm_reset = false;
     if (sharc)
         w.sharc_dirty = false;
+    if (caustic)
+        w.caustic_dirty = false;
 
     // the shaders' readback, for vkpt_readback when this slot comes round again
     transition(cmd, w.readback_buffer, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);

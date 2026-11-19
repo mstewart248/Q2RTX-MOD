@@ -437,7 +437,19 @@ main()
 
 	Ray ray = get_primary_ray(inUV);
 
-	bool is_readback_pixel = all(equal(ipos, ivec2(global_ubo.width / 4, global_ubo.height / 2)));
+	/* The crosshair's pixel - what 'mat' edits, 'mat print' names and the
+	   look-at cluster report: the SCREEN centre, found by where this ray goes
+	   on screen (pixel_center), not by where its result is stored. It used to
+	   be ipos == (width / 4, height / 2), which is the centre only in the
+	   checkerboard layout, where each field packs every other pixel into half
+	   the width. With full-resolution fields (DLSS-RR's split glass layers)
+	   the launch position IS the screen position, so that put it a quarter of
+	   the way across the screen, left of the crosshair (Matt, 11-18: "I need
+	   to zoom way in to select the same material"). Both full-resolution
+	   fields trace the centre; field 0 answers. In the checkerboard, whichever
+	   field holds it does. */
+	bool is_readback_pixel = all(equal(ivec2(pixel_center), ivec2(global_ubo.width / 2, global_ubo.height / 2)))
+		&& (global_ubo.pt_fullres_fields == PT_FIELDS_CHECKERBOARD || secondField == 0u);
 	if(is_readback_pixel)
 	{
 		// this needs to happen somewhere...

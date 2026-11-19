@@ -48,6 +48,9 @@ int MVD_GetDemoPercent(bool *paused, int *framenum);
 
 #if USE_CLIENT
 char *SV_GetSaveInfo(const char *dir);
+// [Q2RTX] the local server has a player from another machine (bots are not
+// clients): the client's spent brass and marks then fade as Quake III's do
+bool SV_HasRemoteClients(void);
 #endif
 
 #endif // SERVER_H

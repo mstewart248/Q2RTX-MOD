@@ -50,6 +50,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "client/ui.h"
 #include "client/video.h"
 
+#include "q3player.h"
+
 #if USE_ZLIB
 #include <zlib.h>
 #endif
@@ -182,6 +184,8 @@ typedef struct clientinfo_s {
     char skin_name[MAX_QPATH];
     qhandle_t model;
     qhandle_t weaponmodel[MAX_CLIENTWEAPONMODELS];
+    q3pmodel_t q3;          // .q3 set: a Quake III model (q3player.c); skin 0,
+                            // model = its legs, weaponmodel = the male's
 } clientinfo_t;
 
 typedef struct {
@@ -342,6 +346,15 @@ typedef struct client_state_s {
 
     vec3_t      v_forward, v_right, v_up;    // set when refdef.angles is set
 
+    // [Q2RTX] The camera the last frame was actually drawn from: cl.refdef as
+    // R_RenderFrame left it. Photo mode's free camera (vkpt/freecam.c) writes
+    // itself into cl.refdef inside the renderer, after v_forward was set from
+    // the player's view, so aiming tools take the crosshair from here
+    // (lightedit.c). render_view_moved: the renderer drew from somewhere other
+    // than the view it was given, i.e. the free camera has moved.
+    vec3_t      render_vieworg, render_viewangles;
+    bool        render_view_moved;
+
     bool        thirdPersonView;
 
     // predicted values, used for smooth player entity movement in thirdperson view
@@ -363,6 +376,7 @@ typedef struct client_state_s {
     int         clientNum;            // never changed during gameplay, set by serverdata packet
     int         maxclients;
     pmoveParams_t pmp;
+    int         q3_weapons;     // CS_Q3RULES: 0 Quake II, 1 Quake III, 2 by player model
 
     // Server frame interval in milliseconds and its reciprocal. Always
     // BASE_FRAMETIME / BASE_1_FRAMETIME except while playing back a rerelease
@@ -844,6 +858,35 @@ typedef enum {
 
 void CL_ParsePlayerSkin(char *name, char *model, char *skin, const char *s);
 void CL_LoadClientinfo(clientinfo_t *ci, const char *s);
+
+//
+// q3player.c - Quake III player models in the game
+//
+int CL_AddQ3Player(const centity_t *cent, const clientinfo_t *ci, const entity_t *base,
+                   bool self, entity_t *out, int *gun);
+void CL_Q3PlayerFired(int entnum);
+void CL_Q3Flush(void);
+
+//
+// q3weapons.c - Quake III Arena's guns (the bot match's g_q3_weapons)
+//
+bool CL_Q3W_Self(void);
+void CL_Q3W_Init(void);
+void CL_Q3W_RegisterMedia(void);
+void CL_Q3W_Clear(void);
+void CL_Q3W_AddEntities(void);
+bool CL_Q3W_IsGun(qhandle_t model);
+const char *CL_Q3W_VWepFallback(const char *vwep);
+bool CL_Q3W_AddViewWeapon(const entity_t *gun, int gunframe);
+bool CL_Q3W_ViewMuzzle(vec3_t out);
+void CL_Q3W_AddGunParts(const entity_t *gun, int entnum);
+void CL_Q3W_EjectBrass(int entnum, int mz);
+void CL_Q3W_Impact(int type, const vec3_t origin, const vec3_t dir);
+void CL_Q3W_Explosion(int type, const vec3_t origin);
+void CL_Q3W_RailImpact(const vec3_t start, const vec3_t end, const vec3_t color);
+void CL_Q3W_RailStart(vec3_t start);
+void CL_Q3W_Lightning(int shooter, bool hit, const vec3_t start, const vec3_t end);
+void CL_Q3W_AddSprite(const entity_state_t *s1, const vec3_t origin);
 void CL_LoadState(load_state_t state);
 void CL_RegisterSounds(void);
 void CL_RegisterBspModels(void);
@@ -1036,6 +1079,8 @@ void V_AddSphereLight(const vec3_t org, float intensity, float r, float g, float
 void V_SetLightVolumetricScale(float scale);
 // marks the light most recently added as a map fixture. See V_MarkLightFixture in view.c.
 void V_MarkLightFixture(void);
+// gives the light most recently added an identity that holds while it moves. See V_SetLightId in view.c.
+void V_SetLightId(uint32_t id);
 void V_AddSpotLight(const vec3_t org, const vec3_t dir, float intensity, float r, float g, float b, float width_angle, float falloff_angle);
 void V_AddLightStyle(int style, float value);
 
@@ -1082,6 +1127,13 @@ void CL_LoadDynamicLights(void);
 void CL_FreeDynamicLights(void);
 void CL_AddDynamicLightsToScene(void);
 float CL_LightStyleValue(int style);
+
+// q3lamps.c: a spot light on Quake III's flying skull lamps, in place of the
+// flare sprite. Loaded, freed and added with the dynamic lights.
+void CL_InitQ3Lamps(void);
+void CL_LoadQ3Lamps(void);
+void CL_FreeQ3Lamps(void);
+void CL_AddQ3LampsToScene(void);
 void CL_UpdateBlendSetting(void);
 
 
@@ -1123,6 +1175,7 @@ extern qhandle_t cl_mod_muzzleflash;
 void CL_MuzzleOffset_f(void);
 void CL_ViewMuzzleFlash(void);
 void CL_PlayerModelMuzzleFlash(void);
+bool CL_OtherPlayerMuzzleFlash(int entnum);
 void CL_AddPlayerModelFlash(void);
 
 void CL_RegisterTEntSounds(void);
@@ -1131,7 +1184,7 @@ void CL_ParseTEnt(void);
 // NVIDIA Flow's part in the BFG ball `number` at `origin` this frame: its
 // plasma trail while `flying`, its blast once it has hit. R_FLOW_* flags,
 // with CL_FLOW_HIDE when the ball's own sprite should go.
-int CL_FlowBfgBall(int number, const vec3_t origin, bool flying);
+int CL_FlowBfgBall(int number, const vec3_t origin, bool flying, float scale);
 void CL_AddTEnts(void);
 float CL_CompassFade(int endtime);
 void CL_ClearTEnts(void);
@@ -1439,6 +1492,7 @@ cparticle_t *CL_AllocParticle(void);
 void CL_RunParticles(void);
 void CL_AddParticles(void);
 cdlight_t *CL_AllocDlight(int key);
+void CL_Q3W_MuzzleFlash(int entnum, int mz, cdlight_t *dl);     // q3weapons.c
 void CL_AddDLights(void);
 void CL_SetLightStyle(int index, const char *s);
 void CL_AddLightStyles(void);

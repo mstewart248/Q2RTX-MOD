@@ -1705,6 +1705,20 @@ static void CL_FixUpGender(void)
     Q_strlcpy(sk, info_skin->string, sizeof(sk));
     if ((p = strchr(sk, '/')) != NULL)
         *p = 0;
+
+    // a Quake III model says in its animation.cfg ("sex f")
+    if (CL_Q3PlayersEnabled() && Q3P_ModelExists(sk)) {
+        q3player_t *q3 = Q3P_Get(sk);
+
+        if (q3) {
+            char sex = Q3P_Sex(q3);
+
+            Cvar_Set("gender", sex == 'f' ? "female" : sex == 'n' ? "none" : "male");
+            info_gender->modified = false;
+            return;
+        }
+    }
+
     if (Q_stricmp(sk, "male") == 0 || Q_stricmp(sk, "cyborg") == 0)
         Cvar_Set("gender", "male");
     else if (Q_stricmp(sk, "female") == 0 || Q_stricmp(sk, "crackhor") == 0)
@@ -2642,6 +2656,7 @@ void CL_RestartFilesystem(bool total)
         R_Shutdown(false);
 
         FS_Restart(total);
+        CL_Q3Flush();   // baseq3 may have come or gone
 
         // Rebuild the music track list before CL_PrepRefresh() below re-issues
         // CS_CDTRACK, or the map would ask the OLD gamedir's list for its track.
@@ -2654,6 +2669,7 @@ void CL_RestartFilesystem(bool total)
         UI_Init();
     } else {
         FS_Restart(total);
+        CL_Q3Flush();
         OGG_RestartTrackList();
     }
 
@@ -2970,6 +2986,7 @@ static void CL_InitLocal(void)
     CL_InitAscii();
     CL_InitEffects();
     CL_InitTEnts();
+    Q3P_Init();
     CL_InitDownloads();
     CL_GTV_Init();
 

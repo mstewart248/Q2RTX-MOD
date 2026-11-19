@@ -607,7 +607,7 @@ void P_FallingDamage(edict_t *ent)
         if (damage < 1)
             damage = 1;
         // Quake III's maps are built for its own, much smaller, falls (g_q3.c)
-        if (level.q3map)
+        if (level.q3map || level.q3_physics)
             damage = Q3_FallingDamage(delta);
         VectorSet(dir, 0, 0, 1);
 

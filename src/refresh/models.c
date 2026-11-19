@@ -610,6 +610,14 @@ qhandle_t R_RegisterModel(const char *name)
         goto fail2;
     }
 
+#if USE_MD3
+    // a Quake III player part (models/players/<model>/lower.md3 etc.) gets
+    // every skin of its model on each mesh, from the .skin files, so a skin
+    // is just a skinnum - see Q3P_PatchMD3 in client/q3player.c
+    if (ident == MD3_IDENT)
+        Q3P_PatchMD3(source, &rawdata, &filelen);
+#endif
+
     model = MOD_Alloc();
     if (!model) {
         ret = Q_ERR_OUT_OF_SLOTS;

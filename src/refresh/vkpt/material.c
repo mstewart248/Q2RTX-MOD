@@ -1574,6 +1574,21 @@ static bool material_unsaved(const pbr_material_t* mat)
 	return mat->console_fields || vkpt_q3_stage_unsaved(mat->name);
 }
 
+// " texture_metallic metalness_factor": the attributes typed in the console
+// and not yet saved (console_fields), each with a leading space
+static void material_console_field_names(const pbr_material_t* mat, char* out, size_t size)
+{
+	out[0] = 0;
+	for (int i = 0; i < c_NumAttributes; i++)
+	{
+		if (mat->console_fields & (1u << c_Attributes[i].index))
+		{
+			Q_strlcat(out, " ", size);
+			Q_strlcat(out, c_Attributes[i].name, size);
+		}
+	}
+}
+
 // Every changed material defined in (source_matfile), written into it in one go.
 // (tried) marks the materials dealt with, saved or not.
 static int save_changes_to_file(const char* source_matfile, uint8_t* tried)
@@ -1752,12 +1767,19 @@ static void save_to_source_files(void)
 	char no_entry[512] = "";
 	int num_no_entry = 0;
 
+	/* Counted before anything is written: a save writes every changed material
+	   of that file and marks them saved, so counting in the loop below missed
+	   the ones a save had already done - "Saved 2 of 1 changed material"
+	   (Matt, 2026-11-18: m_shell and medkit_sphere, both in quake3.mat). */
+	for (int i = 0; i < MAX_PBR_MATERIALS; i++)
+		if (r_materials[i].registration_sequence && material_unsaved(r_materials + i))
+			changed++;
+
 	for (int i = 0; i < MAX_PBR_MATERIALS; i++)
 	{
 		pbr_material_t* mat = r_materials + i;
 		if (!mat->registration_sequence || !material_unsaved(mat))
 			continue;
-		changed++;
 		if (tried[i])
 			continue;
 
@@ -1856,16 +1878,13 @@ static void load_material_image(image_t** image, const char* filename, pbr_mater
 		if(strncmp(filename, "overrides/", 10) == 0)
 			*image = IMG_Find(filename, type, flags | IF_EXACT);
 	}
-}
 
-/* load_material_image for a glow map, which has no texture of the material's own
-   to fall back on. A path into materialDev/ may name a copy of a pak file at the
-   pak's own path (quake3.mat's texture_emissive for the health crosses); only the
-   edited copies are in git, so with the copy missing the pak's file is the same
-   picture. */
-static void load_material_image_or_pak(image_t** image, const char* filename, pbr_material_t* mat, imagetype_t type, imageflags_t flags)
-{
-	load_material_image(image, filename, mat, type, flags);
+	/* A path into materialDev/ names a copy of a pak file at the pak's own path
+	   (quake3.mat names one for every Quake III texture). Only the edited copies
+	   are in git, so with the copy missing, the pak file it was made from is the
+	   same picture - the health crosses' texture_emissive envmap*.jpg, which the
+	   material has no other glow to fall back on for. Nothing else missing
+	   changes here: the callers leave the material as it is without the line. */
 	if (*image == R_NOTEXTURE && !Q_strncasecmp(filename, "materialDev/", 12) && filename[12])
 		load_material_image(image, filename + 12, mat, type, flags);
 }
@@ -1963,6 +1982,62 @@ explicit "texture_normals 0", which means "this material has none" - winning
 over whatever happens to be lying beside the texture.
 =================
 */
+/* A slot no sidecar fills is EMPTY - its name too. On 'mat reload' the slot can
+   still carry a path typed in the console and dropped with the rest of the
+   unsaved changes; clearing only the image left 'mat print' showing that path
+   as "(NOT LOADED)", which reads as a broken file rather than a lost edit
+   (Matt's anarki_g_metal.png, a fine 16-bit PNG, 2026-11-18). */
+static void clear_detected_slot(image_t** image, char* filename)
+{
+	*image = NULL;
+	filename[0] = 0;
+}
+
+// Whether a stage of `material` names a surface map of its own (mat
+// stage<N>_texture_roughness / _metallic / _normals, from any scope): the
+// "basic diffuse" rule below counts those as the material's own maps. Sets
+// *metallic for a metallic one.
+static bool q3_stages_name_maps(const char* material, bool* metallic)
+{
+	bool any = false;
+
+	*metallic = false;
+	for (int i = 0; i < Q3P_MAX_STAGES; i++)
+	{
+		q3stagesettings_t s;
+		if (!vkpt_q3_stage_settings(material, i, &s))
+			continue;
+		if (s.set & (1u << Q3SS_TEXTURE_METALLIC))
+			*metallic = any = true;
+		if (s.set & ((1u << Q3SS_TEXTURE_ROUGHNESS) | (1u << Q3SS_TEXTURE_NORMALS)))
+			any = true;
+	}
+	return any;
+}
+
+/* A MAP TYPED IN TAKES A SURFACE OFF "BASIC DIFFUSE". The rule at the end of
+   autodetect_material_textures runs when the material loads: no normal,
+   roughness or metallic map, so specular_factor 0 (and metalness_factor 0). A
+   map typed in afterwards loaded and changed nothing, because the zero stayed.
+   That was Matt's BFG (models/weapons2/bfg/bfg) given bfg_rough.tga, as
+   texture_roughness and as stage1's own, 2026-11-18: specular 0, so no
+   reflection for the roughness to act on. The next load, with the map in the
+   entry, keeps specular 1; this does the same now. Not over a value the entry
+   or the console states, and metalness only for a metallic map. */
+static void material_revive_specular(pbr_material_t* mat, bool metallic_map)
+{
+	if (!MAT_SPECIFIED(mat, MAT_SPECULAR_FACTOR) && mat->specular_factor == 0.f)
+	{
+		mat->specular_factor = 1.f;
+		Com_Printf("  specular_factor 0 -> 1: it had been zeroed at load for having no maps\n");
+	}
+	if (metallic_map && !MAT_SPECIFIED(mat, MAT_METALNESS_FACTOR) && mat->metalness_factor == 0.f)
+	{
+		mat->metalness_factor = 1.f;
+		Com_Printf("  metalness_factor 0 -> 1: it had been zeroed at load for having no maps\n");
+	}
+}
+
 static void autodetect_material_textures(pbr_material_t* mat, const char* name, const char* mat_name_no_ext,
 	imagetype_t type, imageflags_t flags)
 {
@@ -1984,7 +2059,7 @@ static void autodetect_material_textures(pbr_material_t* mat, const char* name, 
 		Q_snprintf(file_name, sizeof(file_name), "%s_n.tga", mat_name_no_ext);
 		mat->image_normals = IMG_Find(file_name, type, flags);
 		if (mat->image_normals == R_NOTEXTURE)
-			mat->image_normals = NULL;
+			clear_detected_slot(&mat->image_normals, mat->filename_normals);
 		else
 			Q_strlcpy(mat->filename_normals, mat->image_normals->filepath, sizeof(mat->filename_normals));
 	}
@@ -1996,7 +2071,7 @@ static void autodetect_material_textures(pbr_material_t* mat, const char* name, 
 		Q_snprintf(file_name, sizeof(file_name), "%s_rough.tga", mat_name_no_ext);
 		mat->image_roughness = IMG_Find(file_name, type, flags);
 		if (mat->image_roughness == R_NOTEXTURE)
-			mat->image_roughness = NULL;
+			clear_detected_slot(&mat->image_roughness, mat->filename_roughness);
 		else
 			Q_strlcpy(mat->filename_roughness, mat->image_roughness->filepath, sizeof(mat->filename_roughness));
 	}
@@ -2006,7 +2081,7 @@ static void autodetect_material_textures(pbr_material_t* mat, const char* name, 
 		Q_snprintf(file_name, sizeof(file_name), "%s_metallic.tga", mat_name_no_ext);
 		mat->image_metallic = IMG_Find(file_name, type, flags);
 		if (mat->image_metallic == R_NOTEXTURE)
-			mat->image_metallic = NULL;
+			clear_detected_slot(&mat->image_metallic, mat->filename_metallic);
 		else
 			Q_strlcpy(mat->filename_metallic, mat->image_metallic->filepath, sizeof(mat->filename_metallic));
 	}
@@ -2016,7 +2091,7 @@ static void autodetect_material_textures(pbr_material_t* mat, const char* name, 
 		Q_snprintf(file_name, sizeof(file_name), "%s_height.tga", mat_name_no_ext);
 		mat->image_height = IMG_Find(file_name, type, flags);
 		if (mat->image_height == R_NOTEXTURE)
-			mat->image_height = NULL;
+			clear_detected_slot(&mat->image_height, mat->filename_height);
 		else
 			Q_strlcpy(mat->filename_height, mat->image_height->filepath, sizeof(mat->filename_height));
 	}
@@ -2026,7 +2101,7 @@ static void autodetect_material_textures(pbr_material_t* mat, const char* name, 
 		Q_snprintf(file_name, sizeof(file_name), "%s_light.tga", mat_name_no_ext);
 		mat->image_emissive = IMG_Find(file_name, type, flags | IF_SRGB);
 		if (mat->image_emissive == R_NOTEXTURE)
-			mat->image_emissive = NULL;
+			clear_detected_slot(&mat->image_emissive, mat->filename_emissive);
 		else
 			Q_strlcpy(mat->filename_emissive, mat->image_emissive->filepath, sizeof(mat->filename_emissive));
 
@@ -2071,10 +2146,15 @@ static void autodetect_material_textures(pbr_material_t* mat, const char* name, 
 	// while being tuned and wrong from the next map load on.
 	// (Only a name the definition states: a reload refreshes specified_fields
 	// but leaves the old filename in a slot the entry has stopped naming.)
+	//
+	// A Quake III stage's own map counts too (q3_stages_name_maps): the BFG
+	// with stage1_texture_roughness alone came up specular 0 every load.
+	bool stage_metallic;
+	const bool stage_maps = q3_stages_name_maps(mat->name, &stage_metallic);
 	const bool has_roughness = mat->image_roughness
-		|| (MAT_SPECIFIED(mat, MAT_TEXTURE_ROUGHNESS) && mat->filename_roughness[0]);
+		|| (MAT_SPECIFIED(mat, MAT_TEXTURE_ROUGHNESS) && mat->filename_roughness[0]) || stage_maps;
 	const bool has_metallic = mat->image_metallic
-		|| (MAT_SPECIFIED(mat, MAT_TEXTURE_METALLIC) && mat->filename_metallic[0]);
+		|| (MAT_SPECIFIED(mat, MAT_TEXTURE_METALLIC) && mat->filename_metallic[0]) || stage_metallic;
 
 	if (!mat->image_normals)
 	{
@@ -2384,16 +2464,19 @@ static image_t* q3_stage_image(const pbr_material_t* mat, const q3shader_t* q3, 
 		image_t* image = IMG_FindFile(override, type, flags);
 		if (image != R_NOTEXTURE)
 			return image;
-		if (!Q3Shader_ResolveImage(override, path, sizeof(path)))
-			return NULL;
+		if (Q3Shader_ResolveImage(override, path, sizeof(path)))
+		{
+			image = IMG_FindFile(path, type, flags);
+			if (image != R_NOTEXTURE)
+				return image;
+		}
+		// the file is missing: the stage as it is without the line (q3stages.c)
 	}
-	else
-	{
-		if (!stage->map[0] || stage->lightmap || stage->white)
-			return NULL;
-		if (!Q3Shader_ResolveImage(stage->map, path, sizeof(path)))
-			return NULL;
-	}
+
+	if (!stage->map[0] || stage->lightmap || stage->white)
+		return NULL;
+	if (!Q3Shader_ResolveImage(stage->map, path, sizeof(path)))
+		return NULL;
 
 	image_t* image = IMG_FindFile(path, type, flags);
 	return image == R_NOTEXTURE ? NULL : image;
@@ -2524,26 +2607,33 @@ static void apply_q3_shader(pbr_material_t* mat, const q3shader_t* q3, imagetype
 	   before calling this, which is why only a fresh map load showed it. */
 	if (MAT_SPECIFIED(mat, MAT_TEXTURE_EMISSIVE) && mat->filename_emissive[0] && !mat->image_emissive)
 	{
-		load_material_image_or_pak(&mat->image_emissive, mat->filename_emissive, mat, type, flags | IF_SRGB);
+		load_material_image(&mat->image_emissive, mat->filename_emissive, mat, type, flags | IF_SRGB);
 		if (mat->image_emissive == R_NOTEXTURE)
 			mat->image_emissive = NULL;
 	}
 
-	if (!MAT_SPECIFIED(mat, MAT_TEXTURE_BASE) && !mat->image_base && base_index >= 0)
+	/* What the shader gives a slot the entry leaves unsaid - or names a file
+	   for that is missing, which leaves the material as it is without the line
+	   (only the edited materialDev copies are in git). The entry's name stays
+	   in the slot, so 'mat print' shows what it asked for. */
+	const bool base_named = MAT_SPECIFIED(mat, MAT_TEXTURE_BASE) && mat->filename_base[0];
+	if ((!MAT_SPECIFIED(mat, MAT_TEXTURE_BASE) || base_named) && !mat->image_base && base_index >= 0)
 	{
 		mat->image_base = q3_stage_image(mat, q3, base_index, type, flags | IF_SRGB);
 		if (mat->image_base)
 		{
-			Q_strlcpy(mat->filename_base, mat->image_base->filepath, sizeof(mat->filename_base));
+			if (!base_named)
+				Q_strlcpy(mat->filename_base, mat->image_base->filepath, sizeof(mat->filename_base));
 			mat->original_width = mat->image_base->width;
 			mat->original_height = mat->image_base->height;
 		}
 	}
 
-	if (!MAT_SPECIFIED(mat, MAT_TEXTURE_EMISSIVE) && !mat->image_emissive && q3->emissive_stage >= 0)
+	const bool emissive_named = MAT_SPECIFIED(mat, MAT_TEXTURE_EMISSIVE) && mat->filename_emissive[0];
+	if ((!MAT_SPECIFIED(mat, MAT_TEXTURE_EMISSIVE) || emissive_named) && !mat->image_emissive && q3->emissive_stage >= 0)
 	{
 		mat->image_emissive = q3_stage_image(mat, q3, q3->emissive_stage, type, flags | IF_SRGB);
-		if (mat->image_emissive)
+		if (mat->image_emissive && !emissive_named)
 			Q_strlcpy(mat->filename_emissive, mat->image_emissive->filepath, sizeof(mat->filename_emissive));
 	}
 
@@ -2593,6 +2683,14 @@ static void apply_q3_shader(pbr_material_t* mat, const q3shader_t* q3, imagetype
 		int contents = q3->content_flags;
 
 		if (never_drawn)
+			kind = MATERIAL_KIND_INVISIBLE;
+		/* A model's surface whose shader draws nothing - "surfaceparm nodraw", or
+		   no stages at all - is not there. Hunter's harpy skin puts its feathers
+		   on harpy_f, which is only that: with no image they came out a white
+		   spiky hood over her head (Matt, 2026-11-17). compute_mesh_material_flags
+		   skips an INVISIBLE mesh. Not the world's: a hidden face there can still
+		   be a q3map_surfacelight lamp, and bsp_mesh.c has its own nodraw rules. */
+		else if (q3->no_draw && type == IT_SKIN)
 			kind = MATERIAL_KIND_INVISIBLE;
 		else if (q3->sky || (q3->surface_flags & Q3_SURF_SKY))
 			kind = MATERIAL_KIND_SKY;
@@ -2826,8 +2924,16 @@ static void apply_q3_shader(pbr_material_t* mat, const q3shader_t* q3, imagetype
 		}
 	}
 
+	/* Not a glow that travels with its lamp (Q3Shader_IsTravellingGlow: the
+	   flying skull lamp's jets, bot_flare2). It is drawn as a q3deform model,
+	   which a light material cannot be, and its light polys would hang where
+	   the map put it while the jets bob away. The lamp's light is the spot the
+	   client puts in place of its flare (client q3lamps.c). 'is_light 1' in the
+	   entry still makes it one - then it stays still in the world. */
+	const bool travelling_glow = Q3Shader_IsTravellingGlow(q3);
+
 	const bool liquid =MAT_IsKind(mat->flags, MATERIAL_KIND_WATER) || MAT_IsKind(mat->flags, MATERIAL_KIND_SLIME);
-	if (type == IT_WALL && !q3->sky && !q3->portal && !q3->no_draw && !is_glass && !is_chrome
+	if (type == IT_WALL && !q3->sky && !q3->portal && !q3->no_draw && !is_glass && !is_chrome && !travelling_glow
 		&& !(q3->translucent && MAT_IsKind(mat->flags, MATERIAL_KIND_REGULAR))
 		&& (!liquid || cvar_pt_enable_surface_lights_warp->integer))
 	{
@@ -2990,15 +3096,24 @@ pbr_material_t* MAT_Find(const char* name, imagetype_t type, imageflags_t flags)
 				   pointing into materialDev/ - renders with the texture it would
 				   have replaced, which is the intended result, and a release
 				   carrying thousands of those printed one warning each.
-				   developer 1 still lists every one for whoever is authoring. */
-				mat->image_base = IMG_Find(texture_name, type, flags | IF_SRGB);
-				mat->original_width = mat->image_base->width;
-				mat->original_height = mat->image_base->height;
-				if (mat->image_base == R_NOTEXTURE) {
-					Com_WPrintf("Texture '%s' specified in material '%s' could not be found, and neither could '%s'.\n", mat->filename_base, mat_name_no_ext, texture_name);
+				   developer 1 still lists every one for whoever is authoring.
+				   A scripted Quake III shader's name is no file: the texture it
+				   would have replaced is the shader's colour stage, which
+				   apply_q3_shader below puts in the slot. */
+				const q3shader_t* q3 = instance_base ? NULL : q3_shader_for(texture_name_no_ext, type);
+				if (q3 && q3_base_stage(q3)) {
+					Com_DPrintf("Texture '%s' specified in material '%s' could not be found. Using the shader's own.\n", mat->filename_base, mat_name_no_ext);
 					mat->image_base = NULL;
 				} else {
-					Com_DPrintf("Texture '%s' specified in material '%s' could not be found. Using the low-res texture.\n", mat->filename_base, mat_name_no_ext);
+					mat->image_base = IMG_Find(texture_name, type, flags | IF_SRGB);
+					mat->original_width = mat->image_base->width;
+					mat->original_height = mat->image_base->height;
+					if (mat->image_base == R_NOTEXTURE) {
+						Com_WPrintf("Texture '%s' specified in material '%s' could not be found, and neither could '%s'.\n", mat->filename_base, mat_name_no_ext, texture_name);
+						mat->image_base = NULL;
+					} else {
+						Com_DPrintf("Texture '%s' specified in material '%s' could not be found. Using the low-res texture.\n", mat->filename_base, mat_name_no_ext);
+					}
 				}
 			}
 			else
@@ -3040,7 +3155,7 @@ pbr_material_t* MAT_Find(const char* name, imagetype_t type, imageflags_t flags)
 		}
 
 		if (mat->filename_emissive[0] && !mat->image_emissive) {
-			load_material_image_or_pak(&mat->image_emissive, mat->filename_emissive, mat, type, flags | IF_SRGB);
+			load_material_image(&mat->image_emissive, mat->filename_emissive, mat, type, flags | IF_SRGB);
 			if (mat->image_emissive == R_NOTEXTURE) {
 				Com_DPrintf("Texture '%s' specified in material '%s' could not be found.\n", mat->filename_emissive, mat_name_no_ext);
 				mat->image_emissive = NULL;
@@ -3421,15 +3536,8 @@ void MAT_Print(pbr_material_t const * mat)
 	// what 'mat save' would write back
 	if (material_unsaved(mat))
 	{
-		char changed[512] = "";
-		for (int i = 0; i < c_NumAttributes; i++)
-		{
-			if (mat->console_fields & (1u << c_Attributes[i].index))
-			{
-				Q_strlcat(changed, " ", sizeof(changed));
-				Q_strlcat(changed, c_Attributes[i].name, sizeof(changed));
-			}
-		}
+		char changed[512];
+		material_console_field_names(mat, changed, sizeof(changed));
 		char stage_key[64], stage_value[MAX_IMAGE_PATH];
 		for (int k = 0; vkpt_q3_stage_unsaved_get(mat->name, k, stage_key, sizeof(stage_key),
 			stage_value, sizeof(stage_value)); k++)
@@ -3687,6 +3795,120 @@ static void material_refresh_images(pbr_material_t* mat)
 		vkpt_extract_emissive_texture_info(mat->image_emissive);
 }
 
+/* WHAT 'reload_textures <name>' SAYS ABOUT THE MATERIALS. Matt, 2026-11-18,
+   painting the Quake III Doom player's doom_rough.tga with the game open:
+   "I make changes do reload_textures and I always get zero textures new and I
+   have to restart the game to see my changes". The logs show the file saved
+   and the next 'mat reload' re-reading nothing, which the code as read cannot
+   do for a live material's own map - so the report names, for each material
+   with the name in it, the image each map really is (its slot, its file, and
+   whether that slot is still a live image), and for each texture matched, the
+   materials that draw it. One run of it tells which of the three it is: not
+   the file that was edited, not a material that is drawn, or not seen as
+   changed. */
+static const char* const map_slot_names[] = {
+	"base", "normals", "roughness", "metallic", "height", "emissive", "mask",
+};
+
+static void material_map_images(const pbr_material_t* mat, image_t* out[7], const char* names[7])
+{
+	out[0] = mat->image_base;      names[0] = mat->filename_base;
+	out[1] = mat->image_normals;   names[1] = mat->filename_normals;
+	out[2] = mat->image_roughness; names[2] = mat->filename_roughness;
+	out[3] = mat->image_metallic;  names[3] = mat->filename_metallic;
+	out[4] = mat->image_height;    names[4] = mat->filename_height;
+	out[5] = mat->image_emissive;  names[5] = mat->filename_emissive;
+	out[6] = mat->image_mask;      names[6] = mat->filename_mask;
+}
+
+int MAT_ImageUsers(const image_t* image, char* out, size_t size)
+{
+	int count = 0;
+	out[0] = 0;
+
+	for (uint32_t i = 0; i < MAX_PBR_MATERIALS; i++)
+	{
+		const pbr_material_t* mat = r_materials + i;
+		if (!mat->registration_sequence)
+			continue;
+
+		image_t* images[7];
+		const char* names[7];
+		material_map_images(mat, images, names);
+		for (int k = 0; k < 7; k++)
+		{
+			if (images[k] != image)
+				continue;
+			if (count++ < 4)
+			{
+				if (out[0])
+					Q_strlcat(out, ", ", size);
+				Q_strlcat(out, mat->name, size);
+				Q_strlcat(out, " (", size);
+				Q_strlcat(out, map_slot_names[k], size);
+				Q_strlcat(out, ")", size);
+			}
+			break;
+		}
+	}
+	if (count > 4)
+		Q_strlcat(out, va(" and %d more", count - 4), size);
+	return count;
+}
+
+void MAT_ReportImages(const char* filter)
+{
+	int shown = 0;
+
+	for (uint32_t i = 0; i < MAX_PBR_MATERIALS; i++)
+	{
+		const pbr_material_t* mat = r_materials + i;
+		if (!mat->registration_sequence || !Q_stristr(mat->name, filter))
+			continue;
+
+		if (!shown++)
+			Com_Printf("Materials with '%s' in their name - the image each map is:\n", filter);
+		Com_Printf("  %s (material %u%s)\n", mat->name, i,
+		           mat->registration_sequence == registration_sequence ? "" : ", NOT registered for this level");
+
+		image_t* images[7];
+		const char* names[7];
+		material_map_images(mat, images, names);
+		for (int k = 0; k < 7; k++)
+		{
+			const image_t* img = images[k];
+			if (!img && !names[k][0])
+				continue;
+			if (!img)
+			{
+				Com_Printf("      %-9s %s (NOT LOADED)\n", map_slot_names[k], names[k]);
+				continue;
+			}
+			const char* file = img->filepath[0] ? img->filepath : img->name;
+			Com_Printf("      %-9s #%d %s%s%s\n", map_slot_names[k], (int)(img - r_images),
+			           file[0] ? file : "(a freed slot)",
+			           !img->registration_sequence ? " - FREED IMAGE SLOT, still drawn from" : "",
+			           names[k][0] && file[0] && FS_pathcmp(file, names[k]) ? va(" - the entry names %s", names[k]) : "");
+		}
+		if (mat->q3_program)
+			Com_Printf("      and a Quake III stage program: its stage images are listed above if their paths match\n");
+	}
+}
+
+// what follows images re-read in place (IMG_ReloadModified)
+void MAT_ImagesReloaded(void)
+{
+	// a light's color and extent are measured from the pixels
+	for (uint32_t i = 0; i < MAX_PBR_MATERIALS; i++)
+	{
+		const pbr_material_t* mat = r_materials + i;
+		if (mat->registration_sequence && mat->image_emissive && !mat->image_emissive->processing_complete)
+			vkpt_extract_emissive_texture_info(mat->image_emissive);
+	}
+	// and the stage glows' CPU copies (q3stages.c light_image)
+	vkpt_q3_light_cache_clear();
+}
+
 // Re-read every .mat file from disk and push the new values onto the materials
 // that are already live, so brightness and other values can be tuned in a text
 // editor without restarting. The definition tables (r_global_materials /
@@ -3717,6 +3939,16 @@ static void material_command_reload(void)
 	// instances in a second pass: each one re-inherits from its base, which
 	// therefore has to have taken its own new definition first
 	int updated = 0, generated = 0;
+
+	/* WHAT THE RELOAD THROWS AWAY, SAID OUT LOUD. Re-applying the definition
+	   drops what was typed and not saved (material_reapply_definition clears
+	   console_fields), silently - and the slot it drops can be left printing
+	   the typed path as "(NOT LOADED)". Matt typed texture_metallic for the
+	   Anarki gun (anarki_g_metal.png), ran 'mat reload' to see it, and it was
+	   gone; 'mat save' then said "Nothing to save", and the next save wrote
+	   only the roughness typed after (2026-11-18, rerelease/logs/console.log). */
+	int dropped = 0;
+	char dropped_list[1024] = "";
 	for (int pass = 0; pass < 2; pass++)
 	for (uint32_t i = 0; i < MAX_PBR_MATERIALS; i++)
 	{
@@ -3750,10 +3982,33 @@ static void material_command_reload(void)
 			continue;
 		}
 
+		if (mat->console_fields)
+		{
+			if (dropped < 4)
+			{
+				char fields[512];
+				material_console_field_names(mat, fields, sizeof(fields));
+				Q_strlcat(dropped_list, "\n    ", sizeof(dropped_list));
+				Q_strlcat(dropped_list, mat->name, sizeof(dropped_list));
+				Q_strlcat(dropped_list, ":", sizeof(dropped_list));
+				Q_strlcat(dropped_list, fields, sizeof(dropped_list));
+			}
+			++dropped;
+		}
+
 		material_reapply_definition(mat, matdef);
 		material_refresh_images(mat);
 		++updated;
 	}
+
+	// and the pictures the Quake III stages draw from, which are not the
+	// material's own maps (q3stages.c)
+	int stage_images = vkpt_q3_refresh_stage_images();
+
+	// and every other live texture saved since it was read - what
+	// 'reload_textures' does, so one command is enough (a model's skin
+	// registered as an image of its own, a sprite, an image no map names)
+	int other_images = IMG_ReloadModified(NULL, false, false);
 
 	// Some material changes reclassify a mesh as transparent or masked, which
 	// affects the static model BLAS, and emissive changes have to reach the
@@ -3761,8 +4016,21 @@ static void material_command_reload(void)
 	vkpt_vertex_buffer_invalidate_static_model_vbos(-1);
 	CL_PrepRefresh();
 
-	Com_Printf("Reloaded material definitions (%d materials updated, %d auto-generated with no .mat entry).\n",
+	Com_Printf("Reloaded material definitions (%d materials updated, %d auto-generated with no .mat entry",
 	           updated, generated);
+	if (stage_images)
+		Com_Printf(", %d stage image%s re-read", stage_images, stage_images == 1 ? "" : "s");
+	if (other_images)
+		Com_Printf(", %d other texture%s re-read", other_images, other_images == 1 ? "" : "s");
+	Com_Printf(").\n");
+
+	if (dropped)
+	{
+		Com_WPrintf("Dropped unsaved console changes to %d material%s - 'mat save' before 'mat reload' keeps them:%s\n",
+		            dropped, dropped == 1 ? "" : "s", dropped_list);
+		if (dropped > 4)
+			Com_WPrintf("    ... and %d more\n", dropped - 4);
+	}
 }
 
 // The commented-out lines in a fresh instance stub: what the instance inherits
@@ -4193,7 +4461,8 @@ static void material_command_stage(pbr_material_t* mat, int stage, const char* s
 		}
 		Com_Printf("usage: mat stage%d <setting> <value|none>, the setting one of: map (its image; "
 			"'map off' leaves the stage out), roughness_override, metalness_factor, specular_factor, "
-			"bump_scale, texture_roughness, texture_metallic, texture_normals\n", stage);
+			"bump_scale, texture_roughness, texture_metallic, texture_normals, emissive_factor (its own "
+			"glow, added to the material's)\n", stage);
 		return;
 	}
 
@@ -4231,15 +4500,196 @@ static void material_command_stage(pbr_material_t* mat, int stage, const char* s
 		return;
 	}
 
+	// a stage's own map typed in: the surface is no longer "basic diffuse"
+	// (where the stage shows, what it does not state comes from the material)
+	if ((field == Q3SS_TEXTURE_ROUGHNESS || field == Q3SS_TEXTURE_METALLIC || field == Q3SS_TEXTURE_NORMALS)
+		&& (s.set & (1u << field)))
+		material_revive_specular(mat, field == Q3SS_TEXTURE_METALLIC);
+
 	// The program draws from what it was built with: rebuilt, as for 'mat
 	// texture_emissive' - and for a new image the map too, which is what its
 	// glow lights from.
 	material_rebuild_program(mat, q3);
 	if (field == Q3SS_MAP && vkpt_refdef.fd)
 	{
-		vkpt_vertex_buffer_invalidate_static_model_vbos(vkpt_refdef.fd->feedback.view_material_index);
+		vkpt_vertex_buffer_invalidate_static_model_vbos(MAT_IndexOf(mat));
 		CL_PrepRefresh();
 	}
+}
+
+/*
+=================
+THE VIEW WEAPON'S MATERIALS ('mat view_weapon')
+
+The crosshair cannot reach the gun in your hands: 'mat print' reads the
+material under the middle of the screen, and the view weapon is off to one
+side. Every frame notes the materials of what is drawn as the view weapon
+(RF_WEAPONMODEL: the gun, a Quake III gun's barrel and flash, Quake II's flash
+model), and keeps them while the same gun is up - so a flash that shows for a
+frame or two can still be picked after the shot. A new gun starts the list
+again. 'mat view_weapon [N] <command>' then runs any 'mat' command on number
+N (0, the gun's own, if left out) instead of the crosshair's. Matt,
+2026-11-18: "mat view_weapon print", "mat view_weapon roughness_override 1".
+=================
+*/
+#define MAX_VIEW_WEAPON_MATERIALS 16
+
+static struct {
+	char material[MAX_QPATH];   // by name: a reload makes the materials anew
+	char model[MAX_QPATH];      // what it is on
+} view_weapon_materials[MAX_VIEW_WEAPON_MATERIALS];
+static int num_view_weapon_materials;
+static qhandle_t view_weapon_gun;   // the frame's first view weapon model
+
+// while 'mat view_weapon' runs a command: its material, not the crosshair's
+static pbr_material_t* mat_command_target;
+
+static const pbr_material_t* view_weapon_mesh_material(const entity_t* e, const model_t* model,
+	const maliasmesh_t* mesh)
+{
+	// as the renderer picks it (main.c get_mesh_material)
+	if (e->skin)
+		return MAT_ForSkin(IMG_ForHandle(e->skin));
+
+	int wanted = e->skinnum + model->skin_base;
+	if (e->skinnum >= 0 && wanted < (int)q_countof(mesh->materials) && mesh->materials[wanted])
+		return mesh->materials[wanted];
+	return mesh->materials[0];
+}
+
+void MAT_NoteViewWeapon(const refdef_t* fd)
+{
+	bool first = true;
+
+	for (int i = 0; i < fd->num_entities; i++)
+	{
+		const entity_t* e = fd->entities + i;
+		if (!(e->flags & RF_WEAPONMODEL) || !e->model || (e->model & 0x80000000))
+			continue;
+
+		const model_t* model = MOD_ForHandle(e->model);
+		if (!model || !model->meshes)
+			continue;
+
+		if (first)
+		{
+			first = false;
+			if (e->model != view_weapon_gun)
+			{
+				view_weapon_gun = e->model;
+				num_view_weapon_materials = 0;
+			}
+		}
+
+		for (int m = 0; m < model->nummeshes; m++)
+		{
+			const pbr_material_t* mat = view_weapon_mesh_material(e, model, model->meshes + m);
+			if (!mat || !mat->name[0])
+				continue;
+
+			int k;
+			for (k = 0; k < num_view_weapon_materials; k++)
+				if (!strcmp(view_weapon_materials[k].material, mat->name))
+					break;
+			if (k < num_view_weapon_materials || k == MAX_VIEW_WEAPON_MATERIALS)
+				continue;
+
+			Q_strlcpy(view_weapon_materials[k].material, mat->name, sizeof(view_weapon_materials[k].material));
+			Q_strlcpy(view_weapon_materials[k].model, model->name, sizeof(view_weapon_materials[k].model));
+			num_view_weapon_materials++;
+		}
+	}
+}
+
+static bool view_weapon_is_number(const char* n)
+{
+	if (!n[0])
+		return false;
+	for (const char* c = n; *c; c++)
+		if (!Q_isdigit(*c))
+			return false;
+	return true;
+}
+
+static void material_command_view_weapon(void)
+{
+	int argi = 2, index = 0, skip = -1;
+
+	if (mat_command_target)
+	{
+		Com_Printf("'mat view_weapon' is already picking the material\n");
+		return;
+	}
+
+	// a number first: which of them
+	if (argi < Cmd_Argc() && view_weapon_is_number(Cmd_Argv(argi)))
+	{
+		index = atoi(Cmd_Argv(argi));
+		argi++;
+	}
+	// ... or straight after the words that take no value: 'mat view_weapon
+	// print 1' is 'mat view_weapon 1 print', not a material named "1"
+	else if (argi + 1 < Cmd_Argc() && view_weapon_is_number(Cmd_Argv(argi + 1)) &&
+		(!strcmp(Cmd_Argv(argi), "print") || !strcmp(Cmd_Argv(argi), "view") || !strcmp(Cmd_Argv(argi), "which")))
+	{
+		index = atoi(Cmd_Argv(argi + 1));
+		skip = argi + 1;
+	}
+
+	if (!num_view_weapon_materials)
+	{
+		Com_Printf("No view weapon drawn yet: one has to be up and on screen (cl_gun 1, hand 0 or 1)\n");
+		return;
+	}
+
+	if (argi >= Cmd_Argc() || !strcmp(Cmd_Argv(argi), "list"))
+	{
+		Com_Printf("The view weapon's materials - 'mat view_weapon [N] <command>', N 0 if left out:\n");
+		for (int i = 0; i < num_view_weapon_materials; i++)
+			Com_Printf("  %d: %s  (%s)\n", i, view_weapon_materials[i].material, view_weapon_materials[i].model);
+		Com_Printf("e.g. 'mat view_weapon print', 'mat view_weapon 1 roughness_override 0.3', 'mat save'\n");
+		return;
+	}
+
+	if (index >= num_view_weapon_materials)
+	{
+		Com_Printf("The view weapon has no material %d: 'mat view_weapon' lists them\n", index);
+		return;
+	}
+
+	const char* name = view_weapon_materials[index].material;
+	pbr_material_t* mat = find_material(name, Com_HashString(name, RMATERIALS_HASH), r_materials, MAX_PBR_MATERIALS);
+	if (!mat)
+	{
+		Com_Printf("'%s' is not loaded now\n", name);
+		return;
+	}
+
+	const char* sub = Cmd_Argv(argi);
+	if (!strcmp(sub, "create_instance"))
+	{
+		Com_Printf("Instances are keyed on the level's own surfaces: a weapon's material has none\n");
+		return;
+	}
+	if (!strcmp(sub, "view_weapon"))
+		return;
+
+	// the rest of the line, as a 'mat' command of its own
+	char line[MAX_STRING_CHARS];
+	if (skip < 0)
+		Q_concat(line, sizeof(line), "mat ", Cmd_RawArgsFrom(argi));
+	else
+	{
+		Q_strlcpy(line, "mat", sizeof(line));
+		for (int a = argi; a < Cmd_Argc(); a++)
+			if (a != skip)
+				Q_strlcat(line, va(" \"%s\"", Cmd_Argv(a)), sizeof(line));
+	}
+	Cmd_TokenizeString(line, false);
+
+	mat_command_target = mat;
+	material_command();
+	mat_command_target = NULL;
 }
 
 static void material_command_help(void)
@@ -4259,6 +4709,9 @@ static void material_command_help(void)
 	Com_Printf("        ('none' takes one away; 'map off' leaves the stage out of the drawing).\n");
 	Com_Printf("        In a .mat file: stage2_roughness_override 0.8, stage1_map off\n");
 	Com_Printf("    which: tell where the current material is defined\n");
+	Com_Printf("    view_weapon [N] <command>: any of these for the gun in your hands instead of\n");
+	Com_Printf("        the crosshair's material ('mat view_weapon print', 'mat view_weapon\n");
+	Com_Printf("        roughness_override 1'); alone, it lists the gun's materials and their N\n");
 	Com_Printf("    create_instance: give the surface at the crosshair its own material,\n");
 	Com_Printf("        so it can be tuned without affecting other uses of the same texture.\n");
 	Com_Printf("        Writes an empty section to materials/<map>.mat and reloads.\n");
@@ -4285,6 +4738,12 @@ static void material_command(void)
 	if (strcmp(key, "help") == 0)
 	{
 		material_command_help();
+		return;
+	}
+
+	if (strcmp(key, "view_weapon") == 0)
+	{
+		material_command_view_weapon();
 		return;
 	}
 
@@ -4393,9 +4852,9 @@ static void material_command(void)
 		return;
 	}
 
-	pbr_material_t* mat = NULL;
+	pbr_material_t* mat = mat_command_target;
 
-	if (vkpt_refdef.fd)
+	if (!mat && vkpt_refdef.fd)
 		mat = MAT_ForIndex(vkpt_refdef.fd->feedback.view_material_index);
 
 	if (!mat)
@@ -4423,7 +4882,7 @@ static void material_command(void)
 		   apart BEFORE committing to splitting them - aim at each in turn and
 		   compare. Nothing to report off the static world, where there is no
 		   geometry hash. */
-		if (vkpt_refdef.fd && vkpt_refdef.fd->feedback.view_prim_instance_hash)
+		if (!mat_command_target && vkpt_refdef.fd && vkpt_refdef.fd->feedback.view_prim_instance_hash)
 		{
 			uint32_t instance_hash = vkpt_refdef.fd->feedback.view_prim_instance_hash;
 			char instance_name[MAX_QPATH];
@@ -4516,6 +4975,12 @@ static void material_command(void)
 				reload_flags |= RELOAD_MAP;
 			}
 		}
+
+		// a map typed in: the surface is no longer "basic diffuse"
+		if ((attr->index == MAT_TEXTURE_ROUGHNESS && mat->image_roughness)
+			|| (attr->index == MAT_TEXTURE_METALLIC && mat->image_metallic)
+			|| (attr->index == MAT_TEXTURE_NORMALS && mat->image_normals))
+			material_revive_specular(mat, attr->index == MAT_TEXTURE_METALLIC);
 	}
 
 	if ((reload_flags & RELOAD_EMISSIVE) != 0)
@@ -4547,38 +5012,48 @@ static void material_command(void)
 		// Trigger a re-upload and rebuild of the models that use this material.
 		// Reason to rebuild: some material changes result in meshes being classified as
 		// transparent or masked, which affects the static model BLAS.
-		vkpt_vertex_buffer_invalidate_static_model_vbos(vkpt_refdef.fd->feedback.view_material_index);
+		vkpt_vertex_buffer_invalidate_static_model_vbos(MAT_IndexOf(mat));
 
 		// Reload the map and necessary models.
 		CL_PrepRefresh();
 	}
 }
 
-static void material_completer(genctx_t* ctx, int argnum)
+// the words of a 'mat' command from (first) on: 1 for 'mat ...', 2 or 3 after
+// 'mat view_weapon [N]', which takes the same commands for the gun
+static void material_complete_from(genctx_t* ctx, int argnum, int first)
 {
-	if (argnum == 1) {
+	const bool weapon = first > 1;
+
+	if (argnum == first) {
 		// sub-commands
 		
 		Prompt_AddMatch(ctx, "print");
 		Prompt_AddMatch(ctx, "view");
 		Prompt_AddMatch(ctx, "save");
 		Prompt_AddMatch(ctx, "which");
-		Prompt_AddMatch(ctx, "create_instance");
+		if (!weapon) {
+			Prompt_AddMatch(ctx, "reload");
+			Prompt_AddMatch(ctx, "create_instance");
+			Prompt_AddMatch(ctx, "view_weapon");
+		}
 		for (int i = 0; i < Q3P_MAX_STAGES; i++)
 			Prompt_AddMatch(ctx, va("stage%d", i));
 
 		for (int i = 0; i < c_NumAttributes; i++)
 			Prompt_AddMatch(ctx, c_Attributes[i].name);
 	}
-	else if (argnum == 2)
+	else if (argnum == first + 1)
 	{
-		if(strcmp(Cmd_Argv(1), "save") == 0)
+		const char* sub = Cmd_Argv(first);
+
+		if(strcmp(sub, "save") == 0)
 		{
 			// extra arguments for 'save'
 			Prompt_AddMatch(ctx, "all");
 			Prompt_AddMatch(ctx, "force");
 		}
-		else if (strcmp(Cmd_Argv(1), "print") == 0 || strcmp(Cmd_Argv(1), "view") == 0)
+		else if (strcmp(sub, "print") == 0 || strcmp(sub, "view") == 0)
 		{
 			// the map to show on screen, or the stage
 			for (int i = 0; i < (int)q_countof(mat_preview_names); i++)
@@ -4586,14 +5061,14 @@ static void material_completer(genctx_t* ctx, int argnum)
 			for (int i = 0; i < Q3P_MAX_STAGES; i++)
 				Prompt_AddMatch(ctx, va("stage%d", i));
 		}
-		else if (!Q_strncasecmp(Cmd_Argv(1), "stage", 5) && Q_isdigit(Cmd_Argv(1)[5]) && !Cmd_Argv(1)[6])
+		else if (!Q_strncasecmp(sub, "stage", 5) && Q_isdigit(sub[5]) && !sub[6])
 		{
 			// a stage's settings
 			for (int f = 0; f < Q3SS_COUNT; f++)
 				Prompt_AddMatch(ctx, vkpt_q3_stage_field_name(f));
 		}
-		else if((strcmp(Cmd_Argv(1), "which") == 0)
-			|| (strcmp(Cmd_Argv(1), "create_instance") == 0))
+		else if((strcmp(sub, "which") == 0)
+			|| (strcmp(sub, "create_instance") == 0))
 		{
 			// Nothing to complete for these
 		}
@@ -4603,7 +5078,7 @@ static void material_completer(genctx_t* ctx, int argnum)
 			struct MaterialAttribute const* t = NULL;
 			for (int i = 0; i < c_NumAttributes; ++i)
 			{
-				if (strcmp(Cmd_Argv(1), c_Attributes[i].name) == 0)
+				if (strcmp(sub, c_Attributes[i].name) == 0)
 				{
 					t = &c_Attributes[i];
 					break;
@@ -4639,6 +5114,29 @@ static void material_completer(genctx_t* ctx, int argnum)
 			}
 		}
 	}
+}
+
+static void material_completer(genctx_t* ctx, int argnum)
+{
+	if (argnum >= 2 && !strcmp(Cmd_Argv(1), "view_weapon"))
+	{
+		// 'mat view_weapon [N] ...': the gun's materials by number, then
+		// whatever 'mat' itself takes
+		const char* n = Cmd_Argv(2);
+		bool digits = argnum > 2 && n[0] != 0;
+		for (const char* c = n; digits && *c; c++)
+			digits = Q_isdigit(*c) != 0;
+
+		if (argnum == 2)
+		{
+			Prompt_AddMatch(ctx, "list");
+			for (int i = 0; i < num_view_weapon_materials; i++)
+				Prompt_AddMatch(ctx, va("%d", i));
+		}
+		material_complete_from(ctx, argnum, digits ? 3 : 2);
+		return;
+	}
+	material_complete_from(ctx, argnum, 1);
 }
 
 uint32_t MAT_SetKind(uint32_t material, uint32_t kind)

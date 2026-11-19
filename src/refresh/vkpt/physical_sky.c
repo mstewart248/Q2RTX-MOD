@@ -214,11 +214,12 @@ static cvar_t *sky_map_sun_azimuth;
 // The value is the animation rate, exactly as sun_animate's is: 1 is one full
 // day/night cycle every 86 minutes, 2 is twice that, and so on.
 //
-// WHY THIS EXISTS RATHER THAN "mapcvar sun_animate 1". sun_animate is only read
-// on the Custom sun preset, and the shipped default is Morning - so a map that
-// set sun_animate would animate for nobody until the player went into the video
-// menu and picked Custom. This cvar says "animate regardless of the preset",
-// which is the only way a map can state a time of day that MOVES.
+// WHY THIS EXISTS RATHER THAN "mapcvar sun_animate 1". sun_animate is the
+// player's own speed and wins outright when they have set one; this is the
+// speed a map asks for when they have not. (sun_animate used to be read on the
+// Custom preset only; since 11-17 a time of day animates too, from its own hour
+// - see sun_preset_day_start. A map that wants a speed even over the player's
+// own sets "mapcvar sun_animate", as q3dm17 does.)
 //
 // Like sky_map_sun_elevation / _azimuth it only bites in "rerelease" sky mode:
 // an explicit sky_type pick is the player asking for one particular sky, and a
@@ -477,6 +478,33 @@ static int active_sun_preset(void)
 	}
 
 	return sun_preset->integer;
+}
+
+/* A TIME OF DAY IS WHERE THE DAY STARTS (Matt, 2026-11-17: "the animation should
+   progress the time of day", "it goes all the way around"). Under sun_animate, a
+   time of day used to pin the sun at its hour and ignore the animation - it only
+   ever ran on Custom. Now the hour is where the cycle starts, on every map load,
+   and the sun runs on from there through the whole day and night.
+
+   Given as the animation's own parameter (vkpt_evaluate_sun_light): `e` climbs
+   0..360 a degree per hour of game time - 0..90 rising, 90..180 setting on the
+   far side (azimuth turned 180), 180..270 sinking below, 270..360 coming back
+   up. So an hour is named by which way the sun is GOING: evening's 15 degrees is
+   the setting side, 165, or the sun would climb back to noon. Each pair is the
+   preset's own fixed angles at its first frame. Current time and 12x current time
+   follow the clock and have no hour to start from. */
+static bool sun_preset_day_start(int preset, float *e, float *azimuth)
+{
+	switch (preset)
+	{
+	case SUN_PRESET_NIGHT:   *e = 270.f; *azimuth = 180.f; return true;    // -90, azimuth 0
+	case SUN_PRESET_DAWN:    *e = 357.f; *azimuth = 0.f;   return true;    // -3 rising, 0
+	case SUN_PRESET_MORNING: *e = 25.f;  *azimuth = 345.f; return true;    // 25 rising, -15
+	case SUN_PRESET_NOON:    *e = 90.f;  *azimuth = 285.f; return true;    // 90, -75
+	case SUN_PRESET_EVENING: *e = 165.f; *azimuth = 10.f;  return true;    // 15 setting, 190
+	case SUN_PRESET_DUSK:    *e = 186.f; *azimuth = 25.f;  return true;    // -6 sinking, 205
+	default:                 return false;
+	}
 }
 
 static void change_image_layouts(VkImage image, const VkImageSubresourceRange* subresource_range);
@@ -1363,7 +1391,9 @@ static void publish_sky_state(void)
 
 	// The menu has no OR between conditions - they are ANDed - so "Custom or
 	// rerelease" has to arrive as one value rather than as two tests.
-	int animate_ok = (sky_mode_is_rerelease() || sun_preset->integer == 0) ? 1 : 0;
+	float unused_e, unused_azimuth;
+	int animate_ok = (sky_mode_is_rerelease() || sun_preset->integer == 0
+		|| sun_preset_day_start(sun_preset->integer, &unused_e, &unused_azimuth)) ? 1 : 0;
 
 	if (sun_animate_available->integer != animate_ok)
 		Cvar_SetInteger(sun_animate_available, animate_ok, FROM_CODE);
@@ -1478,6 +1508,15 @@ vkpt_evaluate_sun_light(sun_light_t* light, const vec3_t sky_matrix[3], float ti
 
 	const int preset = active_sun_preset();
 
+	// a new time of day picked mid-map starts the cycle again at its hour,
+	// rather than at that hour plus however long the old one had been running
+	static int clock_preset = -1;
+	if (preset != clock_preset)
+	{
+		start_time = time;
+		clock_preset = preset;
+	}
+
 	if ((preset == SUN_PRESET_CURRENT_TIME) || (preset == SUN_PRESET_FAST_TIME))
 	{
 		bool fast_time = (preset == SUN_PRESET_FAST_TIME);
@@ -1499,7 +1538,12 @@ vkpt_evaluate_sun_light(sun_light_t* light, const vec3_t sky_matrix[3], float ti
 	}
 	else
 	{
-		switch (preset)
+		// a time of day under sun_animate: where the cycle below starts
+		float day_e = 0.f, day_azimuth = 0.f;
+		const bool day_from_preset = sun_animate_rate > 0.f
+			&& sun_preset_day_start(preset, &day_e, &day_azimuth);
+
+		switch (day_from_preset ? SUN_PRESET_NONE : preset)
 		{
 		case SUN_PRESET_NIGHT:
 			elevation = -90.f;
@@ -1572,10 +1616,12 @@ vkpt_evaluate_sun_light(sun_light_t* light, const vec3_t sky_matrix[3], float ti
 				   physical_sky_draw_clouds 0 is the cheap half of the same
 				   question. */
 				const float elapsed = (time - start_time) * 250.f * sun_animate_rate;
+				const float base_azimuth = day_from_preset ? day_azimuth : sun_azimuth->value;
+				const float base_e = day_from_preset ? day_e : sun_elevation->value;
 
-				azimuth = fmod(sun_azimuth->value + elapsed / (24.f * 60.f * 60.f), 360.0f);
+				azimuth = fmod(base_azimuth + elapsed / (24.f * 60.f * 60.f), 360.0f);
 
-				double e = fmod(sun_elevation->value + elapsed / (60.f * 60.f), 360.0f);
+				double e = fmod(base_e + elapsed / (60.f * 60.f), 360.0f);
 				if (e > 270.f)
 					elevation = -(360.f - e);
 				else if (e > 180.0f)

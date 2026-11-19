@@ -525,7 +525,9 @@ void SV_BuildClientFrame(client_t *client)
                             ent_visible = false;
                     }
 
-                    if (!ent->s.modelindex && !far_sounds) {
+                    // RF_Q3_SPRITE: the bot match's Quake III plasma ball, which is
+                    // drawn without a model - seen, not only heard
+                    if (!ent->s.modelindex && !(ent->s.renderfx & RF_Q3_SPRITE) && !far_sounds) {
                         // don't send sounds if they will be attenuated away
                         vec3_t    delta;
                         float    len;

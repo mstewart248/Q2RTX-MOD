@@ -1572,6 +1572,9 @@ bool d3d12_frontend_prepare_frame(refdef_t *fd, int waterLevel, d3d12_world_fram
     frame->caustics = cvar_pt_caustics->value != 0;
     frame->sharc_active = prep->sharc_active;
     frame->sharc_clear = prep->sharc_clear;
+    frame->caustics_active = prep->caustics_active;
+    frame->caustics_clear = prep->caustics_clear;
+    frame->caustic_photons = prep->caustic_photons;
     // DLSSApply (d3d12_frontend_dlss_record), and whether the interleave pass
     // writes TAA_OUTPUT itself (the UBO is this frame's)
     frame->dlss = DLSSEnabled() && ngx_params;

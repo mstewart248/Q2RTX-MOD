@@ -148,6 +148,9 @@ typedef struct light_poly_s {
 	// vkpt_q3_program_key when it was; 0 = not yet)
 	uint32_t q3_glow_key;
 	vec3_t q3_glow_rgb;
+	// ... and its stage<N>_emissive_factor stages' glow, which the material's
+	// emissive_factor does not scale
+	vec3_t q3_glow_stages_rgb;
 } light_poly_t;
 
 typedef struct model_s {

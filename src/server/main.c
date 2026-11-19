@@ -1349,6 +1349,24 @@ static void SV_ConnectionlessPacket(void)
 
 //============================================================================
 
+#if USE_CLIENT
+// [Q2RTX] see server.h: anyone connected who is not this machine's own client
+bool SV_HasRemoteClients(void)
+{
+    client_t *cl;
+
+    if (!svs.initialized)
+        return false;
+
+    FOR_EACH_CLIENT(cl) {
+        if (cl->state > cs_zombie && cl->netchan &&
+            !NET_IsLocalAddress(&cl->netchan->remote_address))
+            return true;
+    }
+    return false;
+}
+#endif
+
 int SV_CountClients(void)
 {
     client_t *cl;

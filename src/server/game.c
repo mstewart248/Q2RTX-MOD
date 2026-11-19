@@ -432,6 +432,11 @@ static void PF_configstring(int index, const char *val)
     memcpy(dst, val, len);
     dst[len] = 0;
 
+    // the bot match's player physics: pmove has to know (see CS_Q3RULES)
+    if (index == CS_Q3RULES) {
+        SV_UpdateQ3Rules();
+    }
+
     if (sv.state == ss_loading) {
         return;
     }

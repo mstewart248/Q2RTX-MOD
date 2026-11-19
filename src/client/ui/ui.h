@@ -29,6 +29,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "client/client.h"
 #include "client/ui.h"
 #include "refresh/refresh.h"
+#include "../q3player.h"
 
 #define UI_Malloc(s)        Z_TagMalloc(s, TAG_UI)
 #define UI_Mallocz(s)       Z_TagMallocz(s, TAG_UI)
@@ -320,10 +321,29 @@ typedef struct playerModelInfo_s {
     int nskins;
     char **skindisplaynames;
     char *directory;
+    bool q3;        // a Quake III model: models/players/<directory>/ (q3player.c)
 } playerModelInfo_t;
+
+/*
+THE MODEL GRID. With Quake III models installed there are too many skins to
+step through, so Player Setup and the bot picker choose from a page of
+thumbnails instead (playerconfig.c): every model and skin, one cell each -
+the Quake II ones first, by their 32x32 _i.pcx icons drawn at 64, then the
+Quake III ones by their icon_<skin>.tga. Team uniforms (ctf_r/ctf_b, red/blue)
+and the rerelease's disguise are left out: the game puts those on by itself.
+Without Quake III models (pmGrid false) the old model and skin spin controls
+stay.
+*/
+typedef struct {
+    short       model, skin;    // uis.pmi indexes
+    qhandle_t   icon;           // 0 = not registered yet, -1 = none
+} playerModelCell_t;
 
 void PlayerModel_Load(void);
 void PlayerModel_Free(void);
+int  PlayerModel_FindCell(const char *value);   // a "model/skin" value's cell
+void PlayerModel_CellValue(int cell, char *buf, size_t size);
+qhandle_t PlayerModel_CellIcon(int cell);
 
 #define MAX_MENU_DEPTH    8
 
@@ -349,6 +369,13 @@ typedef struct uiStatic_s {
     int numPlayerModels;
     playerModelInfo_t pmi[MAX_PLAYERMODELS];
     char weaponModel[32];
+
+    // the model grid (see playerModelCell_t)
+    bool pmGrid;                    // Quake III models are installed: use it
+    int numPmCells;
+    int pmQ3First;                  // the first Quake III cell
+    playerModelCell_t *pmCells;
+    char **pmCellNames;             // "model / skin", NULL-terminated
 
     qhandle_t backgroundHandle;
     qhandle_t fontHandle;
@@ -416,6 +443,7 @@ void        Menu_Pop(menuFrameWork_t *menu);
 void        Menu_Free(menuFrameWork_t *menu);
 
 void M_Menu_PlayerConfig(void);
+void M_Menu_PlayerModelGrid(void);
 void M_Menu_BotPick(void);
 void M_Menu_Demos(void);
 void M_Menu_Servers(void);

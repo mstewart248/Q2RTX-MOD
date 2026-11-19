@@ -581,6 +581,8 @@ models/mapobjects/console/console:
 	stage1_map materialDev/models/mapobjects/console/console.tga
 #	stage2: map models/mapobjects/console/console2.tga; blendFunc add; rgbGen vertex; rgbGen wave sin .5 .5 0 .2
 	stage2_map materialDev/models/mapobjects/console/console2.jpg
+	roughness_override 0.1
+	metalness_factor 1
 #	texture_normals materialDev/models/mapobjects/console/console_n.png
 #	texture_roughness materialDev/models/mapobjects/console/console_rough.png
 #	texture_metallic materialDev/models/mapobjects/console/console_metal.png
@@ -601,6 +603,7 @@ models/mapobjects/console/rotate:
 # scripts/models.shader
 #	stage0: clampmap models/mapobjects/console/rotate.tga; blendFunc add; tcmod rotate 40; rgbGen vertex
 	stage0_map materialDev/models/mapobjects/console/rotate.jpg
+	roughness_override 0.1
 #	texture_normals materialDev/models/mapobjects/console/rotate_n.png
 #	texture_roughness materialDev/models/mapobjects/console/rotate_rough.png
 #	texture_metallic materialDev/models/mapobjects/console/rotate_metal.png
@@ -953,6 +956,7 @@ models/mapobjects/kmlamp_white:
 # shape (vertex normals) - focus spots, dark bands past ~41 deg. Needs
 # pt_caustics 1. "caustic 0.5" halves the bend, "caustic 0" turns it off.
 	kind GLASSCAUSTIC
+	caustic 0.5
 #	texture_normals materialDev/models/mapobjects/kmlamp_white_n.png
 #	texture_roughness materialDev/models/mapobjects/kmlamp_white_rough.png
 #	texture_metallic materialDev/models/mapobjects/kmlamp_white_metal.png
@@ -1480,7 +1484,7 @@ models/mapobjects/spotlamp/spotlamp_l:
 # scripts/models.shader
 #	stage0: map models/mapobjects/spotlamp/spotlamp_l.tga; rgbGen identity
 	stage0_map materialDev/models/mapobjects/spotlamp/spotlamp_l.jpg
-	default_radiance 3
+	default_radiance 5
 	synth_emissive 0
 	emissive_threshold 1
 #	texture_normals materialDev/models/mapobjects/spotlamp/spotlamp_l_n.png
@@ -1488,8 +1492,9 @@ models/mapobjects/spotlamp/spotlamp_l:
 #	texture_metallic materialDev/models/mapobjects/spotlamp/spotlamp_l_metal.png
 #	texture_height materialDev/models/mapobjects/spotlamp/spotlamp_l_height.png
 	texture_emissive materialDev/models/mapobjects/spotlamp/spotlamp_l_light.png
-	emissive_factor 2
-	light_factor 5
+	emissive_factor 5
+	light_factor 10
+	bsp_radiance 0
 
 # === models/mapobjects
 
@@ -1727,8 +1732,8 @@ models/mapobjects/weeds/weed02:
 models/players/anarki/anarki:
 	texture_base materialDev/models/players/anarki/anarki.tga
 #	texture_normals materialDev/models/players/anarki/anarki_n.png
-#	texture_roughness materialDev/models/players/anarki/anarki_rough.png
-#	texture_metallic materialDev/models/players/anarki/anarki_metal.png
+	texture_roughness materialDev/models/players/anarki/anarki_rough.tga
+	texture_metallic materialDev/models/players/anarki/anarki_metal.tga
 #	texture_height materialDev/models/players/anarki/anarki_height.png
 #	texture_emissive materialDev/models/players/anarki/anarki_light.png
 
@@ -1739,8 +1744,9 @@ models/players/anarki/anarki_b:
 #	stage1: map models/players/anarki/anarki_b.tga; blendfunc blend; rgbGen lightingDiffuse
 	stage1_map materialDev/models/players/anarki/anarki_b.tga
 #	texture_normals materialDev/models/players/anarki/anarki_b_n.png
-#	texture_roughness materialDev/models/players/anarki/anarki_b_rough.png
-#	texture_metallic materialDev/models/players/anarki/anarki_b_metal.png
+	texture_roughness materialDev/models/players/anarki/anarki_b_rough.tga
+	texture_metallic materialDev/models/players/anarki/anarki_b_metal.tga
+	metalness_factor 1
 #	texture_height materialDev/models/players/anarki/anarki_b_height.png
 #	texture_emissive materialDev/models/players/anarki/anarki_b_light.png
 
@@ -1751,15 +1757,15 @@ models/players/anarki/anarki_g:
 #	stage1: map models/players/anarki/anarki_g_fx.tga; rgbGen lightingDiffuse; rgbGen wave triangle 0 1 0 .5; blendfunc gl_ONE gl_ONE
 	stage1_map materialDev/models/players/anarki/anarki_g_fx.tga
 #	texture_normals materialDev/models/players/anarki/anarki_g_n.png
-#	texture_roughness materialDev/models/players/anarki/anarki_g_rough.png
-#	texture_metallic materialDev/models/players/anarki/anarki_g_metal.png
+	texture_roughness materialDev/models/players/anarki/anarki_g_rough.png
+	texture_metallic materialDev/models/players/anarki/anarki_g_metal.png
 #	texture_height materialDev/models/players/anarki/anarki_g_height.png
 #	texture_emissive materialDev/models/players/anarki/anarki_g_light.png
 
 models/players/anarki/anarki_h:
 	texture_base materialDev/models/players/anarki/anarki_h.tga
 #	texture_normals materialDev/models/players/anarki/anarki_h_n.png
-#	texture_roughness materialDev/models/players/anarki/anarki_h_rough.png
+	texture_roughness materialDev/models/players/anarki/anarki_h_rough.tga
 #	texture_metallic materialDev/models/players/anarki/anarki_h_metal.png
 #	texture_height materialDev/models/players/anarki/anarki_h_height.png
 #	texture_emissive materialDev/models/players/anarki/anarki_h_light.png
@@ -2188,6 +2194,8 @@ models/players/crash/crash_f:
 	stage0_map materialDev/textures/sfx/snow.jpg
 #	stage1: map textures/effects/tinfx2b.tga; tcGen environment; blendFunc add; rgbGen lightingdiffuse
 	stage1_map materialDev/textures/effects/tinfx2b.jpg
+	roughness_override 0.01
+	emissive_factor 0.03
 #	texture_normals materialDev/models/players/crash/crash_f_n.png
 #	texture_roughness materialDev/models/players/crash/crash_f_rough.png
 #	texture_metallic materialDev/models/players/crash/crash_f_metal.png
@@ -2234,9 +2242,9 @@ models/players/doom/blue:
 
 models/players/doom/doom:
 	texture_base materialDev/models/players/doom/doom.tga
-#	texture_normals materialDev/models/players/doom/doom_n.png
-#	texture_roughness materialDev/models/players/doom/doom_rough.png
-#	texture_metallic materialDev/models/players/doom/doom_metal.png
+	texture_normals materialDev/models/players/doom/doom_n.tga
+	texture_roughness materialDev/models/players/doom/doom_rough.tga
+	texture_metallic materialDev/models/players/doom/doom_metal.tga
 #	texture_height materialDev/models/players/doom/doom_height.png
 #	texture_emissive materialDev/models/players/doom/doom_light.png
 
@@ -2246,6 +2254,8 @@ models/players/doom/doom_f:
 	stage0_map materialDev/models/players/doom/doom_f.tga
 #	stage1: map models/players/doom/doom_fx.tga; tcGen environment; rgbGen lightingDiffuse; blendfunc gl_ONE gl_ONE
 	stage1_map materialDev/models/players/doom/doom_fx.tga
+	roughness_override 0.05
+	emissive_factor 0
 #	texture_normals materialDev/models/players/doom/doom_f_n.png
 #	texture_roughness materialDev/models/players/doom/doom_f_rough.png
 #	texture_metallic materialDev/models/players/doom/doom_f_metal.png
@@ -2296,6 +2306,8 @@ models/players/doom/phobos_f:
 	stage0_map materialDev/textures/effects/tinfx.jpg
 #	stage1: map models/players/doom/phobos_f.tga; blendFunc GL_SRC_ALPHA GL_ONE_MINUS_SRC_ALPHA; rgbGen lightingDiffuse
 	stage1_map materialDev/models/players/doom/phobos_f.tga
+	roughness_override 0.05
+	emissive_factor 0
 #	texture_normals materialDev/models/players/doom/phobos_f_n.png
 #	texture_roughness materialDev/models/players/doom/phobos_f_rough.png
 #	texture_metallic materialDev/models/players/doom/phobos_f_metal.png
@@ -2619,17 +2631,19 @@ models/players/lucy/angel:
 	stage0_map materialDev/models/players/lucy/angel.tga
 #	stage1: map models/mapobjects/bitch/hologirl2.tga; tcgen environment; tcMod scroll -6 -.2; tcMod scale 1 1; blendFunc GL_ONE GL_ONE; rgbGen lightingDiffuse
 	stage1_map materialDev/models/mapobjects/bitch/hologirl2.jpg
+	metalness_factor 1
 #	texture_normals materialDev/models/players/lucy/angel_n.png
-#	texture_roughness materialDev/models/players/lucy/angel_rough.png
-#	texture_metallic materialDev/models/players/lucy/angel_metal.png
+	texture_roughness materialDev/models/players/lucy/angel_rough.tga
+	texture_metallic materialDev/models/players/lucy/angel_metal.tga
+	stage1_emissive_factor 1
 #	texture_height materialDev/models/players/lucy/angel_height.png
 #	texture_emissive materialDev/models/players/lucy/angel_light.png
 
 models/players/lucy/angel_h:
 	texture_base materialDev/models/players/lucy/angel_h.tga
 #	texture_normals materialDev/models/players/lucy/angel_h_n.png
-#	texture_roughness materialDev/models/players/lucy/angel_h_rough.png
-#	texture_metallic materialDev/models/players/lucy/angel_h_metal.png
+	texture_roughness materialDev/models/players/lucy/angel_h_rough.tga
+	texture_metallic materialDev/models/players/lucy/angel_h_metal.tga
 #	texture_height materialDev/models/players/lucy/angel_h_height.png
 #	texture_emissive materialDev/models/players/lucy/angel_h_light.png
 
@@ -2828,6 +2842,7 @@ models/players/mynx/mynx_shiny:
 	stage0_map materialDev/textures/sfx/specular5.jpg
 #	stage1: map models/players/mynx/mynx_shiny.tga; blendFunc GL_SRC_ALPHA GL_ONE_MINUS_SRC_ALPHA; rgbGen lightingDiffuse
 	stage1_map materialDev/models/players/mynx/mynx_shiny.tga
+	emissive_factor 0
 #	texture_normals materialDev/models/players/mynx/mynx_shiny_n.png
 #	texture_roughness materialDev/models/players/mynx/mynx_shiny_rough.png
 #	texture_metallic materialDev/models/players/mynx/mynx_shiny_metal.png
@@ -2888,6 +2903,9 @@ models/players/orbb/orbb_h2:
 	stage1_map materialDev/textures/effects/tinfx.jpg
 #	stage2: map models/players/orbb/orbb_h2.tga; blendFunc GL_SRC_ALPHA GL_ONE_MINUS_SRC_ALPHA; rgbGen lightingDiffuse
 	stage2_map materialDev/models/players/orbb/orbb_h2.tga
+	roughness_override 0.1
+	metalness_factor 0
+	emissive_factor 0
 #	texture_normals materialDev/models/players/orbb/orbb_h2_n.png
 #	texture_roughness materialDev/models/players/orbb/orbb_h2_rough.png
 #	texture_metallic materialDev/models/players/orbb/orbb_h2_metal.png
@@ -3248,6 +3266,9 @@ models/players/sarge/null:
 # scripts/models.shader
 #	stage0: map models/players/sarge/null.tga; blendFunc GL_ONE GL_ONE
 	stage0_map materialDev/models/players/sarge/null.tga
+# HAND (2026-11-17): black added on = nothing - the Krusade and Roderic skins
+# hide Sarge's cigar with it. Models leave INVISIBLE meshes out (vkpt main.c).
+	kind INVISIBLE
 #	texture_normals materialDev/models/players/sarge/null_n.png
 #	texture_roughness materialDev/models/players/sarge/null_rough.png
 #	texture_metallic materialDev/models/players/sarge/null_metal.png
@@ -3527,6 +3548,9 @@ models/players/uriel/null:
 # scripts/models.shader
 #	stage0: map models/players/uriel/null.tga; blendFunc GL_ONE GL_ONE
 	stage0_map materialDev/models/players/uriel/null.tga
+# HAND (2026-11-17): black added on = nothing - the Zael skin hides Uriel's
+# wings with it. Models leave INVISIBLE meshes out (vkpt main.c).
+	kind INVISIBLE
 #	texture_normals materialDev/models/players/uriel/null_n.png
 #	texture_roughness materialDev/models/players/uriel/null_rough.png
 #	texture_metallic materialDev/models/players/uriel/null_metal.png
@@ -3643,8 +3667,8 @@ models/players/visor/red:
 models/players/visor/visor:
 	texture_base materialDev/models/players/visor/visor.tga
 #	texture_normals materialDev/models/players/visor/visor_n.png
-#	texture_roughness materialDev/models/players/visor/visor_rough.png
-#	texture_metallic materialDev/models/players/visor/visor_metal.png
+	texture_roughness materialDev/models/players/visor/visor_rough.tga
+	texture_metallic materialDev/models/players/visor/visor_metal.tga
 #	texture_height materialDev/models/players/visor/visor_height.png
 #	texture_emissive materialDev/models/players/visor/visor_light.png
 
@@ -3699,6 +3723,8 @@ models/players/xaero/xaero_a:
 	stage0_map materialDev/textures/effects/envmapbfg.jpg
 #	stage1: map models/players/xaero/xaero_a.tga; blendFunc blend; rgbGen lightingdiffuse
 	stage1_map materialDev/models/players/xaero/xaero_a.tga
+	stage1_texture_metallic materialDev/models/players/xaero/xaero_a_metal.tga
+	stage1_texture_roughness materialDev/models/players/xaero/xaero_a_rough.tga
 #	texture_normals materialDev/models/players/xaero/xaero_a_n.png
 #	texture_roughness materialDev/models/players/xaero/xaero_a_rough.png
 #	texture_metallic materialDev/models/players/xaero/xaero_a_metal.png
@@ -4154,6 +4180,7 @@ models/powerups/holdable/medkit_sphere:
 # (apply_q3_shader), as the health spheres do.
 	kind GLASS
 	stage0_map materialDev/textures/effects/envmapdim.jpg
+	caustic 1
 #	texture_normals materialDev/models/powerups/holdable/medkit_sphere_n.png
 #	texture_roughness materialDev/models/powerups/holdable/medkit_sphere_rough.png
 #	texture_metallic materialDev/models/powerups/holdable/medkit_sphere_metal.png
@@ -4349,12 +4376,18 @@ models/weaphits/ring01_1:
 models/weapons2/bfg/bfg:
 # scripts/models.shader
 #	stage0: map textures/effects/tinfx2d.tga; blendFunc GL_ONE GL_ZERO; tcmod scroll .01 .01; tcGen environment; rgbGen lightingDiffuse
-	stage0_map materialDev/textures/effects/tinfx2d.jpg
+	stage0_map off
 #	stage1: map models/weapons2/bfg/bfg.tga; blendFunc GL_SRC_ALPHA GL_ONE_MINUS_SRC_ALPHA; rgbGen lightingDiffuse
 	stage1_map materialDev/models/weapons2/bfg/bfg.tga
+	metalness_factor 1
+	stage0_texture_roughness materialDev/models/weapons2/bfg/bfg_rough.tga
+	stage1_texture_roughness materialDev/models/weapons2/bfg/bfg_rough.tga
 #	texture_normals materialDev/models/weapons2/bfg/bfg_n.png
-#	texture_roughness materialDev/models/weapons2/bfg/bfg_rough.png
-#	texture_metallic materialDev/models/weapons2/bfg/bfg_metal.png
+	texture_roughness materialDev/models/weapons2/bfg/bfg_rough.tga
+	stage1_roughness_override 0
+	texture_metallic materialDev/models/weapons2/bfg/bfg_metal.tga
+	stage1_texture_metallic materialDev/models/weapons2/bfg/bfg_metal.tga
+	base_factor 2.5
 #	texture_height materialDev/models/weapons2/bfg/bfg_height.png
 #	texture_emissive materialDev/models/weapons2/bfg/bfg_light.png
 
@@ -4366,6 +4399,7 @@ models/weapons2/bfg/bfg_e:
 	stage1_map materialDev/textures/effects/envmapbfg.jpg
 #	stage2: map textures/effects/tinfx.tga; tcGen environment; blendFunc GL_ONE GL_ONE; rgbGen lightingDiffuse
 	stage2_map materialDev/textures/effects/tinfx.jpg
+	kind WATER
 #	texture_normals materialDev/models/weapons2/bfg/bfg_e_n.png
 #	texture_roughness materialDev/models/weapons2/bfg/bfg_e_rough.png
 #	texture_metallic materialDev/models/weapons2/bfg/bfg_e_metal.png
@@ -4423,6 +4457,7 @@ models/weapons2/gauntlet/gauntlet2:
 	stage0_map materialDev/textures/sfx/specular.jpg
 #	stage1: map models/weapons2/gauntlet/gauntlet2.tga; blendFunc GL_SRC_ALPHA GL_ONE_MINUS_SRC_ALPHA; rgbGen lightingDiffuse
 	stage1_map materialDev/models/weapons2/gauntlet/gauntlet2.tga
+	emissive_factor 0
 #	texture_normals materialDev/models/weapons2/gauntlet/gauntlet2_n.png
 #	texture_roughness materialDev/models/weapons2/gauntlet/gauntlet2_rough.png
 #	texture_metallic materialDev/models/weapons2/gauntlet/gauntlet2_metal.png
@@ -4705,8 +4740,8 @@ models/weapons2/machinegun/f_machinegun:
 models/weapons2/machinegun/machinegun:
 	texture_base materialDev/models/weapons2/machinegun/machinegun.jpg
 #	texture_normals materialDev/models/weapons2/machinegun/machinegun_n.png
-#	texture_roughness materialDev/models/weapons2/machinegun/machinegun_rough.png
-#	texture_metallic materialDev/models/weapons2/machinegun/machinegun_metal.png
+	texture_roughness materialDev/models/weapons2/machinegun/machinegun_rough.jpg
+	texture_metallic materialDev/models/weapons2/machinegun/machinegun_metal.jpg
 #	texture_height materialDev/models/weapons2/machinegun/machinegun_height.png
 #	texture_emissive materialDev/models/weapons2/machinegun/machinegun_light.png
 
@@ -4745,7 +4780,9 @@ models/weapons2/plasma/plasma_glo:
 #	stage0: map models/weapons2/plasma/plasma_glo.tga; tcmod rotate 33; tcMod scroll .7 1; rgbGen identity
 	stage0_map materialDev/models/weapons2/plasma/plasma_glo.jpg
 #	stage1: map textures/effects/tinfxb.tga; tcGen environment; tcMod scroll .01 .02; blendfunc GL_ONE GL_ONE; rgbGen lightingDiffuse
-	stage1_map materialDev/textures/effects/tinfxb.jpg
+	stage1_map off
+	roughness_override 0
+	kind WATER
 #	texture_normals materialDev/models/weapons2/plasma/plasma_glo_n.png
 #	texture_roughness materialDev/models/weapons2/plasma/plasma_glo_rough.png
 #	texture_metallic materialDev/models/weapons2/plasma/plasma_glo_metal.png
@@ -4776,6 +4813,9 @@ models/weapons2/railgun/railgun2:
 # scripts/models.shader
 #	stage0: map models/weapons2/railgun/railgun2.glow.tga; blendfunc GL_ONE GL_ONE; rgbGen entity
 	stage0_map materialDev/models/weapons2/railgun/railgun2.glow.jpg
+	emissive_factor 0.01
+	kind GLASS
+	alpha_glass 1
 #	texture_normals materialDev/models/weapons2/railgun/railgun2_n.png
 #	texture_roughness materialDev/models/weapons2/railgun/railgun2_rough.png
 #	texture_metallic materialDev/models/weapons2/railgun/railgun2_metal.png
@@ -4819,8 +4859,8 @@ models/weapons2/rocketl/f_rocketl:
 models/weapons2/rocketl/rocketl:
 	texture_base materialDev/models/weapons2/rocketl/rocketl.jpg
 #	texture_normals materialDev/models/weapons2/rocketl/rocketl_n.png
-#	texture_roughness materialDev/models/weapons2/rocketl/rocketl_rough.png
-#	texture_metallic materialDev/models/weapons2/rocketl/rocketl_metal.png
+	texture_roughness materialDev/models/weapons2/rocketl/rocketl_rough.jpg
+	texture_metallic materialDev/models/weapons2/rocketl/rocketl_metal.jpg
 #	texture_height materialDev/models/weapons2/rocketl/rocketl_height.png
 #	texture_emissive materialDev/models/weapons2/rocketl/rocketl_light.png
 
@@ -4846,17 +4886,18 @@ models/weapons2/rocketl/rocketl2:
 
 models/weapons2/shells/m_shell:
 	texture_base materialDev/models/weapons2/shells/m_shell.jpg
+	roughness_override 0.05
 #	texture_normals materialDev/models/weapons2/shells/m_shell_n.png
-#	texture_roughness materialDev/models/weapons2/shells/m_shell_rough.png
-#	texture_metallic materialDev/models/weapons2/shells/m_shell_metal.png
+	texture_roughness materialDev/models/weapons2/shells/m_shell_rough.jpg
+	texture_metallic materialDev/models/weapons2/shells/m_shell_metal.jpg
 #	texture_height materialDev/models/weapons2/shells/m_shell_height.png
 #	texture_emissive materialDev/models/weapons2/shells/m_shell_light.png
 
 models/weapons2/shells/s_shell:
 	texture_base materialDev/models/weapons2/shells/s_shell.jpg
 #	texture_normals materialDev/models/weapons2/shells/s_shell_n.png
-#	texture_roughness materialDev/models/weapons2/shells/s_shell_rough.png
-#	texture_metallic materialDev/models/weapons2/shells/s_shell_metal.png
+	texture_roughness materialDev/models/weapons2/shells/s_shell_rough.jpg
+	texture_metallic materialDev/models/weapons2/shells/s_shell_metal.jpg
 #	texture_height materialDev/models/weapons2/shells/s_shell_height.png
 #	texture_emissive materialDev/models/weapons2/shells/s_shell_light.png
 
@@ -4875,8 +4916,8 @@ models/weapons2/shotgun/f_shotgun:
 models/weapons2/shotgun/shotgun:
 	texture_base materialDev/models/weapons2/shotgun/shotgun.jpg
 #	texture_normals materialDev/models/weapons2/shotgun/shotgun_n.png
-#	texture_roughness materialDev/models/weapons2/shotgun/shotgun_rough.png
-#	texture_metallic materialDev/models/weapons2/shotgun/shotgun_metal.png
+	texture_roughness materialDev/models/weapons2/shotgun/shotgun_rough.jpg
+	texture_metallic materialDev/models/weapons2/shotgun/shotgun_metal.jpg
 #	texture_height materialDev/models/weapons2/shotgun/shotgun_height.png
 #	texture_emissive materialDev/models/weapons2/shotgun/shotgun_light.png
 
@@ -5437,6 +5478,9 @@ textures/base_floor/clangspot2:
 	stage1_map materialDev/textures/effects/tinfx3.jpg
 #	stage2: map textures/base_floor/clangspot2.tga; blendFunc GL_SRC_ALPHA GL_ONE_MINUS_SRC_ALPHA; rgbGen identity
 	stage2_map materialDev/textures/base_floor/clangspot2.tga
+	roughness_override 1
+	metalness_factor 0
+	specular_factor 1
 #	stage3: map $lightmap; blendFunc GL_DST_COLOR GL_ONE_MINUS_DST_ALPHA; rgbGen identity
 #	texture_normals materialDev/textures/base_floor/clangspot2_n.png
 #	texture_roughness materialDev/textures/base_floor/clangspot2_rough.png
@@ -6855,6 +6899,7 @@ textures/base_light/light5_5k:
 # scripts/base_light.shader
 #	stage0: map textures/base_light/light5.tga; rgbGen identity
 	stage0_map materialDev/textures/base_light/light5.jpg
+	emissive_threshold 1
 #	texture_normals materialDev/textures/base_light/light5_5k_n.png
 #	texture_roughness materialDev/textures/base_light/light5_5k_rough.png
 #	texture_metallic materialDev/textures/base_light/light5_5k_metal.png
@@ -7916,7 +7961,9 @@ textures/base_trim/border12b:
 #	stage1: map textures/base_trim/border12b.tga; rgbGen identity; blendFunc GL_DST_COLOR GL_ZERO
 	stage1_map materialDev/textures/base_trim/border12b.jpg
 #	stage2: map textures/base_trim/border12bfx.tga; blendfunc GL_ONE GL_ONE
-	stage2_map materialDev/textures/base_trim/border12bfx.jpg
+	stage2_map materialDev/textures/base_trim/border12bfx_fix.jpg
+	emissive_factor 0
+	stage2_emissive_factor 1
 #	texture_normals materialDev/textures/base_trim/border12b_n.png
 #	texture_roughness materialDev/textures/base_trim/border12b_rough.png
 #	texture_metallic materialDev/textures/base_trim/border12b_metal.png
@@ -7929,12 +7976,12 @@ textures/base_trim/border12b_pj:
 #	stage1: map textures/base_trim/border12b.tga; rgbGen identity; blendFunc GL_DST_COLOR GL_ZERO
 	stage1_map materialDev/textures/base_trim/border12b.jpg
 #	stage2: map textures/base_trim/border12bfx.tga; blendfunc GL_ONE GL_ONE
-	stage2_map materialDev/textures/base_trim/border12bfx.jpg
+	stage2_map materialDev/textures/base_trim/border12bfx_fix.jpg
 #	texture_normals materialDev/textures/base_trim/border12b_pj_n.png
 #	texture_roughness materialDev/textures/base_trim/border12b_pj_rough.png
 #	texture_metallic materialDev/textures/base_trim/border12b_pj_metal.png
 #	texture_height materialDev/textures/base_trim/border12b_pj_height.png
-#	texture_emissive materialDev/textures/base_trim/border12b_pj_light.png
+	texture_emissive materialDev/textures/base_trim/border12bfx_fix.jpg
 
 textures/base_trim/bridgesupport1e_fin:
 	texture_base materialDev/textures/base_trim/bridgesupport1e_fin.jpg
@@ -7979,6 +8026,7 @@ textures/base_trim/dark_tin2:
 	stage0_map materialDev/textures/effects/tinfx.jpg
 #	stage1: map textures/base_trim/dark_tin2.tga; blendFunc GL_SRC_ALPHA GL_ONE_MINUS_SRC_ALPHA; rgbGen identity
 	stage1_map materialDev/textures/base_trim/dark_tin2.tga
+	emissive_factor 0
 #	stage2: map $lightmap; blendFunc GL_DST_COLOR GL_ONE_MINUS_DST_ALPHA; rgbGen identity
 #	texture_normals materialDev/textures/base_trim/dark_tin2_n.png
 #	texture_roughness materialDev/textures/base_trim/dark_tin2_rough.png
@@ -8273,6 +8321,10 @@ textures/base_trim/proto_comp:
 	stage4_map materialDev/textures/base_trim/proto_comp.tga
 	emissive_factor 0
 	is_light 0
+	stage0_roughness_override 0.01
+	stage0_emissive_factor 0.1
+	stage1_emissive_factor 0.02
+	stage2_emissive_factor 0.1
 #	stage5: map $lightmap; blendFunc filter; rgbGen identity
 #	texture_normals materialDev/textures/base_trim/proto_comp_n.png
 #	texture_roughness materialDev/textures/base_trim/proto_comp_rough.png
@@ -8758,6 +8810,7 @@ textures/base_wall/basewall02:
 
 textures/base_wall/basewall03:
 	texture_base materialDev/textures/base_wall/basewall03.jpg
+	roughness_override 0
 #	texture_normals materialDev/textures/base_wall/basewall03_n.png
 #	texture_roughness materialDev/textures/base_wall/basewall03_rough.png
 #	texture_metallic materialDev/textures/base_wall/basewall03_metal.png
@@ -9096,9 +9149,10 @@ textures/base_wall/bluemetalsupport2ftv:
 	stage3_map materialDev/textures/base_wall/bluemetalsupport2ftv_glow.jpg
 	default_radiance 0.5
 	light_factor 3
-	roughness_override 0.1
+	roughness_override -1
+	stage3_roughness_override 0.1
 #	texture_normals materialDev/textures/base_wall/bluemetalsupport2ftv_n.png
-#	texture_roughness materialDev/textures/base_wall/bluemetalsupport2ftv_rough.png
+	texture_roughness materialDev/textures/base_wall/bluemetalsupport2ftv_rough.tga
 #	texture_metallic materialDev/textures/base_wall/bluemetalsupport2ftv_metal.png
 #	texture_height materialDev/textures/base_wall/bluemetalsupport2ftv_height.png
 #	texture_emissive materialDev/textures/base_wall/bluemetalsupport2ftv_light.png
@@ -9204,6 +9258,7 @@ textures/base_wall/comp3:
 #	stage2: map $lightmap; tcGen environment; blendFunc GL_DST_COLOR GL_ONE
 #	stage3: map textures/base_wall/comp3.tga; blendFunc GL_SRC_ALPHA GL_ONE_MINUS_SRC_ALPHA; rgbGen identity
 	stage3_map materialDev/textures/base_wall/comp3.tga
+	stage0_emissive_factor 5
 #	stage4: map $lightmap; blendFunc GL_DST_COLOR GL_ONE_MINUS_DST_ALPHA; rgbGen identity
 #	texture_normals materialDev/textures/base_wall/comp3_n.png
 #	texture_roughness materialDev/textures/base_wall/comp3_rough.png
@@ -9252,7 +9307,8 @@ textures/base_wall/comp3c:
 #	stage2: map textures/base_wall/comp3c.tga; blendFunc GL_SRC_ALPHA GL_ONE_MINUS_SRC_ALPHA; rgbGen identity
 	stage2_map materialDev/textures/base_wall/comp3c.tga
 	emissive_factor 0
-	roughness_override 0.04
+	roughness_override 0.5
+	stage0_roughness_override 0.1
 #	stage3: map $lightmap; blendFunc GL_DST_COLOR GL_ONE_MINUS_DST_ALPHA; rgbGen identity
 #	texture_normals materialDev/textures/base_wall/comp3c_n.png
 #	texture_roughness materialDev/textures/base_wall/comp3c_rough.png
@@ -9407,6 +9463,8 @@ textures/base_wall/glass01:
 #	stage0: map textures/effects/tinfx.tga; tcgen environment; blendFunc GL_ONE GL_ONE; rgbGen identity
 	stage0_map materialDev/textures/effects/tinfx.jpg
 	specular_factor 1
+	kind GLASS
+	caustic 1
 #	stage1: map $lightmap; rgbGen identity; blendFunc filter
 #	texture_normals materialDev/textures/base_wall/glass01_n.png
 #	texture_roughness materialDev/textures/base_wall/glass01_rough.png
@@ -9529,8 +9587,11 @@ textures/base_wall/medal_impressive:
 #	stage3: map textures/base_wall/comp3frame.tga; blendfunc blend; rgbgen identity
 	stage3_map materialDev/textures/base_wall/comp3frame.tga
 	roughness_override 0.01
-	emissive_factor 5
+	emissive_factor 0
 	default_radiance 10
+	stage0_emissive_factor 5
+	stage1_emissive_factor 1
+	stage3_texture_roughness materialDev/textures/base_wall/comp3frame_rough.tga
 #	stage4: map $lightmap; rgbGen identity; blendfunc gl_dst_color gl_zero
 #	texture_normals materialDev/textures/base_wall/medal_impressive_n.png
 #	texture_roughness materialDev/textures/base_wall/medal_impressive_rough.png
@@ -9613,6 +9674,7 @@ textures/base_wall/metalfloor_wall_15ow:
 	stage1_map materialDev/textures/sfx/hologirl.jpg
 #	stage2: map textures/base_wall/metalfloor_wall_15ow.tga; blendfunc blend; rgbGen identity
 	stage2_map materialDev/textures/base_wall/metalfloor_wall_15ow.tga
+	specular_factor 1
 #	stage3: map $lightmap; blendFunc filter
 #	texture_normals materialDev/textures/base_wall/metalfloor_wall_15ow_n.png
 #	texture_roughness materialDev/textures/base_wall/metalfloor_wall_15ow_rough.png
@@ -16933,6 +16995,7 @@ textures/liquids/clear_calm1:
 	stage0_map materialDev/textures/liquids/pool3d_5e.jpg
 #	stage1: map textures/liquids/pool3d_3e.tga; blendFunc GL_dst_color GL_one; tcmod scale -.5 -.5; tcmod scroll .025 .025
 	stage1_map materialDev/textures/liquids/pool3d_3e.jpg
+	emissive_factor 0
 #	stage2: map $lightmap; blendFunc GL_dst_color GL_zero; rgbgen identity
 #	texture_normals materialDev/textures/liquids/clear_calm1_n.png
 #	texture_roughness materialDev/textures/liquids/clear_calm1_rough.png
@@ -17195,6 +17258,7 @@ textures/liquids/proto_poolpass:
 #	stage2: map $lightmap; rgbgen identity; blendfunc GL_DST_COLOR GL_ZERO
 #	stage3: map textures/sfx/bolts.tga; blendfunc GL_ONE GL_ONE; tcMod scale .2 .2; tcMod scroll .1 .1; tcmod rotate 290
 	stage3_map materialDev/textures/sfx/bolts.jpg
+	emissive_factor 0
 #	texture_normals materialDev/textures/liquids/proto_poolpass_n.png
 #	texture_roughness materialDev/textures/liquids/proto_poolpass_rough.png
 #	texture_metallic materialDev/textures/liquids/proto_poolpass_metal.png
@@ -17276,6 +17340,7 @@ textures/liquids/slime1:
 	stage1_map materialDev/textures/liquids/slime7.jpg
 #	stage2: map textures/liquids/bubbles.tga; blendfunc GL_ZERO GL_SRC_COLOR; tcMod turb .2 .1 .1 .2; tcMod scale .05 .05; tcMod scroll .001 .001
 	stage2_map materialDev/textures/liquids/bubbles.jpg
+	kind SLIME
 #	texture_normals materialDev/textures/liquids/slime1_n.png
 #	texture_roughness materialDev/textures/liquids/slime1_rough.png
 #	texture_metallic materialDev/textures/liquids/slime1_metal.png
@@ -18204,10 +18269,15 @@ textures/sfx/fan:
 # scripts/sfx.shader
 #	stage0: clampmap textures/sfx/fan.tga; tcMod rotate 256; blendFunc GL_ONE GL_ZERO; alphaFunc GE128; depthWrite; rgbGen identity
 	stage0_map materialDev/textures/sfx/fan.tga
+# the metal map on stage0 rather than the whole material, so it turns with
+# the blades (stage maps go through the stage's tcMod rotate; texture_* maps
+# sit still on the surface)
+	stage0_texture_metallic materialDev/textures/sfx/fan_metal.tga
+	stage0_metalness_factor 0.7
 #	stage1: map $lightmap; rgbGen identity; blendFunc GL_DST_COLOR GL_ZERO; depthFunc equal
 #	texture_normals materialDev/textures/sfx/fan_n.png
 #	texture_roughness materialDev/textures/sfx/fan_rough.png
-#	texture_metallic materialDev/textures/sfx/fan_metal.png
+#	texture_metallic materialDev/textures/sfx/fan_metal.tga
 #	texture_height materialDev/textures/sfx/fan_height.png
 #	texture_emissive materialDev/textures/sfx/fan_light.png
 

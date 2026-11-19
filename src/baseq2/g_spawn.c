@@ -639,6 +639,9 @@ void ED_CallSpawn(edict_t *ent)
         }
     }
 
+    // the bot match's Quake III guns stand in for Quake II's (g_q3weap.c)
+    lookup = Q3W_SpawnClassname(ent, lookup);
+
     // check item spawn functions
     for (i = 0, item = itemlist ; i < game.num_items ; i++, item++) {
         if (!item->classname)
@@ -1325,6 +1328,8 @@ void SpawnEntities(const char *mapname, const char *entities, const char *spawnp
     level.is_n64 = !strncmp(level.mapname, "q64/", 4);
     // a Quake III Arena map, as the server found it when it loaded the BSP
     level.q3map = gi.cvar("sv_map_q3", "0", 0)->integer != 0;
+    // the bot match's Quake III weapons and physics, before any item spawns
+    Q3_LevelRules();
 
     // set client fields on player ents
     for (i = 0 ; i < game.maxclients ; i++)
@@ -1720,6 +1725,10 @@ void SP_worldspawn(edict_t *ent)
     // tells the client STAT_FLASHLIGHT / STAT_HEALTH_BARS are ours to read
     gi.configstring(CS_GAME_ID, GAME_ID_STRING);
 
+    // the bot match's Quake III weapons and physics: the engine's pmove and
+    // the clients' prediction, view weapons and effects all read this
+    gi.configstring(CS_Q3RULES, va("%d%d", level.q3_weapons, level.q3_physics ? 1 : 0));
+
     // status bar program
     if (G_CTF())
         gi.configstring(CS_STATUSBAR, CTF_StatusBar(dm_statusbar));
@@ -1818,9 +1827,11 @@ void SP_worldspawn(edict_t *ent)
     gi.modelindex("#w_plasma.md2");         // WEAP_PLASMA (17)
     gi.modelindex("#w_etfrifle.md2");       // WEAP_ETFRIFLE (18)
     gi.modelindex("#w_plauncher.md2");      // WEAP_PROXLAUNCHER (19)
-    // WEAP_GRAPPLE (20), the last slot: CTF_Precache, in a CTF game only
+    // WEAP_GRAPPLE (20): CTF_Precache, in a CTF game only
     if (G_CTF())
         CTF_Precache();
+    // WEAP_Q3_* (21..29): Quake III's guns, in a game with them (g_q3weap.c)
+    Q3W_Precache();
 
     //-------------------
 

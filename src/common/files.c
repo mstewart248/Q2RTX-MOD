@@ -1461,6 +1461,10 @@ int FS_RealPath(const char *path, unsigned flags, char *out, size_t size)
             pack_t *pak = search->pack;
             packfile_t *entry;
 
+            // FS_TYPE_REAL: loose files only, as for a read (the texture
+            // reload: the file FS_LastModified looked at)
+            if ((flags & FS_TYPE_MASK) == FS_TYPE_REAL)
+                continue;
             if (namelen >= MAX_QPATH)
                 continue;
             for (entry = pak->file_hash[hash & (pak->hash_size - 1)]; entry; entry = entry->hash_next) {

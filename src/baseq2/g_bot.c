@@ -153,6 +153,8 @@ typedef struct {
     bool    lob;            // thrown on an arc (fire_grenade adds 200 up)
     bool    splash;         // hurts whoever fires it at point blank
     bool    melee;
+    float   lob_rise;       // a lob's launch: `speed` along the view and this
+                            // much up; 0 = Quake II's 200
     int     index;          // itemlist index, -1 = not in this game
     int     ammo_index;     // its ammo's, -1 = none
 } bot_weapon_t;
@@ -175,6 +177,17 @@ static bot_weapon_t bot_weapons[] = {
     { "weapon_boomer",          15,   0,  768,  500,  6,  1, AIM_CENTER },
     { "weapon_phalanx",         15,  80, 2048,  725,  7,  1, AIM_FEET, false, true },
     { "weapon_disintegrator",    5,   0,  512,  800, 10,  1, AIM_CENTER },
+    // Quake III's guns, in a bot match with them (g_q3weap.c). Its grenade
+    // leaves at 700 along the view tipped 0.2 up, ~686 + 137 up.
+    { "weapon_q3_gauntlet",     30,   0,   64,    0,  1,  0, AIM_CENTER, false, false, true },
+    { "weapon_q3_machinegun",   15,   0, 4096,    0,  3,  1, AIM_CENTER },
+    { "weapon_q3_shotgun",      15,   0,  768,    0,  4,  1, AIM_CENTER },
+    { "weapon_q3_grenadelauncher", 20, 192, 768,  686,  5,  1, AIM_HEAD, true, true, false, 137 },
+    { "weapon_q3_rocketlauncher", 15, 100, 1280,  900,  7,  1, AIM_FEET, false, true },
+    { "weapon_q3_lightning",    15,   0,  768,    0,  6,  1, AIM_CENTER },
+    { "weapon_q3_railgun",      15, 256, 8192,    0,  6,  1, AIM_CENTER },
+    { "weapon_q3_plasmagun",    30,  64, 1024, 2000,  6,  1, AIM_CENTER },
+    { "weapon_q3_bfg",          30, 128, 4096, 2000,  8,  1, AIM_CENTER, false, true },
 };
 
 #define BOT_NUM_WEAPONS ((int)(sizeof(bot_weapons) / sizeof(bot_weapons[0])))
@@ -241,6 +254,11 @@ typedef struct {
     float       unstick_dir;
     bool        waiting;            // for a lift; not stuck
     vec3_t      last_origin;
+
+    // in the air off a Quake III jump pad (Bot_PadFlight)
+    bool        pad_flight;
+    edict_t     *pad;               // the pad pad_landing is for
+    vec3_t      pad_landing;
 
     // fighting
     float       strafe;             // -1 left, 1 right
@@ -529,6 +547,8 @@ custom model, or a stock one without the uniforms). Only with no uniform
 anywhere do they keep their own skin. Their userinfo keeps the skin they
 chose, for when team play ends.
 */
+static bool Bot_SkinExistsQ3(const char *skin);
+
 const char *Team_Skin(edict_t *ent, const char *skin)
 {
     static const char *const stock[] = { "male", "female", "cyborg" };
@@ -550,6 +570,13 @@ const char *Team_Skin(edict_t *ent, const char *skin)
         len = 0;
     memcpy(model, skin, len);
     model[len] = 0;
+
+    // a Quake III model (baseq3) has its own: red and blue
+    if (model[0]) {
+        Q_snprintf(out, sizeof(out), "%s/%s", model, color == 'r' ? "red" : "blue");
+        if (Bot_SkinExistsQ3(out))
+            return out;
+    }
 
     if (!model[0] || !Team_SkinExists(model, color)) {
         for (i = 0; i < 3; i++)
@@ -635,6 +662,24 @@ void Team_Command(edict_t *ent)
 static char     (*skin_pool)[MAX_QPATH];
 static int      skin_pool_count;
 
+// a Quake III model's skin (baseq3): models/players/<model>/lower_<skin>.skin,
+// with no Quake II model of the name - the client's test (q3player.c)
+static bool Bot_SkinExistsQ3(const char *skin)
+{
+    char        model[MAX_QPATH];
+    const char  *slash = strchr(skin, '/');
+    size_t      len = slash ? (size_t)(slash - skin) : 0;
+
+    if (!len || len >= sizeof(model) || !gi.LoadFile)
+        return false;
+    memcpy(model, skin, len);
+    model[len] = 0;
+
+    if (gi.LoadFile(va("players/%s/tris.md2", model), NULL) >= 0)
+        return false;
+    return gi.LoadFile(va("models/players/%s/lower_%s.skin", model, slash + 1), NULL) >= 0;
+}
+
 static bool Bot_SkinExists(const char *skin)
 {
     static const char *const exts[] = { "pcx", "png", "tga" };
@@ -644,14 +689,16 @@ static bool Bot_SkinExists(const char *skin)
         if (gi.LoadFile && gi.LoadFile(va("players/%s.%s", skin, exts[i]), NULL) >= 0)
             return true;
 
-    return false;
+    return Bot_SkinExistsQ3(skin);
 }
 
 static void Bot_PoolAdd(const char *skin)
 {
     int i;
 
-    if (skin_pool_count >= BOT_MAX_SKINS || !strchr(skin, '/') || !Bot_SkinUsable(skin))
+    if (skin_pool_count >= BOT_MAX_SKINS || !strchr(skin, '/'))
+        return;
+    if (!Bot_SkinUsable(skin) && !Bot_SkinUsableQ3(skin))
         return;
     for (i = 0; i < skin_pool_count; i++)
         if (!Q_stricmp(skin_pool[i], skin))
@@ -661,18 +708,35 @@ static void Bot_PoolAdd(const char *skin)
     Q_strlcpy(skin_pool[skin_pool_count++], skin, MAX_QPATH);
 }
 
+/*
+The skins a random bot wears: id's Quake II ones, Quake III's bots (baseq3,
+bot_roster.h) or both, as bot_models says - looked again when it changes.
+Quake III's asked for and none installed: Quake II's.
+*/
+static int  skin_pool_models = -1;
+
 static void Bot_LoadSkins(void)
 {
+    int models = gi.cvar("bot_models", "2", 0)->integer;
     int i;
 
-    if (skin_pool)
+    if (skin_pool && models == skin_pool_models)
         return;
 
-    skin_pool = gi.TagMalloc(BOT_MAX_SKINS * sizeof(*skin_pool), TAG_GAME);
+    if (!skin_pool)
+        skin_pool = gi.TagMalloc(BOT_MAX_SKINS * sizeof(*skin_pool), TAG_GAME);
     skin_pool_count = 0;
+    skin_pool_models = models;
 
-    for (i = 0; i < BOT_CLASSIC_ROSTER_SIZE; i++)
-        Bot_PoolAdd(bot_classic_roster[i].skin);
+    if (models != BOT_MODELS_Q3)
+        for (i = 0; i < BOT_CLASSIC_ROSTER_SIZE; i++)
+            Bot_PoolAdd(bot_classic_roster[i].skin);
+    if (models != BOT_MODELS_Q2)
+        for (i = 0; i < BOT_Q3_ROSTER_SIZE; i++)
+            Bot_PoolAdd(bot_q3_roster[i].skin);
+    if (!skin_pool_count)
+        for (i = 0; i < BOT_CLASSIC_ROSTER_SIZE; i++)
+            Bot_PoolAdd(bot_classic_roster[i].skin);
 
     gi.dprintf("Bots: %d skins to wear\n", skin_pool_count);
 }
@@ -946,6 +1010,7 @@ void Bot_Init(void)
     roster_built = false;
     skin_pool = NULL;
     skin_pool_count = 0;
+    skin_pool_models = -1;
     team_skin_cached = 0;
     bot_player_plan = TEAM_NONE;
 
@@ -1358,6 +1423,8 @@ static int Bot_MaxAmmo(const gclient_t *cl, int tag)
     case AMMO_TRAP:         return cl->pers.max_trap;
     case AMMO_FLECHETTES:   return cl->pers.max_flechettes;
     case AMMO_PROX:         return cl->pers.max_prox;
+    case AMMO_Q3_LIGHTNING: return cl->pers.max_q3_lightning;
+    case AMMO_Q3_BFG:       return cl->pers.max_q3_bfg;
     }
     return 100;
 }
@@ -1435,7 +1502,8 @@ static float Bot_ItemWant(edict_t *self, bot_t *b, edict_t *it, bool fighting)
 {
     const bot_skill_t   *sk = &bot_skills[b->skill];
     const gclient_t     *cl = self->client;
-    const gitem_t       *item = it->item;
+    // a pickup carrying both games' guns: the one this bot would take
+    const gitem_t       *item = Q3W_ItemFor(it, self);
     const char          *cn = item->classname;
     float               health = (float)self->health / max(self->max_health, 1);
     int                 i;
@@ -1924,6 +1992,37 @@ static edict_t *Bot_LiftAt(const vec3_t point)
 
 /*
 =================
+Bot_PadFlight
+
+In the air off a Quake III jump pad (g_q3.c), with b->pad_landing where it
+comes down. The flight is the pad's: the bot keeps its route and does not
+replan from mid-air, fight-strafe or dodge, and only leans toward the
+landing - Quake II's bit of air control spent steering back at the pad (the
+route's step still says "walk onto it") would cut the jump short.
+=================
+*/
+#define BOT_PAD_FLIGHT_FRAMES   80  // 8 seconds: longer is not a pad's doing
+
+static bool Bot_PadFlight(edict_t *self, bot_t *b)
+{
+    gclient_t   *client = self->client;
+    edict_t     *pad = client->q3_jumppad;
+
+    if (!pad || self->groundentity || self->waterlevel >= 2 || self->movetype == MOVETYPE_NOCLIP)
+        return false;
+    if (level.framenum - client->q3_jumppad_framenum > BOT_PAD_FLIGHT_FRAMES)
+        return false;
+
+    if (b->pad != pad) {
+        if (!Q3_JumpPadLanding(pad, b->pad_landing))
+            return false;
+        b->pad = pad;
+    }
+    return true;
+}
+
+/*
+=================
 Bot_FollowRoute
 
 Where to go next along the route: sets `wish` (a flat direction, or zero to
@@ -1935,6 +2034,15 @@ static bool Bot_FollowRoute(edict_t *self, bot_t *b, vec3_t wish, bool *jump, bo
     float radius = Nav_IsGenerated() ? 20 : 32;
 
     b->waiting = false;
+
+    // a jump pad has us: toward where it puts us down
+    if (Bot_PadFlight(self, b)) {
+        if (Bot_Dist2D(self->s.origin, b->pad_landing) > 16)
+            Bot_Steer(self, b->pad_landing, wish);
+        else
+            VectorClear(wish);
+        return true;
+    }
 
     while (b->route_pos < b->route_len) {
         int         to = b->route[b->route_pos];
@@ -2182,14 +2290,15 @@ static void Bot_AimPoint(edict_t *self, bot_t *b, const bot_weapon_t *w, vec3_t 
         float   g = sv_gravity->value > 0 ? sv_gravity->value : 800;
         float   dx = Bot_Dist2D(eye, target);
         float   dz = target[2] - eye[2];
-        float   v = sqrtf(w->speed * w->speed + 200 * 200);
+        float   rise = w->lob_rise ? w->lob_rise : 200;
+        float   v = sqrtf(w->speed * w->speed + rise * rise);
         float   v2 = v * v;
         float   root = v2 * v2 - g * (g * dx * dx + 2 * dz * v2);
 
         if (root >= 0 && dx > 1) {
             float elevation = RAD2DEG(atanf((v2 - sqrtf(root)) / (g * dx)));
 
-            *lob_pitch = -(elevation - RAD2DEG(atanf(200 / w->speed)));
+            *lob_pitch = -(elevation - RAD2DEG(atanf(rise / w->speed)));
         }
     }
 
@@ -2267,6 +2376,19 @@ static void Bot_SendCommand(edict_t *self, bot_t *b, const vec3_t wish, int spee
     cmd.forwardmove = (short)((wish[0] * fx + wish[1] * fy) * speed);
     cmd.sidemove = (short)((wish[0] * fy - wish[1] * fx) * speed);
 
+    // Quake III's movement takes a command's speed from its LARGEST axis, as
+    // keys give it (pmove.c PM_Q3CmdScale), so a bot's diagonal - a unit
+    // vector's worth split over two axes - would run slow. Stretch it.
+    if (level.q3_physics && speed) {
+        float   f = fabsf(cmd.forwardmove), s = fabsf(cmd.sidemove);
+        float   m = max(f, s);
+
+        if (m > 1 && m < speed) {
+            cmd.forwardmove = (short)(cmd.forwardmove * speed / m);
+            cmd.sidemove = (short)(cmd.sidemove * speed / m);
+        }
+    }
+
     if (jump || climb)
         cmd.upmove = 400;
 
@@ -2307,7 +2429,7 @@ static void Bot_Think(edict_t *self, bot_t *b)
     const bot_weapon_t  *w;
     vec3_t              want_view, aim_at = { 0, 0, 0 };
     float               lob_pitch = 999, tolerance = 0;
-    bool                fighting, aiming = false;
+    bool                fighting, aiming = false, flight;
     int                 step, speed;
 
     if (level.intermission_framenum)
@@ -2327,7 +2449,19 @@ static void Bot_Think(edict_t *self, bot_t *b)
         VectorClear(b->turn);
         memcpy(b->delta, self->client->ps.pmove.delta_angles, sizeof(b->delta));
     }
-    if (Distance(self->s.origin, b->last_origin) > 160) {
+    // a jump pad's flight (Bot_PadFlight) is ridden out; down again, the
+    // route goes on from wherever it landed
+    flight = Bot_PadFlight(self, b);
+    if (flight) {
+        b->pad_flight = true;
+    } else if (b->pad_flight) {
+        b->pad_flight = false;
+        b->replan_time = 0;
+        if (b->goal == GOAL_NONE || !b->route_len)
+            b->next_goal_time = 0;
+    }
+
+    if (!flight && Distance(self->s.origin, b->last_origin) > 160) {
         // a teleporter: the route was for the other side
         b->route_len = b->route_pos = 0;
         b->next_goal_time = 0;
@@ -2341,7 +2475,8 @@ static void Bot_Think(edict_t *self, bot_t *b)
 
     // where to go. Choosing costs route searches, so only a couple of bots
     // choose in any one frame; the rest carry on and choose next frame.
-    if ((Bot_GoalReached(self, b) || level.time >= b->next_goal_time) && bot_goal_budget > 0) {
+    // Not in a pad's flight: from mid-air the nearest node is the floor under it.
+    if (!flight && (Bot_GoalReached(self, b) || level.time >= b->next_goal_time) && bot_goal_budget > 0) {
         bot_goal_budget--;
         if (Bot_GoalReached(self, b))
             b->goal = GOAL_NONE;
@@ -2366,13 +2501,13 @@ static void Bot_Think(edict_t *self, bot_t *b)
             Bot_PickGoal(self, b, false);
         }
     }
-    if (b->goal != GOAL_NONE && b->route_len && level.time >= b->replan_time)
+    if (!flight && b->goal != GOAL_NONE && b->route_len && level.time >= b->replan_time)
         Bot_PlanTo(self, b, b->goal_pos);
 
     Bot_Shortcut(self, b);
 
     // stuck?
-    if (level.time >= b->stuck_time) {
+    if (!flight && level.time >= b->stuck_time) {
         if (!b->waiting && Distance(self->s.origin, b->stuck_pos) < 24 && b->goal != GOAL_NONE)
             b->stuck_count++;
         else
@@ -2420,10 +2555,14 @@ static void Bot_Think(edict_t *self, bot_t *b)
     for (step = 0; step < BOT_STEPS; step++) {
         vec3_t  wish = { 0, 0, 0 }, eye, dir;
         bool    jump = false, climb = false, attack = false;
-        bool    moving;
+        bool    moving, riding;
 
         speed = BOT_RUN;
         moving = Bot_FollowRoute(self, b, wish, &jump, &climb);
+
+        // a jump pad's flight: Bot_FollowRoute leans toward the landing, and
+        // nothing below turns it - it still aims and shoots
+        riding = Bot_PadFlight(self, b);
 
         // the last few units to an item off the end of the route
         if (!moving && b->goal == GOAL_ITEM && b->goal_item && Bot_ItemAvailable(b->goal_item) &&
@@ -2438,7 +2577,7 @@ static void Bot_Think(edict_t *self, bot_t *b)
         }
 
         // fighting: keep at the weapon's range and keep moving sideways
-        if (fighting && sk->combat) {
+        if (fighting && sk->combat && !riding) {
             vec3_t  to, side, test;
             float   dist, ideal;
 
@@ -2482,14 +2621,14 @@ static void Bot_Think(edict_t *self, bot_t *b)
         }
 
         // out of the way of a grenade or a rocket
-        if (!VectorEmpty(b->dodge)) {
+        if (!VectorEmpty(b->dodge) && !riding) {
             VectorAdd(wish, b->dodge, wish);
             VectorAdd(wish, b->dodge, wish);
             VectorNormalize(wish);
             moving = true;
         }
 
-        if (level.time < b->unstick_until) {
+        if (level.time < b->unstick_until && !riding) {
             VectorSet(wish, cosf(DEG2RAD(b->unstick_dir)), sinf(DEG2RAD(b->unstick_dir)), 0);
             moving = true;
         }

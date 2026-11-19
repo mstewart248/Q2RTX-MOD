@@ -26792,6 +26792,7 @@ models/weapons/g_hyperb/md5/skin:
 
 models/weapons/g_machn/md5/skin:
 	# w_machinegun; inherits specular_factor 0, emissive_factor 0.1 (baseq2.mat)
+	roughness_override 0.1
 
 models/weapons/g_shotx/md5/skin:
 	# w_phalanx; inherits metalness_factor 0 (rerelease.mat)

@@ -993,6 +993,9 @@ static void CL_ParseTEntPacket(void)
     case TE_MOREBLOOD:
     case TE_ELECTRIC_SPARKS:
     case TE_BERSERK_SLAM:
+    case TE_Q3_BULLET:
+    case TE_Q3_SHOTGUN:
+    case TE_Q3_PLASMA_EXPLOSION:
         MSG_ReadPos(te.pos1);
         MSG_ReadDir(te.dir);
         break;
@@ -1013,6 +1016,7 @@ static void CL_ParseTEntPacket(void)
     case TE_DEBUGTRAIL:
     case TE_BUBBLETRAIL2:
     case TE_BFG_LASER:
+    case TE_Q3_RAILTRAIL:
         MSG_ReadPos(te.pos1);
         MSG_ReadPos(te.pos2);
         break;
@@ -1036,6 +1040,9 @@ static void CL_ParseTEntPacket(void)
     case TE_DBALL_GOAL:
     case TE_WIDOWSPLASH:
     case TE_NUKEBLAST:
+    case TE_Q3_ROCKET_EXPLOSION:
+    case TE_Q3_GRENADE_EXPLOSION:
+    case TE_Q3_BFG_EXPLOSION:
         MSG_ReadPos(te.pos1);
         break;
 
@@ -1057,6 +1064,7 @@ static void CL_ParseTEntPacket(void)
         break;
 
     case TE_LIGHTNING:
+    case TE_Q3_LIGHTNING:   // entity2: whether it hit anything
         te.entity1 = MSG_ReadShort();
         te.entity2 = MSG_ReadShort();
         MSG_ReadPos(te.pos1);

@@ -367,13 +367,19 @@ process_selected_light_restir(
 
 	if (check_vis) vis *= trace_shadow_ray(shadow_ray, null_light ? 0 : shadow_cull_mask);
 
+	bool photon_owned = false; // pt_caustics 2 carries this light's diffuse (trace_caustic_ray)
 #ifdef ENABLE_SHADOW_CAUSTICS
 	// Only where the light is seen: contrib_polygonal reaches the result solely as
 	// vis * contrib_polygonal (and under vis > 0), so the caustic ray of an occluded
 	// or null light was traced for nothing.
 	if (enable_caustics && vis > 0.0 && !null_light)
 	{
-		contrib_polygonal *= trace_caustic_ray(shadow_ray, surface_medium);
+		// the caustic from the light's centre (the sun's: its disc centre) - see caustic_light_anchor
+		vec3 caustic_anchor = (light_idx == RESTIR_ENV_ID)
+			? shadow_ray.origin + global_ubo.sun_direction * 10000.0
+			: caustic_light_anchor(int(light_idx), pos_on_light_polygonal);
+		contrib_polygonal *= trace_caustic_ray(shadow_ray, surface_medium, caustic_anchor,
+			(light_idx == RESTIR_ENV_ID) ? -1 : int(light_idx), photon_owned);
 	}
 #endif
 
@@ -435,7 +441,7 @@ process_selected_light_restir(
 	float NdotL = max(0, dot(normal, L));
 
 	float diffuse_brdf = NdotL / M_PI;
-	diffuse = radiance * diffuse_brdf * (vec3(1.0) - F);
+	diffuse = photon_owned ? vec3(0) : radiance * diffuse_brdf * (vec3(1.0) - F);
 }
 
 

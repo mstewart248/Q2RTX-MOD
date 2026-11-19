@@ -392,7 +392,82 @@ static void smooth_model_normals(model_t* model)
 	}
 }
 
-static void compute_missing_model_tangents(model_t* model)
+/* TANGENTS ACROSS SPLIT VERTICES.
+
+   Quake III's exporters split a vertex wherever the mesh was cut into
+   pieces, even when the pieces' UVs carry straight on across the cut: the
+   two copies share position and normal, and their UVs differ only by
+   exporter jitter (under a texel of the 256 skin). Each copy summed only
+   its own side's triangles, so the tangent frame jumped across the cut while
+   the normal map was continuous: a lit line along every such cut. Matt's
+   Doom player (11-18): 131 such cuts, most on the arms, median 45 deg
+   between the two sides' tangents, 14 deg median break in the shaded normal.
+
+   So copies that agree in frame 0 on position, normal, UV handedness and UV
+   (within TANGENT_WELD_UV_EPS) share one tangent: the sum of both sides'.
+   A real UV cut (islands apart in the texture), or a mirror line (opposite
+   handedness), keeps its own. md3 only: the md5 _n maps were seam-fixed
+   against the per-copy tangents (see normfix, 11-10). */
+#define TANGENT_WELD_UV_EPS (1.f / 256.f)
+
+static int *tangent_weld_roots(const maliasmesh_t *mesh)
+{
+	const int nv = mesh->numverts;
+	float *vsign = Z_Mallocz(nv * sizeof(float));
+	int *root = Z_Malloc(nv * sizeof(int));
+	int welded = 0;
+
+	// UV handedness of each vertex, the same test get_material() makes per triangle
+	for (int tri = 0; tri < mesh->numtris; tri++)
+	{
+		const int *ix = mesh->indices + tri * 3;
+		const float *pA = mesh->positions[ix[0]], *pB = mesh->positions[ix[1]], *pC = mesh->positions[ix[2]];
+		const float *tA = mesh->tex_coords[ix[0]], *tB = mesh->tex_coords[ix[1]], *tC = mesh->tex_coords[ix[2]];
+		vec3_t dP0, dP1, face, nsum;
+		VectorSubtract(pB, pA, dP0);
+		VectorSubtract(pC, pA, dP1);
+		CrossProduct(dP0, dP1, face);
+		VectorAdd(mesh->normals[ix[0]], mesh->normals[ix[1]], nsum);
+		VectorAdd(nsum, mesh->normals[ix[2]], nsum);
+		float uv_winding = (tB[0] - tA[0]) * (tC[1] - tA[1]) - (tC[0] - tA[0]) * (tB[1] - tA[1]);
+		float s = uv_winding * DotProduct(face, nsum);
+		if (s == 0.f)
+			continue;
+		for (int k = 0; k < 3; k++)
+			vsign[ix[k]] += s > 0.f ? 1.f : -1.f;
+	}
+
+	for (int v = 0; v < nv; v++)
+	{
+		root[v] = v;
+		if (vsign[v] == 0.f)
+			continue;
+		for (int u = 0; u < v; u++)
+		{
+			if (root[u] != u || (vsign[u] > 0.f) != (vsign[v] > 0.f))
+				continue;
+			if (!VectorCompare(mesh->positions[u], mesh->positions[v]) ||
+				!VectorCompare(mesh->normals[u], mesh->normals[v]))
+				continue;
+			if (fabsf(mesh->tex_coords[u][0] - mesh->tex_coords[v][0]) > TANGENT_WELD_UV_EPS ||
+				fabsf(mesh->tex_coords[u][1] - mesh->tex_coords[v][1]) > TANGENT_WELD_UV_EPS)
+				continue;
+			root[v] = u;
+			welded++;
+			break;
+		}
+	}
+
+	Z_Free(vsign);
+	if (!welded)
+	{
+		Z_Free(root);
+		return NULL;
+	}
+	return root;
+}
+
+static void compute_missing_model_tangents_ex(model_t* model, bool weld_split_vertices)
 {
 	for (int mesh_idx = 0; mesh_idx < model->nummeshes; mesh_idx++)
 	{
@@ -406,6 +481,8 @@ static void compute_missing_model_tangents(model_t* model)
 		mesh->tangents = MOD_Malloc(tangent_size);
 
 		memset(mesh->tangents, 0, tangent_size);
+
+		int *weld_root = weld_split_vertices ? tangent_weld_roots(mesh) : NULL;
 
 		int handedness = 0;
 
@@ -481,6 +558,33 @@ static void compute_missing_model_tangents(model_t* model)
 			}
 		}
 
+		if (weld_root)
+		{
+			// per frame, and only while the copies still coincide in that frame
+			for (int frame = 0; frame < model->numframes; frame++)
+			{
+				int voffset = frame * mesh->numverts;
+
+				for (int pass = 0; pass < 2; pass++)
+				{
+					for (int v = 0; v < mesh->numverts; v++)
+					{
+						int r = weld_root[v];
+						if (r == v)
+							continue;
+						if (!VectorCompare(mesh->positions[r + voffset], mesh->positions[v + voffset]) ||
+							!VectorCompare(mesh->normals[r + voffset], mesh->normals[v + voffset]))
+							continue;
+						if (pass == 0)
+							VectorAdd(mesh->tangents[r + voffset], mesh->tangents[v + voffset], mesh->tangents[r + voffset]);
+						else
+							VectorCopy(mesh->tangents[r + voffset], mesh->tangents[v + voffset]);
+					}
+				}
+			}
+			Z_Free(weld_root);
+		}
+
 		for (int vtx = 0; vtx < mesh->numverts * model->numframes; vtx++)
 		{
 			vec3_t* tangent = mesh->tangents + vtx;
@@ -494,6 +598,11 @@ static void compute_missing_model_tangents(model_t* model)
 		// bitangent sign per triangle from the UV winding.
 		mesh->handedness = (handedness < 0);
 	}
+}
+
+static void compute_missing_model_tangents(model_t* model)
+{
+	compute_missing_model_tangents_ex(model, false);
 }
 
 int MOD_LoadMD2_RTX(model_t *model, const void *rawdata, size_t length, const char* mod_name)
@@ -1149,7 +1258,8 @@ int MOD_LoadMD3_RTX(model_t *model, const void *rawdata, size_t length, const ch
 	// no smooth_model_normals: the authored normals are better than any
 	// rebuilt from 1/64-unit positions (see the note above it)
 
-	compute_missing_model_tangents(model);
+	// one tangent across the exporter's split vertices - see tangent_weld_roots
+	compute_missing_model_tangents_ex(model, true);
 
 	extract_model_lights(model);
 

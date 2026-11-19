@@ -31,6 +31,7 @@ typedef enum {
     D3D12_PASS_REFLECT_REFRACT_SECOND,      // ...and the later ones
     D3D12_PASS_DIRECT_LIGHTING,
     D3D12_PASS_DIRECT_LIGHTING_CAUSTICS,
+    D3D12_PASS_DIRECT_LIGHTING_PHOTONS,     // ...and pt_caustics 2's grid lookup, on frames its photons run
     D3D12_PASS_INDIRECT_LIGHTING_FIRST,
     D3D12_PASS_INDIRECT_LIGHTING_SECOND,    // the second and later bounces
     D3D12_PASS_RESTIR_GI,
@@ -54,6 +55,8 @@ typedef enum {
     D3D12_PASS_ANIMATE_MATERIALS,           // the world's texture animation, in its primitives
     D3D12_PASS_SHARC_UPDATE,                // the radiance cache: trained from the primary surfaces
     D3D12_PASS_SHARC_RESOLVE,               // ...and folded into its resolved entries
+    D3D12_PASS_CAUSTIC_PHOTONS,             // pt_caustics 2: photons through the caustic glass into its grid
+    D3D12_PASS_CAUSTIC_RESOLVE,             // ...and the grid's running means
     D3D12_PASS_BLOOD_MOVE,                  // blood.c's droplets that only slid, moved in place
     D3D12_PASS_BLOOM_DOWNSCALE,             // bloom.c: TAA_OUTPUT to a quarter
     D3D12_PASS_BLOOM_BLUR,                  // ...blurred across, then down
@@ -154,6 +157,12 @@ typedef struct {
     ID3D12Resource              *sharc_buffers[3];
     uint64_t                    sharc_sizes[3];
     uint32_t                    sharc_entries;
+    // photon-traced caustics' grid (pt_caustics 2): keys, accumulators, resolved -
+    // vertex_buffer.c's, in COMMON - CAUSTIC_CAPACITY, and CAUSTIC_LAUNCH_WIDTH
+    ID3D12Resource              *caustic_buffers[3];
+    uint64_t                    caustic_sizes[3];
+    uint32_t                    caustic_entries;
+    uint32_t                    caustic_width;
     // DLSS (the frame's `dlss`): records NGX's evaluation of TAA_OUTPUT into DLSS_OUTPUT
     // (frontend.c's, or the test's). NGX leaves its own heaps and root signature on the
     // list, so these heaps are set again after it.
@@ -214,6 +223,9 @@ typedef struct {
     bool        sharc;              // vkpt_frame_prep_t's sharc_active (the UBO's pt_sharc agrees)
     bool        sharc_clear;        // ...its sharc_clear: zero the cache first
     uint32_t    sharc_stride;       // pt_sharc_stride, [1..16]: one training path per stride^2 pixels
+    bool        caustic_photons;    // vkpt_frame_prep_t's caustics_active: the photon pass runs
+    bool        caustic_clear;      // ...its caustics_clear: zero the grid first
+    uint32_t    caustic_count;      // ...and its caustic_photons
     bool        bloom;              // vkpt_bloom_will_run: bloom_enable, or the menu's / wheel's blur
     float       bloom_argument_scale, bloom_normalization_scale;    // vkpt_bloom_blur_params
     int32_t     bloom_num_samples;

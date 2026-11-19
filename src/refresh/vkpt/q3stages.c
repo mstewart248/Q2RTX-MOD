@@ -20,6 +20,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #include "vkpt.h"
 #include "q3stages.h"
+#include "conversion.h"
 #include "shader/vertex_buffer.h"
 #include "format/bsp3.h"
 
@@ -57,6 +58,7 @@ typedef struct {
     uint32_t    prop_flags;             // Q3P_PROP_*
     image_t     *prop_images[3];        // roughness, metallic, normals
     float       prop_values[4];         // roughness_override, metalness_factor, specular_factor, bump_scale
+    float       glow_factor;            // stage<N>_emissive_factor, 0 = none: Q3P_PROG_STAGE_EMIT
 } q3pstage_t;
 
 typedef struct {
@@ -103,7 +105,7 @@ static int num_overrides, max_overrides;
 
 static const char *const stage_field_names[Q3SS_COUNT] = {
     "map", "texture_roughness", "texture_metallic", "texture_normals",
-    "roughness_override", "metalness_factor", "specular_factor", "bump_scale",
+    "roughness_override", "metalness_factor", "specular_factor", "bump_scale", "emissive_factor",
 };
 
 int vkpt_q3_stage_field(const char *word)
@@ -186,7 +188,7 @@ bool vkpt_q3_stage_setting_add(int scope, const char *material, int stage, int f
     }
     if (field < 0 || field >= Q3SS_COUNT) {
         Q_strlcpy(err, "not a stage setting - map, texture_roughness, texture_metallic, texture_normals, "
-                  "roughness_override, metalness_factor, specular_factor or bump_scale", err_size);
+                  "roughness_override, metalness_factor, specular_factor, bump_scale or emissive_factor", err_size);
         return false;
     }
 
@@ -212,6 +214,11 @@ bool vkpt_q3_stage_setting_add(int scope, const char *material, int stage, int f
         }
         if (field == Q3SS_ROUGHNESS_OVERRIDE && number < 0)
             none = true;
+        // a half float on the GPU (write_stage)
+        if (field == Q3SS_EMISSIVE_FACTOR && !(number >= 0.f && number <= 60000.f)) {
+            Q_strlcpy(err, "from 0 up (0 or none: the stage glows only as the material does)", err_size);
+            return false;
+        }
     }
 
     q3override_t *o = find_override(scope, material, stage, true);
@@ -589,6 +596,13 @@ static void stage_surface(q3program_t *p, q3pstage_t *ps, const char *material, 
     if (!vkpt_q3_stage_settings(material, index, &s))
         return;
 
+    // its own glow (q3_stages.glsl, vkpt_q3_light_glow)
+    if ((s.set & (1u << Q3SS_EMISSIVE_FACTOR)) && s.values[Q3SS_EMISSIVE_FACTOR - Q3SS_NUM_PATHS] > 0.f &&
+        !(ps->flags & (Q3P_STAGE_NO_IMAGE | Q3P_STAGE_HIGHLIGHT))) {
+        ps->glow_factor = s.values[Q3SS_EMISSIVE_FACTOR - Q3SS_NUM_PATHS];
+        p->flags |= Q3P_PROG_STAGE_EMIT;
+    }
+
     for (int m = 0; m < 3; m++) {
         const int field = Q3SS_TEXTURE_ROUGHNESS + m;
         if (!(s.set & (1u << field)))
@@ -743,20 +757,28 @@ void vkpt_q3_build_program(pbr_material_t *mat, const q3shader_t *q3, imagetype_
         if (st->white) {
             ps->flags |= Q3P_STAGE_WHITE;
         } else {
+            /* A stage<N>_map whose file is missing leaves the stage as it would
+               be without the line: the script's own image. quake3.mat names
+               copies in materialDev/ for every stage, and only the edited ones
+               are in git - the rest are the pak's own pictures anyway. */
             const char *path = vkpt_q3_stage_override(mat->name, i);
+            image_t *override = path ? load_stage_image(path, type, flags | IF_SRGB) : NULL;
+            if (path && !override)
+                Com_DPrintf("%s: stage%d_map %s not found, drawing the script's image\n",
+                            mat->name, i, path);
 
             // the material's own base or glow, when its .mat names one, is the
             // image of the stage that supplied it
-            if (!path && i == q3->diffuse_stage && own_base && mat->image_base) {
+            if (override) {
+                ps->images[0] = override;
+                ps->num_images = 1;
+            } else if (i == q3->diffuse_stage && own_base && mat->image_base) {
                 ps->images[0] = mat->image_base;
                 ps->num_images = 1;
-            } else if (!path && i == q3->emissive_stage && own_emissive && mat->image_emissive &&
+            } else if (i == q3->emissive_stage && own_emissive && mat->image_emissive &&
                        (named_stage < 0 || named_stage == i)) {
                 ps->images[0] = mat->image_emissive;
                 ps->num_images = 1;
-            } else if (path) {
-                ps->images[0] = load_stage_image(path, type, flags | IF_SRGB);
-                ps->num_images = ps->images[0] ? 1 : 0;
             } else if (st->num_frames > 1 && st->frames) {
                 for (int f = 0; f < st->num_frames && f < Q3S_MAX_ANIMFRAMES; f++) {
                     ps->images[f] = load_stage_image(st->frames[f], type, flags | IF_SRGB);
@@ -1128,7 +1150,8 @@ static void write_stage(vec4 *out, const q3pstage_t *ps, float time)
     stage_colour(ps, time, colour);
 
     put_uvec4(&out[0], (image_index & 0xffff) | (flags << 16),
-              (uint32_t)ps->src_blend | ((uint32_t)ps->dst_blend << 4) | ((uint32_t)ps->alpha_func << 8),
+              (uint32_t)ps->src_blend | ((uint32_t)ps->dst_blend << 4) | ((uint32_t)ps->alpha_func << 8) |
+              ((uint32_t)floatToHalf(ps->glow_factor) << 16),
               float_bits(turb_amp), float_bits(turb_now));
     put_vec4(&out[1], m1[0], m1[1], m1[2], m1[3]);
     put_vec4(&out[2], m1[4], m1[5], m2[0], m2[1]);
@@ -1242,11 +1265,12 @@ void vkpt_q3_print_program(const pbr_material_t *mat)
     }
 
     const q3program_t *p = &programs[mat->q3_program - 1];
-    Com_Printf("    q3 program: %d stages%s%s%s%s, %s\n", p->num_stages,
+    Com_Printf("    q3 program: %d stages%s%s%s%s%s, %s\n", p->num_stages,
                (p->flags & Q3P_PROG_TRANSLUCENT) ? ", translucent" : "",
                (p->flags & Q3P_PROG_IMPLICIT_LIT) ? ", implicit lit" : "",
                (p->flags & Q3P_PROG_SELF_LIT) ? ", self lit" : "",
                (p->flags & Q3P_PROG_GLOW) ? ", entry glow" : "",
+               (p->flags & Q3P_PROG_STAGE_EMIT) ? ", stage glow" : "",
                p->offset ? "in this frame's table" : "NOT IN THIS FRAME'S TABLE (drawn still)");
 
     for (int s = 0; s < p->num_stages; s++) {
@@ -1309,6 +1333,11 @@ void vkpt_q3_print_program(const pbr_material_t *mat)
             }
             Com_Printf("        own surface: %s\n", line);
         }
+        if (ps->glow_factor > 0.f)
+            Com_Printf("        own glow: emissive_factor %g (added, not scaled by the material's)\n", ps->glow_factor);
+        else if ((ps->flags & Q3P_STAGE_GLOW) && (p->flags & Q3P_PROG_STAGE_EMIT))
+            Com_Printf("        (the entry's glow stage, but other stages have their own emissive_factor: "
+                       "this one glows only by one of its own)\n");
     }
     if (p->has_props)
         Com_Printf("      (a stage's own surface replaces the material's values above where it shows)\n");
@@ -1612,6 +1641,7 @@ typedef struct {
     float       average[4];             // a reflection map: the image's average
     uint32_t    flags;
     int         src_blend, dst_blend, alpha_func;
+    float       glow_factor;            // stage<N>_emissive_factor
 } q3lightstage_t;
 
 typedef struct {
@@ -1678,6 +1708,7 @@ static const q3lightprog_t *set_up_light_program(const q3program_t *p, uint32_t 
         ls->src_blend = ps->src_blend;
         ls->dst_blend = ps->dst_blend;
         ls->alpha_func = ps->alpha_func;
+        ls->glow_factor = ps->glow_factor;
         ls->image = NULL;
         stage_colour(ps, time, ls->colour);
 
@@ -1720,9 +1751,11 @@ static const q3lightprog_t *set_up_light_program(const q3program_t *p, uint32_t 
     return lp;
 }
 
-int vkpt_q3_light_glow(const pbr_material_t *mat, const float uv[6], int samples, float time, vec3_t out)
+int vkpt_q3_light_glow(const pbr_material_t *mat, const float uv[6], int samples, float time, vec3_t out,
+                       vec3_t out_stages)
 {
     VectorClear(out);
+    VectorClear(out_stages);
 
     const q3program_t *p = program_of(mat);
     if (!p)
@@ -1734,7 +1767,10 @@ int vkpt_q3_light_glow(const pbr_material_t *mat, const float uv[6], int samples
         return 0;
 
     const bool self_lit = (p->flags & Q3P_PROG_SELF_LIT) != 0;
-    const bool glow = (p->flags & Q3P_PROG_GLOW) != 0;
+    const bool stage_emit = (p->flags & Q3P_PROG_STAGE_EMIT) != 0;
+    // as q3_stages.glsl: stage<N>_emissive_factor settings take the entry's
+    // glow stage over (it glows by a factor of its own, or not)
+    const bool glow = (p->flags & Q3P_PROG_GLOW) != 0 && !stage_emit;
     const int n = max(1, min(LIGHT_MAX_SAMPLES, samples));
     const float e1[2] = { uv[2] - uv[0], uv[3] - uv[1] };
     const float e2[2] = { uv[4] - uv[0], uv[5] - uv[1] };
@@ -1753,7 +1789,7 @@ int vkpt_q3_light_glow(const pbr_material_t *mat, const float uv[6], int samples
             level[s] = min(li->num_levels - 1, (int)(0.5f * log2f(texels) + 0.5f));
     }
 
-    vec3_t sum = { 0, 0, 0 };
+    vec3_t sum = { 0, 0, 0 }, sum_stages = { 0, 0, 0 };
 
     /* The centres of the n x n triangles the light's triangle splits into, all
        the same size: n(n+1)/2 pointing like it, n(n-1)/2 the other way. */
@@ -1771,6 +1807,10 @@ int vkpt_q3_light_glow(const pbr_material_t *mat, const float uv[6], int samples
                 // Q3P_PROG_GLOW, as q3_stages.glsl: fully lit, and fully lit
                 // with the Q3P_STAGE_GLOW stages black
                 float c10[4] = { 0, 0, 0, 1 }, cg[4] = { 0, 0, 0, 1 };
+                // Q3P_PROG_STAGE_EMIT: fully lit with each stage<N>_emissive_factor
+                // stage's colour x (1 - its factor) - C10 - CS is what of them
+                // shows, fully lit, x the factor
+                float cs[4] = { 0, 0, 0, 1 };
 
                 for (int s = 0; s < p->num_stages; s++) {
                     const q3lightstage_t *ls = &lp->stages[s];
@@ -1805,23 +1845,37 @@ int vkpt_q3_light_glow(const pbr_material_t *mat, const float uv[6], int samples
                     if (ls->alpha_func == Q3ALPHA_GE128 && !(s0[3] >= 0.5f))
                         continue;
 
-                    if (glow) {
-                        float s1[4], sg[4], fs[4], fd[4];
+                    if (glow || stage_emit) {
+                        float s1[4], fs[4], fd[4];
                         memcpy(s1, s0, sizeof(s1));
                         if (flags & Q3P_STAGE_ONE_MINUS_LIT)
                             s1[0] = s1[1] = s1[2] = 0;
-                        memcpy(sg, s1, sizeof(sg));
-                        if (flags & Q3P_STAGE_GLOW)
-                            sg[0] = sg[1] = sg[2] = 0;
 
                         blend_factor(ls->src_blend, s1, c10, fs);
                         blend_factor(ls->dst_blend, s1, c10, fd);
                         for (int k = 0; k < 4; k++)
                             c10[k] = s1[k] * fs[k] + c10[k] * fd[k];
-                        blend_factor(ls->src_blend, sg, cg, fs);
-                        blend_factor(ls->dst_blend, sg, cg, fd);
-                        for (int k = 0; k < 4; k++)
-                            cg[k] = sg[k] * fs[k] + cg[k] * fd[k];
+
+                        if (glow) {
+                            float sg[4];
+                            memcpy(sg, s1, sizeof(sg));
+                            if (flags & Q3P_STAGE_GLOW)
+                                sg[0] = sg[1] = sg[2] = 0;
+                            blend_factor(ls->src_blend, sg, cg, fs);
+                            blend_factor(ls->dst_blend, sg, cg, fd);
+                            for (int k = 0; k < 4; k++)
+                                cg[k] = sg[k] * fs[k] + cg[k] * fd[k];
+                        }
+                        if (stage_emit) {
+                            float se[4];
+                            memcpy(se, s1, sizeof(se));
+                            for (int k = 0; k < 3; k++)
+                                se[k] *= 1.f - ls->glow_factor;
+                            blend_factor(ls->src_blend, se, cs, fs);
+                            blend_factor(ls->dst_blend, se, cs, fd);
+                            for (int k = 0; k < 4; k++)
+                                cs[k] = se[k] * fs[k] + cs[k] * fd[k];
+                        }
                     }
 
                     // with no light: what the light multiplies is not there -
@@ -1849,11 +1903,15 @@ int vkpt_q3_light_glow(const pbr_material_t *mat, const float uv[6], int samples
                 // correct_emissive (path_tracer_rgen.h), as the surface shows it
                 for (int k = 0; k < 3; k++)
                     sum[k] += max(0.f, c00[k] + (float)EMISSIVE_TRANSFORM_BIAS);
+                if (stage_emit)
+                    for (int k = 0; k < 3; k++)
+                        sum_stages[k] += max(0.f, c10[k] - cs[k] + (float)EMISSIVE_TRANSFORM_BIAS);
             }
         }
     }
 
     VectorScale(sum, 1.f / (float)(n * n), out);
+    VectorScale(sum_stages, 1.f / (float)(n * n), out_stages);
     return p->varies ? 1 : 2;
 }
 
@@ -2159,9 +2217,11 @@ void vkpt_q3_quad_register(bool quake3)
             continue;
 
         memset(ps, 0, sizeof(*ps));
-        if (path) {
-            ps->images[0] = load_stage_image(path, IT_SKIN, IF_REPEAT | IF_SRGB);
-            ps->num_images = ps->images[0] ? 1 : 0;
+        // a stage<N>_map whose file is missing: the script's image, as without it
+        image_t *override = path ? load_stage_image(path, IT_SKIN, IF_REPEAT | IF_SRGB) : NULL;
+        if (override) {
+            ps->images[0] = override;
+            ps->num_images = 1;
         } else if (st->num_frames > 1 && st->frames) {
             for (int f = 0; f < st->num_frames && f < Q3S_MAX_ANIMFRAMES; f++) {
                 ps->images[f] = load_stage_image(st->frames[f], IT_SKIN, IF_REPEAT | IF_SRGB);
@@ -2222,4 +2282,47 @@ void vkpt_q3_quad_upload(QVKUniformBuffer_t *ubo, float time)
     put_uvec4(&out[1], float_bits(m1[4]), float_bits(m1[5]), (uint32_t)(image - r_images), 0);
     put_vec4(&out[2], colour[0] * glow, colour[1] * glow, colour[2] * glow, colour[3]);
     ubo->q3_quad_active = 1;
+}
+
+/* 'MAT RELOAD' AND THE STAGES' OWN IMAGES. A stage program loads its pictures
+   by name (load_stage_image -> IMG_FindFile), so a rebuild finds the copy
+   already in memory, and the material's own refresh (material_refresh_images)
+   only looks at its seven maps. A stage texture edited in a paint program and
+   saved - a frame, a glow, a stage<N>_map or stage<N>_texture_* file - was
+   never read again until a restart (Matt, 11-18: "mat reload doesn't catch the
+   texture stages"). The images reload in place, so the programs keep pointing
+   at them; the lights' CPU copies of the pixels (light_image) are dropped so
+   the glows are measured again. */
+static int refresh_stage(q3pstage_t *ps)
+{
+    int reloaded = 0;
+
+    for (int f = 0; f < ps->num_images && f < Q3S_MAX_ANIMFRAMES; f++)
+        if (ps->images[f] && IMG_ReloadIfModified(ps->images[f]))
+            reloaded++;
+    for (int m = 0; m < 3; m++)
+        if (ps->prop_images[m] && IMG_ReloadIfModified(ps->prop_images[m]))
+            reloaded++;
+    return reloaded;
+}
+
+int vkpt_q3_refresh_stage_images(void)
+{
+    int reloaded = 0;
+
+    for (int i = 0; i < MAX_Q3_PROGRAMS; i++) {
+        q3program_t *p = &programs[i];
+
+        if (!p->in_use)
+            continue;
+        for (int s = 0; s < p->num_stages && s < Q3P_MAX_STAGES; s++)
+            reloaded += refresh_stage(&p->stages[s]);
+    }
+    for (int i = 0; i < q3_sky.num_layers && i < Q3_SKY_MAX_LAYERS; i++)
+        reloaded += refresh_stage(&q3_sky.layers[i]);
+    reloaded += refresh_stage(&q3_quad);
+
+    if (reloaded)
+        vkpt_q3_light_cache_clear();
+    return reloaded;
 }

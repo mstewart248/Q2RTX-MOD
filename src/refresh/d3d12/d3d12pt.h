@@ -491,6 +491,9 @@ typedef struct {
     bool                caustics;           // pt_caustics: direct lighting's variant
     bool                sharc_active;       // vkpt_frame_prep_t's: the radiance cache runs
     bool                sharc_clear;        // ...and starts from empty
+    bool                caustics_active;    // vkpt_frame_prep_t's: pt_caustics 2's photon pass runs
+    bool                caustics_clear;     // ...and its grid starts from empty
+    uint32_t            caustic_photons;    // ...with this many photons
     bool                bloom;              // vkpt_bloom_will_run
     float               bloom_argument_scale, bloom_normalization_scale;    // vkpt_bloom_blur_params
     int                 bloom_num_samples;

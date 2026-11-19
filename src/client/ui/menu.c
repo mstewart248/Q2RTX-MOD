@@ -2650,15 +2650,16 @@ menuSound_t Menu_SelectItem(menuFrameWork_t *s)
     //case MTYPE_SLIDER:
     //    return Slider_DoSlide((menuSlider_t *)item, 1);
     case MTYPE_PAIRS:
+    case MTYPE_SPINCONTROL:
         // a row that opens something: Enter runs its command, the arrows and
-        // the wheel still step its value
+        // the wheel still step its value (`pairs --command`, and Player
+        // Setup's model row when it opens the model grid)
         if (((menuSpinControl_t *)item)->cmd) {
             Cbuf_AddText(&cmd_buffer, ((menuSpinControl_t *)item)->cmd);
             Cbuf_AddText(&cmd_buffer, "\n");
             return QMS_IN;
         }
         // fall through
-    case MTYPE_SPINCONTROL:
     case MTYPE_BITFIELD:
     case MTYPE_VALUES:
     case MTYPE_STRINGS:

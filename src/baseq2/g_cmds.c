@@ -216,6 +216,10 @@ void Cmd_Give_f(edict_t *ent)
                 continue;
             if (!(it->flags & IT_WEAPON))
                 continue;
+            // Quake III's guns only in a game with them, and only to a
+            // player who plays with them (g_q3weap.c)
+            if (!!(it->flags & IT_Q3) != Q3W_PlayerQ3(ent))
+                continue;
             ent->client->pers.inventory[i] += 1;
             // Load it now, as a map's own weapons are. Otherwise each gun's
             // view model was registered on its first switch, its projectile
@@ -233,6 +237,8 @@ void Cmd_Give_f(edict_t *ent)
             if (!it->pickup)
                 continue;
             if (!(it->flags & IT_AMMO))
+                continue;
+            if ((it->flags & IT_Q3) && !Q3W_PlayerQ3(ent))
                 continue;
             Add_Ammo(ent, it, 1000);
             PrecacheItem(it);   // grenades, traps, tesla, prox are used as weapons
@@ -283,10 +289,10 @@ void Cmd_Give_f(edict_t *ent)
         return;
     }
 
-    it = FindItem(name);
+    it = Q3W_FindItem(ent, name);
     if (!it) {
         name = gi.argv(1);
-        it = FindItem(name);
+        it = Q3W_FindItem(ent, name);
         if (!it) {
             gi.cprintf(ent, PRINT_HIGH, "unknown item\n");
             return;
@@ -758,7 +764,7 @@ void Cmd_Use_f(edict_t *ent)
     char        *s;
 
     s = gi.args();
-    it = FindItem(s);
+    it = Q3W_FindItem(ent, s);     // the player's own game's gun (g_q3weap.c)
     if (!it) {
         gi.cprintf(ent, PRINT_HIGH, "unknown item: %s\n", s);
         return;
@@ -791,7 +797,7 @@ void Cmd_Drop_f(edict_t *ent)
     char        *s;
 
     s = gi.args();
-    it = FindItem(s);
+    it = Q3W_FindItem(ent, s);     // the player's own game's gun (g_q3weap.c)
     if (!it) {
         gi.cprintf(ent, PRINT_HIGH, "unknown item: %s\n", s);
         return;

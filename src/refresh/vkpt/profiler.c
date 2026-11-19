@@ -32,6 +32,7 @@ extern cvar_t *cvar_profiler_scale;
 extern cvar_t *cvar_pt_reflect_refract;
 extern cvar_t *cvar_pt_fog_froxel;
 extern cvar_t *cvar_pt_sharc;
+extern cvar_t *cvar_pt_caustics;
 extern cvar_t *cvar_pt_restir_gi;
 extern cvar_t *cvar_profiler_samples;
 
@@ -484,6 +485,7 @@ category_of(int idx)
 	case PROFILER_FOG_FROXEL_INTEGRATE:
 		return CAT_VOLUMETRICS;
 	case PROFILER_DIRECT_LIGHTING:
+	case PROFILER_CAUSTIC_PHOTONS:
 		return CAT_DIRECT;
 	case PROFILER_INDIRECT_LIGHTING:
 	case PROFILER_INDIRECT_LIGHTING_0:
@@ -2425,6 +2427,7 @@ draw_profiler(int enable_asvgf, const char *title)
 		PROFILER_DO(PROFILER_ASVGF_GRADIENT_REPROJECT, 1);
 	}
 	if (cvar_pt_sharc->value != 0) { PROFILER_DO(PROFILER_SHARC, 1); }
+	if (cvar_pt_caustics->integer == 2) { PROFILER_DO(PROFILER_CAUSTIC_PHOTONS, 1); }
 	PROFILER_DO(PROFILER_DIRECT_LIGHTING, 1);
 	PROFILER_DO(PROFILER_INDIRECT_LIGHTING, 1);
 	PROFILER_DO(PROFILER_INDIRECT_LIGHTING_0, 2);

@@ -132,6 +132,7 @@ cvar_t *cvar_pt_fog_lava = NULL;
 cvar_t *cvar_pt_accumulation_rendering = NULL;
 cvar_t *cvar_pt_accumulation_rendering_framenum = NULL;
 cvar_t *cvar_pt_accumulation_stats = NULL;
+cvar_t *cvar_pt_accumulation_keep_averaging = NULL;
 cvar_t *cvar_pt_accumulation_bypass_dlss = NULL;
 cvar_t *cvar_pt_projection = NULL;
 cvar_t *cvar_pt_dof = NULL;
@@ -175,6 +176,7 @@ cvar_t* cvar_min_driver_version_nvidia = NULL;
 cvar_t* cvar_min_driver_version_amd = NULL;
 cvar_t *cvar_ray_tracing_api = NULL;
 cvar_t *cvar_vk_validation = NULL;
+cvar_t *cvar_tm_exposure_speed_bots = NULL;	// prepare_ubo: the eye's speed-up in a Bot Match
 
 extern uiStatic_t uis;
 
@@ -560,6 +562,8 @@ bool vkpt_dlss5_take_history_reset(void)
    a new map, and whenever it has been off (disabled, or photo mode) - entries from
    before that describe lighting that may no longer exist. */
 static bool sharc_clear_pending = true;
+// pt_caustics 2's grid (caustics.c), the same rule: empty after a map load or a spell off
+static bool caustics_clear_pending = true;
 
 /* dlss_reset_history, consumed by the frame that evaluates DLSS (both renderers):
    whether it starts its history afresh.
@@ -3703,6 +3707,44 @@ static pbr_material_t const * get_mesh_material(const entity_t* entity, const mo
 	return mesh->materials[skinnum];
 }
 
+// The pass vkpt_model_vbo_layout put a static model's mesh in (vertex_buffer.c):
+// a see-through kind first, then masked, else opaque
+static int static_layout_pass(const pbr_material_t* mat)
+{
+	if (!mat)
+		return 0;
+	if (MAT_IsTransparent(mat->flags))
+		return 2;
+	if (MAT_IsMasked(mat->flags))
+		return 1;
+	return 0;
+}
+
+/* WHETHER THIS SKIN FITS THE STATIC BLASES. A static model's opaque, transparent
+   and masked BLASes were laid out once, by each mesh's FIRST skin, and the meshes
+   of a pass take instance slots in order. A skin that moves a mesh to another
+   pass takes it out of that order: every mesh after it in the BLAS reads the
+   wrong slot, or one nobody filled. Quake III's Sarge in krusade or roderic
+   hides his cigar with the see-through "null" shader where every other skin has
+   an opaque cigar, and his head - a one-frame md3, so static - vanished with it
+   (Matt, 2026-11-17). Such an entity takes the animated path, which goes by its
+   own skin's materials, mesh by mesh. */
+static bool static_layout_fits_skin(const entity_t* entity, const model_t* model)
+{
+	for (int i = 0; i < model->nummeshes; i++)
+	{
+		const maliasmesh_t* mesh = model->meshes + i;
+		const pbr_material_t* mat = get_mesh_material(entity, model, mesh);
+		// a mesh the loop skips (compute_mesh_material_flags) leaves its slot
+		// out of the order as well: Hunter's harpy feathers, nodraw
+		if (!mat || MAT_IsKind(mat->flags, MATERIAL_KIND_INVISIBLE))
+			return false;
+		if (static_layout_pass(mat) != static_layout_pass(mesh->materials[0]))
+			return false;
+	}
+	return true;
+}
+
 /* The mine wall lamps get a cylinder light along the tube (process_regular_entity)
    and a light-flagged material so GI rays don't count that tube twice
    (fill_model_instance). light_mine2 always has, in Q2RTX's green. light_mine1
@@ -3962,6 +4004,14 @@ add_dlights(const dlight_t* dlights, int num_dlights, light_poly_t* light_list, 
 		}
 		pos_hash ^= pos_hash >> 15;
 
+		// a light that moves but stays one light says who it is (dlight_t.id:
+		// the Quake III skull lamps), and keeps its reservoir as it goes
+		if (dlight->id)
+		{
+			pos_hash = dlight->id * 2654435761u;
+			pos_hash ^= pos_hash >> 15;
+		}
+
 		entity_hash_t hash;
 		hash.entity = (pos_hash & 0x3FFF) | 1; // nonzero: 0 means "no identity"
 		hash.mesh = (pos_hash >> 14) & 0xFF;
@@ -4202,6 +4252,7 @@ static void process_regular_entity(
 	int current_instance_index = *instance_count;
 	int current_animated_index = *animated_count;
 	int current_num_instanced_prim = *num_instanced_prim;
+	bool caustic_listed = false;
 
 	if (contains_transparent)
 		*contains_transparent = false;
@@ -4234,7 +4285,8 @@ static void process_regular_entity(
 	// model's BLASes are split by those - none of them holds it as transparent -
 	// so it takes the animated path, which goes by the kind given here.
 	const bool cloak = (entity->flags & RF_CLOAK) != 0;
-	bool use_static_blas = vkpt_model_is_static(model) && (mesh_filter != MESH_FILTER_ALL) && !cloak;
+	bool use_static_blas = vkpt_model_is_static(model) && (mesh_filter != MESH_FILTER_ALL) && !cloak
+		&& static_layout_fits_skin(entity, model);
 
 	const model_vbo_t* vbo = vkpt_get_model_vbo(model);
 
@@ -4342,6 +4394,14 @@ static void process_regular_entity(
 				continue;
 		}
 
+		// caustic glass on a model (the Q3 health orbs): pt_caustics 2 traces
+		// photons through it - once per entity, by its bounding sphere
+		if (!caustic_listed && !is_viewer_weapon && vkpt_caustics_material(get_mesh_material(entity, model, mesh)))
+		{
+			vkpt_caustics_add_model(entity, model, transform);
+			caustic_listed = true;
+		}
+
 		entity_hash_t hash;
 		hash.entity = entity->id;
 		hash.model = entity->model;
@@ -4409,6 +4469,7 @@ static void
 prepare_entities(EntityUploadInfo* upload_info)
 {
 	entity_frame_num = !entity_frame_num;
+	vkpt_caustics_begin_frame();
 
 	InstanceBuffer* instance_buffer = &vkpt_refdef.uniform_instance_buffer;
 	
@@ -5409,7 +5470,17 @@ evaluate_reference_mode(reference_mode_t* ref_mode)
 		ref_mode->rr_denoiser = false;
 		// The reference gets at least two bounces, and as many as gameplay uses.
 		ref_mode->num_bounce_rays = max(2, min(8, round(cvar_pt_num_bounce_rays->value)));
-		ref_mode->temporal_blend_factor = 1.f / min(max(1, num_accumulated_frames - num_warmup_frames), num_frames_to_accumulate);
+		/* pt_accumulation_keep_averaging (default 1): a plain average of every frame
+		   since the photo started, so the image keeps settling for as long as it is
+		   left. pt_accumulation_rendering_framenum is then only when the progress text
+		   reads 100%. 0 = the old (stock) rule: past framenum each new frame weighs
+		   1/framenum, a rolling window, so anything rarer than about once per
+		   framenum frames per pixel stays as specks for good - Matt, 2026-11-17:
+		   glass "never converges" in photo mode (mgu3m3 monitors, q3dm0 bulbs). */
+		int blend_frames = max(1, num_accumulated_frames - num_warmup_frames);
+		if (!cvar_pt_accumulation_keep_averaging->integer)
+			blend_frames = min(blend_frames, num_frames_to_accumulate);
+		ref_mode->temporal_blend_factor = 1.f / (float)blend_frames;
 		ref_mode->reflect_refract = max(4, cvar_pt_reflect_refract->integer);
 
 		switch (cvar_pt_accumulation_rendering->integer)
@@ -5624,6 +5695,23 @@ sparse_rendering_rate(const reference_mode_t *ref_mode, const QVKUniformBuffer_t
 		last_reason = reason;
 	}
 	return rate;
+}
+
+/*
+A Bot Match is on screen (for tm_exposure_speed_bots): a local game the Bot
+Match menu started (bot_match 1 - the start-server and campaign actions set
+it 0). Against people everyone's eye is equally slow, so only here does it
+matter.
+*/
+static bool R_BotMatchView(void)
+{
+	static cvar_t *bot_match;
+
+	if (cls.state != ca_active || !sv_running->integer)
+		return false;
+	if (!bot_match)
+		bot_match = Cvar_FindVar("bot_match");
+	return bot_match && bot_match->integer;
 }
 
 static void
@@ -6245,6 +6333,19 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 	UBO_CVAR_LIST
 #undef UBO_CVAR_DO
 
+	// tm_exposure_speed_bots: in a Bot Match the eye adapts this many times
+	// faster, both ways. An explosion's flash pulls the exposure down within a
+	// few frames, and the slow way back (tm_exposure_speed_down 1, a one-second
+	// time constant) left the picture dark for a second or two after it, while
+	// the bots, which see the world and not the picture, fight on (Matt, 11-17).
+	// Every adaptation keeps its shape, just compressed in time.
+	if (R_BotMatchView()) {
+		float k = Cvar_ClampValue(cvar_tm_exposure_speed_bots, 1, 20);
+
+		ubo->tm_exposure_speed_up *= k;
+		ubo->tm_exposure_speed_down *= k;
+	}
+
 	// A Quake III sun lights the haze as brightly as at pt_q3_sun_scale 0.1 (Matt liked
 	// q3dm1's fog; only the light on the ground was too bright). Skybox mode only: that
 	// is where the map's own sun is used (vkpt_evaluate_sun_light).
@@ -6677,14 +6778,29 @@ static bool q3_content_present(const QVKUniformBuffer_t *ubo)
 	return false;
 }
 
-static void update_q3_shaders(const QVKUniformBuffer_t *ubo)
+/* A FRAME WITH NO WORLD - the player setup preview, the model grid - decides too,
+   but only ever to switch the code ON, for its models' programs. It used to be
+   left out altogether, so the menu drew whatever the last world frame had chosen:
+   with no map, or a Quake II map or demo behind it, the code was out, and every
+   Quake III skin drawn by a program showed its still picture instead - Sarge's
+   krusade all fire (the stage under the skin), Phobos his scrolling fx layer,
+   Uriel's and Xaero's faces their glow over the whole head, Crash's visor and
+   Klesk's eyes frozen (Matt, 2026-11-17). It never switches OFF: a menu over a
+   Quake III map would otherwise fight the world's frames, rebuilding the
+   pipelines twice a frame. The two agree anyway, as vkpt_q3_materials_in_use
+   counts every registered material, the preview's included. */
+static void update_q3_shaders(const QVKUniformBuffer_t *ubo, bool render_world)
 {
 	static cvar_t *cvar_pt_q3_shaders = NULL;
 	if (!cvar_pt_q3_shaders)
 		cvar_pt_q3_shaders = Cvar_Get("pt_q3_shaders", "1", 0);
 
 	const int mode = cvar_pt_q3_shaders->integer;
-	const bool want = mode >= 2 || (mode == 1 && q3_content_present(ubo));
+	bool want;
+	if (render_world)
+		want = mode >= 2 || (mode == 1 && q3_content_present(ubo));
+	else
+		want = mode >= 2 || (mode == 1 && (vkpt_spec_q3 != 0 || vkpt_q3_materials_in_use));
 	if ((vkpt_spec_q3 != 0) == want || !vkpt_prep_backend->set_q3_shaders)
 		return;
 	vkpt_prep_backend->set_q3_shaders(want);
@@ -6703,6 +6819,10 @@ vkpt_prepare_frame(refdef_t *fd, int waterLevel, vkpt_frame_prep_t *prep)
 	vkpt_refdef.fd = fd;
 	bool render_world = (fd->rdflags & RDF_NOWORLDMODEL) == 0;
 	prep->render_world = render_world;
+
+	// what the gun in your hands is made of, for 'mat view_weapon' (material.c)
+	if (render_world)
+		MAT_NoteViewWeapon(fd);
 
 	// Quake III surfaces that move (q3deform.c) are entities of their own, added
 	// to the client's list for this frame - the client sets it afresh every frame
@@ -7059,8 +7179,7 @@ vkpt_prepare_frame(refdef_t *fd, int waterLevel, vkpt_frame_prep_t *prep)
 
 	// the pipelines with or without the Quake III code, from what this frame has
 	// (after the material table, the sky, the sun and the fog brushes are in)
-	if (render_world)
-		update_q3_shaders(ubo);
+	update_q3_shaders(ubo, render_world);
 
 	prep->frame_time = frame_time;
 	prep->frame_wallclock_time = frame_wallclock_time;
@@ -7080,6 +7199,10 @@ vkpt_prepare_frame(refdef_t *fd, int waterLevel, vkpt_frame_prep_t *prep)
 	prep->sharc_active = sharc_active(&ref_mode);
 	prep->sharc_clear = sharc_clear_pending;
 	sharc_clear_pending = !prep->sharc_active;
+	// photon caustics: decided by the emitter list vkpt_light_buffer_upload_to_staging built
+	prep->caustics_active = vkpt_caustics_frame(&prep->caustic_photons);
+	prep->caustics_clear = caustics_clear_pending;
+	caustics_clear_pending = !prep->caustics_active;
 	return true;
 }
 
@@ -7663,6 +7786,9 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 
 		if (prep.sharc_active)
 			vkpt_pt_sharc_update(trace_cmd_buf, prep.sharc_clear);
+
+		if (prep.caustics_active)
+			vkpt_pt_caustic_photons(trace_cmd_buf, prep.caustics_clear, prep.caustic_photons);
 
 		vkpt_pt_trace_lighting(trace_cmd_buf, ref_mode.num_bounce_rays);
 
@@ -9871,6 +9997,8 @@ vkpt_init_frontend(void)
 	// time to reach pt_accumulation_rendering_framenum) that does NOT fade out
 	// with the progress text. Toggle it off before taking the shot.
 	cvar_pt_accumulation_stats = Cvar_Get("pt_accumulation_stats", "0", CVAR_ARCHIVE);
+	// see evaluate_reference_mode: 1 = photo mode keeps averaging past framenum
+	cvar_pt_accumulation_keep_averaging = Cvar_Get("pt_accumulation_keep_averaging", "1", 0);
 
 	// 1 -> photo mode skips DLSS and shows the accumulated frame as traced (default);
 	// 0 -> photo mode keeps running DLSS, as it used to. See accumulation_bypasses_dlss().
@@ -9978,6 +10106,10 @@ vkpt_init_frontend(void)
 	UBO_CVAR_LIST
 #undef UBO_CVAR_LIST
 
+	// 1 = the same eye as everywhere else; the video menu's "eye adjustment vs
+	// bots" picks a faster one (prepare_ubo)
+	cvar_tm_exposure_speed_bots = Cvar_Get("tm_exposure_speed_bots", "1", CVAR_ARCHIVE);
+
 	cvar_flt_temporal_hf->changed = temporal_cvar_changed;
 	cvar_flt_temporal_lf->changed = temporal_cvar_changed;
 	cvar_flt_temporal_spec->changed = temporal_cvar_changed;
@@ -10007,6 +10139,7 @@ vkpt_init_frontend(void)
 	// performance choices Matt keeps across launches (11-12: pt_bounce_cull did not save)
 	cvar_pt_bounce_cull->flags |= CVAR_ARCHIVE;
 	cvar_pt_sparse->flags |= CVAR_ARCHIVE;
+	cvar_pt_caustics_photons->flags |= CVAR_ARCHIVE; // the video menu's "caustic photons" (pt_caustics 2)
 	// the HDR page's settings (archived there) and the screen's read-only figures
 	vkpt_hdr_init_cvars();
 
@@ -10952,6 +11085,7 @@ vkpt_begin_registration(const char *name)
 	vkpt_prep_backend->load_world(&vkpt_refdef.bsp_mesh_world, bsp);
 	Com_LoadMark("world GPU");
 	sharc_clear_pending = true;     // the old map's keys would light the new one
+	caustics_clear_pending = true;  // and the old map's caustics
 
 	// Blood's worst-case memory now, while the map loads, rather than on the
 	// first droplet - the first monster shot used to hitch (vkpt_blood_preallocate).

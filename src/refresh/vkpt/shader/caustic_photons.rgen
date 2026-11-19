@@ -1,0 +1,304 @@
+/*
+Copyright (C) 2026
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along
+with this program; if not, write to the Free Software Foundation, Inc.,
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+*/
+
+// ========================================================================== //
+// pt_caustics 2: shoots this frame's photons (see caustics.h).
+//
+// One thread per photon, CAUSTIC_LAUNCH_WIDTH wide. The photon's emitter is
+// found by its index (the emitters' photon ranges are consecutive), its light
+// sampled the way NEE sees that light, and the photon aimed at the emitter's
+// glass: uniformly over the cone the glass's bounding sphere fills from the
+// light, or every way when the light is inside it.
+//
+// HOW MUCH LIGHT A PHOTON CARRIES. What NEE gives each kind of light (sample_lights
+// in light_lists.h; diffuse = radiance * NdotL / pi in get_direct_illumination)
+// read as an emitter:
+//   triangle  radiance C * sqrt(cos) on its front (the cross(p1-p0, p2-p0) side):
+//             1 / pdfw is the solid angle, times the sqrt(LdotNL) spotlight term
+//   sphere    radiance C / pi * sqrt(cos) over its surface: 1 / pdfw is the solid
+//             angle / pi (2 (1 - cos)), and the point is drawn on the disc facing
+//             the shading point with the same sqrt(cos) - so it sends out
+//             0.8 C r^2 per unit solid angle in every direction
+//   spot      a point of intensity 2 C falloff(cos) sqrt(cos) (1 / pdfw is
+//             2 falloff / d^2)
+// all times the light style. A photon carries that light through its share of the
+// cone (or of everything), divided by the emitter's EXPECTED photon count: the
+// count itself is rounded at random on the CPU, so the sum stays exact on average.
+//
+// Where it goes. Caustic glass (kind GLASS, caustic or caustic_ripple > 0) refracts
+// it at the interpolated vertex normal - entering where that normal faces the
+// photon, leaving where it faces away, so a light inside a closed glass starts
+// inside it, as glass_caustic has always assumed - with IOR 1 + 0.52 * caustic,
+// and reflects it instead with the Fresnel chance or past the critical angle. The
+// glass's colour tints it once, at its first caustic glass, as the shadow ray's
+// one glass hit does. Any other see-through surface lets it by unchanged. At the
+// first ordinary surface it lands, if it went through caustic glass at all - one
+// that did not is plain direct light, which NEE already gives. Lava and sky end it.
+//
+// Only the emitter that OWNS its first caustic glass hit keeps a photon: the first
+// of the light's emitters (caustics.h, caustic_owner) whose sphere holds that hit.
+// Two pieces of glass near one light have overlapping cones, and the same light
+// through the same glass must not be counted from both. trace_caustic_ray takes
+// the diffuse out of the shadow ray by exactly the same test.
+// ========================================================================== //
+
+#version 460
+#extension GL_GOOGLE_include_directive    : enable
+
+#include "path_tracer_rgen.h"
+#include "caustics.h"
+
+// glass surfaces one photon may be bent or reflected at
+#define CAUSTIC_MAX_EVENTS 10
+
+uint photon_rng;
+
+float photon_rand()
+{
+	photon_rng = caustic_pcg(photon_rng);
+	return float(photon_rng >> 8) * (1.0 / 16777216.0);
+}
+
+// uniform over the cone round `axis` whose edge is at cosine `cos_max` (-1: everywhere)
+vec3 photon_sample_cone(vec3 axis, float cos_max)
+{
+	float c = mix(1.0, cos_max, photon_rand());
+	float s = sqrt(max(0.0, 1.0 - c * c));
+	float phi = 2.0 * M_PI * photon_rand();
+	mat3 onb = construct_ONB_frisvad(axis);
+	return normalize(onb[0] * (s * cos(phi)) + onb[2] * (s * sin(phi)) + axis * c);
+}
+
+void
+main()
+{
+	if (!caustics_photons_active())
+		return;
+
+	uvec2 launch = rt_LaunchID.xy;
+	if (launch.x >= CAUSTIC_LAUNCH_WIDTH)
+		return;
+
+	uint idx = launch.y * CAUSTIC_LAUNCH_WIDTH + launch.x;
+	uint num_emitters = min(light_buffer.caustic_header.x, MAX_CAUSTIC_EMITTERS);
+	if (idx >= light_buffer.caustic_header.y || num_emitters == 0u)
+		return;
+
+	// the last emitter whose range starts at or before this photon
+	uint lo = 0u, hi = num_emitters - 1u;
+	while (lo < hi)
+	{
+		uint mid = (lo + hi + 1u) >> 1;
+		if (caustic_emitter_info(mid).y <= idx)
+			lo = mid;
+		else
+			hi = mid - 1u;
+	}
+
+	uint emitter = lo;
+	uvec3 info = caustic_emitter_info(emitter);
+	if (idx < info.y || idx >= info.y + info.z)
+		return;
+
+	float expected = caustic_emitter_expected(emitter);
+	vec4 sphere = caustic_emitter_sphere(emitter);
+	if (!(expected > 0.0))
+		return;
+
+	photon_rng = caustic_pcg(idx ^ caustic_pcg(global_ubo.current_frame_idx * 0x9e3779b9u + 0x632be5abu));
+
+	LightPolygon light = get_light_polygon(info.x);
+	if (light.color.r < 0)
+		return; // a sky portal - caustics.c never lists one
+
+	vec3 light_center;
+	float light_radius;
+	caustic_light_bounds(light, light_center, light_radius);
+
+	// the cone the glass fills from the light, widened by the light's own size
+	// (caustic_light_inside - the same test caustics.c makes)
+	vec3 to_glass = sphere.xyz - light_center;
+	float dist = length(to_glass);
+	bool inside = caustic_light_inside(light, sphere);
+	float cos_max = inside ? -1.0 : sqrt(max(0.0, 1.0 - square((sphere.w + light_radius) / dist)));
+	float solid_angle = 2.0 * M_PI * (1.0 - cos_max);
+	vec3 axis = inside ? vec3(0, 0, 1) : to_glass / dist;
+
+	vec3 color = light.color * light.light_style_scale;
+	vec3 origin, direction, flux;
+	uint type = uint(light.type);
+
+	if (type == DYNLIGHT_SPHERE)
+	{
+		direction = photon_sample_cone(axis, cos_max);
+		// The point on the disc facing that way, drawn with density sqrt(cos) - the
+		// sphere's own falloff - so every photon of it carries the same light:
+		// with s = rho^2 uniform-area, density (1 - s)^(1/4), drawn as below.
+		float rho2 = 1.0 - pow(1.0 - photon_rand(), 0.8);
+		float rho = sqrt(max(rho2, 0.0));
+		float phi = 2.0 * M_PI * photon_rand();
+		mat3 onb = construct_ONB_frisvad(direction);
+		origin = light_center + (onb[0] * (rho * cos(phi)) + onb[2] * (rho * sin(phi))
+			+ direction * sqrt(max(1.0 - rho2, 0.0))) * light_radius;
+		flux = color * (0.8 * light_radius * light_radius * solid_angle / expected);
+	}
+	else if (type == DYNLIGHT_SPOT)
+	{
+		direction = photon_sample_cone(axis, cos_max);
+		vec3 spot_axis = normalize(light.positions[2]);
+		float cos_theta = dot(direction, spot_axis);
+		float falloff = spotlight_falloff(light.positions, light.spot_emission_profile, cos_theta);
+		mat3 onb = construct_ONB_frisvad(spot_axis);
+		vec2 disk = sample_disk(vec2(photon_rand(), photon_rand()));
+		origin = light_center + (onb[0] * disk.x + onb[2] * disk.y) * light_radius;
+		flux = color * (2.0 * falloff * sqrt(max(cos_theta, 0.0)) * solid_angle / expected);
+	}
+	else // DYNLIGHT_POLYGON
+	{
+		vec3 g = cross(light.positions[1] - light.positions[0], light.positions[2] - light.positions[0]);
+		float g_len = length(g);
+		if (!(g_len > 0.0))
+			return;
+		vec3 light_normal = g / g_len;
+		float area = 0.5 * g_len;
+
+		origin = light.positions * sample_triangle(vec2(photon_rand(), photon_rand()));
+
+		if (inside)
+		{
+			// every way out of its front, drawn as its light goes: density cos^1.5
+			// (sqrt(cos) radiance times cos), so every photon carries the same light,
+			// all of it being 0.8 pi C area
+			float mu = pow(photon_rand(), 0.4);
+			float s = sqrt(max(0.0, 1.0 - mu * mu));
+			float phi = 2.0 * M_PI * photon_rand();
+			mat3 onb = construct_ONB_frisvad(light_normal);
+			direction = normalize(onb[0] * (s * cos(phi)) + onb[2] * (s * sin(phi)) + light_normal * mu);
+			flux = color * (0.8 * M_PI * area / expected);
+		}
+		else
+		{
+			direction = photon_sample_cone(axis, cos_max);
+			float cos_light = dot(light_normal, direction);
+			if (cos_light <= 0.0)
+				return; // the glass is (partly) behind the triangle
+			flux = color * (sqrt(cos_light) * cos_light * area * solid_angle / expected);
+		}
+
+		origin += light_normal * 0.01;
+	}
+
+	if (!(luminance(flux) > 0.0) || any(isnan(flux)) || any(isinf(flux)))
+		return;
+
+	bool through_glass = false;
+	vec3 position = origin;
+
+	for (int event = 0; event < CAUSTIC_MAX_EVENTS; event++)
+	{
+		Ray ray;
+		ray.origin = position;
+		ray.direction = direction;
+		ray.t_min = (event == 0) ? 0.0 : 0.01;
+		ray.t_max = 10000.0;
+
+		// both faces: a photon leaves glass through its back faces
+		trace_geometry_ray(ray, false, AS_FLAG_OPAQUE | AS_FLAG_TRANSPARENT);
+
+		if (!found_intersection(ray_payload_geometry))
+			return;
+
+		Triangle triangle = get_hit_triangle(ray_payload_geometry);
+		uint material_id = triangle.material_id;
+
+		if (is_sky(material_id))
+			return;
+
+		vec3 bary = get_hit_barycentric(ray_payload_geometry);
+		vec3 hit_position = triangle.positions * bary;
+		MaterialInfo minfo = get_material_info(material_id);
+
+		if (is_glass(material_id) && (minfo.glass_caustic > 0.0 || minfo.caustic_ripple > 0.0))
+		{
+			if (!through_glass)
+			{
+				if (caustic_owner(info.x, hit_position) != int(emitter))
+					return; // another emitter of this light has this glass
+
+				through_glass = true;
+
+				// the glass's colour, once - as trace_caustic_ray's one glass hit
+				vec2 tex_coord = triangle.tex_coords * bary;
+				vec3 base_color = vec3(minfo.base_factor);
+				if (minfo.alpha_glass)
+					base_color = alpha_glass_solid(minfo, tex_coord, vec2(0), vec2(0), 2) ? vec3(0) : base_color;
+				else if (minfo.base_texture > 0)
+					base_color *= global_textureLod(minfo.base_texture, tex_coord, 2).rgb;
+				flux *= clamp(base_color, vec3(0), vec3(1));
+
+				if (!(luminance(flux) > 0.0))
+					return;
+			}
+
+			vec3 normal = normalize(triangle.normals * bary);
+			bool entering = dot(normal, direction) < 0.0;
+			if (!entering)
+				normal = -normal; // now against the photon either way
+
+			float ior = 1.0 + 0.52 * minfo.glass_caustic;
+			float eta = entering ? 1.0 / ior : ior;
+
+			vec3 refracted = refract(direction, normal, eta);
+			float reflectance = 1.0; // total internal reflection
+			if (dot(refracted, refracted) > 0.0)
+			{
+				float ci = -dot(direction, normal);
+				float ct = -dot(refracted, normal);
+				float rs = (eta * ci - ct) / (eta * ci + ct);
+				float rp = (ci - eta * ct) / (ci + eta * ct);
+				reflectance = 0.5 * (rs * rs + rp * rp);
+			}
+
+			direction = (photon_rand() < reflectance) ? reflect(direction, normal) : normalize(refracted);
+			position = hit_position;
+			continue;
+		}
+
+		// any other see-through surface: the light goes by as through nothing
+		if (is_glass(material_id) || is_water(material_id) || is_slime(material_id)
+			|| is_transparent(material_id) || triangle.alpha < 1.0)
+		{
+			position = hit_position;
+			continue;
+		}
+
+		// an ordinary surface - it lands here, if it is caustic light at all
+		if (!through_glass || is_lava(material_id))
+			return;
+
+		vec3 flat_normal = normalize(cross(
+			triangle.positions[1] - triangle.positions[0],
+			triangle.positions[2] - triangle.positions[0]));
+		if (dot(flat_normal, direction) > 0.0)
+			flat_normal = -flat_normal; // the side the light arrives on
+
+		// each level divides by its own cell's area (caustics.h)
+		caustic_deposit(hit_position, flat_normal, flux * (1.0 / M_PI), photon_rand());
+		return;
+	}
+}

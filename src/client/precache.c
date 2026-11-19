@@ -98,6 +98,28 @@ default_model:
 
 /*
 ================
+CL_RegisterVWep
+
+Vwep `i` for a body whose weapons are in players/<dir>/. A Quake III gun's
+(the bot match's g_q3_weapons: "models/weapons2/<gun>/<gun>.md3") is its
+own model in a Quake III body's hand, and its Quake II counterpart in a
+Quake II body's, whose md2 has no hand to hold it.
+================
+*/
+static qhandle_t CL_RegisterVWep(const char *dir, int i, bool q3body)
+{
+    char        filename[MAX_QPATH];
+    const char  *name = cl.weaponModels[i];
+    const char  *q2 = CL_Q3W_VWepFallback(name);
+
+    if (q2 && q3body)
+        return R_RegisterModel(name);
+    Q_concat(filename, sizeof(filename), "players/", dir, "/", q2 ? q2 : name);
+    return R_RegisterModel(filename);
+}
+
+/*
+================
 CL_LoadClientinfo
 
 ================
@@ -109,10 +131,38 @@ void CL_LoadClientinfo(clientinfo_t *ci, const char *s)
     char        skin_name[MAX_QPATH];
     char        model_filename[MAX_QPATH];
     char        skin_filename[MAX_QPATH];
-    char        weapon_filename[MAX_QPATH];
     char        icon_filename[MAX_QPATH];
 
     CL_ParsePlayerSkin(ci->name, model_name, skin_name, s);
+
+    memset(&ci->q3, 0, sizeof(ci->q3));
+
+    // A Quake III model (baseq3's models/players/<model>/, when Quake II has
+    // no model of that name): its three parts in the skin asked for, and the
+    // Quake II male's weapons for its hand - see q3player.c. A skin it does
+    // not have is its "default"; a model we do not have goes on below to the
+    // Quake II male, as any missing model does.
+    if (ci != &cl.baseclientinfo && CL_Q3PlayersEnabled() && Q3P_Register(&ci->q3, model_name, skin_name)) {
+        Q_strlcpy(skin_name, Q3P_SkinName(ci->q3.q3, ci->q3.skin), sizeof(skin_name));
+
+        ci->model = ci->q3.lower;
+        ci->skin = 0;
+        for (i = 0; i < cl.numWeaponModels; i++)
+            ci->weaponmodel[i] = CL_RegisterVWep("male", i, true);
+
+        Q_concat(icon_filename, sizeof(icon_filename),
+                 "/models/players/", model_name, "/icon_", skin_name, ".tga");
+        ci->icon = R_RegisterPic2(icon_filename);
+        if (!ci->icon) {
+            Q_concat(icon_filename, sizeof(icon_filename),
+                     "/models/players/", model_name, "/icon_default.tga");
+            ci->icon = R_RegisterPic2(icon_filename);
+        }
+
+        Q_strlcpy(ci->model_name, Q3P_ModelName(ci->q3.q3), sizeof(ci->model_name));
+        Q_strlcpy(ci->skin_name, skin_name, sizeof(ci->skin_name));
+        return;
+    }
 
     // model file
     Q_concat(model_filename, sizeof(model_filename),
@@ -162,14 +212,10 @@ void CL_LoadClientinfo(clientinfo_t *ci, const char *s)
 
     // weapon file
     for (i = 0; i < cl.numWeaponModels; i++) {
-        Q_concat(weapon_filename, sizeof(weapon_filename),
-                 "players/", model_name, "/", cl.weaponModels[i]);
-        ci->weaponmodel[i] = R_RegisterModel(weapon_filename);
+        ci->weaponmodel[i] = CL_RegisterVWep(model_name, i, false);
         if (!ci->weaponmodel[i] && !Q_stricmp(model_name, "cyborg")) {
             // try male
-            Q_concat(weapon_filename, sizeof(weapon_filename),
-                     "players/male/", cl.weaponModels[i]);
-            ci->weaponmodel[i] = R_RegisterModel(weapon_filename);
+            ci->weaponmodel[i] = CL_RegisterVWep("male", i, false);
         }
     }
 
@@ -567,6 +613,14 @@ void CL_UpdateConfigstring(int index)
 
     if (index == CS_AIRACCEL) {
         cl.pmp.airaccelerate = cl.pmp.qwmode || atoi(s);
+        return;
+    }
+
+    // the bot match's weapon set and player physics (SV_UpdateQ3Rules does the
+    // same with the physics for the server's pmove)
+    if (index == CS_Q3RULES) {
+        cl.q3_weapons = Q3RULES_WEAPONS(s);
+        cl.pmp.q3move = Q3RULES_PHYSICS(s);
         return;
     }
 

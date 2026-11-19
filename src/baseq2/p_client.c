@@ -327,7 +327,11 @@ void ClientObituary(edict_t *self, edict_t *inflictor, edict_t *attacker)
             break;
         }
         if (attacker == self) {
-            switch (mod) {
+            const char *q3_message2;
+
+            // Quake III's guns (g_q3weap.c)
+            message = (char *)Q3W_Obituary(mod, true, &q3_message2, self);
+            if (!message) switch (mod) {
             case MOD_HELD_GRENADE:
                 message = "tried to put the pin back in";
                 break;
@@ -446,6 +450,14 @@ void ClientObituary(edict_t *self, edict_t *inflictor, edict_t *attacker)
                 message2 = "'s personal space";
                 break;
             }
+            if (!message) {
+                const char *q3_message2;
+
+                // Quake III's guns (g_q3weap.c)
+                message = (char *)Q3W_Obituary(mod, false, &q3_message2, self);
+                if (message)
+                    message2 = (char *)q3_message2;
+            }
             if (message) {
                 gi.bprintf(PRINT_MEDIUM, "%s %s %s%s\n", self->client->pers.netname, message, attacker->client->pers.netname, message2);
                 if (deathmatch->value) {
@@ -481,6 +493,8 @@ void TossClientWeapon(edict_t *self)
     if (! self->client->pers.inventory[self->client->ammo_index])
         item = NULL;
     if (item && (strcmp(item->pickup_name, "Blaster") == 0))
+        item = NULL;
+    if (Q3W_KeepsOnDeath(item))     // Quake III's gauntlet and machinegun
         item = NULL;
 
     if (!((int)(dmflags->value) & DF_QUAD_DROP))
@@ -762,6 +776,9 @@ but is called after each death and level change in deathmatch
 void InitClientPersistant(gclient_t *client)
 {
 	gitem_t     *item;
+	// Quake III's guns for this player? (g_q3weap.c) Asked of the userinfo
+	// before it goes: PutClientInServer puts it back after.
+	bool        q3_weapons = Q3W_ClientQ3(client);
 
 	memset(&client->pers, 0, sizeof(client->pers));
 
@@ -816,9 +833,15 @@ void InitClientPersistant(gclient_t *client)
     client->pers.max_trap       = 5;
     client->pers.max_flechettes = 200;
     client->pers.max_prox       = 50;
+    client->pers.max_q3_lightning = 200;
+    client->pers.max_q3_bfg     = 200;
 
-    // Quake III map: the spawn weapons the bot match menu chose (g_q3.c)
-    Q3_GiveSpawnKit(client);
+    // Quake III's guns: Quake III's spawn (g_q3weap.c). Otherwise, on a
+    // Quake III map, the spawn weapons the bot match menu chose (g_q3.c)
+    if (q3_weapons)
+        Q3W_GiveSpawnKit(client);
+    else
+        Q3_GiveSpawnKit(client);
 
     client->pers.connected = true;
 
@@ -2084,6 +2107,11 @@ void ClientThink(edict_t *ent, usercmd_t *ucmd)
     // save light level the player is standing on for
     // monster sighting AI
     ent->light_level = ucmd->lightlevel;
+
+    // Quake III's guns run on every command, from the final position
+    // (g_q3weap.c): their fire rates are finer than the 10 Hz frame
+    if (!client->resp.spectator)
+        Q3W_Think(ent, ucmd);
 
     // fire weapon from final position if needed
     if (client->latched_buttons & BUTTON_ATTACK) {

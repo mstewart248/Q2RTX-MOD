@@ -131,6 +131,26 @@ fail1:
 
 /*
 ================
+SV_UpdateQ3Rules
+
+The bot match's player physics, from the game's CS_Q3RULES: Quake III's
+movement for every client's pmove and for the bots' (sv_pmp). Called when the
+game sets the string and once a level is up (a loaded save's strings come from
+the file). The client reads the same string for its prediction.
+================
+*/
+void SV_UpdateQ3Rules(void)
+{
+    client_t    *client;
+
+    sv_pmp.q3move = Q3RULES_PHYSICS(sv.configstrings[CS_Q3RULES]);
+    FOR_EACH_CLIENT(client) {
+        client->pmp.q3move = sv_pmp.q3move;
+    }
+}
+
+/*
+================
 SV_SpawnServer
 
 Change the server to a new map, taking all connected
@@ -282,6 +302,9 @@ void SV_SpawnServer(mapcmd_t *cmd, qboolean isMguMap)
 
     // check for a savegame
     SV_CheckForSavegame(cmd);
+
+    // a loaded level's configstrings came from the save, not the game
+    SV_UpdateQ3Rules();
 
     // all precaches are complete
     sv.state = cmd->state;

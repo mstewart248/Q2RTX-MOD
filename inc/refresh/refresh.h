@@ -79,6 +79,19 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // and software.
 #define RF_CLOAK            0x20000000
 
+// [Q2RTX] Client to renderer only, never on the wire (entities.c strips it). A
+// mark on a surface - Quake III's bullet holes and scorches (client
+// q3weapons.c) - drawn by the RTX renderers' sprite pass: always with RF_FLARE,
+// whose image, tint and alpha it takes (frame, rgba, alpha), but lying flat on
+// the surface whose normal is `angles`' forward, `angles[ROLL]` its turn, and
+// `scale` its half size in world units. skinnum 0 darkens what is under it by
+// the image's brightness (Quake III's GL_ZERO GL_ONE_MINUS_SRC_COLOR), 1 is
+// an ordinary blended sprite (its alpha), 2 adds its light.
+#define RF_DECAL            0x80000000
+#define DECAL_DARKEN        0
+#define DECAL_BLEND         1
+#define DECAL_ADD           2
+
 #define DLIGHT_CUTOFF       64
 
 typedef struct entity_s {
@@ -162,6 +175,13 @@ typedef struct dlight_s {
     // froxel fog keeps these on its long history with the map's own lights;
     // see partition_bmodel_lights() in vkpt main.c. Set by V_MarkLightFixture.
     bool    fixture;
+
+    // Who this light is, frame to frame, for a light that MOVES but is still
+    // one light (the Quake III skull lamps, client q3lamps.c). 0 = none: the
+    // renderer goes by position (vkpt main.c add_dlights), which gives a moving
+    // light a fresh ReSTIR reservoir whenever it crosses a quarter unit. Set by
+    // V_SetLightId.
+    uint32_t id;
 
     // VKPT light types support
     dlight_type light_type;

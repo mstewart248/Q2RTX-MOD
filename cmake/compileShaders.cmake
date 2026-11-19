@@ -16,6 +16,7 @@ set(SHADER_SOURCE_DEPENDENCIES
     ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/restir.h
     ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/restir_gi.h
     ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/sharc.h
+    ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/caustics.h
     ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/sky.h
     ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/tiny_encryption_algorithm.h
     ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/tone_mapping_utils.glsl

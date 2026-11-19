@@ -509,6 +509,8 @@ extern server_t             sv;         // local server
 
 extern pmoveParams_t    sv_pmp;
 
+void SV_UpdateQ3Rules(void);
+
 extern cvar_t       *sv_hostname;
 extern cvar_t       *sv_maxclients;
 extern cvar_t       *sv_password;

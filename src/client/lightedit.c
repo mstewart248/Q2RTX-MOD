@@ -28,9 +28,12 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // in between.
 //
 //   light place   <r> <g> <b> <brightness> [radius] [volscale]
-//                                    put a new light in front of the camera
+//                                    put a new light just in front of whatever
+//                                    the crosshair is on, on the crosshair's
+//                                    line (sky or nothing: light_place_dist
+//                                    in front of the eye)
 //   light replace [<r> <g> <b> <brightness> [radius] [volscale]]
-//                                    put a new light in front of the camera that
+//                                    put a new light there, the same way, that
 //                                    STANDS IN for the map light under the
 //                                    crosshair. Anything not typed is inherited
 //                                    from that entity.
@@ -88,7 +91,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 //                                                (also "lightstyle")
 //   aim                    point it where the camera is looking
 //                                                (also "direction")
-//   origin                 move it to in front of the camera  (also "move")
+//   origin                 move it to just in front of what the crosshair is
+//                          on, as "place" puts one          (also "move")
 //   x <n> / y <n> / z <n>  nudge it <n> units along that world axis (negative
 //                          goes back); "x =<n>" sets the coordinate outright.
 //                          With the crosshair on no light these move the light
@@ -122,8 +126,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // then builds a real light that stands in for it - the entity stops emitting for
 // good and the new light is drawn instead.
 //
-// The replacement is a NORMAL light in its own right, placed in front of the
-// camera rather than at the entity, so its position is yours to choose. What it
+// The replacement is a NORMAL light in its own right, placed in front of what
+// the crosshair is on rather than at the entity, so its position is yours to
+// choose. What it
 // takes from the entity is every attribute you did not type: colour, brightness,
 // cone, lightstyle, aim - and its SWITCHABILITY, so a light the game turns on and
 // off goes on doing that. Anything the entity does not specify falls back to the
@@ -1193,16 +1198,36 @@ static void LE_WriteLights(void)
 =================================================================
 */
 
+// The crosshair's ray: from the camera the picture is drawn from. Photo mode's
+// free camera writes itself into cl.refdef inside the renderer, after
+// cl.v_forward was set from the player's view - and the per-frame pick that
+// highlights a marker runs before the renderer, while cl.refdef is still the
+// player's. So once the free camera had moved, edit and pick aimed from the
+// player down the player's view, not where the screen pointed (Matt, 11-18).
+// view.c records the camera each frame was drawn from, and whether the
+// renderer moved it (cl.render_view_moved); unmoved, nothing changes.
+static void LE_ViewRay(vec3_t org, vec3_t forward)
+{
+    if (cl.render_view_moved) {
+        VectorCopy(cl.render_vieworg, org);
+        AngleVectors(cl.render_viewangles, forward, NULL, NULL);
+    } else {
+        VectorCopy(cl.refdef.vieworg, org);
+        VectorCopy(cl.v_forward, forward);
+    }
+}
+
 // Whether the view ray through the crosshair hits a marker sphere of `radius`
 // at `origin`, and if so how far along the ray it is.
 static bool LE_RayHitsMarker(const vec3_t origin, float radius, float *along_out)
 {
-    vec3_t  delta, perp;
+    vec3_t  delta, perp, org, forward;
     float   along, pick;
 
-    VectorSubtract(origin, cl.refdef.vieworg, delta);
+    LE_ViewRay(org, forward);
+    VectorSubtract(origin, org, delta);
 
-    along = DotProduct(delta, cl.v_forward);
+    along = DotProduct(delta, forward);
     if (along <= 0.0f)
         return false;               // behind the camera
 
@@ -1211,7 +1236,7 @@ static bool LE_RayHitsMarker(const vec3_t origin, float radius, float *along_out
     // size are allowed to disagree.
     pick = max(radius, light_pick_size->value);
 
-    VectorMA(delta, -along, cl.v_forward, perp);
+    VectorMA(delta, -along, forward, perp);
     if (VectorLength(perp) > pick)
         return false;
 
@@ -1621,8 +1646,10 @@ static const leent_t *LE_PickBrushEnt(const leent_t **inside_out)
     trace_t         tr;
     float           world_frac;
 
-    VectorCopy(cl.refdef.vieworg, start);
-    VectorMA(start, LE_PROBE_RANGE, cl.v_forward, end);
+    vec3_t          forward;
+
+    LE_ViewRay(start, forward);
+    VectorMA(start, LE_PROBE_RANGE, forward, end);
 
     CM_BoxTrace(&tr, start, end, vec3_origin, vec3_origin, cl.bsp->nodes, MASK_SOLID);
     // a button is flush with the wall it is set in, so allow a couple of units
@@ -1838,24 +1865,49 @@ static void LE_ExplainNoSwitch(const char *name)
 =================================================================
 */
 
-// Where a new light goes: light_place_dist in front of the eye, or against
-// whatever is nearer than that. Landing on a surface is the common case when
-// lighting a wall fixture, so back the emitter off the plane by its own radius -
-// a sphere light buried in a wall lights nothing.
+// Where a new light goes (place, replace, edit origin): on the crosshair's line,
+// just in front of whatever the crosshair is on - the far wall, the ceiling
+// fixture, a func_wall lamp - backed off TOWARD THE CAMERA along that same line,
+// so it lands under the crosshair, by enough that the emitter sphere clears the
+// surface (a sphere light buried in a wall lights nothing).
+//
+// Matt (11-18): it used to stop light_place_dist (64) in front of the eye, and
+// back off a nearer surface along the surface's normal - short of what he was
+// pointing at, or off the crosshair at a glancing angle. light_place_dist is now
+// only for when the crosshair is on sky or nothing at all.
+#define LE_PLACE_RANGE  8192.0f
+
 static void LE_PlacementPoint(vec3_t out, float radius)
 {
-    vec3_t  end;
+    vec3_t  start, forward, end;
     trace_t trace;
+    float   hit, cosine, back;
 
-    VectorMA(cl.refdef.vieworg, light_place_dist->value, cl.v_forward, end);
-    CM_BoxTrace(&trace, cl.refdef.vieworg, end, vec3_origin, vec3_origin,
-                cl.bsp->nodes, MASK_SOLID);
+    LE_ViewRay(start, forward);
+    VectorMA(start, LE_PLACE_RANGE, forward, end);
+    // brush entities too: a lamp fixture is often a func_wall
+    trace = CL_TracePoint(start, end, MASK_SOLID, false);
 
-    // startsolid leaves no plane to push off of - the camera is already inside
-    // something, which happens with noclip, so just take the eye position
-    VectorCopy(trace.endpos, out);
-    if (trace.fraction < 1.0f && !trace.startsolid)
-        VectorMA(out, radius + 1.0f, trace.plane.normal, out);
+    // the camera already inside something (noclip): no surface to stand off
+    // from, so the eye itself
+    if (trace.startsolid || trace.allsolid) {
+        VectorCopy(start, out);
+        return;
+    }
+
+    if (trace.fraction >= 1.0f || (trace.surface && (trace.surface->flags & SURF_SKY))) {
+        VectorMA(start, light_place_dist->value, forward, out);
+        return;
+    }
+
+    // far enough back along the line that the sphere's radius (and a unit)
+    // clears the plane: (radius + 1) / cos. At a glancing angle that grows
+    // without end, so at most four times; and never behind the camera.
+    hit = trace.fraction * LE_PLACE_RANGE;
+    cosine = fabsf(DotProduct(forward, trace.plane.normal));
+    back = (radius + 1.0f) / max(cosine, 0.25f);
+    back = min(back, hit);
+    VectorMA(start, hit - back, forward, out);
 }
 
 /*
@@ -1941,7 +1993,8 @@ static void LE_Place_f(void)
 LE_Replace_f
 
 Build a light that stands in for the map light under the crosshair. It goes in
-front of the camera, not at the entity, so its placement is the mapper's; and
+front of what the crosshair is on (LE_PlacementPoint), not at the entity, so its
+placement is the mapper's; and
 every attribute not typed is left unstated, which is what makes it inherit.
 =================
 */
@@ -2023,7 +2076,7 @@ typedef enum {
     LEA_CONE,
     LEA_STYLE,
     LEA_AIM,        // no value: the camera's direction
-    LEA_ORIGIN,     // no value: re-place in front of the camera
+    LEA_ORIGIN,     // no value: re-place in front of what the crosshair is on
     LEA_COORD,      // one float into origin[chan]
     LEA_TRIGGER,    // a targetname; chan 1 = trigger_on, 0 = trigger_off
     LEA_GLOW,       // visible core multiplier, or "off"
@@ -2146,7 +2199,9 @@ static void LE_Edit_f(void)
             // There is no sane way to type a direction. Standing where the
             // light should shine and saying "that way" is the whole idea of
             // editing inside the level.
-            VectorCopy(cl.v_forward, l->aim);
+            vec3_t  view_org;
+
+            LE_ViewRay(view_org, l->aim);
             if (VectorNormalize(l->aim) <= 0.0f) {
                 Com_Printf("No view direction to aim along.\n");
                 return;
@@ -2244,8 +2299,11 @@ static void LE_Edit_f(void)
 
                 // which way the world axes run from here - nobody knows +x
                 {
-                    const float *f = cl.v_forward;
-                    int ax = fabsf(f[0]) >= fabsf(f[1]) ? 0 : 1;
+                    vec3_t  view_org, f;
+                    int ax;
+
+                    LE_ViewRay(view_org, f);
+                    ax = fabsf(f[0]) >= fabsf(f[1]) ? 0 : 1;
 
                     Com_Printf("You are facing %c%c (up is +z).\n",
                                f[ax] >= 0.0f ? '+' : '-', "xy"[ax]);
@@ -2759,7 +2817,9 @@ void LE_Init(void)
     // one of those.
     light_scale = Cvar_Get("light_scale", "2000", CVAR_ARCHIVE);
 
-    // How far in front of the eye a new light goes when nothing is in the way.
+    // How far in front of the eye a new light goes when the crosshair is on sky
+    // or nothing at all - otherwise it goes just in front of what the crosshair
+    // is on (LE_PlacementPoint).
     light_place_dist = Cvar_Get("light_place_dist", "64", CVAR_ARCHIVE);
 
     // Floor on the crosshair pick radius, so a small light is still a

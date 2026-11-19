@@ -959,6 +959,27 @@ typedef struct {
 // can set it by accident. Without it a beam is treated as fire, as before.
 #define RF_BEAM_FIXTURE     0x08000000
 
+// [Q2RTX] The bot match's Quake III weapons (g_q3_weapons, baseq2 g_q3weap.c),
+// bit 30: past the client-only RF_Q3_QUAD and RF_CLOAK (refresh.h), and the
+// client takes it off before the renderer sees the entity (entities.c).
+// RF_Q3_ITEM, on an entity with a model: a gun pickup carrying both games'
+// guns - modelindex is Quake II's and modelindex2 Quake III's; each client
+// draws the one its own player takes (Quake III's half as big again).
+// RF_Q3_SPRITE, the same bit on one with no model: a Quake III missile drawn
+// as a sprite, s.frame says which (client q3weapons.c).
+#define RF_Q3_ITEM          0x40000000
+#define RF_Q3_SPRITE        RF_Q3_ITEM
+#define Q3_SPRITE_PLASMA    0
+
+// ps.gunframe while a Quake III gun is in hand: its state in the top two bits
+// and the shots fired below, which the view weapon's flash and recoil key on
+#define Q3_GUNFRAME_READY       0x00
+#define Q3_GUNFRAME_RAISING     0x40
+#define Q3_GUNFRAME_DROPPING    0x80
+#define Q3_GUNFRAME_FIRING      0xC0
+#define Q3_GUNFRAME_STATE       0xC0
+#define Q3_GUNFRAME_SHOTS       0x3F
+
 // the rerelease aliases these two as well - a flare is never a viewmodel, so
 // RF_MINLIGHT is free to mean "do not turn to face the camera".
 #define RF_FLARE_LOCK_ANGLE RF_MINLIGHT
@@ -1025,6 +1046,18 @@ enum {
 // the MGU drop pods are lit by a `light` entity, which Q2RTX does not render.
 // Appended, never inserted: these numbers go over the wire.
 #define MZ_PODLIGHT         41
+// Quake III's weapons (bot match, g_q3_weapons): the muzzle light only, in
+// the gun's own colour - their sounds come from the game, and their flash
+// model is the client's view weapon. Gauntlet first, BFG10K last.
+#define MZ_Q3_GAUNTLET      42
+#define MZ_Q3_MACHINEGUN    43
+#define MZ_Q3_SHOTGUN       44
+#define MZ_Q3_GRENADE       45
+#define MZ_Q3_ROCKET        46
+#define MZ_Q3_LIGHTNING     47
+#define MZ_Q3_RAILGUN       48
+#define MZ_Q3_PLASMAGUN     49
+#define MZ_Q3_BFG           50
 // Q2RTX
 
     MZ_SILENCED = 128,  // bit flag ORed with one of the above numbers
@@ -1288,6 +1321,21 @@ typedef enum {
 	// ([byte DI_* bits | damage / 3 clamped to 1..31][dir from the source to
 	// the player]). Fork-local: append below, never above.
 	TE_DAMAGE_INDICATOR,
+	// Quake III's weapons in the bot match (g_q3weap.c), fork-local: append
+	// below, never above. Packets take the shapes of their Quake II twins:
+	// BULLET and PLASMA_EXPLOSION are TE_GUNSHOT's [pos][dir]; the three
+	// explosions are TE_ROCKET_EXPLOSION's [pos]; RAILTRAIL is TE_RAILTRAIL's
+	// [start][end]; LIGHTNING is TE_LIGHTNING's [shooter][hit 0/1][start][end].
+	// Sounds are Quake III's; rockets, grenades, the rail and the BFG use
+	// the Flow effects Quake II's do.
+	TE_Q3_BULLET,
+	TE_Q3_PLASMA_EXPLOSION,
+	TE_Q3_ROCKET_EXPLOSION,
+	TE_Q3_GRENADE_EXPLOSION,
+	TE_Q3_BFG_EXPLOSION,
+	TE_Q3_RAILTRAIL,
+	TE_Q3_LIGHTNING,
+	TE_Q3_SHOTGUN,      // a shotgun pellet on a wall: TE_Q3_BULLET without the ricochet
 
     TE_NUM_ENTITIES
 } temp_event_t;
@@ -1499,6 +1547,16 @@ typedef enum {
 // configstrings with the level, so a loaded game keeps the fog it was saved in.
 #define CS_TRIGGER_FOG          (CS_GENERAL + 3)
 #define CS_TRIGGER_HEIGHTFOG    (CS_GENERAL + 4)
+
+// Set by this tree's baseq2 game at every map start: the bot match's weapon set
+// and player physics, as two digits "<weapons><physics>". Weapons: 0 Quake II,
+// 1 Quake III, 2 by player model (Quake III bodies Quake III guns); physics: 0
+// Quake II, 1 Quake III. The physics digit is pmoveParams_t.q3move on both the
+// server (PF_configstring / SV_SpawnServer) and the client (CL_ParseConfigstring),
+// so prediction and the server move the player alike. Empty = "00".
+#define CS_Q3RULES              (CS_GENERAL + 5)
+#define Q3RULES_WEAPONS(s)      (((s)[0] >= '0' && (s)[0] <= '2') ? (s)[0] - '0' : 0)
+#define Q3RULES_PHYSICS(s)      ((s)[0] && (s)[1] == '1')
 
 // Some mods actually exploit CS_STATUSBAR to take space up to CS_AIRACCEL
 #define CS_SIZE(cs) \

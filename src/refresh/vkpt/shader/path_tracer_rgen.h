@@ -966,10 +966,163 @@ GlassCausticPatch glass_caustic_patch(Triangle tri, vec3 bary, vec2 beta, vec3 t
 	return g;
 }
 
+/*
+=================
+glass_ball_caustic
+
+A light OUTSIDE a glass ball - the sun, a lamp across the room - shining
+through it onto something behind: Quake III's health orbs (Matt, 2026-11-18,
+q3dm17: the sun through an orb threw a dark ring round a dim disc the size of
+the ball onto the wall; a real glass ball throws a dark shadow with a small
+bright spot in it). pt_caustic_ball.
+
+glass_caustic bends the light once, where it leaves the glass, as for a lamp
+INSIDE the shape (the cross in an orb, a kmlamp bulb's lamp). Light from
+outside a ball is bent twice, going in and coming out, which focuses about four
+times as hard: half a radius past the ball's far side instead of two radii.
+
+The ball is the sphere the hit triangle's own corners stand on (p = C + R n, as
+glass_ripple fits it): exact on the orbs, which models.c rounds. Light and ball
+are then symmetric about the axis from the light through C, and a ray is one
+number, b - how far from C its line passes. The ball turns that line about C,
+towards the axis, by
+  psi(b) = 2 (asin(b/R) - asin(b/(eta R))) - asin(b/D)
+(the last term: a lamp D away, whose rays spread; 0 for the sun) and the line
+keeps its distance b. The lit point X, z along the axis from C and rho off it,
+is reached by every b with
+  z sin psi + rho cos psi = b
+found by scanning b across the ball for sign changes. Each brings
+  |b| K / (rho |1 - psi'(b) s|),   s = z cos psi - rho sin psi
+times what the straight ray would bring: the squeeze of a thin ring of rays
+across the beam (K: a lamp's spread, 1 for the sun), and two Fresnel losses.
+Rays crossing over from the far side of the axis add in, which is how the spot
+past the focus fills in. A point no ray reaches gets 0 - the ring round the
+spot, where the edge of the ball throws its light inwards. Across the beam, as
+glass_caustic's ratio is: the lit point's cosine stays the straight ray's.
+
+Checked against brute-force tracing through a ball (scratchpad ballcheck.py,
+2026-11-18): within 2% off the focus, for the sun and a lamp 3 radii away.
+
+Only where the corners fit one sphere (each corner's centre within
+GLASS_BALL_FIT radii of their mean) and the lit point and the light are both
+outside it; false otherwise, and glass_caustic's one bend stands.
+=================
+*/
+#define GLASS_BALL_SCAN 16
+#define GLASS_BALL_FIT  0.02
+
+// psi(b) above: how far the ball turns the line `b` from its centre
+float glass_ball_turn(float b, float R, float eta, float inv_D)
+{
+	float si = clamp(b / R, -1.0, 1.0);
+	return 2.0 * (asin(si) - asin(si / eta)) - asin(clamp(b * inv_D, -1.0, 1.0));
+}
+
+bool glass_ball_caustic(Triangle tri, Ray ray, float eta, out float ratio)
+{
+	ratio = 1.0;
+
+	// the sphere: R from p = C + R n over two edges, then C from each corner
+	vec3 dn1 = tri.normals[1] - tri.normals[0];
+	vec3 dn2 = tri.normals[2] - tri.normals[0];
+	float nn = dot(dn1, dn1) + dot(dn2, dn2);
+	if (!(nn > 1e-8))
+		return false; // flat
+	float R = (dot(tri.positions[1] - tri.positions[0], dn1) + dot(tri.positions[2] - tri.positions[0], dn2)) / nn;
+	if (!(R > 0.0))
+		return false; // hollow side out: no ball
+	vec3 c0 = tri.positions[0] - R * tri.normals[0];
+	vec3 c1 = tri.positions[1] - R * tri.normals[1];
+	vec3 c2 = tri.positions[2] - R * tri.normals[2];
+	vec3 C = (c0 + c1 + c2) * (1.0 / 3.0);
+	if (max(max(distance(c0, C), distance(c1, C)), distance(c2, C)) > GLASS_BALL_FIT * R)
+		return false; // not a ball
+
+	vec3 v = ray.origin - C; // the shadow ray starts at the lit point
+	if (dot(v, v) <= R * R)
+		return false;
+
+	// the axis: the way the light travels. The sun's shadow ray is 10000 long.
+	vec3 axis = -ray.direction;
+	float inv_D = 0.0;
+	float k_lamp = 1.0; // |X - L|^2 / D^2
+	if (ray.t_max < 9000.0)
+	{
+		vec3 lc = C - (ray.origin + ray.direction * ray.t_max);
+		float D = length(lc);
+		if (D <= R * 1.001)
+			return false; // the lamp is in the ball: one bend
+		axis = lc / D;
+		inv_D = 1.0 / D;
+		k_lamp = ray.t_max * ray.t_max * inv_D * inv_D;
+	}
+
+	float z = dot(v, axis);
+	float rho = max(length(v - z * axis), 1e-3 * R);
+	float lim = R * 0.9995;
+
+	float total = 0.0;
+	float b0 = -lim;
+	float p0 = glass_ball_turn(b0, R, eta, inv_D);
+	float f0 = z * sin(p0) + rho * cos(p0) - b0;
+	for (int i = 1; i <= GLASS_BALL_SCAN; i++)
+	{
+		float b1 = lim * (2.0 * float(i) / float(GLASS_BALL_SCAN) - 1.0);
+		float p1 = glass_ball_turn(b1, R, eta, inv_D);
+		float f1 = z * sin(p1) + rho * cos(p1) - b1;
+		if (f0 * f1 < 0.0)
+		{
+			// secant steps, kept inside the bracket
+			float lo = b0, hi = b1, flo = f0, fhi = f1;
+			for (int k = 0; k < 5; k++)
+			{
+				float m = lo - flo * (hi - lo) / (fhi - flo);
+				if (!(m > min(lo, hi) && m < max(lo, hi)))
+					m = 0.5 * (lo + hi);
+				float pm = glass_ball_turn(m, R, eta, inv_D);
+				float fm = z * sin(pm) + rho * cos(pm) - m;
+				if (fm * flo < 0.0) { hi = m; fhi = fm; }
+				else                { lo = m; flo = fm; }
+			}
+			float b = (fhi != flo) ? lo - flo * (hi - lo) / (fhi - flo) : 0.5 * (lo + hi);
+			float psi = glass_ball_turn(b, R, eta, inv_D);
+			float s = z * cos(psi) - rho * sin(psi);
+
+			// only once the ray has left the ball
+			float si = b / R;
+			float ci = sqrt(max(1.0 - si * si, 1e-8));
+			if (s >= R * ci - 1e-4 * R)
+			{
+				float st = si / eta;
+				float ct = sqrt(max(1.0 - st * st, 1e-8));
+				float sd = sqrt(max(1.0 - b * b * inv_D * inv_D, 1e-8));
+				float dpsi = 2.0 * (1.0 / (R * ci) - 1.0 / (eta * R * ct)) - inv_D / sd;
+				float r = abs(b) * k_lamp / (sd * rho * max(abs(1.0 - dpsi * s), 1e-6));
+
+				// Fresnel, in and out
+				float rs = (ci - eta * ct) / (ci + eta * ct);
+				float rp = (eta * ci - ct) / (eta * ci + ct);
+				float t = 1.0 - 0.5 * (rs * rs + rp * rp);
+				total += r * t * t;
+			}
+		}
+		b0 = b1;
+		f0 = f1;
+	}
+
+	ratio = min(total, GLASS_CAUSTIC_MAX);
+	return true;
+}
+
 float glass_caustic(Triangle triangle, vec3 bary, Ray ray, float hit_distance, float strength)
 {
 	float eta = 1.0 + 0.52 * strength; // glass over air
 	float z = hit_distance;            // glass -> lit point
+
+	// a light outside a ball: bent going in as well (glass_ball_caustic)
+	float ball;
+	if (global_ubo.pt_caustic_ball != 0 && glass_ball_caustic(triangle, ray, eta, ball))
+		return ball;
 
 	// light -> P. The sun's shadow ray (get_sunlight) is 10000 long: parallel light.
 	bool directional = ray.t_max >= 9000.0;
@@ -1161,8 +1314,128 @@ float glass_ripple(Triangle tri, vec3 bary, Ray ray, float hit_distance, float s
 	return bright / glass_ripple_mean(k);
 }
 
-vec3
-trace_caustic_ray(Ray ray, int surface_medium)
+/*
+=================
+caustic_light_anchor
+
+pt_caustic_anchor (global_ubo.h): the point a light's CAUSTIC is worked out from
+- the light's centre - where the shadow ray goes to a random point on it. In play
+only: photo mode is the reference and averages the per-sample bend.
+
+A caustic glass bends a lamp's light by the faces the shadow ray crosses
+(glass_caustic, glass_ripple). Aimed at a fresh random point on the lamp each
+frame, the ray crosses a different patch of glass each frame: on q3dm0's kmlamp
+(a 3-unit sphere light in a 12-unit bulb whose faces turn ~33 degrees apiece) a
+spot on the floor read 0 (total internal reflection) on one frame and 8 (a
+focus) on the next. The pattern never moves, but every frame showed a different
+one - Matt, 2026-11-17: sparse white blobs that RR could not settle and photo
+mode never cleared, gone with `light edit radius 0.5`. Worked out from the
+centre, each lit point gets the same caustic every frame. The shadow itself
+still uses the random point, so soft shadows stay soft; only the bend is sharp,
+as a point lamp's would be.
+
+Sphere and spot lights: their centre. Triangle lights: the centroid. Sky
+portals keep the sample (the sky is not a point). The sun is the caller's own
+case: its disc centre.
+=================
+*/
+vec3 caustic_light_anchor(int light_index, vec3 pos_on_light)
+{
+	if (light_index < 0)
+		return pos_on_light;
+
+	LightPolygon light = get_light_polygon(uint(light_index));
+	if (light.color.r < 0)
+		return pos_on_light; // sky portal
+
+	if (uint(light.type) == DYNLIGHT_POLYGON)
+		return (light.positions[0] + light.positions[1] + light.positions[2]) * (1.0 / 3.0);
+	return light.positions[0]; // DYNLIGHT_SPHERE, DYNLIGHT_SPOT: the centre
+}
+
+/* pt_caustics 2's EMITTERS - (light, caustic glass) pairs whose light the photons
+   carry through that glass (shader/caustics.h, caustics.c). caustics.c writes them
+   sorted by light index. */
+vec4 caustic_emitter_sphere(uint i)
+{
+	return light_buffer.caustic_emitters[i * CAUSTIC_EMITTER_VEC4S + 0];
+}
+
+// light index, first photon, photon count
+uvec3 caustic_emitter_info(uint i)
+{
+	return floatBitsToUint(light_buffer.caustic_emitters[i * CAUSTIC_EMITTER_VEC4S + 1].xyz);
+}
+
+float caustic_emitter_expected(uint i)
+{
+	return light_buffer.caustic_emitters[i * CAUSTIC_EMITTER_VEC4S + 1].w;
+}
+
+// Centre and radius of a light, as caustics.c works them out: a sphere's or spot's
+// own, a triangle's centroid and its farthest corner.
+void caustic_light_bounds(LightPolygon light, out vec3 center, out float radius)
+{
+	if (uint(light.type) == DYNLIGHT_POLYGON)
+	{
+		center = (light.positions[0] + light.positions[1] + light.positions[2]) * (1.0 / 3.0);
+		radius = sqrt(max(max(
+			dot(light.positions[0] - center, light.positions[0] - center),
+			dot(light.positions[1] - center, light.positions[1] - center)),
+			dot(light.positions[2] - center, light.positions[2] - center)));
+	}
+	else
+	{
+		center = light.positions[0];
+		radius = light.positions[1].x;
+	}
+}
+
+// the light reaches into the glass's sphere: its photons go every way, not into a cone
+bool caustic_light_inside(LightPolygon light, vec4 sphere)
+{
+	vec3 center;
+	float radius;
+	caustic_light_bounds(light, center, radius);
+	return distance(center, sphere.xyz) <= sphere.w + radius;
+}
+
+/* The emitter of `light` that owns caustic glass at `p`: the first of the light's
+   emitters whose sphere holds it, or -1. The photons of every other emitter of the
+   light that reach that glass first are dropped (caustic_photons.rgen), and a
+   shadow ray toward the light that crosses it gives no diffuse (trace_caustic_ray),
+   so the light through each piece of glass is counted once, by photons. */
+int caustic_owner(uint light, vec3 p)
+{
+	uint n = min(light_buffer.caustic_header.x, uint(MAX_CAUSTIC_EMITTERS));
+	if (n == 0u)
+		return -1;
+
+	// the light's first emitter
+	uint lo = 0u, hi = n;
+	while (lo < hi)
+	{
+		uint mid = (lo + hi) >> 1;
+		if (caustic_emitter_info(mid).x < light)
+			lo = mid + 1u;
+		else
+			hi = mid;
+	}
+
+	for (uint i = lo; i < n && i < lo + 64u; i++)
+	{
+		if (caustic_emitter_info(i).x != light)
+			break;
+		vec4 s = caustic_emitter_sphere(i);
+		if (distance(p, s.xyz) <= s.w)
+			return int(i);
+	}
+
+	return -1;
+}
+
+// One ray at the see-through geometry only, its hit (if any) left in ray_payload_geometry.
+void trace_caustic_hit(Ray ray)
 {
 	ray_payload_geometry.barycentric = vec2(0);
 	ray_payload_geometry.primitive_id = ~0u;
@@ -1198,6 +1471,33 @@ trace_caustic_ray(Ray ray, int surface_medium)
 		ray.origin, ray.t_min, ray.direction, ray.t_max, RT_PAYLOAD_GEOMETRY);
 
 #endif
+}
+
+// A caustic glass's bend of the light crossing it at `bary` (see glass_caustic,
+// glass_ripple): `caustic` and `ripple` are the material's strengths.
+float glass_bend(Triangle tri, vec3 bary, Ray ray, float hit_distance, float caustic, float ripple)
+{
+	float f = 1.0;
+	// GLASSCAUSTIC: the lamp's light bent by the shape (glass_caustic)
+	if (caustic > 0.0)
+		f *= glass_caustic(tri, bary, ray, hit_distance, caustic);
+	// caustic_ripple: and thrown in moving water ripples (glass_ripple)
+	if (ripple > 0.0 && f > 0.0)
+		f *= glass_ripple(tri, bary, ray, hit_distance, ripple);
+	return f;
+}
+
+// `anchor`: the light's centre - see caustic_light_anchor. Pass the ray's own far
+// end to work the caustic out where the shadow ray goes (the pt_caustic_anchor 0 way).
+// `light_index`: the light's, -1 for the sun. `photon_owned` comes back true where
+// pt_caustics 2's photons carry this light through the caustic glass the ray
+// crosses (caustic_owner): the caller then gives no diffuse for it, and only the
+// specular uses what this returns.
+vec3
+trace_caustic_ray(Ray ray, int surface_medium, vec3 anchor, int light_index, out bool photon_owned)
+{
+	photon_owned = false;
+	trace_caustic_hit(ray);
 
 	float extinction_distance = ray.t_max - ray.t_min;
 	vec3 throughput = vec3(1);
@@ -1253,12 +1553,47 @@ trace_caustic_ray(Ray ray, int surface_medium)
 				base_color *= global_textureLod(minfo.base_texture, tex_coord, 2).rgb;
 			base_color = clamp(base_color, vec3(0), vec3(1));
 
-			// GLASSCAUSTIC: the lamp's light bent by the shape (glass_caustic)
-			if (minfo.glass_caustic > 0.0 && is_glass(triangle.material_id) && any(greaterThan(base_color, vec3(0))))
-				base_color *= glass_caustic(triangle, bary, ray, ray_payload_geometry.hit_distance, minfo.glass_caustic);
-			// caustic_ripple: and thrown in moving water ripples (glass_ripple)
-			if (minfo.caustic_ripple > 0.0 && is_glass(triangle.material_id) && any(greaterThan(base_color, vec3(0))))
-				base_color *= glass_ripple(triangle, bary, ray, ray_payload_geometry.hit_distance, minfo.caustic_ripple);
+			if (is_glass(triangle.material_id) && (minfo.glass_caustic > 0.0 || minfo.caustic_ripple > 0.0)
+				&& any(greaterThan(base_color, vec3(0))))
+			{
+				// pt_caustics 2: is this light through this glass the photons'?
+				if (light_index >= 0 && light_buffer.caustic_header.x != 0u)
+					photon_owned = caustic_owner(uint(light_index),
+						ray.origin + ray.direction * ray_payload_geometry.hit_distance) >= 0;
+
+				Ray c_ray = ray;
+				bool bend = true;
+
+				vec3 to_anchor = anchor - ray.origin;
+				float anchor_dist = length(to_anchor);
+				// play only: photo mode (the reference) averages the per-sample bend instead
+				if (global_ubo.pt_caustic_anchor != 0 && global_ubo.temporal_blend_factor == 0.0 && anchor_dist > 0.02
+					&& distance(anchor, ray.origin + ray.direction * ray.t_max) > 0.05) // not the sample itself
+				{
+					// pt_caustic_anchor: work the bend out along the line to the light's
+					// centre, not to this frame's random point on it (caustic_light_anchor).
+					// Nothing of the first hit but base_color lives past this trace.
+					c_ray.direction = to_anchor / anchor_dist;
+					c_ray.t_max = max(anchor_dist - 0.01, c_ray.t_min);
+					trace_caustic_hit(c_ray);
+
+					// The line to the centre misses the caustic glass (round its rim,
+					// or through a gap): that light arrives unbent - only the sample's
+					// glass tint above.
+					bend = found_intersection(ray_payload_geometry)
+						&& is_glass(get_hit_triangle(ray_payload_geometry).material_id);
+				}
+
+				// ray_payload_geometry now holds the hit to bend at: the line to the
+				// centre's, or still the shadow ray's own
+				if (bend)
+				{
+					Triangle c_tri = get_hit_triangle(ray_payload_geometry);
+					MaterialInfo c_minfo = get_material_info(c_tri.material_id);
+					base_color *= glass_bend(c_tri, get_hit_barycentric(ray_payload_geometry), c_ray,
+						ray_payload_geometry.hit_distance, c_minfo.glass_caustic, c_minfo.caustic_ripple);
+				}
+			}
 
 			throughput = base_color;
 		}
@@ -1270,6 +1605,14 @@ trace_caustic_ray(Ray ray, int surface_medium)
 
 	//return vec3(caustic);
 	return extinction(surface_medium, extinction_distance) * throughput;
+}
+
+// The sun and the other callers without a light that photons could carry.
+vec3
+trace_caustic_ray(Ray ray, int surface_medium, vec3 anchor)
+{
+	bool photon_owned;
+	return trace_caustic_ray(ray, surface_medium, anchor, -1, photon_owned);
 }
 
 vec3 rgbToNormal(vec3 rgb, out float len)
@@ -1439,12 +1782,14 @@ get_direct_illumination(
 	Ray shadow_ray = get_shadow_ray(position - view_direction * 0.01, pos_on_light, 0);
 
 	vis *= trace_shadow_ray(shadow_ray, null_light ? 0 : shadow_cull_mask);
+	bool photon_owned = false; // pt_caustics 2 carries this light's diffuse (trace_caustic_ray)
 #ifdef ENABLE_SHADOW_CAUSTICS
 	// contrib only reaches the result as vis * contrib, so skip the caustic ray of an
 	// occluded or null light (same as get_sunlight already does).
 	if (enable_caustics && vis > 0.0 && !null_light)
 	{
-		contrib *= trace_caustic_ray(shadow_ray, surface_medium);
+		contrib *= trace_caustic_ray(shadow_ray, surface_medium, caustic_light_anchor(light_index, pos_on_light),
+			light_index, photon_owned);
 	}
 #endif
 
@@ -1523,7 +1868,7 @@ get_direct_illumination(
 	float NdotL = max(0, dot(normal, L));
 
 	float diffuse_brdf = NdotL / M_PI;
-	diffuse = radiance * diffuse_brdf * (vec3(1.0) - F);
+	diffuse = photon_owned ? vec3(0) : radiance * diffuse_brdf * (vec3(1.0) - F);
 }
 
 
@@ -1625,7 +1970,8 @@ get_sunlight(
 #ifdef ENABLE_SHADOW_CAUSTICS
 	if (enable_caustics)
 	{
-		radiance *= trace_caustic_ray(shadow_ray, surface_medium);
+		// the caustic from the sun disc's centre - see caustic_light_anchor
+		radiance *= trace_caustic_ray(shadow_ray, surface_medium, shadow_ray.origin + global_ubo.sun_direction * 10000.0);
 	}
 #endif
 
@@ -2508,8 +2854,10 @@ get_material(
 
 	if (triangle.emissive_factor > 0)
 	{
+		// a program's: corrected and scaled by the material's emissive_factor
+		// already, plus its stage<N>_emissive_factor glow (q3_program_material)
 		if (q3_program)
-			emissive = correct_emissive(triangle.material_id, q3_emission) * minfo.emissive_factor;
+			emissive = q3_emission;
 		else
 			emissive = sample_emissive_texture(triangle.material_id, minfo, tex_coord, tex_coord_x, tex_coord_y, mip_level);
 		emissive *= triangle.emissive_factor;

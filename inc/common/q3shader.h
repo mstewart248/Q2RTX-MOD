@@ -248,6 +248,20 @@ typedef struct q3shader_s {
 // Quake III's waveform tables, for evaluating a q3wave_t at a time in seconds.
 float Q3Shader_EvalWave(const q3wave_t *wave, float time);
 
+// True if a "deformVertexes move" carries the whole surface somewhere over time
+// (the flying skull lamps bob this way).
+bool Q3Shader_Travels(const q3shader_t *s);
+
+// An additive glow, not a sprite, that travels with its lamp (Q3Shader_Travels):
+// bot_flare2, the lamp's jets. Drawn as a q3deform model with no light polys
+// (they would stay where the map put them), and never taken for a fake flare.
+bool Q3Shader_IsTravellingGlow(const q3shader_t *s);
+
+// How far the shader's move deforms have carried a surface at `time` (seconds,
+// the clock vkpt q3deform.c animates with: refdef time). Wave/bulge deforms,
+// which bend a surface along its normal, are not part of it.
+void Q3Shader_MoveOffset(const q3deform_t *deforms, int num_deforms, float time, vec3_t out);
+
 // Registers the q3shader_* console commands.
 void Q3Shader_Init(void);
 
@@ -270,7 +284,6 @@ const q3shader_t *Q3Shader_Find(const char *name);
 // Quake III names images ".tga" in its scripts but ships many of them as .jpg,
 // and the engine silently tried the other. Writes the path of the file that
 // exists (.tga, .jpg or .png, in that order) to `out`; false if none does.
-// A missing materialDev/<path> copy resolves to the pak's own <path>.
 bool Q3Shader_ResolveImage(const char *path, char *out, size_t size);
 
 #endif // Q3SHADER_H

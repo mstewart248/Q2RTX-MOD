@@ -19,6 +19,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #include <assert.h>
 #include "shared/shared.h"
+#include "system/system.h"	// Sys_Milliseconds: cl_q3_debug's once a second
 #include "vkpt.h"
 #include "vk_util.h"
 #include "color.h"
@@ -45,6 +46,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 // sprite_info[3] flags, read by pt_logic_sprite()
 #define SPRITE_INFO_ADDITIVE   1
+#define SPRITE_INFO_DARKEN     2    // a Quake III mark: darkens by its brightness
 
 
 struct
@@ -317,6 +319,43 @@ bool vkpt_transparency_prepare(const float* view_matrix,
 	}
 	beam_num = min(beam_num, TR_BEAM_MAX_NUM);
 	sprite_num = min(sprite_num, TR_SPRITE_MAX_NUM);
+
+	// cl_q3_debug 1 (client q3weapons.c): what reached the renderer, once a
+	// second - Matt's Quake III plasma ball and marks drew nothing (11-18), and
+	// this says whether their RF_FLARE entities get here, with which image
+	{
+		static cvar_t* q3_debug;
+		static unsigned last_print;
+		if (!q3_debug)
+			q3_debug = Cvar_Get("cl_q3_debug", "0", 0);
+		unsigned now = Sys_Milliseconds();
+		if (q3_debug->integer && now - last_print >= 1000)
+		{
+			int flares = 0, decals = 0, first = -1;
+			for (int i = 0; i < entity_num; i++)
+			{
+				if (!(entities[i].flags & RF_FLARE) || (entities[i].flags & RF_BEAM))
+					continue;
+				if (entities[i].flags & RF_DECAL)
+					decals++;
+				else
+					flares++;
+				if (first < 0)
+					first = i;
+			}
+			last_print = now;
+			Com_Printf("renderer: %d entities, %u sprites (%d flares, %d decals), %d particles, %u beams\n",
+				entity_num, sprite_num, flares, decals, particle_num, beam_num);
+			if (first >= 0)
+			{
+				const entity_t* e = &entities[first];
+				const image_t* image = IMG_ForHandle(e->frame);
+				Com_Printf("  first: image %d '%s' %dx%d, scale %.2f, alpha %.2f, rgba %08x, skinnum %d, at %.0f %.0f %.0f\n",
+					e->frame, image->name, image->width, image->height, e->scale, e->alpha, e->rgba.u32,
+					e->skinnum, e->origin[0], e->origin[1], e->origin[2]);
+			}
+		}
+	}
 
 	transparency.beam_num = beam_num;
 	transparency.particle_num = particle_num;
@@ -877,6 +916,40 @@ static void write_sprite_geometry(const float* view_matrix, const entity_t* enti
 			if (!flare_image)
 				continue;
 
+			// RF_DECAL (refresh.h): a mark lying on a surface - the quad in
+			// the plane whose normal is the angles' forward, turned by roll,
+			// `scale` units from its middle to each side
+			if (e->flags & RF_DECAL)
+			{
+				vec3_t normal, dec_x, dec_y, neg_x, neg_y;
+				const float dec_half = max(0.5f, e->scale);
+
+				AngleVectors(e->angles, normal, dec_x, dec_y);
+				VectorScale(dec_x, dec_half, dec_x);
+				VectorScale(dec_y, dec_half, dec_y);
+				VectorScale(dec_x, -1.f, neg_x);
+				VectorScale(dec_y, -1.f, neg_y);
+
+				sprite_info[0] = flare_image - r_images;
+				memcpy(&sprite_info[1], &e->alpha, sizeof(uint32_t));
+				sprite_info[2] = e->rgba.u32 ? e->rgba.u32 : 0xffffffffu;
+				sprite_info[3] = e->skinnum == DECAL_ADD ? SPRITE_INFO_ADDITIVE :
+				                 e->skinnum == DECAL_BLEND ? 0 : SPRITE_INFO_DARKEN;
+
+				VectorAdd3(e->origin, neg_y, neg_x, vertex_positions[0]);
+				VectorAdd3(e->origin, dec_y, neg_x, vertex_positions[1]);
+				VectorAdd3(e->origin, dec_y, dec_x, vertex_positions[2]);
+				VectorAdd3(e->origin, neg_y, dec_x, vertex_positions[3]);
+
+				vertex_positions += 4;
+				sprite_info += TR_SPRITE_INFO_SIZE / sizeof(uint32_t);
+
+				if (++sprite_count >= TR_SPRITE_MAX_NUM)
+					return;
+
+				continue;
+			}
+
 			float half = max(1.f, e->scale) * FLARE_BASE_SIZE;
 
 			sprite_info[0] = flare_image - r_images;
@@ -896,6 +969,25 @@ static void write_sprite_geometry(const float* view_matrix, const entity_t* enti
 				VectorCopy(world_y, flare_y);
 			else
 				VectorCopy(view_y, flare_y);
+
+			// angles[ROLL]: the quad turned in its own plane, in degrees - the bot
+			// match's Quake III plasma ball spins as its shader's "tcMod rotate 931"
+			// spins it (client q3weapons.c). Everything else that draws a flare
+			// leaves it 0 (entities.c clears it for misc_flare).
+			if (e->angles[ROLL] != 0.0f)
+			{
+				const float turn = DEG2RAD(e->angles[ROLL]);
+				const float c = cosf(turn), s = sinf(turn);
+				vec3_t turned_x, turned_y;
+
+				for (int k = 0; k < 3; k++)
+				{
+					turned_x[k] = c * flare_x[k] + s * flare_y[k];
+					turned_y[k] = c * flare_y[k] - s * flare_x[k];
+				}
+				VectorCopy(turned_x, flare_x);
+				VectorCopy(turned_y, flare_y);
+			}
 
 			VectorScale(flare_x, half, flare_x);
 			VectorScale(flare_y, half, flare_y);
@@ -969,6 +1061,15 @@ static void write_sprite_geometry(const float* view_matrix, const entity_t* enti
 				VectorScale(view_y, -frame->origin_y, down);
 				VectorScale(view_y, frame->height - frame->origin_y, up);
 			}
+		}
+
+		// [rerelease] entity scale (0 = unset = 1): the bot match's Quake
+		// III BFG ball is Quake II's at half the size
+		if (e->scale > 0 && e->scale != 1.0f) {
+			VectorScale(up, e->scale, up);
+			VectorScale(down, e->scale, down);
+			VectorScale(left, e->scale, left);
+			VectorScale(right, e->scale, right);
 		}
 
 		VectorAdd3(e->origin, down, left, vertex_positions[0]);

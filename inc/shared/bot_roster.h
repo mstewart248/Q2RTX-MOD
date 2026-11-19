@@ -56,6 +56,58 @@ static const bot_roster_entry_t bot_classic_roster[] = {
 #define BOT_CLASSIC_ROSTER_SIZE \
     ((int)(sizeof(bot_classic_roster) / sizeof(bot_classic_roster[0])))
 
+/*
+Quake III Arena's bots, as its scripts/bots.txt dresses them - worn when baseq3
+has its player models (client/q3player.c draws them). A Quake III skin is
+"model/skin" like any other; a model's own look is its "default".
+*/
+static const bot_roster_entry_t bot_q3_roster[] = {
+    { "Sarge",      "sarge/default" },
+    { "Anarki",     "anarki/default" },
+    { "Angel",      "lucy/angel" },
+    { "Biker",      "biker/default" },
+    { "Bitterman",  "bitterman/default" },
+    { "Bones",      "bones/default" },
+    { "Cadavre",    "biker/cadavre" },
+    { "Crash",      "crash/default" },
+    { "Daemia",     "major/daemia" },
+    { "Doom",       "doom/default" },
+    { "Gorre",      "visor/gorre" },
+    { "Grunt",      "grunt/default" },
+    { "Hossman",    "biker/hossman" },
+    { "Hunter",     "hunter/default" },
+    { "Keel",       "keel/default" },
+    { "Klesk",      "klesk/default" },
+    { "Lucy",       "lucy/default" },
+    { "Major",      "major/default" },
+    { "Mynx",       "mynx/default" },
+    { "Orbb",       "orbb/default" },
+    { "Patriot",    "razor/patriot" },
+    { "Phobos",     "doom/phobos" },
+    { "Ranger",     "ranger/default" },
+    { "Razor",      "razor/default" },
+    { "Slash",      "slash/default" },
+    { "Sorlag",     "sorlag/default" },
+    { "Stripe",     "grunt/stripe" },
+    { "TankJr",     "tankjr/default" },
+    { "Uriel",      "uriel/default" },
+    { "Visor",      "visor/default" },
+    { "Wrack",      "ranger/wrack" },
+    { "Xaero",      "xaero/default" },
+};
+
+#define BOT_Q3_ROSTER_SIZE \
+    ((int)(sizeof(bot_q3_roster) / sizeof(bot_q3_roster[0])))
+
+/*
+bot_models: whose models a random bot wears - 0 Quake II's, 1 Quake III's
+(baseq3), 2 both. Archived, set from the Bot Match menu. Quake III's need
+its data, which the menu checks and the game finds (Bot_SkinExists).
+*/
+#define BOT_MODELS_Q2       0
+#define BOT_MODELS_Q3       1
+#define BOT_MODELS_BOTH     2
+
 // the rerelease's six bot skill levels, in order (bots/settings_PC.txt)
 #define BOT_NUM_SKILLS  6
 
@@ -80,7 +132,29 @@ static inline bool Bot_SkinUsable(const char *skin)
     return false;
 }
 
-// "male/grunt" -> "Grunt", "cyborg/ps9000" -> "PS9000", "homer/homer" -> "Homer"
+static inline bool Bot_SkinUsableQ3(const char *skin)
+{
+    int i;
+
+    for (i = 0; i < BOT_Q3_ROSTER_SIZE; i++)
+        if (!Q_stricmp(bot_q3_roster[i].skin, skin))
+            return true;
+
+    return false;
+}
+
+// a random bot may wear it, with bot_models at `models`
+static inline bool Bot_SkinInPool(const char *skin, int models)
+{
+    if (models != BOT_MODELS_Q3 && Bot_SkinUsable(skin))
+        return true;
+    if (models != BOT_MODELS_Q2 && Bot_SkinUsableQ3(skin))
+        return true;
+    return false;
+}
+
+// "male/grunt" -> "Grunt", "cyborg/ps9000" -> "PS9000", "homer/homer" -> "Homer",
+// "sarge/default" -> "Sarge", "ranger/wrack" -> "Wrack"
 static inline void Bot_SkinName(const char *skin, char *out, size_t size)
 {
     const char  *s;
@@ -92,9 +166,22 @@ static inline void Bot_SkinName(const char *skin, char *out, size_t size)
             return;
         }
     }
+    for (i = 0; i < BOT_Q3_ROSTER_SIZE; i++) {
+        if (!Q_stricmp(bot_q3_roster[i].skin, skin)) {
+            Q_strlcpy(out, bot_q3_roster[i].name, size);
+            return;
+        }
+    }
 
+    // a Quake III model's own look goes by the model's name
     s = strchr(skin, '/');
-    Q_strlcpy(out, s ? s + 1 : skin, size);
+    if (s && !Q_stricmp(s + 1, "default")) {
+        size_t len = (size_t)(s - skin) + 1;
+
+        Q_strlcpy(out, skin, min(size, len));
+    } else {
+        Q_strlcpy(out, s ? s + 1 : skin, size);
+    }
     if (out[0] >= 'a' && out[0] <= 'z')
         out[0] -= 'a' - 'A';
 }

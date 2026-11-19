@@ -1452,6 +1452,69 @@ load_img(const char *name, image_t *image)
     return Q_ERR_SUCCESS;
 }
 
+/* load_img for the file at the OS path (ospath) itself, not looked up along the
+   search path; (name) is the game path it stands for - its extension picks the
+   loader, and it becomes the image's name and filepath. For the texture reload
+   (IMG_ReloadFrom), when a read through the search path does not give back the
+   file whose time changed. */
+int load_img_from_disk(const char *ospath, const char *name, image_t *image)
+{
+    size_t          len = strlen(name);
+    imageformat_t   fmt;
+    FILE            *fp;
+    byte            *data, *pic = NULL;
+    long            size;
+    int             ret;
+
+    memset(image, 0, sizeof(*image));
+    if (len <= 4 || len >= sizeof(image->name) || name[len - 4] != '.')
+        return Q_ERR_INVALID_PATH;
+    for (fmt = 0; fmt < IM_MAX; fmt++)
+        if (!Q_stricmp(name + len - 3, img_loaders[fmt].ext))
+            break;
+    if (fmt == IM_MAX)
+        return Q_ERR_INVALID_FORMAT;
+
+    fp = Q_fopen(ospath, "rb");
+    if (!fp)
+        return Q_ERRNO;
+    if (fseek(fp, 0, SEEK_END) || (size = ftell(fp)) < 0 || fseek(fp, 0, SEEK_SET)) {
+        ret = Q_ERRNO;
+        fclose(fp);
+        return ret;
+    }
+    if (size == 0 || size > MAX_LOADFILE) {
+        fclose(fp);
+        return size ? Q_ERR(EFBIG) : Q_ERR_UNEXPECTED_EOF;
+    }
+    data = Z_Malloc(size);
+    if (fread(data, 1, size, fp) != (size_t)size) {
+        Z_Free(data);
+        fclose(fp);
+        return Q_ERR_UNEXPECTED_EOF;
+    }
+    fclose(fp);
+
+    memcpy(image->name, name, len + 1);
+    image->baselen = len - 4;
+    image->registration_sequence = 1;
+    ret = img_loaders[fmt].load(data, size, image, &pic);
+    Z_Free(data);
+    if (ret < 0) {
+        memset(image, 0, sizeof(*image));
+        return ret;
+    }
+    strcpy(image->filepath, image->name);
+
+#if USE_REF == REF_VKPT
+    image->pix_data = pic;
+#else
+    IMG_FreePixels(pic);
+#endif
+
+    return Q_ERR_SUCCESS;
+}
+
 // Try to load an image, possibly with an alternative extension
 static int try_load_image_candidate(image_t *image, const char *orig_name, size_t orig_len, byte **pic_p, imagetype_t type, imageflags_t flags, bool ignore_extension, int try_location)
 {
