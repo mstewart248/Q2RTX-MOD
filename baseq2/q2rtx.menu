@@ -1336,21 +1336,115 @@ begin gameflags
     toggle --status "(dmflags)" "quad drop" dmflags 14
 end
 
+// Start Server: a game other players can join, up to "max players"
+// (maxclients). It plays by the bot match's settings (botmatch, below) and
+// shares them: the game mode (bot_mode, turned into teamplay and ctf by the
+// start action), and with Quake III Arena installed the map set and its maps
+// (bot_mapset, bot_map_q3, bot_map_q3ctf) and its rules - health and armor,
+// spawn with, weapons, movement (g_q3_*), friendly fire (bot_friendly_fire).
+// The server sends the weapons and movement to every client in CS_Q3RULES
+// (g_q3.c), so their guns, prediction and Quake III player models follow it;
+// each client needs its own baseq3 paks to load a Quake III arena.
+//
+// Quake II's map set keeps the full map list and co-op (_ui_server_coop, a
+// copy, as "coop" is latched: its old value is what a condition or $coop
+// reads until the next game). A Quake III arena is always deathmatch.
+//
+// "bots" fills that many slots with the bot match's line-up, at the skills
+// set there: bot_server_count, Start Server's own count, none by default.
+// bot_match 2 tells the game it is a server's (g_bot.c). "start server" runs
+// bot_lineup first, which rolls the line-up once a session and drops a CTF
+// or Quake III choice this install cannot play (ui.c). cheats is reset: a
+// bot match may have left it on.
 begin startserver
     background #212F3CD0
     style --compact
     //title "Start Server"
     banner m_banner_start_server
-    strings --status "(_ui_nextserver)" "initial map" _ui_nextserver $$com_maplist
-    values --status "(coop)" "rules" coop deathmatch cooperative
+    ifeq fs_quake3 1
+        pairs --live --status "quake iii arena: its arenas and ctf maps, with its items and the weapons and movement chosen below" "map set" bot_mapset "quake ii" 0 "quake iii arena" 1
+    endif
+    ifneq bot_mapset 1
+        pairs --live --status "deathmatch, or the campaign's maps played together (coop)" "rules" _ui_server_coop deathmatch 0 cooperative 1
+    endif
+    ifeqor bot_mapset 1 _ui_server_coop 0
+    ifeq fs_rerelease 1
+        pairs --live --status "team deathmatch: red against blue, teams kept even. capture the flag: take their flag to yours" "game mode" bot_mode deathmatch 0 "team deathmatch" 1 "capture the flag" 2
+    endif
+    ifneq fs_rerelease 1
+        pairs --live --status "team deathmatch: red against blue, teams kept even" "game mode" bot_mode deathmatch 0 "team deathmatch" 1
+    endif
+    endif
+    ifneq bot_mapset 1
+        strings --status "(_ui_nextserver)" "initial map" _ui_nextserver $$com_maplist
+    endif
+    ifeq bot_mapset 1
+    ifeq bot_mode 2
+        pairs --levelshot "map" bot_map_q3ctf "Dueling Keeps" q3ctf1 "Troubled Waters" q3ctf2 "The Stronghold" q3ctf3 "Space CTF" q3ctf4 "Across Space" q3tourney6_ctf
+    endif
+    ifneq bot_mode 2
+        pairs --levelshot "map" bot_map_q3 "Introduction" q3dm0 "Arena Gate" q3dm1 "House Of Pain" q3dm2 "Arena Of Death" q3dm3 "The Place Of Many Deaths" q3dm4 "The Forgotten Place" q3dm5 "The Camping Grounds" q3dm6 "Temple of Retribution" q3dm7 "Brimstone Abbey" q3dm8 "Hero's Keep" q3dm9 "The Nameless Place" q3dm10 "Deva Station" q3dm11 "The Dredwerkz" q3dm12 "Lost World" q3dm13 "Grim Dungeons" q3dm14 "Demon Keep" q3dm15 "The Bouncy Map" q3dm16 "The Longest Yard" q3dm17 "Space Chamber" q3dm18 "Apocalypse Void" q3dm19 "Powerstation 0218" q3tourney1 "The Proving Grounds" q3tourney2 "Hell's Gate" q3tourney3 "Vertical Vengeance" q3tourney4 "Fatal Instinct" q3tourney5 "The Very End Of You" q3tourney6 "The Campgrounds II" pro-q3dm6 "Lost World II" pro-q3dm13 "The Proving Grounds II" pro-q3tourney2 "Vertical Vengeance II" pro-q3tourney4
+    endif
+        pairs --status "quake iii: 5 / 25 / 50 / 100 health, 5 / 50 / 100 armor, the battle suit. quake ii: its own, the environment suit" "health and armor" g_q3_items "quake iii arena" 1 "quake ii" 0
+    ifneq g_q3_weapons 1
+        pairs --status "what every player with quake ii's weapons spawns holding" "spawn with" g_q3_kit "blaster, machinegun" 0 "chainfist, machinegun" 1 "blaster" 2
+    endif
+    endif
+    ifeqor bot_mapset 1 _ui_server_coop 0
+    ifeq fs_quake3 1
+        pairs --status "quake iii arena: its gauntlet, machinegun, shotgun, grenade and rocket launchers, lightning gun, railgun, plasma gun and bfg10k for everyone. by player model: quake iii's for quake iii models, quake ii's for quake ii models (g_q3_weapons)" "weapons" g_q3_weapons "quake ii" 0 "quake iii arena" 1 "by player model" 2
+    endif
+        pairs --status "quake iii arena: its faster running, air control, jumps and knockback, for everyone (g_q3_physics)" "movement" g_q3_physics "quake ii" 0 "quake iii arena" 1
+    ifge bot_mode 1
+        toggle --status "teammates' shots hurt each other. off as in quake iii arena (bot_friendly_fire)" "friendly fire" bot_friendly_fire
+    endif
+    ifneq bot_mode 2
+        field --integer --status "0 - no frag limit" --width 3 "frag limit" fraglimit
+    endif
+    ifeq bot_mode 2
+        field --integer --status "0 - no capture limit" --width 3 "capture limit" capturelimit
+    endif
+    endif
     field --integer --status "0 - no time limit" --width 3 "time limit" timelimit
-    field --integer --status "0 - no frag limit" --width 3 "frag limit" fraglimit
     field --integer --width 3 "max players" maxclients
     field --width 16 "host name" hostname
-    pairs --status "deathmatch only: red against blue, teams kept even" "teams" teamplay off 0 "red vs blue" 1
+    ifeqor bot_mapset 1 _ui_server_coop 0
+        pairs --live --status "bots in the empty slots: the bot match's line-up, at the skills set there. 0: people only (bot_server_count)" "bots" bot_server_count 0 0 1 1 2 2 3 3 4 4 5 5 6 6 7 7 8 8 9 9 10 10 11 11 12 12 13 13 14 14 15 15
+    ifge bot_server_count 1
+    ifeq fs_quake3 1
+        pairs --live --status "whose player models the bots wear: quake ii's, quake iii arena's, or both" "bot models" bot_models "quake ii" 0 "quake iii arena" 1 both 2
+        pairs --status "how bots think. quake ii: its own bots. quake iii characters: quake iii's bots aim, fight and move by their own characters and rules. quake iii engine: quake iii's whole bot ai and navigation, on maps with its .aas (quake iii's own), and quake iii characters elsewhere (bot_q3_ai)" "bot ai" bot_q3_ai "quake ii" 0 "quake iii characters" 1 "quake iii engine" 2
+        ifeq bot_q3_ai 2
+        ifge bot_mode 1
+            pairs --status "who leads your team. bots: a bot leads and gives the orders - say i am the leader in team chat to take over, i quit being the leader to hand it back. you: quake iii's rule - your bots defend until you order them (bot_q3_human_leader)" "team leader" bot_q3_human_leader bots 0 you 1
+        endif
+        endif
+    endif
+    endif
+    endif
     blank
     action --align "deathmatch flags..." pushmenu gameflags
-    action --align "begin game!" "forcemenuoff; set bot_match 0; set ctf 0; if $coop == 1 then deathmatch 0 else deathmatch 1; map $_ui_nextserver force"
+    ifeq bot_mapset 1
+    ifeq bot_mode 2
+        action --align "begin game!" "forcemenuoff; set sp_campaign 0; set bot_match 2; set teamplay 0; set ctf 1; deathmatch 1; coop 0; set cheats 0; map $bot_map_q3ctf force"
+    endif
+    ifneq bot_mode 2
+        action --align "begin game!" "forcemenuoff; set sp_campaign 0; set bot_match 2; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; set cheats 0; map $bot_map_q3 force"
+    endif
+    endif
+    ifneq bot_mapset 1
+    ifeq _ui_server_coop 1
+        action --align "begin game!" "forcemenuoff; set sp_campaign 0; set bot_match 0; set teamplay 0; set ctf 0; deathmatch 0; coop 1; set cheats 0; map $_ui_nextserver force"
+    endif
+    ifneq _ui_server_coop 1
+    ifeq bot_mode 2
+        action --align "begin game!" "forcemenuoff; set sp_campaign 0; set bot_match 2; set teamplay 0; set ctf 1; deathmatch 1; coop 0; set cheats 0; map $_ui_nextserver force"
+    endif
+    ifneq bot_mode 2
+        action --align "begin game!" "forcemenuoff; set sp_campaign 0; set bot_match 2; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; set cheats 0; map $_ui_nextserver force"
+    endif
+    endif
+    endif
 end
 
 begin multiplayer
@@ -1361,7 +1455,7 @@ begin multiplayer
         action "browse q2servers.com" pushmenu servers "+http://q2servers.com/?raw=2"
         action "browse address book" pushmenu servers "favorites://" "file:///servers.lst" "broadcast://"
         action "browse demos" pushmenu demos
-        action "start server" pushmenu startserver
+        action "start server" "bot_lineup; pushmenu startserver"
         action "player setup" pushmenu players
         action "disconnect" disconnect
         blank

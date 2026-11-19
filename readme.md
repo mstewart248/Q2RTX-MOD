@@ -12,7 +12,9 @@ latency path, none of which Q2RTX ever shipped; and id/Nightdive released a
 remaster whose maps, skeletal models, cinematics, navigation data and gameplay
 Q2RTX cannot load at all. Overdrive does both: it is a modern DLSS integration,
 and it plays the remaster's campaigns with real path-traced lighting instead of
-the remaster's raster renderer.
+the remaster's raster renderer. With your own copy of **Quake III Arena**, it
+plays that too: [its campaign, arenas, weapons and bots](#quake-iii-arena-support),
+path traced in the same engine.
 
 Lineage: **Quake II RTX** builds on [Q2VKPT](http://brechpunkt.de/q2vkpt), which
 builds on [Q2PRO](https://skuller.net/q2pro/), which is a modernised *Quake II*.
@@ -26,7 +28,8 @@ General Public License). You can find the entire license in the
 
 The **Quake II** game data files remain copyrighted and licensed under the
 original id Software terms, so you cannot redistribute the pak files from the
-original game — or from the remaster.
+original game — or from the remaster. The same goes for Quake III Arena's
+`.pk3` files.
 
 ## Downloads
 
@@ -89,6 +92,10 @@ existing Quake II RTX install.
 * **[Bot match](#bot-match)**: deathmatch, team deathmatch or capture the flag
   against up to 15 bots, each with its own skill and its own pick of model and
   skin, on any deathmatch map, classic or remaster.
+* **[Quake III Arena](#quake-iii-arena-support)** from your own `baseq3` paks,
+  path traced: its campaign with the podium and medals, its arenas and CTF
+  maps in bot match, its weapons, movement, player models and bots (Quake
+  III's own bot AI), and its shaders, curved surfaces, skies and fog.
 * **[Physical blood and gore](#gore-and-physical-blood)**: droplets are real,
   lit geometry that splats, runs down walls and pools.
 * **[Simulated fire and smoke](#simulated-fire-and-smoke-nvidia-flow)** with
@@ -795,6 +802,131 @@ rockets and grenades, and respawn. In any deathmatch game, from the console:
 | `team [red\|blue]` | show or change your team in team deathmatch or CTF |
 
 `bot_debug 1` prints each bot's goal, route and target once a second.
+
+## Quake III Arena support
+
+![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/Q3.png)
+
+Quake III Arena's maps, models, weapons, bots and single-player campaign run
+inside the Quake II engine, path traced like everything else. Nothing from
+Quake III ships with this project: copy your own retail `pak0.pk3` through
+`pak8.pk3` into a `baseq3` folder next to the exe. The game finds them at
+start-up (`fs_quake3` turns on and the console prints *Quake III Arena data:
+N pk3 file(s)*), and the Quake III options below appear in the menus. Without
+them, none of them show.
+
+### Single player
+
+**Single player** → **quake iii arena** opens Quake III's own campaign, in its
+own menus: *choose level* by tier with each arena's levelshot, the difficulty
+(*I Can Win* to *Nightmare!*), the bots of each arena with their Quake III
+names, characters and skills, the intro and tier videos, the end-of-match
+podium with medals and the announcer, and the records it keeps. Each arena is
+played as deathmatch with Quake III's rules. `levelshots` makes the levelshot
+pictures for the menus from your own maps.
+
+### Bot match
+
+With the paks installed, the bot match page gets a **map set** row:
+**quake iii arena** offers its deathmatch and tourney arenas, *Introduction*
+through *The Very End Of You* plus the four *pro* maps, and in capture the
+flag its CTF maps, *Dueling Keeps* through *Across Space*. Its jump pads,
+teleporters, movers, speakers and music work. Its items map onto Quake II's
+one for one, drawn with Quake III's own models, and Haste, Regeneration,
+Flight and the two holdables (the medkit and the personal teleporter) work as
+they did in Quake III. More rows set how it plays, and they work on Quake II
+maps too:
+
+* **Health and armor** (`g_q3_items`): Quake III's amounts (5 / 25 / 50 / 100
+  health, 5 / 50 / 100 armor) and its *Battle Suit*, or Quake II's own and the
+  *Environment Suit*.
+* **Weapons** (`g_q3_weapons`): Quake II's guns, Quake III's (gauntlet,
+  machinegun, shotgun, grenade and rocket launchers, lightning gun, railgun,
+  plasma gun and BFG10K), or **by player model**, so a Quake III model gets
+  Quake III's guns and a Quake II model Quake II's. **Spawn with** (`g_q3_kit`)
+  says what Quake II's guns start from.
+* **Movement** (`g_q3_physics`): Quake II's running, jumping and knockback, or
+  Quake III's: its speed, friction, jump height and knockback, so strafe
+  jumping and rocket jumps work the way they did there.
+* **Friendly fire** (`bot_friendly_fire`): off by default, as in Quake III.
+* **Bot models** (`bot_models`): Quake II's, Quake III's bots (Sarge, Doom,
+  Major, Klesk and the rest, each with its own name), or both.
+* **Bot AI** (`bot_q3_ai`): **quake ii**, the bots described above;
+  **quake iii characters**, the same brain driven by each Quake III bot's
+  character file (its aim, reaction, accuracy and weapon preferences); or
+  **quake iii engine**, the whole of Quake III's bot engine (the open-source
+  botlib, its area-awareness navigation and its game AI): Quake III's
+  movement, item timing, chat and team play, on any Quake III map with its
+  `.aas` file. Other maps fall back to the characters.
+* **Team leader** (`bot_q3_human_leader`): in team games, Quake III's bots
+  pick their own leader and give each other orders (*get the flag*, *defend
+  the base*). Say *I am the leader* in team chat to take over, and *I quit
+  being the leader* to hand it back. **You** makes you the leader from the
+  start, as Quake III did.
+
+### Multiplayer
+
+**Multiplayer** → **start server** has the same rows: the map set and the
+Quake III arenas and CTF maps, the game mode, health and armor, weapons,
+movement and friendly fire, plus **bots** (`bot_server_count`, none by
+default) to fill empty slots with the bot match's line-up. The server sends
+its weapons and movement rules to every player, so each one's guns and
+movement prediction match it, and everyone sees each other's Quake III
+models. Each player needs their own Quake III paks to join a Quake III map:
+the server never sends Quake III's files, and tells a player without them
+what is missing.
+
+### Weapons
+
+Quake III's guns are drawn in your hand on their own tags, with their own
+firing, raising and lowering animations, muzzle flashes and sounds. Shells fly
+from the machinegun and shotgun (`cl_brass_time`), shots leave burn marks and
+bullet holes (`cl_q3_marks_time`), and rockets, plasma and the BFG use the
+[NVIDIA Flow](#simulated-fire-and-smoke-nvidia-flow) fire and smoke. They are
+on the [weapon wheel](#quake-ii-2023-rerelease-support) with their own icons.
+With `cl_classic_railgun 0`, the Q2RTX railgun stands in for Quake III's, in
+your hand and on the ground; `1` shows Quake III's.
+
+### Player models
+
+**Player setup** shows every installed model in a grid with a live preview,
+Quake III's models and skins included (`cl_q3_players`). A Quake III model
+animates with its own legs, torso and head, and in team games wears its red or
+blue skin.
+
+### Rendering
+
+* **Shaders**: Quake III's shader stages (blending, scrolling, rotating,
+  turbulent and animated textures, environment maps) run in the path tracer,
+  and `deformVertexes` moves the geometry (`pt_q3_deform`). Glowing stages
+  become real lights. The shader code is only built into the path tracer while
+  Quake III content is in view (`pt_q3_shaders 1`, the default), so Quake II
+  maps don't pay for it.
+* **Curved surfaces**: Quake III's patches are tessellated and collide like
+  any other wall.
+* **Skies**: each map's sky with its cloud layers moving
+  (`pt_q3_sky_clouds`), and its `q3map_sun` as the path tracer's sun
+  (`pt_q3_sun_scale`, `pt_q3_sun_color`). `sky_override` swaps in another sky.
+* **Fog**: fog brushes become [volumetric fog](#volumetric-fog-and-atmosphere)
+  (`pt_fog_q3_thickness`).
+* **Mirrors and portals** reflect and look through, as in Quake III.
+* **Materials**: `baseq3/materials/quake3.mat` gives Quake III's textures
+  roughness, metal and normal maps. Quake III's painted-on environment-map
+  shine becomes a real reflection of the room (`pt_q3_env_shine 1`, the
+  default; `0` draws it as Quake III did). The health orbs are glass, and
+  throw caustics on the floor around them.
+
+### Modding
+
+Quake III maps use the same tools as Quake II's, from `baseq3`:
+
+* `baseq3/materials/quake3.mat`, plus a `<map>.mat` per map, and the source
+  images in `baseq3/materialDev`. A `stage<N>_` key (`stage1_map`,
+  `stage2_roughness_override`, `stage1_emissive_factor`) sets one stage of a
+  Quake III shader, from the file or from the `mat` console command.
+* `baseq3/maps/<map>.cfg` for [per-map settings](#per-map-settings-mapcvar),
+  and `baseq3/maps/lights/<map>.cfg` for
+  [placed lights](#the-light-placement-system).
 
 ## Gore and physical blood
 

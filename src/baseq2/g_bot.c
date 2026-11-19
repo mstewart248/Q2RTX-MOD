@@ -70,8 +70,13 @@ The settings file names its knobs but not what they do, so this reads them:
 
 cvar_t  *teamplay;
 
+// bot_match: 1 the bot match page's game (bot_count bots), 2 a server from
+// Start Server (bot_server_count, 0 unless asked for). Either way the match's
+// rules - friendly fire, the line-up and skills (bot_skinN, bot_skillN) - are
+// the bot match's.
 static cvar_t   *bot_match;
 static cvar_t   *bot_count;
+static cvar_t   *bot_server_count;
 static cvar_t   *bot_debug;
 static cvar_t   *bot_friendly_fire;
 
@@ -495,8 +500,9 @@ bool G_TeamPlay(void)
 
 /*
 Whether teammates' shots leave each other unhurt (knockback still happens).
-dmflags' DF_NO_FRIENDLY_FIRE says so anywhere. A bot match also asks
-bot_friendly_fire, its menu's "friendly fire", saved and off unless turned on -
+dmflags' DF_NO_FRIENDLY_FIRE says so anywhere. A bot match - and a server
+from Start Server (bot_match 2) - also asks bot_friendly_fire, their menus'
+"friendly fire", saved and off unless turned on -
 Quake III's g_friendlyFire default. Its bots don't look out for a teammate
 standing near what they shoot (ioq3 BotCheckAttack: "FIXME: check if a
 teammate gets radial damage"), and the row used to write dmflags, which is
@@ -1163,6 +1169,7 @@ void Bot_Init(void)
     teamplay = gi.cvar("teamplay", "0", CVAR_SERVERINFO | CVAR_LATCH);
     bot_match = gi.cvar("bot_match", "0", 0);
     bot_count = gi.cvar("bot_count", "3", 0);
+    bot_server_count = gi.cvar("bot_server_count", "0", CVAR_ARCHIVE);
     bot_debug = gi.cvar("bot_debug", "0", 0);
     bot_q3_ai = gi.cvar("bot_q3_ai", "1", CVAR_ARCHIVE);
     // the menu's "team leader" (q3bot/game/ai_team.c FindHumanTeamLeader),
@@ -1293,7 +1300,8 @@ void Bot_LevelStart(void)
     }
 
     if (bot_match->value && !roster_built) {
-        int count = Bot_Clamp(bot_count->integer, 0, min(game.maxclients - 1, BOT_MAX_MATCH));
+        int want = bot_match->integer == 2 ? bot_server_count->integer : bot_count->integer;
+        int count = Bot_Clamp(want, 0, min(game.maxclients - 1, BOT_MAX_MATCH));
         int teams[BOT_MAX_MATCH + 1] = { TEAM_NONE };
         bool player = !dedicated->value;
 

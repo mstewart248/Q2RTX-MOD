@@ -5699,9 +5699,9 @@ sparse_rendering_rate(const reference_mode_t *ref_mode, const QVKUniformBuffer_t
 
 /*
 A Bot Match is on screen (for tm_exposure_speed_bots): a local game the Bot
-Match menu started (bot_match 1 - the start-server and campaign actions set
-it 0). Against people everyone's eye is equally slow, so only here does it
-matter.
+Match menu started (bot_match 1 - Start Server's games are 2, even with bots
+in them, and the campaign's 0). Against people everyone's eye is equally
+slow, so only here does it matter.
 */
 static bool R_BotMatchView(void)
 {
@@ -5711,7 +5711,7 @@ static bool R_BotMatchView(void)
 		return false;
 	if (!bot_match)
 		bot_match = Cvar_FindVar("bot_match");
-	return bot_match && bot_match->integer;
+	return bot_match && bot_match->integer == 1;
 }
 
 static void

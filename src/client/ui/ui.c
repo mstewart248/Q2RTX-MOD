@@ -911,6 +911,12 @@ static void UI_BotInit(void)
 
     Cvar_Get("bot_count", "3", CVAR_ARCHIVE);
 
+    // Start Server's: its own bot count, none unless asked for (g_bot.c,
+    // bot_match 2), and its co-op choice - a menu copy, as "coop" is latched
+    // and its old value is what a condition or $coop would read
+    Cvar_Get("bot_server_count", "0", CVAR_ARCHIVE);
+    Cvar_Get("_ui_server_coop", "0", 0);
+
     // whose models the bots wear - 0 Quake II's, 1 Quake III's, 2 both
     // (bot_roster.h); Quake III's only while baseq3 has them, so the menu
     // shows the choice only then. Both by default: with no Quake III data

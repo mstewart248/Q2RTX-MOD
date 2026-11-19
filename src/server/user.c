@@ -555,6 +555,31 @@ static void SV_BeginDownload_f(void)
         goto fail1;
     }
 
+    // Quake III Arena's own files (baseq3, files.c add_quake3_paths) are never
+    // handed out: they are id's, from the server owner's own copy, and a map
+    // without the rest of Quake III's data would not play anyway. The joining
+    // player is told what they are missing instead.
+    {
+        char    real[MAX_OSPATH], q3dir[MAX_OSPATH];
+        size_t  q3len = Q_concat(q3dir, sizeof(q3dir), sys_basedir->string, "/baseq3/");
+
+        if (q3len < sizeof(q3dir) && FS_RealPath(name, 0, real, sizeof(real)) != FS_REALPATH_NONE) {
+            for (char *p = real; *p; p++)
+                if (*p == '\\')
+                    *p = '/';
+            for (char *p = q3dir; *p; p++)
+                if (*p == '\\')
+                    *p = '/';
+            if (!Q_strncasecmp(real, q3dir, q3len)) {
+                SV_ClientPrintf(sv_client, PRINT_HIGH, "%s is Quake III Arena's, and the server does not "
+                                "send it. Put your own Quake III paks (pak0.pk3 ...) in baseq3 next to the game "
+                                "to play this map.\n", name);
+                Com_DPrintf("Refusing download of Quake III's %s to %s\n", name, sv_client->name);
+                goto fail1;
+            }
+        }
+    }
+
     if (sv_client->download) {
         Com_DPrintf("Closing existing download for %s (should not happen)\n", sv_client->name);
         SV_CloseDownload(sv_client);
