@@ -1964,6 +1964,7 @@ extern  cvar_t  *g_q3_physics;
 
 void Q3_InitGame(void);
 void Q3_LevelRules(void);
+bool Q3_ItemRules(void);
 void Q3_SpawnEntity(edict_t *ent);
 void Q3_LevelStart(void);
 int  Q3_SoundIndex(const char *name);
@@ -2077,6 +2078,74 @@ int  CTF_ApplyStrength(edict_t *ent, int dmg);
 bool CTF_HasHaste(edict_t *ent);
 void SP_info_player_team1(edict_t *self);
 void SP_info_player_team2(edict_t *self);
+
+//
+// g_sp.c - the Quake III Arena campaign
+//
+extern  cvar_t  *sp_campaign;
+extern  cvar_t  *sp_skill;
+
+void SP_Init(void);
+void SP_LevelRules(void);
+bool SP_Active(void);
+int  SP_Skill(void);
+float G_FragLimit(void);
+float G_TimeLimit(void);
+int  SP_NumBots(void);
+const char *SP_BotSkin(int i);
+float SP_BotDelay(int i);
+int  SP_BotSkillLevel(void);
+
+// g_botchar.c: a Quake III bot's character (botfiles/bots/<name>_c.c)
+enum {
+    BCH_ATTACK_SKILL,
+    BCH_AIM_SKILL,
+    BCH_AIM_ACCURACY,
+    BCH_VIEW_FACTOR,
+    BCH_VIEW_MAXCHANGE,
+    BCH_REACTIONTIME,
+    BCH_FIRETHROTTLE,
+    BCH_ALERTNESS,
+    BCH_WALKER,
+    BCH_JUMPER,
+    BCH_CROUCHER,
+    BCH_AIM_ACCURACY_MACHINEGUN,
+    BCH_AIM_ACCURACY_SHOTGUN,
+    BCH_AIM_ACCURACY_ROCKETLAUNCHER,
+    BCH_AIM_ACCURACY_GRENADELAUNCHER,
+    BCH_AIM_ACCURACY_LIGHTNING,
+    BCH_AIM_ACCURACY_PLASMAGUN,
+    BCH_AIM_ACCURACY_RAILGUN,
+    BCH_AIM_ACCURACY_BFG10K,
+    BCH_AIM_SKILL_ROCKETLAUNCHER,
+    BCH_AIM_SKILL_GRENADELAUNCHER,
+    BCH_AIM_SKILL_PLASMAGUN,
+    BCH_AIM_SKILL_BFG10K,
+    BCH_NUM
+};
+
+typedef struct {
+    bool    loaded;
+    float   skill;              // Quake III's, 1..5
+    char    name[32];
+    float   c[BCH_NUM];
+} bot_character_t;
+
+bool  BotChar_Load(const char *name, float skill, bot_character_t *out);
+float BotChar_BFloat(const bot_character_t *ch, int index, float lo, float hi);
+int  SP_BotHandicap(void);
+void SP_BotJoined(const char *skin);
+void SP_SpawnHealth(edict_t *ent);
+int  SP_ScaleDamage(edict_t *targ, edict_t *attacker, int damage);
+bool SP_AccuracyTarget(const edict_t *attacker, const edict_t *target);
+void SP_AccuracyShot(edict_t *ent);
+void SP_AccuracyHit(edict_t *ent);
+void SP_RailHits(edict_t *ent, int hits);
+void SP_PlayerKilled(edict_t *self, edict_t *inflictor, edict_t *attacker);
+void SP_RunFrame(void);
+void SP_BeginIntermission(void);
+void SP_PodiumThink(void);
+void SP_Intermission(void);
 
 void Bot_WrapImports(void);
 void Bot_Init(void);
@@ -2225,6 +2294,13 @@ typedef struct {
     float       ctf_flagsince;
 
     bool        q3_spawned;         // spawned once on this Quake III map
+
+    // the Quake III campaign's counts for this arena (g_sp.c)
+    int         sp_shots, sp_hits;  // accuracy
+    int         sp_accurate;        // railgun hits in a row, toward "impressive"
+    int         sp_impressive, sp_excellent, sp_gauntlet;
+    int         sp_deaths;
+    float       sp_last_kill;       // level.time, for "excellent"
 } client_respawn_t;
 
 // this structure is cleared on each PutClientInServer(),

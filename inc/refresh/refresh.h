@@ -687,6 +687,12 @@ extern void    (*R_DrawPic)(int x, int y, qhandle_t pic);
 extern void    (*R_DrawStretchPic)(int x, int y, int w, int h, qhandle_t pic);
 // a pic w x h centred on (cx, cy), turned clockwise by angle radians
 extern void    (*R_DrawRotatedPic)(float cx, float cy, float w, float h, float angle, qhandle_t pic);
+// part of a pic - texture coordinates s1,t1 to s2,t2 (0..1 across the whole
+// image) - stretched over x, y, w, h; floats, so a 640x480 layout scaled to
+// the screen keeps its sub-pixel places. Quake III's menu fonts are drawn
+// with it (client/ui/q3sp.c).
+extern void    (*R_DrawStretchSubPic)(float x, float y, float w, float h,
+                                      float s1, float t1, float s2, float t2, qhandle_t pic);
 extern void    (*R_TileClear)(int x, int y, int w, int h, qhandle_t pic);
 extern void    (*R_DrawFill8)(int x, int y, int w, int h, int c);
 extern void    (*R_DrawFill32)(int x, int y, int w, int h, uint32_t color);

@@ -74,6 +74,16 @@ static cvar_t   *bot_match;
 static cvar_t   *bot_count;
 static cvar_t   *bot_debug;
 
+/*
+bot_q3_ai: who plays by Quake III's bot rules (Bot_Q3* below) - 0 nobody,
+1 Quake III's bots, each by its own character file (the default), 2 every
+bot, Quake II's on Quake III's default character. Read as a bot is added.
+*/
+static cvar_t   *bot_q3_ai;
+
+// the rerelease's six skills as Quake III's (fractions are blends, g_botchar.c)
+static const float bot_q3_skill[BOT_NUM_SKILLS] = { 1, 2, 3, 4, 4.5f, 5 };
+
 // ==========================================================================
 // SKILLS - bots/settings_PC.txt, in order: practice, easy, medium, hard,
 // expert, nightmare. Only the keys the brain below uses.
@@ -272,11 +282,36 @@ typedef struct {
     // dying
     bool        dead;
     float       respawn_time;
+
+    // the Quake III campaign (g_sp.c): this arena's bot, joining join_delay
+    // seconds after you are in, and announced as it does
+    bool        campaign;
+    float       join_delay;
+
+    // Quake III's rules (Bot_Q3*), with a character to play them by. Named
+    // after the bot_state_t fields of ioq3's ai_dmq3.c they stand for.
+    bot_character_t ch;
+    bool        crouch;             // this frame's commands crouch
+    vec2_t      q3_turn;            // viewanglespeed, pitch and yaw
+    bool        q3_turning;         // the view is on the over-reaction model
+    vec3_t      q3_ideal;           // ideal_viewangles while it aims
+    float       q3_sight_time;      // enemysight_time
+    float       q3_enemypos_time;   // enemyposition_time
+    vec3_t      q3_enemy_org;       // enemyorigin, every half second
+    vec3_t      q3_enemy_vel;       // enemyvelocity, the same
+    float       q3_throttle_wait;   // firethrottlewait_time
+    float       q3_throttle_shoot;  // firethrottleshoot_time
+    float       q3_strafe_time;     // attackstrafe_time
+    bool        q3_strafe_right;    // BFL_STRAFERIGHT
+    float       q3_crouch_until;    // attackcrouch_time
+    float       q3_jump_time;       // attackjump_time
+    bool        q3_hurt;            // health went down since it last looked
 } bot_t;
 
 static bot_t    *bots;              // one per client slot
 static bool     bots_pending;       // some active bot is not in this level yet
 static bool     roster_built;       // the menu's bots were added this game
+static float    bot_human_since;    // level.time someone was first in to play, -1 not yet
 
 static bool     bot_connecting;     // Bot_Spawn is inside ClientConnect
 static int      bot_goal_budget;    // goal choices left this frame
@@ -845,6 +880,52 @@ static void Bot_ResetBrain(bot_t *b)
     b->wander_time = 0;
     memset(b->avoid, 0, sizeof(b->avoid));
     b->leash_radius = 0;
+
+    b->crouch = false;
+    b->q3_turn[0] = b->q3_turn[1] = 0;
+    b->q3_turning = false;
+    b->q3_sight_time = 0;
+    b->q3_enemypos_time = 0;
+    b->q3_throttle_wait = b->q3_throttle_shoot = 0;
+    b->q3_strafe_time = 0;
+    b->q3_strafe_right = Q_rand() & 1;
+    b->q3_crouch_until = b->q3_jump_time = 0;
+    b->q3_hurt = false;
+}
+
+// the Quake III bot this skin is, if any
+static const char *Bot_Q3Character(const char *skin)
+{
+    int i;
+
+    for (i = 0; i < BOT_Q3_ROSTER_SIZE; i++)
+        if (!Q_stricmp(bot_q3_roster[i].skin, skin))
+            return bot_q3_roster[i].name;
+    return NULL;
+}
+
+/*
+=================
+Bot_SetCharacter
+
+Quake III's bots play as themselves at Quake III skill `q3skill` (1..5): their
+character file, Quake III's rules. Everyone else, and everyone when the data
+is not there, plays by the rerelease's skill table.
+=================
+*/
+static void Bot_SetCharacter(bot_t *b, float q3skill)
+{
+    const char *name = Bot_Q3Character(b->skin);
+
+    memset(&b->ch, 0, sizeof(b->ch));
+    if (!bot_q3_ai->integer || (!name && bot_q3_ai->integer < 2))
+        return;
+    if (BotChar_Load(name, q3skill, &b->ch) && bot_debug->integer)
+        gi.dprintf("Bots: %s plays as Quake III's %s, skill %.2f: aim %.2f/%.2f, attack %.2f, view %.2f, "
+                   "reaction %.2f, throttle %.2f, walker %.2f\n", b->name, b->ch.name, b->ch.skill,
+                   b->ch.c[BCH_AIM_SKILL], b->ch.c[BCH_AIM_ACCURACY], b->ch.c[BCH_ATTACK_SKILL],
+                   b->ch.c[BCH_VIEW_FACTOR], b->ch.c[BCH_REACTIONTIME], b->ch.c[BCH_FIRETHROTTLE],
+                   b->ch.c[BCH_WALKER]);
 }
 
 // the highest client slot nobody holds or is connecting into
@@ -909,7 +990,8 @@ static bool Bot_Spawn(int i)
     return true;
 }
 
-static int Bot_Add(const char *want, int skill, int team)
+// q3skill: Quake III's skill for its bots' characters, 0 = skill's match
+static int Bot_Add(const char *want, int skill, int team, float q3skill)
 {
     const char  *skin;
     char        base[BOT_MAX_NAME], name[BOT_MAX_NAME];
@@ -944,6 +1026,7 @@ static int Bot_Add(const char *want, int skill, int team)
     bots[i].team = team;
     Q_strlcpy(bots[i].skin, skin, sizeof(bots[i].skin));
     Q_strlcpy(bots[i].name, name, sizeof(bots[i].name));
+    Bot_SetCharacter(&bots[i], q3skill > 0 ? q3skill : bot_q3_skill[bots[i].skill]);
 
     // reserve the slot now: a person connecting meanwhile goes elsewhere
     game.clients[i].pers.connected = true;
@@ -1003,11 +1086,13 @@ void Bot_Init(void)
     bot_match = gi.cvar("bot_match", "0", 0);
     bot_count = gi.cvar("bot_count", "3", 0);
     bot_debug = gi.cvar("bot_debug", "0", 0);
+    bot_q3_ai = gi.cvar("bot_q3_ai", "1", CVAR_ARCHIVE);
 
     bots = gi.TagMalloc(game.maxclients * sizeof(*bots), TAG_GAME);
     memset(bots, 0, game.maxclients * sizeof(*bots));
     bots_pending = false;
     roster_built = false;
+    bot_human_since = -1;
     skin_pool = NULL;
     skin_pool_count = 0;
     skin_pool_models = -1;
@@ -1083,6 +1168,8 @@ void Bot_LevelStart(void)
     if (!bots)
         return;
 
+    bot_human_since = -1;
+
     for (i = 0; i < game.maxclients; i++) {
         bots[i].spawned = false;
         if (bots[i].active && !deathmatch->value)
@@ -1093,6 +1180,33 @@ void Bot_LevelStart(void)
 
     if (!deathmatch->value)
         return;
+
+    // A Quake III campaign arena: exactly its own bots, in its order, at the
+    // campaign's skill - whoever was here before goes (g_sp.c)
+    if (SP_Active()) {
+        roster_built = true;
+        for (i = 0; i < game.maxclients; i++)
+            if (bots[i].active)
+                Bot_Remove(i, NULL);
+        bots_pending = false;
+
+        for (i = 0; i < SP_NumBots(); i++) {
+            const char  *skin = SP_BotSkin(i);
+            int         slot;
+
+            if (!skin) {
+                gi.dprintf("Campaign: no bot of ours for this arena's bot %d\n", i + 1);
+                continue;
+            }
+            slot = Bot_Add(skin, SP_BotSkillLevel(), TEAM_NONE, SP_Skill());
+            if (slot < 0) {
+                gi.dprintf("Campaign: couldn't add %s\n", skin);
+                continue;
+            }
+            bots[slot].campaign = true;
+            bots[slot].join_delay = SP_BotDelay(i);
+        }
+    }
 
     if (bot_match->value && !roster_built) {
         int count = Bot_Clamp(bot_count->integer, 0, min(game.maxclients - 1, BOT_MAX_MATCH));
@@ -1112,8 +1226,8 @@ void Bot_LevelStart(void)
             cvar_t  *skill = gi.cvar(va("bot_skill%d", i), "2", 0);
 
             // a skin the menu rolled that this game cannot find: any other
-            if (Bot_Add(skin->string, skill->integer, teams[i]) < 0)
-                Bot_Add("random", skill->integer, teams[i]);
+            if (Bot_Add(skin->string, skill->integer, teams[i], 0) < 0)
+                Bot_Add("random", skill->integer, teams[i], 0);
         }
         if (count && game.maxclients < 2)
             gi.dprintf("Bots: maxclients is 1, so there is no room for bots\n");
@@ -1193,11 +1307,62 @@ static bool Bot_Firing(const edict_t *other)
     return (other->client->buttons & BUTTON_ATTACK) && other->client->weaponstate == WEAPON_FIRING;
 }
 
+// Quake III's InFieldOfVision: the pitch and the yaw each within fov / 2
+static bool Bot_Q3InFov(const vec3_t view, float fov, const vec3_t angles)
+{
+    int i;
+
+    if (fov >= 360)
+        return true;
+    for (i = PITCH; i <= YAW; i++)
+        if (fabsf(Bot_AngleDelta(angles[i] - view[i])) > fov * 0.5f)
+            return false;
+    return true;
+}
+
+/*
+=================
+Bot_Q3Sees
+
+BotFindEnemy, for a bot with a character. The one it is fighting it follows
+all round while in sight (AINode_Battle_Fight). Anyone else: within 900 +
+4000 x alertness units, and in a field of view that is all round only with
+no fight on and either its health just went down or they are shooting -
+otherwise 90 degrees close up, widening to 180 at 810 units. No sight time:
+Quake III makes it wait before it shoots instead (Bot_Q3CheckAttack).
+=================
+*/
+static bool Bot_Q3Sees(edict_t *self, bot_t *b, edict_t *other, float dist, bool engaged)
+{
+    vec3_t  eye, mid, dir, angles;
+    float   fov;
+
+    if (other == b->enemy)
+        return Bot_LineOfSight(self, other);
+    if (Bot_Invisible(other) && !Bot_Firing(other))
+        return false;
+    if (dist > 900 + BotChar_BFloat(&b->ch, BCH_ALERTNESS, 0, 1) * 4000)
+        return false;
+
+    if (!engaged && (b->q3_hurt || Bot_Firing(other)))
+        fov = 360;
+    else
+        fov = 90 + min(dist * dist, 810.0f * 810.0f) / (810 * 9);
+
+    Bot_EyePos(self, eye);
+    VectorAdd(other->absmin, other->absmax, mid);
+    VectorScale(mid, 0.5f, mid);
+    VectorSubtract(mid, eye, dir);
+    Bot_VecToAngles(dir, angles);
+    return Bot_Q3InFov(b->view, fov, angles) && Bot_LineOfSight(self, other);
+}
+
 static void Bot_Perceive(edict_t *self, bot_t *b)
 {
     const bot_skill_t   *sk = &bot_skills[b->skill];
     edict_t             *best = NULL;
     float               best_dist = 0;
+    bool                engaged = b->enemy && b->enemy_visible;     // as of last frame
     int                 i;
 
     b->enemy_visible = false;
@@ -1216,7 +1381,10 @@ static void Bot_Perceive(edict_t *self, bot_t *b)
         sight = sk->sight_time;
         seen = false;
 
-        if (!Bot_Invisible(other) || dist < sk->invis_dist) {
+        if (b->ch.loaded) {
+            seen = Bot_Q3Sees(self, b, other, dist, engaged);
+            sight = 0;              // knows them at once
+        } else if (!Bot_Invisible(other) || dist < sk->invis_dist) {
             if (Bot_Invisible(other))
                 sight *= sk->invis_scale;
             // it fired at us, or it is in plain view
@@ -1236,6 +1404,10 @@ static void Bot_Perceive(edict_t *self, bot_t *b)
         if (other == b->enemy && seen && b->aware[i] >= 1) {
             if (!b->enemy_visible && level.time - b->enemy_seen > 0.5f)
                 b->enemy_visible_since = level.time;
+            // back in sight after a think or more out of it: Quake III went
+            // from chasing back to fighting, a new sighting (BotFindEnemy)
+            if (level.time - b->enemy_seen > FRAMETIME * 1.5f)
+                b->q3_sight_time = level.time;
             b->enemy_visible = true;
             b->enemy_seen = level.time;
             VectorCopy(other->s.origin, b->enemy_pos);
@@ -1251,8 +1423,15 @@ static void Bot_Perceive(edict_t *self, bot_t *b)
             }
         }
 
-        // a shot nearby: look that way, after a moment
-        if (!seen && b->heard_until < level.time && dist < sk->sound_range && Bot_Firing(other)) {
+        // a shot nearby: look that way, after a moment - unless already in a
+        // fight with someone in sight. Quake III's BotFindEnemy turns to a
+        // shooter anywhere round only when it has no enemy; a bot duelling
+        // another did not feel you come up behind it (Matt, 11-19: "as soon
+        // as you shoot the bot sees it from behind its back and moves")
+        // (Quake III's bots hear nothing: a shooter in sight is seen all
+        // round, Bot_Q3Sees, and one out of sight not at all)
+        if (!seen && !b->ch.loaded && (!b->enemy || !b->enemy_visible) &&
+            b->heard_until < level.time && dist < sk->sound_range && Bot_Firing(other)) {
             VectorCopy(other->s.origin, b->heard_pos);
             b->heard_at = level.time + sk->sound_time;
             b->heard_until = b->heard_at + 1.5f;
@@ -1275,7 +1454,10 @@ static void Bot_Perceive(edict_t *self, bot_t *b)
         if (b->enemy && CTF_HasFlag(b->enemy))
             cur *= 0.25f;
 
-        if (!b->enemy || !b->enemy_visible || best_dist < cur * 0.5f) {
+        // (Quake III's take anyone nearer at all)
+        if (!b->enemy || !b->enemy_visible || best_dist < cur * (b->ch.loaded ? 1.0f : 0.5f)) {
+            // Quake III: no wait to shoot one switched to mid-fight
+            b->q3_sight_time = engaged ? level.time - 2 : level.time;
             b->enemy = best;
             b->enemy_visible = true;
             b->enemy_seen = level.time;
@@ -1284,6 +1466,8 @@ static void Bot_Perceive(edict_t *self, bot_t *b)
             VectorCopy(best->s.origin, b->enemy_pos);
         }
     }
+
+    b->q3_hurt = false;
 }
 
 /*
@@ -1303,6 +1487,14 @@ void Bot_Damaged(edict_t *self, edict_t *attacker)
         return;
 
     b = &bots[self - g_edicts - 1];
+
+    // Quake III's: only that its health went down, which opens its view all
+    // round next time it looks - if it has no fight on (Bot_Q3Sees). Hit
+    // from behind mid-fight, it fights on.
+    if (b->ch.loaded) {
+        b->q3_hurt = true;
+        return;
+    }
     i = attacker - g_edicts - 1;
     if (i >= 0 && i < game.maxclients)
         b->aware[i] = 1;
@@ -2193,12 +2385,30 @@ static bool Bot_GoalReached(edict_t *self, bot_t *b)
 // ==========================================================================
 // DANGER
 
+/*
+Only what the bot can see: a grenade or rocket in its field of view and in
+line of sight. It dodged everything on course for it, behind it included, so a
+rocket from behind never landed (Matt, 11-19). Quake III's own bots dodge no
+missiles at all; its missiles (q3_missile, g_q3weap.c) are not looked at here.
+*/
+static bool Bot_SeesDanger(edict_t *self, bot_t *b, edict_t *e)
+{
+    return Bot_InView(self, b, e->s.origin, bot_skills[b->skill].fov) && Bot_LineOfSight(self, e);
+}
+
+// a grenade lying or bouncing about, Quake II's or Quake III's
+static bool Bot_IsGrenade(const edict_t *e)
+{
+    return !strcmp(e->classname, "grenade") || !strcmp(e->classname, "hgrenade") ||
+           (!strcmp(e->classname, "q3_missile") && e->style == Q3W_GRENADE);
+}
+
 static void Bot_Dangers(edict_t *self, bot_t *b)
 {
     int i;
 
     VectorClear(b->dodge);
-    if (!bot_skills[b->skill].dangers)
+    if (!bot_skills[b->skill].dangers && !b->ch.loaded)
         return;
 
     for (i = game.maxclients + 1; i < globals.num_edicts; i++) {
@@ -2208,8 +2418,19 @@ static void Bot_Dangers(edict_t *self, bot_t *b)
 
         if (!e->inuse || !e->classname)
             continue;
+        if (b->ch.loaded) {
+            // Quake III's: grenades, wherever they are (BotCheckForGrenades
+            // steers round every one in its snapshot); never a rocket
+            if (!Bot_IsGrenade(e))
+                continue;
+        } else {
+            if (!Bot_IsGrenade(e) && strcmp(e->classname, "rocket") && strcmp(e->classname, "bfg blast"))
+                continue;
+            if (!Bot_SeesDanger(self, b, e))
+                continue;
+        }
 
-        if (!strcmp(e->classname, "grenade") || !strcmp(e->classname, "hgrenade")) {
+        if (Bot_IsGrenade(e)) {
             VectorSubtract(self->s.origin, e->s.origin, rel);
             rel[2] = 0;
             dist = VectorNormalize(rel);
@@ -2249,6 +2470,29 @@ static void Bot_Dangers(edict_t *self, bot_t *b)
 // ==========================================================================
 // AIMING
 
+/*
+A grenade: the pitch whose arc comes down on target. fire_grenade launches at
+600 along the view plus 200 along the view's up, which is ~632 units/s at
+18.4 degrees above where we look. False, and *pitch untouched, out of reach.
+*/
+static bool Bot_LobPitch(const vec3_t eye, const bot_weapon_t *w, const vec3_t target, float *pitch)
+{
+    float   g = sv_gravity->value > 0 ? sv_gravity->value : 800;
+    float   dx = Bot_Dist2D(eye, target);
+    float   dz = target[2] - eye[2];
+    float   rise = w->lob_rise ? w->lob_rise : 200;
+    float   v = sqrtf(w->speed * w->speed + rise * rise);
+    float   v2 = v * v;
+    float   root = v2 * v2 - g * (g * dx * dx + 2 * dz * v2);
+    float   elevation;
+
+    if (root < 0 || dx <= 1)
+        return false;
+    elevation = RAD2DEG(atanf((v2 - sqrtf(root)) / (g * dx)));
+    *pitch = -(elevation - RAD2DEG(atanf(rise / w->speed)));
+    return true;
+}
+
 static void Bot_AimPoint(edict_t *self, bot_t *b, const bot_weapon_t *w, vec3_t out, float *lob_pitch)
 {
     const bot_skill_t   *sk = &bot_skills[b->skill];
@@ -2283,24 +2527,8 @@ static void Bot_AimPoint(edict_t *self, bot_t *b, const bot_weapon_t *w, vec3_t 
         VectorMA(target, sk->lag, e->velocity, target);
     }
 
-    // a grenade: aim above it so the arc comes down on it. fire_grenade
-    // launches at 600 along the view plus 200 along the view's up, which is
-    // ~632 units/s at 18.4 degrees above where we look.
-    if (w && w->lob) {
-        float   g = sv_gravity->value > 0 ? sv_gravity->value : 800;
-        float   dx = Bot_Dist2D(eye, target);
-        float   dz = target[2] - eye[2];
-        float   rise = w->lob_rise ? w->lob_rise : 200;
-        float   v = sqrtf(w->speed * w->speed + rise * rise);
-        float   v2 = v * v;
-        float   root = v2 * v2 - g * (g * dx * dx + 2 * dz * v2);
-
-        if (root >= 0 && dx > 1) {
-            float elevation = RAD2DEG(atanf((v2 - sqrtf(root)) / (g * dx)));
-
-            *lob_pitch = -(elevation - RAD2DEG(atanf(rise / w->speed)));
-        }
-    }
+    if (w && w->lob)
+        Bot_LobPitch(eye, w, target, lob_pitch);
 
     VectorCopy(target, out);
 }
@@ -2357,6 +2585,493 @@ static bool Bot_FriendInWay(edict_t *self, const vec3_t point)
 }
 
 // ==========================================================================
+// QUAKE III'S RULES
+//
+// For a bot with a character (g_botchar.c): ioq3's ai_dmq3.c BotAimAtEnemy,
+// BotCheckAttack and BotAttackMove, run once a think as Quake III ran them
+// (bot_thinktime 100 ms, our frame), and ai_main.c's BotChangeViewAngles at
+// Quake III's 20 Hz. What needs its AAS - prediction round corners, the move
+// predictor - is done with traces; the rest is line for line.
+
+#define BOT_Q3_ATTACKDIST   140     // IDEAL_ATTACKDIST
+
+// which of Quake III's guns this is, or plays most like (Q3W_*)
+static int Bot_Q3Weapon(const bot_weapon_t *w)
+{
+    const char *c;
+
+    if (!w)
+        return Q3W_NONE;
+    if (w->melee)
+        return Q3W_GAUNTLET;
+    c = w->classname;
+    if (strstr(c, "machinegun") || strstr(c, "chaingun"))
+        return Q3W_MACHINEGUN;
+    if (strstr(c, "shotgun"))
+        return Q3W_SHOTGUN;
+    if (strstr(c, "grenade") || strstr(c, "prox"))
+        return Q3W_GRENADE;
+    if (strstr(c, "rocket") || strstr(c, "phalanx"))
+        return Q3W_ROCKET;
+    if (strstr(c, "lightning") || strstr(c, "plasmabeam"))
+        return Q3W_LIGHTNING;
+    if (strstr(c, "railgun") || strstr(c, "disintegrator"))
+        return Q3W_RAILGUN;
+    if (strstr(c, "bfg"))
+        return Q3W_BFG;
+    return Q3W_PLASMA;      // blasters, the plasma gun, ETF rifle, ionripper
+}
+
+static bool Bot_Q3Hitscan(int q3w)
+{
+    return q3w == Q3W_MACHINEGUN || q3w == Q3W_SHOTGUN || q3w == Q3W_LIGHTNING || q3w == Q3W_RAILGUN;
+}
+
+// botfiles/weapons.c: the splash a gun's shot does, if it does
+static bool Bot_Q3Radial(int q3w, float *damage, float *radius)
+{
+    switch (q3w) {
+    case Q3W_GRENADE:   *damage = 120; *radius = 160; return true;
+    case Q3W_ROCKET:    *damage = 100; *radius = 120; return true;
+    case Q3W_PLASMA:    *damage = 20;  *radius = 20;  return true;
+    case Q3W_BFG:       *damage = 40;  *radius = 100; return true;
+    default:            return false;
+    }
+}
+
+// the gun's own aim accuracy, and for the slow shots its own aim skill
+static void Bot_Q3AimSkill(const bot_t *b, int q3w, float *skill, float *acc)
+{
+    const bot_character_t *ch = &b->ch;
+
+    switch (q3w) {
+    case Q3W_MACHINEGUN:
+        *acc = BotChar_BFloat(ch, BCH_AIM_ACCURACY_MACHINEGUN, 0, 1);
+        break;
+    case Q3W_SHOTGUN:
+        *acc = BotChar_BFloat(ch, BCH_AIM_ACCURACY_SHOTGUN, 0, 1);
+        break;
+    case Q3W_GRENADE:
+        *acc = BotChar_BFloat(ch, BCH_AIM_ACCURACY_GRENADELAUNCHER, 0, 1);
+        *skill = BotChar_BFloat(ch, BCH_AIM_SKILL_GRENADELAUNCHER, 0, 1);
+        break;
+    case Q3W_ROCKET:
+        *acc = BotChar_BFloat(ch, BCH_AIM_ACCURACY_ROCKETLAUNCHER, 0, 1);
+        *skill = BotChar_BFloat(ch, BCH_AIM_SKILL_ROCKETLAUNCHER, 0, 1);
+        break;
+    case Q3W_LIGHTNING:
+        *acc = BotChar_BFloat(ch, BCH_AIM_ACCURACY_LIGHTNING, 0, 1);
+        break;
+    case Q3W_RAILGUN:
+        *acc = BotChar_BFloat(ch, BCH_AIM_ACCURACY_RAILGUN, 0, 1);
+        break;
+    case Q3W_PLASMA:
+        *acc = BotChar_BFloat(ch, BCH_AIM_ACCURACY_PLASMAGUN, 0, 1);
+        *skill = BotChar_BFloat(ch, BCH_AIM_SKILL_PLASMAGUN, 0, 1);
+        break;
+    case Q3W_BFG:
+        *acc = BotChar_BFloat(ch, BCH_AIM_ACCURACY_BFG10K, 0, 1);
+        *skill = BotChar_BFloat(ch, BCH_AIM_SKILL_BFG10K, 0, 1);
+        break;
+    default:
+        break;
+    }
+}
+
+// AAS_PredictClientMovement, near enough: where e will be when a shot at
+// `speed` gets there - coasting, falling if in the air, stopped by walls
+static void Bot_Q3Predict(edict_t *self, edict_t *e, float speed, vec3_t out)
+{
+    float   t = Distance(e->s.origin, self->s.origin) / speed;
+    vec3_t  end;
+    trace_t tr;
+
+    VectorMA(e->s.origin, t, e->velocity, end);
+    if (e->groundentity)
+        end[2] = e->s.origin[2];
+    else
+        end[2] -= 0.5f * sv_gravity->value * t * t;
+    tr = gi.trace(e->s.origin, e->mins, e->maxs, end, e, MASK_PLAYERSOLID);
+    VectorCopy(tr.endpos, out);
+}
+
+/*
+=================
+Bot_Q3Aim
+
+BotAimAtEnemy: sets q3_ideal, where the view wants to be, and the point the
+shot is meant for. Its misses are the point - the target point jittered by
+up to 20 units and the direction by up to 0.3 a component, both scaled by
+(1 - accuracy); accuracy down by 0.7 when the enemy has turned about, and for
+hitscan guns up close; a lead only from aim skill 0.4, an exact one from 0.8,
+splash aimed at the feet from 0.6. False while a very skilled bot holds off,
+half its reaction time.
+=================
+*/
+static bool Bot_Q3Aim(edict_t *self, bot_t *b, const bot_weapon_t *w, vec3_t aimtarget, float *lob_pitch)
+{
+    static const vec3_t mins4 = { -4, -4, -4 }, maxs4 = { 4, 4, 4 };
+    const bot_character_t   *ch = &b->ch;
+    edict_t                 *e = b->enemy;
+    int                     q3w = Bot_Q3Weapon(w), i;
+    float                   aim_skill, acc, dist, damage, radius;
+    float                   speed = w ? w->speed : 0;
+    vec3_t                  eye, best, dir, vel, clean;
+    trace_t                 tr;
+
+    *lob_pitch = 999;
+    Bot_EyePos(self, eye);
+
+    aim_skill = BotChar_BFloat(ch, BCH_AIM_SKILL, 0, 1);
+    acc = BotChar_BFloat(ch, BCH_AIM_ACCURACY, 0, 1);
+    if (aim_skill > 0.95f) {
+        float reaction = 0.5f * BotChar_BFloat(ch, BCH_REACTIONTIME, 0, 1);
+
+        if (b->q3_sight_time > level.time - reaction)
+            return false;
+    }
+    Bot_Q3AimSkill(b, q3w, &aim_skill, &acc);
+    if (acc <= 0)
+        acc = 0.0001f;
+    if (Bot_Invisible(e) && random() > 0.1f)
+        acc *= 0.4f;
+
+    // where it was and how it moved, every half second
+    VectorCopy(e->velocity, vel);
+    if (b->q3_enemypos_time < level.time) {
+        b->q3_enemypos_time = level.time + 0.5f;
+        VectorCopy(vel, b->q3_enemy_vel);
+        VectorCopy(e->s.origin, b->q3_enemy_org);
+    }
+    if (aim_skill < 0.9f) {
+        VectorSubtract(e->s.origin, b->q3_enemy_org, dir);
+        if (VectorLengthSquared(dir) > 48 * 48 && DotProduct(b->q3_enemy_vel, vel) < 0)
+            acc *= 0.7f;
+    }
+
+    if (b->enemy_visible) {
+        VectorCopy(e->s.origin, best);
+        best[2] += 8;
+        tr = gi.trace(eye, mins4, maxs4, best, self, MASK_SHOT);
+        if (tr.ent != e)
+            best[2] += 16;
+
+        // a slow shot: lead it, unless far off and only stepping about
+        if (speed > 0) {
+            dist = Distance(best, self->s.origin);
+            VectorSubtract(e->s.origin, b->q3_enemy_org, dir);
+            if (!(dist > 100 && VectorLengthSquared(dir) < 32 * 32)) {
+                if (aim_skill > 0.8f && self->client->weaponstate == WEAPON_READY) {
+                    Bot_Q3Predict(self, e, speed, best);
+                } else if (aim_skill > 0.4f) {
+                    vec3_t  hor = { vel[0], vel[1], 0 };
+                    float   hspeed = VectorNormalize(hor);
+
+                    dist = Distance(e->s.origin, self->s.origin);
+                    VectorMA(e->s.origin, dist / speed * hspeed, hor, best);
+                }
+            }
+        }
+
+        // splash: at the floor under it, if that is in reach and in its sight
+        if (aim_skill > 0.6f && Bot_Q3Radial(q3w, &damage, &radius) &&
+            e->s.origin[2] < self->s.origin[2] + 16) {
+            vec3_t  end, ground;
+
+            VectorCopy(e->s.origin, end);
+            end[2] -= 64;
+            tr = gi.trace(e->s.origin, NULL, NULL, end, e, MASK_SHOT);
+            VectorCopy(best, ground);
+            ground[2] = tr.startsolid ? e->s.origin[2] - 16 : tr.endpos[2] - 8;
+            tr = gi.trace(eye, NULL, NULL, ground, self, MASK_SHOT);
+            if (fabsf(tr.endpos[2] - ground[2]) < 50) {
+                VectorSubtract(tr.endpos, ground, dir);
+                if (VectorLengthSquared(dir) < 60 * 60) {
+                    VectorSubtract(tr.endpos, eye, dir);
+                    if (VectorLengthSquared(dir) > 100 * 100) {
+                        VectorCopy(tr.endpos, end);
+                        end[2] += 1;
+                        tr = gi.trace(end, NULL, NULL, e->s.origin, e, MASK_SHOT);
+                        if (tr.fraction >= 1)
+                            VectorCopy(ground, best);
+                    }
+                }
+            }
+        }
+
+        best[0] += 20 * crandom() * (1 - acc);
+        best[1] += 20 * crandom() * (1 - acc);
+        best[2] += 10 * crandom() * (1 - acc);
+
+        tr = gi.trace(eye, NULL, NULL, best, self, MASK_SHOT);
+        VectorCopy(tr.endpos, aimtarget);
+    } else {
+        // where it was last seen (Quake III's shots round corners need its AAS)
+        VectorCopy(b->enemy_pos, best);
+        best[2] += 8;
+        VectorCopy(best, aimtarget);
+    }
+
+    VectorSubtract(best, eye, dir);
+    if (Bot_Q3Hitscan(q3w)) {
+        dist = min(VectorLength(dir), 150.0f);
+        acc *= 0.6f + dist / 150 * 0.4f;
+    }
+    Bot_VecToAngles(dir, clean);
+    if (acc < 0.8f) {
+        VectorNormalize(dir);
+        for (i = 0; i < 3; i++)
+            dir[i] += 0.3f * crandom() * (1 - acc);
+    }
+    Bot_VecToAngles(dir, b->q3_ideal);
+
+    // a grenade on its arc - Quake III's own bots throw them straight -
+    // with the same miss on top
+    if (w && w->lob && Bot_LobPitch(eye, w, best, lob_pitch))
+        b->q3_ideal[PITCH] = *lob_pitch + Bot_AngleDelta(b->q3_ideal[PITCH] - clean[PITCH]);
+
+    b->q3_ideal[PITCH] = Bot_AngleDelta(b->q3_ideal[PITCH]);
+    b->q3_ideal[ROLL] = 0;
+    return true;
+}
+
+/*
+=================
+Bot_Q3CheckAttack
+
+BotCheckAttack: whether to hold the trigger this think. Not before its
+reaction time (up to a second) has passed since the enemy came into sight;
+in bursts by its fire throttle; only once the aim point is within 25 degrees
+of where it looks (60 up close), so a slow turner fires on its way round; not
+through a team-mate, nor at a wall near enough to splash itself.
+=================
+*/
+static bool Bot_Q3CheckAttack(edict_t *self, bot_t *b, const bot_weapon_t *w, const vec3_t aimtarget,
+                              float lob_pitch)
+{
+    static const vec3_t mins8 = { -8, -8, -8 }, maxs8 = { 8, 8, 8 };
+    const bot_character_t   *ch = &b->ch;
+    int                     q3w = Bot_Q3Weapon(w);
+    float                   throttle, fov, damage, radius;
+    vec3_t                  eye, dir, angles, forward, start, end;
+    trace_t                 tr;
+
+    if (b->q3_sight_time > level.time - BotChar_BFloat(ch, BCH_REACTIONTIME, 0, 1))
+        return false;
+
+    // the fire throttle: now and then a pause of `throttle` seconds, else
+    // a burst of 1 - throttle. (A pause ending this very think counts as
+    // still on; in Quake III, float time made that a coin toss.)
+    if (b->q3_throttle_wait > level.time - 0.001f)
+        return false;
+    throttle = BotChar_BFloat(ch, BCH_FIRETHROTTLE, 0, 1);
+    if (b->q3_throttle_shoot < level.time) {
+        if (random() > throttle) {
+            b->q3_throttle_wait = level.time + throttle;
+            b->q3_throttle_shoot = 0;
+        } else {
+            b->q3_throttle_shoot = level.time + 1 - throttle;
+            b->q3_throttle_wait = 0;
+        }
+    }
+
+    Bot_EyePos(self, eye);
+    VectorSubtract(aimtarget, eye, dir);
+    if (q3w == Q3W_GAUNTLET && VectorLengthSquared(dir) > 60 * 60)
+        return false;
+    fov = VectorLengthSquared(dir) < 100 * 100 ? 120 : 50;
+    Bot_VecToAngles(dir, angles);
+    if (lob_pitch < 900)
+        angles[PITCH] = lob_pitch;
+    if (!Bot_Q3InFov(b->view, fov, angles))
+        return false;
+
+    tr = gi.trace(eye, NULL, NULL, aimtarget, self, CONTENTS_SOLID | CONTENTS_PLAYERCLIP);
+    if (tr.fraction < 1 && tr.ent != b->enemy)
+        return false;
+
+    // along the view itself
+    AngleVectors(b->view, forward, NULL, NULL);
+    VectorMA(eye, 1000, forward, end);
+    VectorMA(eye, -12, forward, start);
+    tr = gi.trace(start, mins8, maxs8, end, self, MASK_SHOT);
+    if (tr.ent && tr.ent != b->enemy && tr.ent->client && G_TeamPlay() && OnSameTeam(self, tr.ent))
+        return false;
+    if (tr.ent != b->enemy && Bot_Q3Radial(q3w, &damage, &radius)) {
+        float d = tr.fraction * 1000;
+
+        if (d < radius && (damage - 0.5f * d) * 0.5f > 0)
+            return false;
+    }
+    return true;
+}
+
+// BotWalkInDirection's say, roughly: not into a wall (steps are fine), off a
+// ledge or into lava
+static bool Bot_Q3CanMove(edict_t *self, const vec3_t dir)
+{
+    vec3_t  flat = { dir[0], dir[1], 0 }, mins, end;
+    trace_t tr;
+
+    if (VectorNormalize(flat) < 0.001f)
+        return false;
+    VectorCopy(self->mins, mins);
+    mins[2] += 18;      // a stair step
+    VectorMA(self->s.origin, 48, flat, end);
+    tr = gi.trace(self->s.origin, mins, self->maxs, end, self, MASK_PLAYERSOLID);
+    if (tr.startsolid || tr.fraction < 0.5f)
+        return false;
+    return Bot_SafeFloor(self, tr.endpos);
+}
+
+/*
+=================
+Bot_Q3AttackMove
+
+BotAttackMove, once a think. Below attack skill 0.2 the bot stands and
+shoots; to 0.4 it only walks up to, or back from, 140 units off; above that
+it strafes, flipping about every 0.4-0.6 s at a 6.5% chance a think, edging
+in or out to 140 and now and then back. Jumps (one a second at most) and
+crouches as its character says.
+=================
+*/
+static bool Bot_Q3AttackMove(edict_t *self, bot_t *b, const bot_weapon_t *w, vec3_t wish, bool *jump, bool *crouch)
+{
+    const bot_character_t   *ch = &b->ch;
+    float                   attack_skill = BotChar_BFloat(ch, BCH_ATTACK_SKILL, 0, 1);
+    float                   jumper = BotChar_BFloat(ch, BCH_JUMPER, 0, 1);
+    float                   croucher = BotChar_BFloat(ch, BCH_CROUCHER, 0, 1);
+    float                   dist, attack_dist, attack_range, change;
+    bool                    want_jump = false;
+    vec3_t                  forward, backward, side, hordir;
+    int                     i;
+
+    VectorClear(wish);
+    *jump = *crouch = false;
+    if (attack_skill < 0.2f)
+        return false;
+
+    VectorSubtract(b->enemy->s.origin, self->s.origin, forward);
+    dist = VectorNormalize(forward);
+    VectorNegate(forward, backward);
+
+    if (b->q3_crouch_until < level.time - 1) {
+        if (random() < jumper)
+            want_jump = true;
+        else if (random() < croucher)       // wait a second between crouches
+            b->q3_crouch_until = level.time + croucher * 5;
+    }
+    if (b->q3_crouch_until > level.time) {
+        *crouch = true;
+        want_jump = false;
+    }
+    if (want_jump) {
+        if (b->q3_jump_time > level.time)
+            want_jump = false;
+        else
+            b->q3_jump_time = level.time + 1;
+    }
+
+    if (w && w->melee) {
+        attack_dist = 0;
+        attack_range = 0;
+    } else {
+        attack_dist = BOT_Q3_ATTACKDIST;
+        attack_range = 40;
+    }
+
+    // not much of a fighter: just to or away from it
+    if (attack_skill <= 0.4f) {
+        if (dist > attack_dist + attack_range && Bot_Q3CanMove(self, forward)) {
+            VectorSet(wish, forward[0], forward[1], 0);
+        } else if (dist < attack_dist - attack_range && Bot_Q3CanMove(self, backward)) {
+            VectorSet(wish, backward[0], backward[1], 0);
+        } else {
+            return false;
+        }
+        VectorNormalize(wish);
+        *jump = want_jump;
+        return true;
+    }
+
+    b->q3_strafe_time += FRAMETIME;
+    change = 0.4f + (1 - attack_skill) * 0.2f;
+    if (attack_skill > 0.7f)
+        change += crandom() * 0.2f;
+    if (b->q3_strafe_time > change && random() > 0.935f) {
+        b->q3_strafe_right = !b->q3_strafe_right;
+        b->q3_strafe_time = 0;
+    }
+
+    for (i = 0; i < 2; i++) {
+        VectorSet(hordir, forward[0], forward[1], 0);
+        VectorNormalize(hordir);
+        VectorSet(side, hordir[1], -hordir[0], 0);     // hordir x up
+        if (b->q3_strafe_right)
+            VectorNegate(side, side);
+        if (random() > 0.9f)
+            VectorAdd(side, backward, side);
+        else if (dist > attack_dist + attack_range)
+            VectorAdd(side, forward, side);
+        else if (dist < attack_dist - attack_range)
+            VectorAdd(side, backward, side);
+        side[2] = 0;
+
+        if (Bot_Q3CanMove(self, side)) {
+            VectorNormalize(side);
+            VectorCopy(side, wish);
+            *jump = want_jump;
+            return true;
+        }
+        // that way's blocked: the other
+        b->q3_strafe_right = !b->q3_strafe_right;
+        b->q3_strafe_time = 0;
+    }
+    return false;
+}
+
+/*
+=================
+Bot_Q3Turn
+
+BotChangeViewAngles' "over-reaction" model (bot_challenge 0), a tick every
+50 ms as on Quake III's 20 Hz server: each tick the turn speed doubles less
+view_factor of the way still to go, is held to view_maxchange (240 at least)
+degrees a second, and keeps 0.45 x (1 - factor) of itself for the next.
+Factor 1 snaps onto the aim; 0.2 swings past it and back.
+=================
+*/
+static void Bot_Q3Turn(bot_t *b, const vec3_t ideal, float dt)
+{
+    float   factor = BotChar_BFloat(&b->ch, BCH_VIEW_FACTOR, 0.01f, 1);
+    float   maxchange = BotChar_BFloat(&b->ch, BCH_VIEW_MAXCHANGE, 1, 1800);
+    int     i;
+
+    if (maxchange < 240)
+        maxchange = 240;
+    maxchange *= dt;
+
+    for (i = PITCH; i <= YAW; i++) {
+        float diff = Bot_AngleDelta(b->view[i] - ideal[i]);
+        float speed = b->q3_turn[i];
+
+        speed += speed - diff * factor;
+        if (speed > 180)
+            speed = maxchange;
+        if (speed < -180)
+            speed = -maxchange;
+        b->view[i] = Bot_AngleDelta(b->view[i] + max(-maxchange, min(maxchange, speed)));
+        b->q3_turn[i] = speed * 0.45f * (1 - factor);
+    }
+
+    if (b->view[PITCH] > 89)
+        b->view[PITCH] = 89;
+    else if (b->view[PITCH] < -89)
+        b->view[PITCH] = -89;
+    b->view[ROLL] = 0;
+}
+
+// ==========================================================================
 // THINKING
 
 static void Bot_SendCommand(edict_t *self, bot_t *b, const vec3_t wish, int speed, bool jump, bool climb, bool attack)
@@ -2391,6 +3106,8 @@ static void Bot_SendCommand(edict_t *self, bot_t *b, const vec3_t wish, int spee
 
     if (jump || climb)
         cmd.upmove = 400;
+    else if (b->crouch)
+        cmd.upmove = -400;
 
     if (attack)
         cmd.buttons |= BUTTON_ATTACK;
@@ -2416,6 +3133,7 @@ static void Bot_Dead(edict_t *self, bot_t *b)
         b->respawn_time = level.time + Bot_Rand(sk->respawn_min, sk->respawn_max);
         b->enemy = NULL;
     }
+    b->crouch = false;
 
     // a press, then a release, so the respawn sees a new press
     for (step = 0; step < BOT_STEPS; step++)
@@ -2431,9 +3149,18 @@ static void Bot_Think(edict_t *self, bot_t *b)
     float               lob_pitch = 999, tolerance = 0;
     bool                fighting, aiming = false, flight;
     int                 step, speed;
+    // Quake III's rules, for a bot with a character: this think's aim,
+    // trigger and fighting move, held for all four commands as Quake III held
+    // a think's input for its two server frames
+    bool                q3 = b->ch.loaded, q3_attack = false;
+    bool                q3_moving = false, q3_jump = false, q3_crouch = false;
+    vec3_t              q3_wish = { 0, 0, 0 };
+    float               q3_run = BOT_RUN;
 
     if (level.intermission_framenum)
         return;
+
+    b->crouch = false;
 
     if (self->deadflag || self->health <= 0) {
         Bot_Dead(self, b);
@@ -2482,13 +3209,13 @@ static void Bot_Think(edict_t *self, bot_t *b)
             b->goal = GOAL_NONE;
         if (G_CTF() && Bot_CTFGoal(self, b, fighting))
             ;                                   // the team's errand comes first
-        else if (fighting && sk->combat_items)
+        else if (fighting && (sk->combat_items || q3))
             Bot_PickGoal(self, b, true);        // only what it is short of, close by
         else if (fighting && sk->combat)
             b->next_goal_time = level.time + 1;
         else if (fighting)
             Bot_PickGoal(self, b, false);       // shoots, but keeps on its way
-        else if (b->enemy && sk->combat &&
+        else if (b->enemy && (sk->combat || q3) &&
                  self->health >= self->max_health * sk->min_health * 0.5f) {
             // gone round a corner: after it
             if (b->goal != GOAL_CHASE || Distance(b->goal_pos, b->enemy_pos) > 128) {
@@ -2532,7 +3259,20 @@ static void Bot_Think(edict_t *self, bot_t *b)
 
     // the weapon, and how far off the aim can be and still fire
     w = Bot_CurrentWeapon(self);
-    if (fighting) {
+    if (q3) {
+        // a walker walks wherever it is going - not when fighting, where
+        // BotAttackMove always ran (BotTravel_Walk's MFL_WALK)
+        if (BotChar_BFloat(&b->ch, BCH_WALKER, 0, 1) > 0.5f)
+            q3_run = BOT_WALK;
+        if (fighting) {
+            aiming = true;
+            if (!Bot_Q3Aim(self, b, w, aim_at, &lob_pitch))
+                VectorCopy(b->view, b->q3_ideal);      // holding off: stays put
+            else
+                q3_attack = w && Bot_Q3CheckAttack(self, b, w, aim_at, lob_pitch);
+            q3_moving = Bot_Q3AttackMove(self, b, w, q3_wish, &q3_jump, &q3_crouch);
+        }
+    } else if (fighting) {
         float dist = Distance(self->s.origin, b->enemy->s.origin);
         float fov = w ? w->ideal_fov : 15;
 
@@ -2557,8 +3297,8 @@ static void Bot_Think(edict_t *self, bot_t *b)
         bool    jump = false, climb = false, attack = false;
         bool    moving, riding;
 
-        speed = BOT_RUN;
         moving = Bot_FollowRoute(self, b, wish, &jump, &climb);
+        speed = (jump || climb) ? BOT_RUN : (int)q3_run;
 
         // a jump pad's flight: Bot_FollowRoute leans toward the landing, and
         // nothing below turns it - it still aims and shoots
@@ -2576,8 +3316,19 @@ static void Bot_Think(edict_t *self, bot_t *b)
             moving = true;
         }
 
+        // Quake III's fighting move, unless it is on its way to an item
+        if (fighting && q3 && !riding) {
+            if ((b->goal != GOAL_ITEM && b->goal != GOAL_CTF) || !moving) {
+                VectorCopy(q3_wish, wish);
+                moving = q3_moving;
+                speed = BOT_RUN;
+                b->crouch = q3_crouch;
+                if (step == 0 && q3_jump && self->groundentity)
+                    jump = true;
+            }
+        }
         // fighting: keep at the weapon's range and keep moving sideways
-        if (fighting && sk->combat && !riding) {
+        else if (fighting && sk->combat && !riding) {
             vec3_t  to, side, test;
             float   dist, ideal;
 
@@ -2642,7 +3393,9 @@ static void Bot_Think(edict_t *self, bot_t *b)
             jump = jump && self->waterlevel >= 2;
 
         // where to look
-        if (aiming) {
+        if (aiming && q3) {
+            VectorCopy(b->q3_ideal, want_view);
+        } else if (aiming) {
             Bot_EyePos(self, eye);
             VectorSubtract(aim_at, eye, dir);
             Bot_VecToAngles(dir, want_view);
@@ -2667,10 +3420,27 @@ static void Bot_Think(edict_t *self, bot_t *b)
         want_view[PITCH] = Bot_AngleDelta(want_view[PITCH]);
         want_view[ROLL] = 0;
 
-        Bot_TurnToward(b, want_view, BOT_STEP_TIME);
+        // with an enemy, Quake III's view turns by its own model, ticking
+        // every other command (20 Hz); otherwise the aim spring's
+        if (q3 && b->enemy) {
+            if (!b->q3_turning) {
+                b->q3_turn[0] = b->q3_turn[1] = 0;
+                b->q3_turning = true;
+            }
+            if (!(step & 1))
+                Bot_Q3Turn(b, want_view, BOT_STEP_TIME * 2);
+        } else {
+            if (b->q3_turning) {
+                VectorClear(b->turn);
+                b->q3_turning = false;
+            }
+            Bot_TurnToward(b, want_view, BOT_STEP_TIME);
+        }
 
         // fire?
-        if (aiming && w && level.time - b->enemy_visible_since >= sk->fire_sight_time) {
+        if (q3) {
+            attack = aiming && q3_attack;
+        } else if (aiming && w && level.time - b->enemy_visible_since >= sk->fire_sight_time) {
             vec3_t check;
 
             VectorCopy(aim_at, check);
@@ -2725,17 +3495,28 @@ void Bot_RunFrame(void)
     bot_goal_budget = BOT_GOALS_PER_FRAME;
 
     if (bots_pending && Bot_HumanInGame() && !level.intermission_framenum) {
+        bool waiting = false;
+
+        if (bot_human_since < 0)
+            bot_human_since = level.time;
+
         bots_pending = false;
         for (i = 0; i < game.maxclients; i++) {
             if (bots[i].active && !bots[i].spawned) {
+                // a campaign bot keeps to Quake III's schedule
+                if (bots[i].campaign && level.time < bot_human_since + bots[i].join_delay) {
+                    waiting = true;
+                    continue;
+                }
                 // one a frame: each ClientBegin is a configstring and a spawn
-                Bot_Spawn(i);
+                if (Bot_Spawn(i) && bots[i].campaign)
+                    SP_BotJoined(bots[i].skin);
                 bots_pending = true;
                 break;
             }
         }
-        if (i == game.maxclients)
-            bots_pending = false;
+        if (waiting)
+            bots_pending = true;
     }
 
     for (i = 0; i < game.maxclients; i++) {
@@ -2799,7 +3580,7 @@ bool Bot_ServerCommand(const char *cmd)
         const char  *t = gi.argv(4);
         int         team = !Q_stricmp(t, "red") ? TEAM_RED : !Q_stricmp(t, "blue") ? TEAM_BLUE : TEAM_NONE;
 
-        i = Bot_Add(gi.argc() > 2 ? gi.argv(2) : "random", Bot_SkillByName(gi.argv(3)), team);
+        i = Bot_Add(gi.argc() > 2 ? gi.argv(2) : "random", Bot_SkillByName(gi.argv(3)), team, 0);
         if (i >= 0)
             gi.cprintf(NULL, PRINT_HIGH, "Added %s (%s).\n", bots[i].name, bot_skills[bots[i].skill].name);
         return true;

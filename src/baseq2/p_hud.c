@@ -239,8 +239,9 @@ INTERMISSION
 
 void MoveClientToIntermission(edict_t *ent)
 {
-    // [rerelease] coop shows the end of unit table in place of the scores
-    bool scores = deathmatch->value || (coop->value && !level.eou_screen);
+    // [rerelease] coop shows the end of unit table in place of the scores.
+    // The Quake III campaign shows its podium and postgame screen (g_sp.c).
+    bool scores = (deathmatch->value && !SP_Active()) || (coop->value && !level.eou_screen);
 
     if (scores)
         ent->client->showscores = true;
@@ -271,6 +272,12 @@ void MoveClientToIntermission(edict_t *ent)
     ent->s.modelindex4 = 0;
     ent->s.effects = 0;
     ent->s.sound = 0;
+    // BeginIntermission respawns the dead first, and respawn() marks them
+    // EV_PLAYER_TELEPORT: moved here with it, the teleport burst and its
+    // sound went off round the intermission camera - over the Quake III
+    // podium, where a paused frame kept it hanging (11-19). Quake III's own
+    // MoveClientToIntermission clears the event.
+    ent->s.event = 0;
     ent->solid = SOLID_NOT;
     // [rerelease] KEX ClientThink parks intermission clients in MOVETYPE_NOCLIP,
     // which SV_Push skips. Without it the frozen player still counts as a rider
@@ -369,8 +376,9 @@ void BeginIntermission(edict_t *targ)
         ent = G_Find(NULL, FOFS(classname), "info_player_start");
         if (!ent)
             ent = G_Find(NULL, FOFS(classname), "info_player_deathmatch");
-    } else {
-        // chose one of four spots
+    } else if (!SP_Active()) {
+        // chose one of four spots (the campaign keeps the first, as Quake III
+        // did - its podium is set in front of that one)
         i = Q_rand() & 3;
         while (i--) {
             ent = G_Find(ent, FOFS(classname), "info_player_intermission");
@@ -384,6 +392,9 @@ void BeginIntermission(edict_t *targ)
         VectorCopy(ent->s.angles, level.intermission_angle);
     }
 
+    // the campaign's podium, with the players as they stand now (g_sp.c)
+    SP_BeginIntermission();
+
     // move all clients to the intermission point
     for (i = 0 ; i < maxclients->value ; i++) {
         client = g_edicts + 1 + i;
@@ -391,6 +402,9 @@ void BeginIntermission(edict_t *targ)
             continue;
         MoveClientToIntermission(client);
     }
+
+    // ...and its result, for the postgame screen
+    SP_Intermission();
 }
 
 

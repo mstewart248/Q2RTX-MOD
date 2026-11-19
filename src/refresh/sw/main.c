@@ -1103,6 +1103,7 @@ void R_RegisterFunctionsSW(void)
     R_DrawPic = R_DrawPic_SW;
     R_DrawStretchPic = R_DrawStretchPic_SW;
     R_DrawRotatedPic = R_DrawRotatedPic_SW;
+    R_DrawStretchSubPic = R_DrawStretchSubPic_SW;
     R_TileClear = R_TileClear_SW;
     R_DrawFill8 = R_DrawFill8_SW;
     R_DrawFill32 = R_DrawFill32_SW;

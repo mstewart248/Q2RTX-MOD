@@ -39,6 +39,19 @@ with this program; if not, write to the Free Software Foundation, Inc.,
    cluster for its light list (fill_model_instance), and a tube crossing a room
    crosses several.
 
+   A "move" deform is not baked into the frames. It shifts every vertex of the
+   shader by the same amount, so it is the entity's ORIGIN instead, evaluated
+   at the frame's time (Q3Shader_MoveOffset, the clock client q3lamps.c moves
+   the skull lamps' light with). The frames then only have to cover the waves
+   that bend the surface. Baked together, the skull lamp jets' 9 Hz wave
+   (bot_flare2: wave 100 sin 0 1 0 9) shared one 20 s loop with the lamp's
+   10 s / 20 s bob. The loop was capped at DEFORM_MAX_FRAMES, which sampled the
+   wave at 6.4 frames a second and aliased it down to a slow wobble (Matt,
+   2026-11-18). Quake III ran a wave after a move on the moved position, so its
+   spread phase drifted with the bob (+-2% of the jets' frequency); that is
+   dropped. A shader that only moves (the skull, pipe and wings) is one still
+   frame.
+
    The shading follows the motion. Each frame's normal is the face's own plus
    how far the deformation has tipped the surface there - the smoothed face
    normal now minus the same at rest - which Quake III never did: its lightmap
@@ -82,8 +95,10 @@ static bool s_collecting = false;
 typedef struct {
 	model_t                 *model;
 	const maliasmesh_t      *meshes;    // what the slot held when built: still ours?
-	float                   period;     // seconds the frames cover
+	float                   period;     // seconds the frames cover; 0 = one still frame
 	int                     *clusters;  // per mesh, in the model's hunk
+	int                     num_deforms;
+	q3deform_t              deforms[Q3S_MAX_DEFORMS];  // the shader's, for its move (the origin)
 } deform_model_t;
 
 static deform_model_t s_models[DEFORM_MAX_MODELS];
@@ -158,18 +173,26 @@ static bool shader_moves(const q3shader_t *q3)
 	return false;
 }
 
-/* The time every moving deform of the shader comes back round in, and the
-   shortest single period among them. Two waves (protobanner: .2 and .7 Hz) share
-   the shortest whole number of both cycles, up to 8 of the first (10 s there);
-   with no such number the frames cover the slowest, and the faster one jumps a
-   little where they loop. */
+// The period the vertex-animation frames have to cover for one deform: a move
+// is the entity's origin, not the frames' (see the top of the file).
+static float frame_period(const q3deform_t *d)
+{
+	return (d->type == Q3DEFORM_MOVE) ? 0.f : deform_period(d);
+}
+
+/* The time every deform the frames carry comes back round in (not the moves:
+   frame_period), and the shortest single period among them; 0 for a shader that
+   only moves. Two waves (protobanner: .2 and .7 Hz) share the shortest whole
+   number of both cycles, up to 8 of the first (10 s there); with no such number
+   the frames cover the slowest, and the faster one jumps a little where they
+   loop. */
 static float shader_period(const q3shader_t *q3, float *fastest)
 {
 	float period = 0.f, fast = 0.f;
 
 	for (int i = 0; i < q3->num_deforms; i++)
 	{
-		const float p = deform_period(&q3->deforms[i]);
+		const float p = frame_period(&q3->deforms[i]);
 		if (p <= 0.f)
 			continue;
 		if (fast == 0.f || p < fast)
@@ -199,6 +222,7 @@ static float shader_period(const q3shader_t *q3, float *fastest)
 
 // A vertex moved by the shader's deforms at `time`, each reading the position
 // the one before it left (as Quake III's run in place) and the rest normal.
+// Moves are left out: they are the entity's origin.
 static void deform_point(const q3shader_t *q3, const vec3_t in, const vec3_t normal, const vec2_t st,
                          float time, vec3_t out)
 {
@@ -225,7 +249,7 @@ static void deform_point(const q3shader_t *q3, const vec3_t in, const vec3_t nor
 			break;
 		}
 		case Q3DEFORM_MOVE:
-			VectorMA(out, Q3Shader_EvalWave(&d->wave, time), d->move, out);
+			// vkpt_q3_deform_entities puts it in the origin
 			break;
 		}
 	}
@@ -387,18 +411,25 @@ static void build_model(const q3shader_t *q3, const int *tri_index, int num_tris
 	}
 
 	float fastest = 0.f;
-	const float period = shader_period(q3, &fastest);
-	if (period <= 0.f || fastest <= 0.f)
-		return;
-
-	int frames = (int)ceilf(DEFORM_STEPS_PER_CYCLE * period / fastest);
-	frames = max(DEFORM_MIN_FRAMES, min(DEFORM_MAX_FRAMES, frames));
-
-	// the GPU keeps every frame of every triangle (VboPrimitive each)
-	const double budget = max(1.0, (double)cvar_pt_q3_deform_mb->value) * 1024.0 * 1024.0;
+	float period = shader_period(q3, &fastest);
 	const double per_frame = (double)num_tris * sizeof(VboPrimitive);
-	if (per_frame * frames > budget)
-		frames = max(DEFORM_MIN_FRAMES, (int)(budget / per_frame));
+
+	// only moves (the skull lamp's body): one still frame, carried by the origin
+	int frames = 1;
+	if (period > 0.f && fastest > 0.f)
+	{
+		frames = (int)ceilf(DEFORM_STEPS_PER_CYCLE * period / fastest);
+		frames = max(DEFORM_MIN_FRAMES, min(DEFORM_MAX_FRAMES, frames));
+
+		// the GPU keeps every frame of every triangle (VboPrimitive each)
+		const double budget = max(1.0, (double)cvar_pt_q3_deform_mb->value) * 1024.0 * 1024.0;
+		if (per_frame * frames > budget)
+			frames = max(DEFORM_MIN_FRAMES, (int)(budget / per_frame));
+	}
+	else
+	{
+		period = 0.f;
+	}
 
 	/* MESHES: one per (material, cluster). Past DEFORM_MAX_MESHES a triangle joins
 	   the first mesh of its material, lit from that mesh's cluster. */
@@ -691,6 +722,8 @@ static void build_model(const q3shader_t *q3, const int *tri_index, int num_tris
 	dm->meshes = model->meshes;
 	dm->period = period;
 	dm->clusters = clusters;
+	dm->num_deforms = min(q3->num_deforms, Q3S_MAX_DEFORMS);
+	memcpy(dm->deforms, q3->deforms, sizeof(dm->deforms));
 
 	Com_DPrintf("q3deform: %s: %d triangles, %d meshes, %d frames over %.2f s, %.1f MB\n",
 		q3->name, num_tris, num_meshes, frames, period, per_frame * frames / (1024.0 * 1024.0));
@@ -799,19 +832,29 @@ const entity_t *vkpt_q3_deform_entities(const entity_t *entities, int *num_entit
 		}
 
 		const int frames = dm->model->numframes;
-		double cycles = (double)time / (double)dm->period;
-		cycles -= floor(cycles);
-		const double at = cycles * frames;
-		int k = (int)at;
-		if (k >= frames)
-			k = frames - 1;
+		int k = 0;
+		float backlerp = 0.f;
+		if (dm->period > 0.f && frames > 1)
+		{
+			double cycles = (double)time / (double)dm->period;
+			cycles -= floor(cycles);
+			const double at = cycles * frames;
+			k = (int)at;
+			if (k >= frames)
+				k = frames - 1;
+			backlerp = 1.f - (float)(at - k);   // 0 = frame, 1 = oldframe
+		}
 
 		entity_t *e = frame_entities + n++;
 		memset(e, 0, sizeof(*e));
 		e->model = (qhandle_t)(dm->model - r_models) + 1;
 		e->oldframe = k;
 		e->frame = (k + 1) % frames;
-		e->backlerp = 1.f - (float)(at - k);   // 0 = frame, 1 = oldframe
+		e->backlerp = backlerp;
+		// the move deforms; oldorigin too, as create_entity_matrix lerps the
+		// origin by backlerp
+		Q3Shader_MoveOffset(dm->deforms, dm->num_deforms, time, e->origin);
+		VectorCopy(e->origin, e->oldorigin);
 		e->alpha = 1.f;
 		e->scale = 1.f;
 		e->id = DEFORM_ENTITY_ID;

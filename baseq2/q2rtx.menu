@@ -1411,6 +1411,11 @@ begin singleplayer
         action "quake ii 64" "set _ui_campaign newgame_n64; pushmenu skill"
         action "bot match" "bot_lineup; pushmenu botmatch"
     endif
+    // Quake III Arena's own single player game, in its own menus
+    // (src/client/ui/q3sp.c, src/baseq2/g_sp.c)
+    ifeq fs_quake3 1
+        action "quake iii arena" levelselect
+    endif
     blank
     action "load game..." pushmenu loadgame
     action "save game..." pushmenu savegame
@@ -1420,10 +1425,10 @@ begin skill
     background #212F3CD0
     style --compact
     banner m_banner_game
-    action easy "skill 0; deathmatch 0; coop 0; maxclients 1; set bot_match 0; $_ui_campaign"
-    action medium "skill 1; deathmatch 0; coop 0; maxclients 1; set bot_match 0; $_ui_campaign"
-    action hard "skill 2; deathmatch 0; coop 0; maxclients 1; set bot_match 0; $_ui_campaign"
-    action nightmare "skill 3; deathmatch 0; coop 0; maxclients 1; set bot_match 0; $_ui_campaign"
+    action easy "skill 0; deathmatch 0; coop 0; maxclients 1; set bot_match 0; set sp_campaign 0; $_ui_campaign"
+    action medium "skill 1; deathmatch 0; coop 0; maxclients 1; set bot_match 0; set sp_campaign 0; $_ui_campaign"
+    action hard "skill 2; deathmatch 0; coop 0; maxclients 1; set bot_match 0; set sp_campaign 0; $_ui_campaign"
+    action nightmare "skill 3; deathmatch 0; coop 0; maxclients 1; set bot_match 0; set sp_campaign 0; $_ui_campaign"
 end
 
 // Deathmatch against bots (src/baseq2/g_bot.c). The game reads bot_count,
@@ -1486,10 +1491,10 @@ begin botmatch
     endif
     ifeq bot_mapset 1
     ifeq bot_mode 2
-        pairs "map" bot_map_q3ctf "Dueling Keeps" q3ctf1 "Troubled Waters" q3ctf2 "The Stronghold" q3ctf3 "Space CTF" q3ctf4 "Across Space" q3tourney6_ctf
+        pairs --levelshot "map" bot_map_q3ctf "Dueling Keeps" q3ctf1 "Troubled Waters" q3ctf2 "The Stronghold" q3ctf3 "Space CTF" q3ctf4 "Across Space" q3tourney6_ctf
     endif
     ifneq bot_mode 2
-        pairs "map" bot_map_q3 "Introduction" q3dm0 "Arena Gate" q3dm1 "House Of Pain" q3dm2 "Arena Of Death" q3dm3 "The Place Of Many Deaths" q3dm4 "The Forgotten Place" q3dm5 "The Camping Grounds" q3dm6 "Temple of Retribution" q3dm7 "Brimstone Abbey" q3dm8 "Hero's Keep" q3dm9 "The Nameless Place" q3dm10 "Deva Station" q3dm11 "The Dredwerkz" q3dm12 "Lost World" q3dm13 "Grim Dungeons" q3dm14 "Demon Keep" q3dm15 "The Bouncy Map" q3dm16 "The Longest Yard" q3dm17 "Space Chamber" q3dm18 "Apocalypse Void" q3dm19 "Powerstation 0218" q3tourney1 "The Proving Grounds" q3tourney2 "Hell's Gate" q3tourney3 "Vertical Vengeance" q3tourney4 "Fatal Instinct" q3tourney5 "The Very End Of You" q3tourney6 "The Campgrounds II" pro-q3dm6 "Lost World II" pro-q3dm13 "The Proving Grounds II" pro-q3tourney2 "Vertical Vengeance II" pro-q3tourney4
+        pairs --levelshot "map" bot_map_q3 "Introduction" q3dm0 "Arena Gate" q3dm1 "House Of Pain" q3dm2 "Arena Of Death" q3dm3 "The Place Of Many Deaths" q3dm4 "The Forgotten Place" q3dm5 "The Camping Grounds" q3dm6 "Temple of Retribution" q3dm7 "Brimstone Abbey" q3dm8 "Hero's Keep" q3dm9 "The Nameless Place" q3dm10 "Deva Station" q3dm11 "The Dredwerkz" q3dm12 "Lost World" q3dm13 "Grim Dungeons" q3dm14 "Demon Keep" q3dm15 "The Bouncy Map" q3dm16 "The Longest Yard" q3dm17 "Space Chamber" q3dm18 "Apocalypse Void" q3dm19 "Powerstation 0218" q3tourney1 "The Proving Grounds" q3tourney2 "Hell's Gate" q3tourney3 "Vertical Vengeance" q3tourney4 "Fatal Instinct" q3tourney5 "The Very End Of You" q3tourney6 "The Campgrounds II" pro-q3dm6 "Lost World II" pro-q3dm13 "The Proving Grounds II" pro-q3tourney2 "Vertical Vengeance II" pro-q3tourney4
     endif
         pairs --status "quake iii: 5 / 25 / 50 / 100 health, 5 / 50 / 100 armor, the battle suit. quake ii: its own, the environment suit" "health and armor" g_q3_items "quake iii arena" 1 "quake ii" 0
     ifneq g_q3_weapons 1
@@ -1498,7 +1503,7 @@ begin botmatch
     endif
     ifneq bot_mapset 1
     ifeq bot_mode 2
-        pairs "map" bot_map_ctf "McKinley Revival" q2ctf1 "Stronghold Opposition" q2ctf2 "The Smelter" q2ctf3 "Outlands II" q2ctf4 "Capture Showdown" q2ctf5 "Captured Reckoning" q2kctf1 "Nexus CTF" q2kctf2 "Something Epic" ndctf0
+        pairs --levelshot "map" bot_map_ctf "McKinley Revival" q2ctf1 "Stronghold Opposition" q2ctf2 "The Smelter" q2ctf3 "Outlands II" q2ctf4 "Capture Showdown" q2ctf5 "Captured Reckoning" q2kctf1 "Nexus CTF" q2kctf2 "Something Epic" ndctf0
     endif
     ifneq bot_mode 2
     ifeq fs_rerelease 1
@@ -1508,22 +1513,22 @@ begin botmatch
         pairs --live "maps" _ui_botpack "quake ii" 0 "any map" 5
     endif
     ifeq _ui_botpack 0
-        pairs "map" bot_map_q2 "The Edge" q2dm1 "Tokay's Towers" q2dm2 "The Frag Pipe" q2dm3 "Lost Hallways" q2dm4 "The Pits" q2dm5 "Lava Tomb" q2dm6 "The Slimy Place" q2dm7 "WareHouse" q2dm8
+        pairs --levelshot "map" bot_map_q2 "The Edge" q2dm1 "Tokay's Towers" q2dm2 "The Frag Pipe" q2dm3 "Lost Hallways" q2dm4 "The Pits" q2dm5 "Lava Tomb" q2dm6 "The Slimy Place" q2dm7 "WareHouse" q2dm8
     endif
     ifeq _ui_botpack 1
-        pairs "map" bot_map_mg "Misty Heights" mgdm1
+        pairs --levelshot "map" bot_map_mg "Misty Heights" mgdm1
     endif
     ifeq _ui_botpack 2
-        pairs "map" bot_map_xdm "Munitions Dump" xdm1 "Deadly Reckoning" xdm2 "Reservoir Stroggs" xdm3 "The Sludge Pit" xdm4 "Stomping Grounds" xdm5 "Hidden Agenda" xdm6 "The XEdge" xdm7
+        pairs --levelshot "map" bot_map_xdm "Munitions Dump" xdm1 "Deadly Reckoning" xdm2 "Reservoir Stroggs" xdm3 "The Sludge Pit" xdm4 "Stomping Grounds" xdm5 "Hidden Agenda" xdm6 "The XEdge" xdm7
     endif
     ifeq _ui_botpack 3
-        pairs "map" bot_map_rdm "The Low Road" rdm1 "The High Road" rdm2 "Boxed In" rdm3 "Razor's Edge" rdm4 "Stone Hinge" rdm5 "Nexus" rdm6 "Sewer Citadel" rdm7 "Styx & Stones" rdm8 "Scenic Overlook" rdm9 "Great Divide" rdm10 "Dish It Out" rdm11 "Fall From Grace" rdm12 "Roads to Nowhere" rdm13 "Rogue's Edge" rdm14
+        pairs --levelshot "map" bot_map_rdm "The Low Road" rdm1 "The High Road" rdm2 "Boxed In" rdm3 "Razor's Edge" rdm4 "Stone Hinge" rdm5 "Nexus" rdm6 "Sewer Citadel" rdm7 "Styx & Stones" rdm8 "Scenic Overlook" rdm9 "Great Divide" rdm10 "Dish It Out" rdm11 "Fall From Grace" rdm12 "Roads to Nowhere" rdm13 "Rogue's Edge" rdm14
     endif
     ifeq _ui_botpack 4
-        pairs "map" bot_map_q64 "Agony" q64/dm1 "Corridors" q64/dm2 "War Room" q64/dm3 "Twists" q64/dm4 "Fortress" q64/dm5 "Cold Steel" q64/dm6 "Mad Dash" q64/dm7 "Dying Halls" q64/dm8 "Empty Space" q64/dm9 "Overflow" q64/dm10
+        pairs --levelshot "map" bot_map_q64 "Agony" q64/dm1 "Corridors" q64/dm2 "War Room" q64/dm3 "Twists" q64/dm4 "Fortress" q64/dm5 "Cold Steel" q64/dm6 "Mad Dash" q64/dm7 "Dying Halls" q64/dm8 "Empty Space" q64/dm9 "Overflow" q64/dm10
     endif
     ifeq _ui_botpack 5
-        strings "map" bot_map_any $$com_maplist
+        strings --levelshot "map" bot_map_any $$com_maplist
     endif
     endif
     endif
@@ -1609,34 +1614,34 @@ begin botmatch
     blank
     ifeq bot_mapset 1
     ifeq bot_mode 2
-        action --align "start match" "forcemenuoff; set bot_match 1; set teamplay 0; set ctf 1; deathmatch 1; coop 0; maxclients 16; set cheats $bot_cheats; map $bot_map_q3ctf force"
+        action --align "start match" "forcemenuoff; set sp_campaign 0; set bot_match 1; set teamplay 0; set ctf 1; deathmatch 1; coop 0; maxclients 16; set cheats $bot_cheats; map $bot_map_q3ctf force"
     endif
     ifneq bot_mode 2
-        action --align "start match" "forcemenuoff; set bot_match 1; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; maxclients 16; set cheats $bot_cheats; map $bot_map_q3 force"
+        action --align "start match" "forcemenuoff; set sp_campaign 0; set bot_match 1; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; maxclients 16; set cheats $bot_cheats; map $bot_map_q3 force"
     endif
     endif
     ifneq bot_mapset 1
     ifeq bot_mode 2
-        action --align "start match" "forcemenuoff; set bot_match 1; set teamplay 0; set ctf 1; deathmatch 1; coop 0; maxclients 16; set cheats $bot_cheats; map $bot_map_ctf force"
+        action --align "start match" "forcemenuoff; set sp_campaign 0; set bot_match 1; set teamplay 0; set ctf 1; deathmatch 1; coop 0; maxclients 16; set cheats $bot_cheats; map $bot_map_ctf force"
     endif
     ifneq bot_mode 2
     ifeq _ui_botpack 0
-        action --align "start match" "forcemenuoff; set bot_match 1; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; maxclients 16; set cheats $bot_cheats; map $bot_map_q2 force"
+        action --align "start match" "forcemenuoff; set sp_campaign 0; set bot_match 1; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; maxclients 16; set cheats $bot_cheats; map $bot_map_q2 force"
     endif
     ifeq _ui_botpack 1
-        action --align "start match" "forcemenuoff; set bot_match 1; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; maxclients 16; set cheats $bot_cheats; map $bot_map_mg force"
+        action --align "start match" "forcemenuoff; set sp_campaign 0; set bot_match 1; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; maxclients 16; set cheats $bot_cheats; map $bot_map_mg force"
     endif
     ifeq _ui_botpack 2
-        action --align "start match" "forcemenuoff; set bot_match 1; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; maxclients 16; set cheats $bot_cheats; map $bot_map_xdm force"
+        action --align "start match" "forcemenuoff; set sp_campaign 0; set bot_match 1; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; maxclients 16; set cheats $bot_cheats; map $bot_map_xdm force"
     endif
     ifeq _ui_botpack 3
-        action --align "start match" "forcemenuoff; set bot_match 1; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; maxclients 16; set cheats $bot_cheats; map $bot_map_rdm force"
+        action --align "start match" "forcemenuoff; set sp_campaign 0; set bot_match 1; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; maxclients 16; set cheats $bot_cheats; map $bot_map_rdm force"
     endif
     ifeq _ui_botpack 4
-        action --align "start match" "forcemenuoff; set bot_match 1; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; maxclients 16; set cheats $bot_cheats; map $bot_map_q64 force"
+        action --align "start match" "forcemenuoff; set sp_campaign 0; set bot_match 1; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; maxclients 16; set cheats $bot_cheats; map $bot_map_q64 force"
     endif
     ifeq _ui_botpack 5
-        action --align "start match" "forcemenuoff; set bot_match 1; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; maxclients 16; set cheats $bot_cheats; map $bot_map_any force"
+        action --align "start match" "forcemenuoff; set sp_campaign 0; set bot_match 1; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; maxclients 16; set cheats $bot_cheats; map $bot_map_any force"
     endif
     endif
     endif

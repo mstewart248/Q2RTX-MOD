@@ -737,6 +737,8 @@ int R_DrawString_SW(int x, int y, int flags, size_t maxChars, const char *string
 void R_DrawPic_SW(int x, int y, qhandle_t pic);
 void R_DrawStretchPic_SW(int x, int y, int w, int h, qhandle_t pic);
 void R_DrawRotatedPic_SW(float cx, float cy, float w, float h, float angle, qhandle_t pic);
+void R_DrawStretchSubPic_SW(float x, float y, float w, float h,
+                            float s1, float t1, float s2, float t2, qhandle_t pic);
 void R_TileClear_SW(int x, int y, int w, int h, qhandle_t pic);
 void R_DrawFill8_SW(int x, int y, int w, int h, int c);
 void R_DrawFill32_SW(int x, int y, int w, int h, uint32_t color);

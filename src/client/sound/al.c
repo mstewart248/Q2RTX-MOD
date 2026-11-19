@@ -972,7 +972,6 @@ AL_RawSamples(int samples, int rate, int width, int channels,
 	qalGenBuffers(1, &buffer);
 	qalBufferData(buffer, format, (ALvoid *)data,
 		(samples * width * channels), rate);
-	active_buffers++;
 
 	/* set volume */
 	if (volume > 1.0f)
@@ -983,7 +982,20 @@ AL_RawSamples(int samples, int rate, int width, int channels,
 	qalSourcef(streamSource, AL_GAIN, volume);
 
 	/* Shove the data onto the streamSource */
+	qalGetError();
 	qalSourceQueueBuffers(streamSource, 1, &buffer);
+	if (qalGetError() != AL_NO_ERROR)
+	{
+		/* OpenAL refuses a buffer whose rate or format differs from the
+		   ones already queued - music and a video fed in at once. Counted,
+		   it was never unqueued again, and the music streamer, which keeps
+		   active_buffers under its own mark, kept a buffer or so queued
+		   from then on: music in tenth-of-a-second bursts, like an engine
+		   running (11-19, after a Quake III video was cut short). */
+		qalDeleteBuffers(1, &buffer);
+		return;
+	}
+	active_buffers++;
 	AL_StreamPush(samples, rate);
 
 	/* emulate behavior of S_RawSamples for s_rawend */

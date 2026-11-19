@@ -267,6 +267,7 @@ void InitGame(void)
     // bot match and team deathmatch (g_bot.c); needs game.maxclients
     CTF_Init();
     Q3_InitGame();
+    SP_Init();
     Bot_Init();
 }
 
@@ -503,8 +504,9 @@ void CheckDMRules(void)
     if (!deathmatch->value)
         return;
 
-    if (timelimit->value) {
-        if (level.time >= timelimit->value * 60) {
+    // (G_TimeLimit / G_FragLimit: a campaign arena's own, else the cvars - g_sp.c)
+    if (G_TimeLimit()) {
+        if (level.time >= G_TimeLimit() * 60) {
             gi.bprintf(PRINT_HIGH, "Timelimit hit.\n");
             EndDMLevel();
             return;
@@ -518,21 +520,21 @@ void CheckDMRules(void)
         return;
     }
 
-    if (fraglimit->value && G_TeamPlay()) {
-        if (Team_Score(TEAM_RED) >= fraglimit->value || Team_Score(TEAM_BLUE) >= fraglimit->value) {
+    if (G_FragLimit() && G_TeamPlay()) {
+        if (Team_Score(TEAM_RED) >= G_FragLimit() || Team_Score(TEAM_BLUE) >= G_FragLimit()) {
             gi.bprintf(PRINT_HIGH, "Fraglimit hit.\n");
             EndDMLevel();
         }
         return;
     }
 
-    if (fraglimit->value) {
+    if (G_FragLimit()) {
         for (i = 0 ; i < maxclients->value ; i++) {
             cl = game.clients + i;
             if (!g_edicts[i + 1].inuse)
                 continue;
 
-            if (cl->resp.score >= fraglimit->value) {
+            if (cl->resp.score >= G_FragLimit()) {
                 gi.bprintf(PRINT_HIGH, "Fraglimit hit.\n");
                 EndDMLevel();
                 return;
@@ -714,6 +716,9 @@ void G_RunFrame(void)
 
     // see if it is time to end a deathmatch
     CheckDMRules();
+
+    // the Quake III campaign's lead and frags-left calls, its podium (g_sp.c)
+    SP_RunFrame();
 
     // see if needpass needs updated
     CheckNeedPass();

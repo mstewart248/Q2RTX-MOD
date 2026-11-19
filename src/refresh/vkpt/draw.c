@@ -1460,6 +1460,13 @@ R_DrawRotatedPic_RTX(float cx, float cy, float w, float h, float angle, qhandle_
 }
 
 void
+R_DrawStretchSubPic_RTX(float x, float y, float w, float h,
+	float s1, float t1, float s2, float t2, qhandle_t pic)
+{
+	enqueue_stretch_pic(x, y, w, h, s1, t1, s2, t2, draw.colors[0].u32, pic);
+}
+
+void
 R_DrawPic_RTX(int x, int y, qhandle_t pic)
 {
 	image_t *image = IMG_ForHandle(pic);

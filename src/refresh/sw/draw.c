@@ -340,6 +340,12 @@ void R_DrawStretchPic_SW(int x, int y, int w, int h, qhandle_t pic)
     R_DrawImage(x, y, w, h, 0, 0, 1, 1, draw.colors[0].u32, IMG_ForHandle(pic), false);
 }
 
+void R_DrawStretchSubPic_SW(float x, float y, float w, float h,
+                            float s1, float t1, float s2, float t2, qhandle_t pic)
+{
+    R_DrawImage(x, y, w, h, s1, t1, s2, t2, draw.colors[0].u32, IMG_ForHandle(pic), false);
+}
+
 void R_DrawPic_SW(int x, int y, qhandle_t pic)
 {
     image_t *image = IMG_ForHandle(pic);

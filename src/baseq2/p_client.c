@@ -613,6 +613,7 @@ void player_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage
         LookAtKiller(self, inflictor, attacker);
         self->client->ps.pmove.pm_type = PM_DEAD;
         ClientObituary(self, inflictor, attacker);
+        SP_PlayerKilled(self, inflictor, attacker);    // the campaign's rewards
         CTF_PlayerDied(self, attacker);    // drops the flag and tech, before the inventory goes
         TossClientWeapon(self);
         if (deathmatch->value)
@@ -1465,6 +1466,7 @@ void PutClientInServer(edict_t *ent)
         resp = client->resp;
         memcpy(userinfo, client->pers.userinfo, sizeof(userinfo));
         InitClientPersistant(client);
+        SP_SpawnHealth(ent);    // a campaign bot's handicap (g_sp.c)
         ClientUserinfoChanged(ent, userinfo);
     } else {
 //      int         n;
@@ -1958,7 +1960,8 @@ void ClientThink(edict_t *ent, usercmd_t *ucmd)
         // and changemap stays NULL until its killtarget finally runs
         // BeginIntermission. Without this a button press part-way through the
         // shot would call ExitLevel with nowhere to go.
-        if (level.changemap
+        // The Quake III campaign waits for its postgame screen's buttons instead.
+        if (level.changemap && !SP_Active()
             && level.framenum > level.intermission_framenum + 5.0f * BASE_FRAMERATE
             && (ucmd->buttons & BUTTON_ANY))
             level.exitintermission = true;

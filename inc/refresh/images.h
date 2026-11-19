@@ -159,6 +159,11 @@ extern float* (*IMG_ReadPixelsHDR)(int *width, int *height);
 // R_RegisterFunctions sets it.
 extern bool IMG_ReadPixelsTakesHDR;
 
+// A map's thumbnail (client/levelshot.c): the last frame drawn, read back, its
+// middle 4:3 cut out and shrunk to width x height (averaged in linear light),
+// written as a JPEG at `path` under the game's write directory.
+int IMG_SaveLevelshot(const char *path, int width, int height, int quality);
+
 #endif // IMAGES_H
 
 /* vim: set ts=8 sw=4 tw=0 et : */

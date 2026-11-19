@@ -747,7 +747,7 @@ void MegaHealth_think(edict_t *self)
 bool Pickup_Health(edict_t *ent, edict_t *other)
 {
     // Quake III map with its own amounts (g_q3.c)
-    if (level.q3map && g_q3_items->integer)
+    if (level.q3map && Q3_ItemRules())
         return Q3_PickupHealth(ent, other);
 
     if (!(ent->style & HEALTH_IGNORE_MAX))
@@ -806,7 +806,7 @@ bool Pickup_Armor(edict_t *ent, edict_t *other)
     int             base_count;
 
     // Quake III map with its own amounts (g_q3.c)
-    if (level.q3map && g_q3_items->integer)
+    if (level.q3map && Q3_ItemRules())
         return Q3_PickupArmor(ent, other);
 
     // get info on new armor

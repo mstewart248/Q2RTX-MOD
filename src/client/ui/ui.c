@@ -297,6 +297,53 @@ char *UI_GetColumn(char *s, int n)
 UI_CursorInRect
 =================
 */
+/*
+=================
+UI_Levelshot
+
+A map's picture for the menus: levelshots/<map>.jpg - Quake III's own, in its
+paks, or one `levelshots` made (client/levelshot.c); the image loader tries
+the other formats too. With none, Quake III's "unknown map" picture when
+`unknown` is set and it is installed, else 0. Misses are remembered, so a
+menu drawn every frame does not go to the disk for them; UI_LevelshotForget
+clears them as a menu opens, so new levelshots show up.
+=================
+*/
+#define UI_LEVELSHOT_MISSES 64
+
+static char ui_levelshot_misses[UI_LEVELSHOT_MISSES][MAX_QPATH];
+static int  ui_levelshot_nummisses;
+
+void UI_LevelshotForget(void)
+{
+    ui_levelshot_nummisses = 0;
+}
+
+qhandle_t UI_Levelshot(const char *map, bool unknown)
+{
+    char        path[MAX_QPATH];
+    qhandle_t   pic = 0;
+    int         i;
+
+    if (map && *map) {
+        for (i = 0; i < ui_levelshot_nummisses; i++)
+            if (!Q_stricmp(ui_levelshot_misses[i], map))
+                break;
+        if (i == ui_levelshot_nummisses &&
+            Q_snprintf(path, sizeof(path), "/levelshots/%s.jpg", map) < sizeof(path)) {
+            // filtered (IF_BILERP): a 640x480 or Quake III's 256x256 shot,
+            // stretched, shows every texel when sampled nearest
+            pic = R_RegisterImage(path, IT_PIC, IF_SRGB | IF_BILERP, NULL);
+            if (!pic && ui_levelshot_nummisses < UI_LEVELSHOT_MISSES)
+                Q_strlcpy(ui_levelshot_misses[ui_levelshot_nummisses++], map, MAX_QPATH);
+        }
+    }
+
+    if (!pic && unknown)
+        pic = R_RegisterImage("/menu/art/unknownmap.jpg", IT_PIC, IF_SRGB | IF_BILERP, NULL);
+    return pic;
+}
+
 bool UI_CursorInRect(vrect_t *rect)
 {
     if (uis.mouseCoords[0] < rect->x) {
@@ -455,10 +502,14 @@ void UI_Draw(int realtime)
         }
     }
 
-    // draw custom cursor in fullscreen mode
+    // draw custom cursor in fullscreen mode - Quake III's on its pages (q3sp.c)
     if (r_config.flags & QVF_FULLSCREEN) {
-        R_DrawPic(uis.mouseCoords[0] - uis.cursorWidth / 2,
-                  uis.mouseCoords[1] - uis.cursorHeight / 2, uis.cursorHandle);
+        if (uis.activeMenu->q3_cursor) {
+            UI_SP_DrawCursor();
+        } else {
+            R_DrawPic(uis.mouseCoords[0] - uis.cursorWidth / 2,
+                      uis.mouseCoords[1] - uis.cursorHeight / 2, uis.cursorHandle);
+        }
     }
 
     if (ui_debug->integer) {
@@ -962,6 +1013,7 @@ void UI_Init(void)
     M_Menu_PlayerConfig();
     M_Menu_PlayerModelGrid();
     M_Menu_BotPick();
+    M_Menu_Q3SP();
     M_Menu_Servers();
     M_Menu_Demos();
 

@@ -1096,14 +1096,32 @@ image_t *vkpt_solid_texture(image_t *image, const char *tag, byte r, byte g, byt
 		name[sizeof(name) - strlen(suffix) - 1] = 0;
 	Q_strlcat(name, suffix, sizeof(name));
 
-	image_t *prev_image = IMG_FindExisting(name, image->type);
+	return vkpt_solid_texture_named(image, image->type, name, r, g, b);
+}
+
+/*
+=================
+vkpt_solid_texture_named
+
+The same, by its whole name: the one already made under (name), or a new one
+cloned from (like) - any picture, as every pixel is painted over. A .mat entry
+that names another material's stand-in, as `mat print` shows it
+("...chrome_metal*M1.wal"), gets it from here (material.c, load_solid_by_name).
+=================
+*/
+image_t *vkpt_solid_texture_named(image_t *like, imagetype_t type, const char *name, byte r, byte g, byte b)
+{
+	image_t *prev_image = IMG_FindExisting(name, like ? like->type : type);
 	if (prev_image != R_NOTEXTURE)
 	{
 		prev_image->registration_sequence = registration_sequence;
 		return prev_image;
 	}
 
-	image_t *solid = IMG_Clone(image, name);
+	if (!like || like == R_NOTEXTURE || !like->pix_data)
+		return NULL;
+
+	image_t *solid = IMG_Clone(like, name);
 	if (solid == R_NOTEXTURE || !solid->pix_data)
 		return NULL;
 

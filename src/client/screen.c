@@ -4213,6 +4213,9 @@ static void SCR_Draw2D(void)
 	if (cls.key_dest & KEY_MENU)
 		return;
 
+	if (CL_LevelshotActive())
+		return;     // a map thumbnail being taken (levelshot.c)
+
 	R_SetAlphaScale(scr.hud_alpha);
 
     R_SetScale(scr.hud_scale);
@@ -4258,6 +4261,9 @@ static void SCR_Draw2D(void)
     SCR_DrawTurtle();
 
     SCR_DrawPause();
+
+    // the Quake III campaign's reward medals (ui/q3sp.c)
+    UI_SP_DrawHUD();
 
     // debug stats have no alpha
     R_ClearColor();
@@ -4386,8 +4392,9 @@ void SCR_UpdateScreen(void)
     // draw main menu
     UI_Draw(cls.realtime);
 
-    // draw console
-    Con_DrawConsole();
+    // draw console - a levelshot leaves out its notify lines (levelshot.c)
+    if (!CL_LevelshotActive() || (cls.key_dest & KEY_CONSOLE))
+        Con_DrawConsole();
 
     // draw loading plaque
     SCR_DrawLoading();

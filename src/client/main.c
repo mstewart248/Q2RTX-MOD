@@ -2980,6 +2980,7 @@ static void CL_InitLocal(void)
     CL_InitDemos();
     LOC_Init();
     LE_Init();
+    CL_InitLevelshots();
     CL_InitDynamicLights();
     CL_InitMapFog();
     CL_InitSkyOverride();
@@ -3504,7 +3505,9 @@ void CL_CheckForPause(void)
         return;
     }
 
-    if (cls.key_dest & (KEY_CONSOLE | KEY_MENU)) {
+    // the Quake III campaign's postgame screen sits over the podium, which
+    // has to keep moving (ui/q3sp.c)
+    if ((cls.key_dest & KEY_CONSOLE) || ((cls.key_dest & KEY_MENU) && !UI_SP_KeepsGameRunning())) {
         // only pause in single player
         if (cl_paused->integer == 0 && cl_autopause->integer) {
             Cvar_Set("cl_paused", "1");
@@ -3791,6 +3794,9 @@ unsigned CL_Frame(unsigned msec, int waterLevel)
             time_before_ref = Sys_Milliseconds();
 
         SCR_UpdateScreen();
+
+        // a levelshot reads back the frame just drawn
+        CL_LevelshotFrame();
 
         if (host_speeds->integer)
             time_after_ref = Sys_Milliseconds();

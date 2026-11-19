@@ -122,6 +122,7 @@ static cvar_t   *cl_brass_max;
 static cvar_t   *cl_q3_marks_time;
 static cvar_t   *cl_q3_marks_max;
 static cvar_t   *cl_q3_debug;
+static cvar_t   *cl_q3_plasma_from_gun;
 
 // cl_q3_debug 1: what the plasma ball, the marks and the impact flashes did,
 // once a second (q3w_debug_print) - Matt saw none of them on 11-18; the
@@ -1888,10 +1889,77 @@ THE PLASMA BALL, AND THE MUZZLE FLASH EVENT
 ==============================================================================
 */
 
+/*
+A new ball first shows where the server has it: 100 units out (fire_plasma's
+MISSILE_PRESTEP_TIME, 50 ms at 2000 u/s) and up to a frame's flight more,
+well clear of the gun (Matt, 11-19: "spawning too far away from the
+camera"). So it is drawn from its shooter's muzzle instead (s.skinnum, from
+g_q3weap.c), the offset to there shrinking to nothing over Q3W_BALL_BLEND ms.
+Where it really is, and what it hits, stay the server's.
+*/
+#define Q3W_BALL_BLEND  100     // ms: one 10 Hz server frame
+#define Q3W_BALL_LEAD   8       // units out of the barrel it starts
+
+typedef struct {
+    int     id;         // centity_t.id of the ball in this slot
+    int     time;       // cl.time it was first drawn
+    vec3_t  offset;     // from where the server had it then, to the gun
+} q3wball_t;
+
+static q3wball_t q3w_balls[MAX_EDICTS];
+
+// the muzzle of the gun that has just fired `shooter`'s ball: the view gun's
+// if it is ours in first person. The flash comes in the same packet as the ball.
+static bool q3w_ball_muzzle(int shooter, vec3_t out)
+{
+    q3wshooter_t *sh = q3w_shooter(shooter);
+
+    if (!sh || sh->weapon != Q3W_PLASMA || !q3w_firing(sh, 200))
+        return false;
+    if (shooter == cl.frame.clientNum + 1 && CL_Q3W_ViewMuzzle(out))
+        return true;
+    if (sh->muzzle_frame == cls.framecount) {   // its body was drawn this frame
+        VectorCopy(sh->muzzle, out);
+        return true;
+    }
+    return false;
+}
+
+static void q3w_ball_origin(const entity_state_t *s1, const vec3_t origin, vec3_t out)
+{
+    const centity_t *cent = &cl_entities[s1->number];
+    q3wball_t       *b = &q3w_balls[s1->number];
+    vec3_t          muzzle, dir;
+    float           frac;
+
+    VectorCopy(origin, out);
+
+    if (b->id != cent->id) {
+        b->id = cent->id;
+        b->time = cl.time;
+        VectorClear(b->offset);
+        if (cl_q3_plasma_from_gun->integer && q3w_ball_muzzle(s1->skinnum, muzzle)) {
+            AngleVectors(s1->angles, dir, NULL, NULL);
+            VectorMA(muzzle, Q3W_BALL_LEAD, dir, muzzle);
+            VectorSubtract(muzzle, origin, b->offset);
+            // one that came into view in flight, far from the gun
+            if (VectorLength(b->offset) > 512)
+                VectorClear(b->offset);
+        }
+    }
+
+    frac = 1.0f - (float)(cl.time - b->time) / Q3W_BALL_BLEND;
+    if (frac > 0)
+        VectorMA(out, min(frac, 1.0f), b->offset, out);
+}
+
 // entities.c: an RF_Q3_SPRITE entity (no model) at `origin`
-void CL_Q3W_AddSprite(const entity_state_t *s1, const vec3_t origin)
+void CL_Q3W_AddSprite(const entity_state_t *s1, const vec3_t origin_in)
 {
     entity_t e;
+    vec3_t   origin;
+
+    q3w_ball_origin(s1, origin_in, origin);
 
     // cg_weapons.c: the plasma's missileDlight, 200 in its blue
     V_AddLight(origin, 200, 0.6f, 0.6f, 1.0f);
@@ -1996,6 +2064,7 @@ void CL_Q3W_Clear(void)
     q3w_mark_next = 0;
     memset(q3w_fx, 0, sizeof(q3w_fx));
     memset(q3w_bolts, 0, sizeof(q3w_bolts));
+    memset(q3w_balls, 0, sizeof(q3w_balls));
     memset(q3w_shooters, 0, sizeof(q3w_shooters));
     memset(&q3v, 0, sizeof(q3v));
 }
@@ -2017,6 +2086,9 @@ void CL_Q3W_Init(void)
     // did (here) and what reached the renderer (transparency.c); 2: each mark
     // that found no wall too
     cl_q3_debug = Cvar_Get("cl_q3_debug", "0", 0);
+    // 1: a plasma ball starts at its gun's muzzle and catches up with the
+    // server's ball in 0.1 s; 0: first seen where Quake III has it, 100+ out
+    cl_q3_plasma_from_gun = Cvar_Get("cl_q3_plasma_from_gun", "1", 0);
 
     CL_Q3W_Clear();
 }

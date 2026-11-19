@@ -568,10 +568,18 @@ OGG_Stream(void)
 			/* active_buffers are all active OpenAL buffers,
 			   buffering normal sfx _and_ ogg/vorbis samples. */
 			// a read can end the music (a Quake III loop that will not
-			// open): no buffer comes of it then, so stop asking
+			// open): no buffer comes of it then, so stop asking. Nor does
+			// one OpenAL refuses (another rate already queued: a video's
+			// sound, al.c AL_RawSamples) - asking again would run through
+			// the whole track this frame - nor the read that moves on to
+			// the next track: either way, the next frame tries again.
 			while (active_buffers <= ogg_numbufs && ogg_status == PLAY)
 			{
+				int before = active_buffers;
+
 				OGG_Read();
+				if (active_buffers == before)
+					break;
 			}
 		}
 		else /* using SDL */

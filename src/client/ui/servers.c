@@ -689,6 +689,9 @@ void UI_Frame(int msec)
 {
     serverslot_t *slot;
 
+    // the Quake III campaign's announcer queue and video (q3sp.c)
+    UI_SP_Frame();
+
     if (!m_servers.pingstage)
         return;
 

@@ -735,6 +735,9 @@ void T_Damage(edict_t *targ, edict_t *inflictor, edict_t *attacker, const vec3_t
             damage = 1;
     }
 
+    // a handicapped campaign bot hits that much softer (g_sp.c)
+    damage = SP_ScaleDamage(targ, attacker, damage);
+
     // friendly fire avoidance
     // if enabled you can't hurt teammates (but you can hurt yourself)
     // knockback still occurs

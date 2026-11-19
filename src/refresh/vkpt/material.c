@@ -507,6 +507,53 @@ static bool is_texture_attribute(enum AttributeIndex index)
 // the slot (attr) that (mat) states has no texture at all: see MAT_TextureValueClears
 #define MAT_CLEARED(mat, attr, filename) (MAT_SPECIFIED(mat, attr) && !(mat)->filename[0])
 
+/* THE SOLID STAND-INS, BY NAME. A Quake III mirror or chrome with no maps of
+   its own gets one-colour images made for it (apply_q3_shader, q3_solid_slot):
+   "<its image>*<tag>.wal", which `mat print` shows like any other path. There
+   is no such file. Typed into another entry, the '*' was taken for the
+   material's own name - 'mat texture_metallic ...chrome_metal*M1.wal' on
+   base_trim/pewter looked for "chrome_metalpewterM1.wal" - and nothing loaded
+   (Matt, 2026-11-19). A texture value ending in one of these tags now keeps
+   its '*' and is that solid colour (load_solid_by_name). */
+static const struct {
+	const char* tag;
+	byte        r, g, b;
+} c_SolidTags[] = {
+	{ "W",   255, 255, 255 },  // a mirror's base
+	{ "C",   230, 230, 230 },  // chrome's base
+	{ "R0",  0,   0,   0   },  // a mirror's roughness
+	{ "R20", 20,  20,  20  },  // chrome's roughness
+	{ "M1",  255, 255, 255 },  // the metallic of both
+};
+
+// the c_SolidTags entry (name) ends in as "*<tag>.wal", or -1
+static int solid_tag_index(const char* name)
+{
+	const char* star = strrchr(name, '*');
+	if (!star)
+		return -1;
+	for (int i = 0; i < (int)q_countof(c_SolidTags); i++)
+	{
+		size_t len = strlen(c_SolidTags[i].tag);
+		if (!Q_strncasecmp(star + 1, c_SolidTags[i].tag, len) && !Q_stricmp(star + 1 + len, ".wal"))
+			return i;
+	}
+	return -1;
+}
+
+// (name) is a solid stand-in's: the one already made, or a new one in (mat)'s
+// base picture's place. R_NOTEXTURE if (name) is no such name, or there is
+// nothing to make one from yet.
+static image_t* load_solid_by_name(const char* name, const pbr_material_t* mat, imagetype_t type)
+{
+	int tag = solid_tag_index(name);
+	if (tag < 0)
+		return R_NOTEXTURE;
+	image_t* solid = vkpt_solid_texture_named(mat->image_base, type, name,
+		c_SolidTags[tag].r, c_SolidTags[tag].g, c_SolidTags[tag].b);
+	return solid ? solid : R_NOTEXTURE;
+}
+
 static void set_material_texture(pbr_material_t* mat, const char* svalue, char mat_texture_path[MAX_IMAGE_PATH],
 	image_t** mat_image, imageflags_t flags, bool from_console)
 {
@@ -516,7 +563,9 @@ static void set_material_texture(pbr_material_t* mat, const char* svalue, char m
 	}
 	else if (from_console) {
 		// the file typed, not an image already loaded from its .jpg/.png twin
-		image_t* image = IMG_FindFile(svalue, mat->image_type, flags | (mat->image_flags & IF_SRC_MASK));
+		// (or another material's solid stand-in, which is no file: c_SolidTags)
+		image_t* image = solid_tag_index(svalue) >= 0 ? load_solid_by_name(svalue, mat, mat->image_type)
+			: IMG_FindFile(svalue, mat->image_type, flags | (mat->image_flags & IF_SRC_MASK));
 		if (image != R_NOTEXTURE) {
 			Q_strlcpy(mat_texture_path, svalue, MAX_IMAGE_PATH);
 			*mat_image = image;
@@ -565,6 +614,11 @@ static int set_material_attribute(pbr_material_t* mat, const char* attribute, co
 	case ATTR_FLOAT:  fvalue = (float)atof(value); break;
 	case ATTR_STRING: {
 		char* asterisk = strchr(value, '*');
+
+		// another material's solid stand-in, named as `mat print` shows it:
+		// its '*' is part of the name, not this material's (see c_SolidTags)
+		if (asterisk && is_texture_attribute(t->index) && solid_tag_index(value) >= 0)
+			asterisk = NULL;
 
 		/* A path that does not fit used to be cut short here and fail later as
 		   "Invalid quake path" on a name that was never in the file - "..._light."
@@ -1868,6 +1922,12 @@ void MAT_ChangeMap(const char* map_name)
 
 static void load_material_image(image_t** image, const char* filename, pbr_material_t* mat, imagetype_t type, imageflags_t flags)
 {
+	// another material's solid stand-in, "...chrome_metal*M1.wal": no file
+	if (solid_tag_index(filename) >= 0) {
+		*image = load_solid_by_name(filename, mat, type);
+		return;
+	}
+
 	*image = IMG_Find(filename, type, flags | IF_EXACT | (mat->image_flags & IF_SRC_MASK));
 	if (*image == R_NOTEXTURE) {
 		/* Also try inexact loading in case of an override texture.
@@ -2513,16 +2573,7 @@ static const q3stage_t* q3_base_stage(const q3shader_t* q3)
    and the rest), which apply_q3_shader puts in for glass, mirrors and chrome. */
 static bool q3_is_solid_clone(const image_t* image)
 {
-	static const char* const tags[] = { "*W.wal", "*C.wal", "*R0.wal", "*R20.wal", "*M1.wal" };
-	if (!image)
-		return false;
-	const char* star = strrchr(image->name, '*');
-	if (!star)
-		return false;
-	for (int i = 0; i < (int)q_countof(tags); i++)
-		if (!Q_stricmp(star, tags[i]))
-			return true;
-	return false;
+	return image && solid_tag_index(image->name) >= 0;
 }
 
 static void q3_drop_solid_slot(pbr_material_t* mat, int attr, image_t** slot, char* filename)

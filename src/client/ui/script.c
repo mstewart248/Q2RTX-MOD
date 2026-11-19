@@ -48,6 +48,7 @@ static menuSound_t Activate(menuCommon_t *self)
 
 static const cmd_option_t o_common[] = {
     { "s:", "status" },
+    { "m", "levelshot" },
     { NULL }
 };
 
@@ -121,11 +122,15 @@ static void Parse_Spin(menuFrameWork_t *menu, menuType_t type)
     menuSpinControl_t *s;
     int c, i, numItems;
     char *status = NULL;
+    bool levelshot = false;
 
     while ((c = Cmd_ParseOptions(o_common)) != -1) {
         switch (c) {
         case 's':
             status = cmd_optarg;
+            break;
+        case 'm':
+            levelshot = true;
             break;
         default:
             return;
@@ -142,6 +147,8 @@ static void Parse_Spin(menuFrameWork_t *menu, menuType_t type)
     s->generic.type = type;
     s->generic.name = UI_CopyString(Cmd_Argv(cmd_optind));
     s->generic.status = UI_CopyString(status);
+    if (levelshot)
+        s->generic.flags |= QMF_LEVELSHOT;
     s->cvar = Cvar_WeakGet(Cmd_Argv(cmd_optind + 1));
 
     cmd_optind += 2;
@@ -162,6 +169,7 @@ static const cmd_option_t o_pairs[] = {
     { "s:", "status" },
     { "l", "live" },
     { "c:", "command" },
+    { "m", "levelshot" },
     { NULL }
 };
 static void Parse_Pairs(menuFrameWork_t *menu)
@@ -171,6 +179,7 @@ static void Parse_Pairs(menuFrameWork_t *menu)
     char *status = NULL;
     char *command = NULL;
     bool live = false;
+    bool levelshot = false;
 
     while ((c = Cmd_ParseOptions(o_pairs)) != -1) {
         switch (c) {
@@ -179,6 +188,9 @@ static void Parse_Pairs(menuFrameWork_t *menu)
             break;
         case 'l':
             live = true;
+            break;
+        case 'm':
+            levelshot = true;
             break;
         case 'c':
             command = cmd_optarg;
@@ -210,6 +222,8 @@ static void Parse_Pairs(menuFrameWork_t *menu)
     s->numItems = numItems;
     if (live)
         s->generic.flags |= QMF_LIVE;
+    if (levelshot)
+        s->generic.flags |= QMF_LEVELSHOT;
 
     Menu_AddItem(menu, s);
 }

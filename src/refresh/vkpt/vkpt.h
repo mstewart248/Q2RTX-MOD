@@ -971,6 +971,7 @@ int vkpt_image_sampler_kind(const image_t *q_img, int pt_nearest, int bilerp_cha
 image_t *vkpt_fake_emissive_texture(image_t *image, int bright_threshold_int);
 image_t *vkpt_alpha_mask_texture(image_t *image, int func);
 image_t *vkpt_solid_texture(image_t *image, const char *tag, byte r, byte g, byte b);
+image_t *vkpt_solid_texture_named(image_t *like, imagetype_t type, const char *name, byte r, byte g, byte b);
 void vkpt_extract_emissive_texture_info(image_t *image);
 void vkpt_fold_emissive_alpha(image_t *image);
 void vkpt_textures_prefetch(void);
@@ -1745,6 +1746,8 @@ void R_LightPoint_RTX(const vec3_t origin, vec3_t light);
 void R_SetScale_RTX(float scale);
 void R_DrawStretchPic_RTX(int x, int y, int w, int h, qhandle_t pic);
 void R_DrawRotatedPic_RTX(float cx, float cy, float w, float h, float angle, qhandle_t pic);
+void R_DrawStretchSubPic_RTX(float x, float y, float w, float h,
+	float s1, float t1, float s2, float t2, qhandle_t pic);
 void R_DrawPic_RTX(int x, int y, qhandle_t pic);
 void R_TileClear_RTX(int x, int y, int w, int h, qhandle_t pic);
 void R_DrawFill8_RTX(int x, int y, int w, int h, int c);

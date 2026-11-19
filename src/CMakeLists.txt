@@ -32,9 +32,11 @@ SET(SRC_BASEQ2
 	baseq2/g_rogue_items.c
 	baseq2/g_nav.c
 	baseq2/g_bot.c
+	baseq2/g_botchar.c
 	baseq2/g_ctf.c
 	baseq2/g_q3.c
 	baseq2/g_q3weap.c
+	baseq2/g_sp.c
 	baseq2/g_xatrix.c
 	baseq2/g_weapon.c
 	baseq2/m_actor.c
@@ -119,6 +121,7 @@ SET(SRC_CLIENT
 	client/dynamiclights.c
 	client/q3lamps.c
 	client/lightedit.c
+	client/levelshot.c
 	client/mapfog.c
 	client/effects.c
 	client/blood_film.c
@@ -138,6 +141,7 @@ SET(SRC_CLIENT
 	client/q3player.c
 	client/q3weapons.c
 	client/refresh.c
+	client/roq.c
 	client/screen.c
 	client/tent.c
 	client/view.c
@@ -145,6 +149,7 @@ SET(SRC_CLIENT
 	client/ui/menu.c
 	client/ui/playerconfig.c
 	client/ui/playermodels.c
+	client/ui/q3sp.c
 	client/ui/script.c
 	client/ui/servers.c
 	client/ui/ui.c

@@ -101,11 +101,21 @@ void Q3_LevelRules(void)
     if (gi.cvar("fs_quake3", "0", 0)->integer == 1 && g_q3_weapons)
         level.q3_weapons = (g_q3_weapons->integer >= 0 && g_q3_weapons->integer <= 2) ? g_q3_weapons->integer : 0;
     level.q3_physics = g_q3_physics && g_q3_physics->integer;
+
+    // a campaign arena is Quake III's game whatever the bot match says (g_sp.c)
+    SP_LevelRules();
+}
+
+// Quake III's health and armor amounts and its Battle Suit: the bot match's
+// choice, and always in the campaign
+bool Q3_ItemRules(void)
+{
+    return (g_q3_items && g_q3_items->integer) || SP_Active();
 }
 
 static bool Q3_Amounts(void)
 {
-    return level.q3map && g_q3_items && g_q3_items->integer;
+    return level.q3map && Q3_ItemRules();
 }
 
 /*
@@ -1549,7 +1559,7 @@ void Q3_SpawnEntity(edict_t *ent)
     }
 
     // the Battle Suit with the Quake III amounts, the Environment Suit without
-    if (!Q_stricmp(cn, "item_enviro") && g_q3_items->integer) {
+    if (!Q_stricmp(cn, "item_enviro") && Q3_ItemRules()) {
         cn = "item_q3_battlesuit";
         ent->classname = (char *)cn;
     }

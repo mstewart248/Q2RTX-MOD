@@ -2443,6 +2443,63 @@ static void Menu_DrawStatus(menuFrameWork_t *menu)
 Menu_Draw
 =================
 */
+/*
+=================
+Menu_DrawLevelshot
+
+The bot match page's map row (`--levelshot`, QMF_LEVELSHOT): the picture of
+the map it shows, beside the menu's value column - right of the middle, level
+with the row, up to 4:3 at 160 wide, and inside the menu's background band
+(menu->y1..y2), smaller still if the band is short. Too narrow a screen or
+too short a band for it: nothing.
+=================
+*/
+#define LEVELSHOT_COLUMN    240     // right of the middle: clear of the longest map title
+#define LEVELSHOT_WIDTH     160     // the shots are 640x480 at best, often grainier
+#define LEVELSHOT_MARGIN    4       // clear of the band's edges
+
+static void Menu_DrawLevelshot(menuFrameWork_t *menu)
+{
+    menuSpinControl_t   *s = NULL;
+    const char          *map;
+    qhandle_t           pic;
+    int                 i, x, y, w, h;
+
+    for (i = 0; i < menu->nitems; i++) {
+        menuCommon_t *item = menu->items[i];
+
+        if ((item->flags & (QMF_LEVELSHOT | QMF_HIDDEN)) != QMF_LEVELSHOT)
+            continue;
+        if (item->type != MTYPE_PAIRS && item->type != MTYPE_STRINGS && item->type != MTYPE_SPINCONTROL)
+            continue;
+        s = (menuSpinControl_t *)item;
+        break;
+    }
+    if (!s || s->curvalue < 0 || s->curvalue >= s->numItems)
+        return;
+
+    map = (s->generic.type == MTYPE_PAIRS && s->itemvalues) ? s->itemvalues[s->curvalue]
+                                                            : s->itemnames[s->curvalue];
+    pic = UI_Levelshot(map, true);
+    if (!pic)
+        return;
+
+    x = uis.width / 2 + LEVELSHOT_COLUMN;
+    w = min(LEVELSHOT_WIDTH, uis.width - x - 8);
+    h = w * 3 / 4;
+    if (h > menu->y2 - menu->y1 - 2 * LEVELSHOT_MARGIN) {
+        h = menu->y2 - menu->y1 - 2 * LEVELSHOT_MARGIN;
+        w = h * 4 / 3;
+    }
+    if (w < 64)
+        return;
+    // the middle of the menu's band, not level with the map row (Matt, 11-19)
+    y = (menu->y1 + menu->y2) / 2 - h / 2;
+
+    R_DrawFill32(x - 1, y - 1, w + 2, h + 2, MakeColor(255, 0, 0, 255));
+    R_DrawStretchPic(x, y, w, h, pic);
+}
+
 void Menu_Draw(menuFrameWork_t *menu)
 {
     void *item;
@@ -2553,6 +2610,11 @@ void Menu_Draw(menuFrameWork_t *menu)
             UI_DrawRect8(&((menuCommon_t *)item)->rect, 1, 223);
         }
     }
+
+//
+// the map row's picture (bot match)
+//
+    Menu_DrawLevelshot(menu);
 
 //
 // draw status bar

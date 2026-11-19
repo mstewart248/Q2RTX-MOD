@@ -554,7 +554,9 @@ static void GL_SetFilterAndRepeat(imagetype_t type, imageflags_t flags)
         if (flags & IF_NEAREST) {
             nearest = true;
         } else if(flags & IF_BILERP) {
-            nearest = true;
+            // "always lerp, independent of bilerp_pics" (refresh.h), as vkpt
+            // and D3D12 have it; this said nearest
+            nearest = false;
         } else if (type == IT_FONT) {
             nearest = (gl_bilerp_chars->integer == 0);
         } else if (type == IT_PIC) {

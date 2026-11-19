@@ -654,8 +654,8 @@ void V_RenderView(void)
         // trigger_flashlight state, so either one turns the light on.
         // cl_flashlight -1 keeps it off even when the map asks for it.
         // Games from before STAT_FLASHLIGHT_ON wrote 1 (old demos).
-        if(cl_flashlight->integer > 0 ||
-           (cl_flashlight->integer == 0 && V_MapFlashlight()))
+        if((cl_flashlight->integer > 0 ||
+           (cl_flashlight->integer == 0 && V_MapFlashlight())) && !CL_LevelshotActive())
             V_Flashlight();
 
         // never let it sit exactly on a node line, because a water plane can
@@ -678,6 +678,10 @@ void V_RenderView(void)
             cl.refdef.fov_x = cl.fov_x;
             cl.refdef.fov_y = V_CalcFov(cl.refdef.fov_x, cl.refdef.width, cl.refdef.height);
         }
+
+        // a levelshot (levelshot.c): the map's intermission camera, Quake III's fov
+        CL_LevelshotView(cl.refdef.vieworg, cl.refdef.viewangles, cl.refdef.width,
+                         cl.refdef.height, &cl.refdef.fov_x, &cl.refdef.fov_y);
 
         cl.refdef.time = cl.time * 0.001f;
 

@@ -594,6 +594,11 @@ static void CL_AddPacketEntities(void)
         s1 = &cl.entityStates[i];
 
         cent = &cl_entities[s1->number];
+
+        // a levelshot (levelshot.c) leaves you out of the picture
+        if (s1->number == cl.frame.clientNum + 1 && CL_LevelshotActive())
+            continue;
+
         ent.id = cent->id + RESERVED_ENTITIY_COUNT;
         ent.blood_key = 0;  // only the main model's add below sets it
 
@@ -2202,6 +2207,11 @@ static void CL_AddViewWeapon(void)
     }
 
     if (info_hand->integer == 2) {
+        return;
+    }
+
+    // a levelshot is the map alone (levelshot.c)
+    if (CL_LevelshotActive()) {
         return;
     }
 

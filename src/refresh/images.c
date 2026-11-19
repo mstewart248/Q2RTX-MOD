@@ -432,6 +432,115 @@ static int IMG_SaveJPG(screenshot_t *s)
 }
 
 
+/*
+=================
+IMG_SaveLevelshot
+
+What the levelshot generator saves (client/levelshot.c): the frame read back,
+the middle 4:3 of it, each output pixel the average of the screen pixels it
+covers - in linear light, or a shrunk bright edge goes dark - and written
+through the filesystem, so it lands under the game's write directory and the
+menus find it as levelshots/<map>.jpg. Rows stay bottom-up throughout, as
+IMG_ReadPixels hands them over and as the other writers expect.
+=================
+*/
+typedef struct {
+    byte    *data;
+    size_t  len, cap;
+} levelshot_buf_t;
+
+static bool is_render_hdr(void);
+
+static void levelshot_write(void *context, void *data, int size)
+{
+    levelshot_buf_t *b = context;
+
+    if (size <= 0)
+        return;
+    if (b->len + size > b->cap) {
+        size_t cap = max(b->cap * 2, b->len + size + 65536);
+        b->data = Z_Realloc(b->data, cap);
+        b->cap = cap;
+    }
+    memcpy(b->data + b->len, data, size);
+    b->len += size;
+}
+
+int IMG_SaveLevelshot(const char *path, int width, int height, int quality)
+{
+    static float    to_linear[256];
+    static bool     table_ready;
+    byte            *pixels, *out;
+    int             w, h, stride, crop_w, crop_h, x0, y0, x, y, i, ret;
+    levelshot_buf_t buf = { 0 };
+
+    if (!IMG_ReadPixels || width <= 0 || height <= 0)
+        return Q_ERR(EINVAL);
+    if (is_render_hdr() && !IMG_ReadPixelsTakesHDR)
+        return Q_ERR(ENOSYS);
+
+    if (!table_ready) {
+        for (i = 0; i < 256; i++) {
+            float c = i / 255.0f;
+            to_linear[i] = c <= 0.04045f ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f);
+        }
+        table_ready = true;
+    }
+
+    pixels = IMG_ReadPixels(&w, &h, &stride);
+    if (!pixels)
+        return Q_ERR(EIO);
+
+    // the widest 4:3 that fits, centred
+    crop_w = w;
+    crop_h = w * 3 / 4;
+    if (crop_h > h) {
+        crop_h = h;
+        crop_w = h * 4 / 3;
+    }
+    x0 = (w - crop_w) / 2;
+    y0 = (h - crop_h) / 2;
+
+    out = Z_Malloc(width * height * 3);
+    for (y = 0; y < height; y++) {
+        int sy0 = y0 + y * crop_h / height;
+        int sy1 = max(y0 + (y + 1) * crop_h / height, sy0 + 1);
+
+        for (x = 0; x < width; x++) {
+            int     sx0 = x0 + x * crop_w / width;
+            int     sx1 = max(x0 + (x + 1) * crop_w / width, sx0 + 1);
+            float   sum[3] = { 0, 0, 0 };
+            int     n = 0, sx, sy, c;
+
+            for (sy = sy0; sy < sy1; sy++) {
+                const byte *row = pixels + sy * stride + sx0 * 3;
+                for (sx = sx0; sx < sx1; sx++, row += 3) {
+                    sum[0] += to_linear[row[0]];
+                    sum[1] += to_linear[row[1]];
+                    sum[2] += to_linear[row[2]];
+                    n++;
+                }
+            }
+            for (c = 0; c < 3; c++) {
+                float v = sum[c] / n;
+                v = v <= 0.0031308f ? v * 12.92f : 1.055f * powf(v, 1.0f / 2.4f) - 0.055f;
+                out[(y * width + x) * 3 + c] = (byte)max(0, min(255, (int)(v * 255.0f + 0.5f)));
+            }
+        }
+    }
+    Z_Free(pixels);
+
+    stbi_flip_vertically_on_write(1);
+    if (stbi_write_jpg_to_func(levelshot_write, &buf, width, height, 3, out, quality))
+        ret = FS_WriteFile(path, buf.data, buf.len);
+    else
+        ret = Q_ERR_LIBRARY_ERROR;
+
+    Z_Free(buf.data);
+    Z_Free(out);
+    return ret;
+}
+
 static int IMG_SavePNG(screenshot_t *s)
 {
 	stbi_flip_vertically_on_write(1);

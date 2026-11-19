@@ -4266,6 +4266,9 @@ models/powerups/instant/quad:
 # scripts/models.shader
 #	stage0: map textures/effects/envmapblue.jpg; blendfunc GL_ONE GL_ZERO; tcGen environment; rgbGen identity
 	stage0_map materialDev/textures/effects/envmapblue.jpg
+	is_light 1
+	emissive_factor 5
+	bsp_radiance 0
 #	texture_normals materialDev/models/powerups/instant/quad_n.png
 #	texture_roughness materialDev/models/powerups/instant/quad_rough.png
 #	texture_metallic materialDev/models/powerups/instant/quad_metal.png
@@ -4739,7 +4742,7 @@ models/weapons2/machinegun/f_machinegun:
 
 models/weapons2/machinegun/machinegun:
 	texture_base materialDev/models/weapons2/machinegun/machinegun.jpg
-#	texture_normals materialDev/models/weapons2/machinegun/machinegun_n.png
+	texture_normals materialDev/models/weapons2/machinegun/machinegun_n.jpg
 	texture_roughness materialDev/models/weapons2/machinegun/machinegun_rough.jpg
 	texture_metallic materialDev/models/weapons2/machinegun/machinegun_metal.jpg
 #	texture_height materialDev/models/weapons2/machinegun/machinegun_height.png
@@ -7697,9 +7700,11 @@ textures/base_support/metal1_5:
 
 textures/base_support/pip03_2:
 	texture_base materialDev/textures/base_support/pip03_2.jpg
-#	texture_normals materialDev/textures/base_support/pip03_2_n.png
-#	texture_roughness materialDev/textures/base_support/pip03_2_rough.png
-#	texture_metallic materialDev/textures/base_support/pip03_2_metal.png
+	bump_scale 1
+	base_factor 2.5
+	texture_normals materialDev/textures/base_support/pip03_2_n.jpg
+	texture_roughness materialDev/textures/base_support/pip03_2_rough.jpg
+	texture_metallic materialDev/textures/base_support/pip03_2_metal.jpg
 #	texture_height materialDev/textures/base_support/pip03_2_height.png
 #	texture_emissive materialDev/textures/base_support/pip03_2_light.png
 
@@ -8200,6 +8205,7 @@ textures/base_trim/panel_glo:
 #	stage1: map textures/base_trim/panel_glo.tga; blendFunc GL_SRC_ALPHA GL_ONE_MINUS_SRC_ALPHA; rgbGen identity
 	stage1_map materialDev/textures/base_trim/panel_glo.tga
 	emissive_factor 0
+	stage0_emissive_factor 1
 #	stage2: map $lightmap; blendFunc GL_DST_COLOR GL_ONE_MINUS_DST_ALPHA; rgbGen identity
 #	texture_normals materialDev/textures/base_trim/panel_glo_n.png
 #	texture_roughness materialDev/textures/base_trim/panel_glo_rough.png
@@ -8246,9 +8252,12 @@ textures/base_trim/panelbrn01scr:
 
 textures/base_trim/pewter:
 	texture_base materialDev/textures/base_trim/pewter.jpg
+	roughness_override 0.1
+	metalness_factor 0.7
+	base_factor 3.5
 #	texture_normals materialDev/textures/base_trim/pewter_n.png
-#	texture_roughness materialDev/textures/base_trim/pewter_rough.png
-#	texture_metallic materialDev/textures/base_trim/pewter_metal.png
+	texture_roughness materialDev/textures/base_wall/chrome_metal*R20.wal
+	texture_metallic materialDev/textures/base_wall/chrome_metal*M1.wal
 #	texture_height materialDev/textures/base_trim/pewter_height.png
 #	texture_emissive materialDev/textures/base_trim/pewter_light.png
 
@@ -8366,9 +8375,9 @@ textures/base_trim/skull_monitor:
 
 textures/base_trim/slots1_1:
 	texture_base materialDev/textures/base_trim/slots1_1.jpg
-#	texture_normals materialDev/textures/base_trim/slots1_1_n.png
-#	texture_roughness materialDev/textures/base_trim/slots1_1_rough.png
-#	texture_metallic materialDev/textures/base_trim/slots1_1_metal.png
+	texture_normals materialDev/textures/base_trim/slots1_1_n.png
+	texture_roughness materialDev/textures/base_trim/slots1_1_rough.png
+	texture_metallic materialDev/textures/base_trim/slots1_1_metal.png
 #	texture_height materialDev/textures/base_trim/slots1_1_height.png
 #	texture_emissive materialDev/textures/base_trim/slots1_1_light.png
 
@@ -8379,6 +8388,8 @@ textures/base_trim/spiderbit:
 	stage1_map materialDev/textures/base_trim/spiderbit.jpg
 #	stage2: map textures/base_trim/spiderbit_fx.tga; blendfunc GL_ONE GL_ONE; rgbgen wave triangle .1 .5 0 7
 	stage2_map materialDev/textures/base_trim/spiderbit_fx.jpg
+	light_factor 4
+	stage2_emissive_factor 5
 #	texture_normals materialDev/textures/base_trim/spiderbit_n.png
 #	texture_roughness materialDev/textures/base_trim/spiderbit_rough.png
 #	texture_metallic materialDev/textures/base_trim/spiderbit_metal.png

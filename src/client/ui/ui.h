@@ -68,6 +68,9 @@ typedef enum {
 // writes its cvar on every change instead of when the menu is left (`--live` in a
 // menu script): for settings judged by eye while the menu is open, like HDR's
 #define QMF_LIVE            0x00000080
+// a map row (`--levelshot` in a menu script): its map's picture,
+// levelshots/<map>.jpg, is drawn beside the menu (Menu_DrawLevelshot)
+#define QMF_LEVELSHOT       0x00000100
 
 typedef enum {
     QMS_NOTHANDLED,
@@ -150,6 +153,8 @@ typedef struct menuFrameWork_s {
     // `style --clear-view`: the world behind is drawn as it plays, not with the
     // pause menu's blur and HDR dimming - for pages set by eye, like HDR's
     bool clear_view;
+    // a Quake III campaign page (q3sp.c): Quake III's cursor, not ours
+    bool q3_cursor;
 
     qhandle_t image;
     color_t color;
@@ -416,6 +421,10 @@ void        UI_StringDimensions(vrect_t *rc, int flags, const char *string);
 void        UI_LoadScript(void);
 menuFrameWork_t *UI_FindMenu(const char *name);
 
+// a map's levelshot (levelshots/<map>.jpg), see ui.c
+qhandle_t   UI_Levelshot(const char *map, bool unknown);
+void        UI_LevelshotForget(void);
+
 void        Menu_Init(menuFrameWork_t *menu);
 // re-applies every ifeq/ifneq condition; true if any item changed visibility,
 // in which case the caller must re-run the layout
@@ -445,6 +454,9 @@ void        Menu_Free(menuFrameWork_t *menu);
 void M_Menu_PlayerConfig(void);
 void M_Menu_PlayerModelGrid(void);
 void M_Menu_BotPick(void);
+void M_Menu_Q3SP(void);         // the Quake III campaign's pages (q3sp.c)
+void UI_SP_Frame(void);
+void UI_SP_DrawCursor(void);
 void M_Menu_Demos(void);
 void M_Menu_Servers(void);
 

@@ -42,7 +42,12 @@ void        UI_StatusEvent(const serverStatus_t *status);
 void        UI_ErrorEvent(netadr_t *from);
 void        UI_MouseEvent(int x, int y);
 bool        UI_IsTransparent(void);
+// the Quake III campaign (client/ui/q3sp.c)
+void        UI_SP_DrawHUD(void);            // its reward medals, over the HUD
+bool        UI_SP_KeepsGameRunning(void);   // its postgame screen: no auto-pause
 #else
+#define     UI_SP_DrawHUD()         (void)0
+#define     UI_SP_KeepsGameRunning() false
 #define     UI_Init()               (void)0
 #define     UI_Shutdown()           (void)0
 #define     UI_ModeChanged()        (void)0

@@ -176,6 +176,20 @@ void R_DrawStretchPic_GL(int x, int y, int w, int h, qhandle_t pic)
                   draw.colors[0].u32, image);
 }
 
+// Part of a pic: s and t run 0..1 across the image, mapped into the part of
+// the texture the image actually fills (it may sit in a scrap).
+void R_DrawStretchSubPic_GL(float x, float y, float w, float h,
+                            float s1, float t1, float s2, float t2, qhandle_t pic)
+{
+    image_t *image = IMG_ForHandle(pic);
+    float   sw = image->sh - image->sl, th = image->th - image->tl;
+
+    GL_StretchPic(x, y, w, h,
+                  image->sl + s1 * sw, image->tl + t1 * th,
+                  image->sl + s2 * sw, image->tl + t2 * th,
+                  draw.colors[0].u32, image);
+}
+
 // A pic w x h centred on (cx, cy), turned clockwise by `angle` radians.
 void R_DrawRotatedPic_GL(float cx, float cy, float w, float h, float angle, qhandle_t pic)
 {

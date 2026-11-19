@@ -1541,6 +1541,24 @@ demoInfo_t *CL_GetDemoInfo(const char *path, demoInfo_t *info);
 
 
 //
+// roq.c - Quake III's RoQ videos, for the campaign (ui/q3sp.c)
+//
+bool        RoQ_Open(const char *path);
+void        RoQ_Close(void);
+bool        RoQ_IsOpen(void);
+bool        RoQ_Update(void);       // false once it has ended
+qhandle_t   RoQ_Image(int *width, int *height);
+
+//
+// levelshot.c - map thumbnails from the intermission camera
+//
+void CL_InitLevelshots(void);
+void CL_LevelshotFrame(void);
+bool CL_LevelshotActive(void);      // a shot is being set up: no HUD, gun or own body
+bool CL_LevelshotView(vec3_t origin, vec3_t angles, float width, float height,
+                      float *fov_x, float *fov_y);
+
+//
 // lightedit.c
 //
 void LE_Init(void);

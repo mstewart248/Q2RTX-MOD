@@ -645,13 +645,15 @@ units above the blast so it lifts. Your own share is halved here only with
 Quake II's physics; Quake III's halves it in T_Damage, after the push.
 =================
 */
-static void Q3W_RadiusDamage(edict_t *inflictor, edict_t *attacker, float damage,
+// true when it reached someone, for the campaign's accuracy (G_RadiusDamage's hitClient)
+static bool Q3W_RadiusDamage(edict_t *inflictor, edict_t *attacker, float damage,
                              float radius, edict_t *ignore, int mod)
 {
     edict_t *ent = NULL;
     vec3_t  v, dir;
     float   dist, points;
     int     i;
+    bool    hit_client = false;
 
     if (radius < 1)
         radius = 1;
@@ -681,9 +683,12 @@ static void Q3W_RadiusDamage(edict_t *inflictor, edict_t *attacker, float damage
 
         VectorSubtract(ent->s.origin, inflictor->s.origin, dir);
         dir[2] += 24;
+        if (SP_AccuracyTarget(attacker, ent))
+            hit_client = true;
         T_Damage(ent, inflictor, attacker, dir, inflictor->s.origin, vec3_origin,
                  (int)points, (int)points, DAMAGE_RADIUS, mod);
     }
+    return hit_client;
 }
 
 static void Q3W_TempEntity(int type, const vec3_t pos, const vec3_t dir)
@@ -703,12 +708,14 @@ Q3W_Bullet
 g_weapon.c Bullet_Fire: a round spread, seen at 8192 * 16 units.
 =================
 */
-static void Q3W_Bullet(edict_t *ent, const vec3_t muzzle, const vec3_t forward,
+// true when it hit someone, for the campaign's accuracy (g_sp.c)
+static bool Q3W_Bullet(edict_t *ent, const vec3_t muzzle, const vec3_t forward,
                        const vec3_t right, const vec3_t up, float r, float u,
                        int damage, int mod, int impact)
 {
     vec3_t  dir, end;
     trace_t tr;
+    bool    hit;
 
     VectorScale(forward, 8192 * 16, dir);
     VectorMA(dir, r, right, dir);
@@ -718,12 +725,16 @@ static void Q3W_Bullet(edict_t *ent, const vec3_t muzzle, const vec3_t forward,
 
     tr = gi.trace((vec_t *)muzzle, NULL, NULL, end, ent, MASK_SHOT);
     if (tr.fraction == 1.0f || (tr.surface && (tr.surface->flags & SURF_SKY)))
-        return;
+        return false;
 
-    if (tr.ent && tr.ent->takedamage)
+    if (tr.ent && tr.ent->takedamage) {
+        hit = SP_AccuracyTarget(ent, tr.ent);
         T_Damage(tr.ent, ent, ent, dir, tr.endpos, tr.plane.normal, damage, damage, DAMAGE_BULLET, mod);
-    else
-        Q3W_TempEntity(impact, tr.endpos, tr.plane.normal);
+        return hit;
+    }
+
+    Q3W_TempEntity(impact, tr.endpos, tr.plane.normal);
+    return false;
 }
 
 /*
@@ -769,6 +780,7 @@ static void Q3W_Rail(edict_t *ent, const vec3_t muzzle, const vec3_t forward,
     trace_t tr;
     int     damage = Q3_RAIL_DAMAGE * Q3W_DamageScale(ent);
     int     hits = 0;
+    int     players_hit = 0;    // toward "impressive" (g_sp.c)
 
     VectorCopy(muzzle, from);
     VectorMA(muzzle, 8192, forward, end);
@@ -777,8 +789,11 @@ static void Q3W_Rail(edict_t *ent, const vec3_t muzzle, const vec3_t forward,
         tr = gi.trace(from, NULL, NULL, end, ignore, MASK_SHOT);
         if (tr.fraction == 1.0f || !tr.ent)
             break;
-        if (tr.ent != ent && tr.ent->takedamage)
+        if (tr.ent != ent && tr.ent->takedamage) {
+            if (SP_AccuracyTarget(ent, tr.ent))
+                players_hit++;
             T_Damage(tr.ent, ent, ent, (vec_t *)forward, tr.endpos, tr.plane.normal, damage, damage, 0, MOD_Q3_RAILGUN);
+        }
         // through players and bodies, not walls
         if (!(tr.ent->client || (tr.ent->svflags & SVF_MONSTER) || tr.ent->solid == SOLID_BBOX))
             break;
@@ -787,6 +802,8 @@ static void Q3W_Rail(edict_t *ent, const vec3_t muzzle, const vec3_t forward,
         ignore = tr.ent;
         VectorCopy(tr.endpos, from);
     }
+
+    SP_RailHits(ent, players_hit);
 
     VectorMA(muzzle, 4, right, start);
     VectorMA(start, -1, up, start);
@@ -817,8 +834,11 @@ static bool Q3W_Lightning(edict_t *ent, const vec3_t muzzle, const vec3_t forwar
     VectorMA(muzzle, Q3_LIGHTNING_RANGE, forward, end);
     tr = gi.trace((vec_t *)muzzle, NULL, NULL, end, ent, MASK_SHOT);
 
-    if (tr.fraction < 1.0f && tr.ent && tr.ent->takedamage)
+    if (tr.fraction < 1.0f && tr.ent && tr.ent->takedamage) {
+        if (SP_AccuracyTarget(ent, tr.ent))
+            SP_AccuracyHit(ent);
         T_Damage(tr.ent, ent, ent, (vec_t *)forward, tr.endpos, tr.plane.normal, damage, damage, 0, MOD_Q3_LIGHTNING);
+    }
 
     if (ent->client->q3_lightning_framenum == level.framenum)
         return false;
@@ -862,6 +882,7 @@ static void Q3W_MissileExplode(edict_t *self, edict_t *other, cplane_t *plane)
     vec3_t  origin, heading;
     float   back;
     int     te;
+    bool    hit;
 
     // The blast a little back from the surface, as Quake II's rockets do: 1/50
     // of a second of flight, but no more than a Quake III rocket's 18 units.
@@ -880,12 +901,19 @@ static void Q3W_MissileExplode(edict_t *self, edict_t *other, cplane_t *plane)
     }
     VectorCopy(origin, self->s.origin);
 
-    if (other && other->takedamage)
+    // the campaign's accuracy: a hit, direct or splash, counts once (G_MissileImpact)
+    hit = false;
+    if (other && other->takedamage) {
+        hit = SP_AccuracyTarget(self->owner, other);
         T_Damage(other, self, self->owner, self->velocity, self->s.origin,
                  plane ? plane->normal : vec3_origin, self->dmg, self->dmg, 0, Q3W_MissileMod(self, false));
+    }
 
-    if (self->radius_dmg)
-        Q3W_RadiusDamage(self, self->owner, self->radius_dmg, self->dmg_radius, other, Q3W_MissileMod(self, true));
+    if (self->radius_dmg &&
+        Q3W_RadiusDamage(self, self->owner, self->radius_dmg, self->dmg_radius, other, Q3W_MissileMod(self, true)))
+        hit = true;
+    if (hit)
+        SP_AccuracyHit(self->owner);
 
     switch (self->style) {
     case Q3W_GRENADE:   te = TE_Q3_GRENADE_EXPLOSION; break;
@@ -997,6 +1025,9 @@ static void Q3W_Missile(edict_t *ent, int weapon, const vec3_t muzzle, const vec
         // no model: the client draws Quake III's plasma sprite
         m->s.renderfx = RF_Q3_SPRITE;
         m->s.frame = Q3_SPRITE_PLASMA;
+        // its shooter: the client draws a new ball from that gun's muzzle,
+        // not 100 units out where the prestep below puts it (CL_Q3W_AddSprite)
+        m->s.skinnum = ent->s.number;
         m->s.sound = Q3_SoundIndex("weapons/plasma/lasfly.wav");
         break;
     default:    // Q3W_BFG
@@ -1051,23 +1082,34 @@ static void Q3W_Fire(edict_t *ent, int weapon)
 
     scale = Q3W_DamageScale(ent);
 
+    // the campaign's accuracy: every shot but the gauntlet's (g_sp.c)
+    if (weapon != Q3W_GAUNTLET)
+        SP_AccuracyShot(ent);
+
     switch (weapon) {
     case Q3W_MACHINEGUN: {
         float r = random() * M_PI * 2;
         float u = sinf(r) * crandom() * Q3_MACHINEGUN_SPREAD * 16;
 
         r = cosf(r) * crandom() * Q3_MACHINEGUN_SPREAD * 16;
-        Q3W_Bullet(ent, muzzle, forward, right, up, r, u, Q3_MACHINEGUN_DAMAGE * scale,
-                   MOD_Q3_MACHINEGUN, TE_Q3_BULLET);
+        if (Q3W_Bullet(ent, muzzle, forward, right, up, r, u, Q3_MACHINEGUN_DAMAGE * scale,
+                       MOD_Q3_MACHINEGUN, TE_Q3_BULLET))
+            SP_AccuracyHit(ent);
         sound = va("weapons/machinegun/machgf%db.wav", 1 + (Q_rand() & 3));
         break;
     }
-    case Q3W_SHOTGUN:
+    case Q3W_SHOTGUN: {
+        bool hit = false;   // the shot, not each pellet, is a hit
+
         for (i = 0; i < Q3_SHOTGUN_COUNT; i++)
-            Q3W_Bullet(ent, muzzle, forward, right, up,
-                       crandom() * Q3_SHOTGUN_SPREAD * 16, crandom() * Q3_SHOTGUN_SPREAD * 16,
-                       Q3_SHOTGUN_DAMAGE * scale, MOD_Q3_SHOTGUN, TE_Q3_SHOTGUN);
+            if (Q3W_Bullet(ent, muzzle, forward, right, up,
+                           crandom() * Q3_SHOTGUN_SPREAD * 16, crandom() * Q3_SHOTGUN_SPREAD * 16,
+                           Q3_SHOTGUN_DAMAGE * scale, MOD_Q3_SHOTGUN, TE_Q3_SHOTGUN))
+                hit = true;
+        if (hit)
+            SP_AccuracyHit(ent);
         break;
+    }
     case Q3W_GRENADE:
         VectorCopy(forward, dir);
         dir[2] += 0.2f;

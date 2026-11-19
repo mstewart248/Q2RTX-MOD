@@ -36,12 +36,20 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // The flare cards are not in cl.bsp (bsp_q3.c leaves out no-draw surfaces), so
 // they are read from the map's own draw surfaces at load.
 //
+// It is a fixture (V_MarkLightFixture), so the froxel fog keeps it on the long
+// history with the map's own lights, not the short one weapon fire rides (Matt,
+// 2026-11-18: the short one's noise showed in the fog under the lamp). The lamp
+// drifts at most ~15 units a second, so the long history's ~1.7 s lag is a few
+// fog cells.
+//
 // Cvars (all live, archived):
 //   cl_q3_lamp_light       1 = on
 //   cl_q3_lamp_intensity   brightness, in the same units as the light editor's
 //                          light_scale (2000 = its brightness 255)
 //   cl_q3_lamp_color       "r g b", 0..1 - default the flare image's own pink
 //   cl_q3_lamp_cone        full cone angle, degrees
+//   cl_q3_lamp_volscale    how much fog it lights (the light editor's volscale);
+//                          negative = the class default, 0 = none
 //
 
 #include "client.h"
@@ -65,6 +73,7 @@ static cvar_t   *cl_q3_lamp_light;
 static cvar_t   *cl_q3_lamp_intensity;
 static cvar_t   *cl_q3_lamp_color;
 static cvar_t   *cl_q3_lamp_cone;
+static cvar_t   *cl_q3_lamp_volscale;
 
 // The flare sprite of a moving lamp: a fake (not drawn) autoSprite that moves.
 static bool lamp_flare_shader(const q3shader_t *sh)
@@ -276,6 +285,10 @@ void CL_AddQ3LampsToScene(void)
                        half, half * 0.6f);
         // one light all its life, though it moves (vkpt main.c add_dlights)
         V_SetLightId(0x51A40000u | (uint32_t)i);
+        // the fog's long history, with the map's lights
+        V_MarkLightFixture();
+        // negative = the class default (V_SetLightVolumetricScale)
+        V_SetLightVolumetricScale(cl_q3_lamp_volscale->value);
     }
 }
 
@@ -289,4 +302,6 @@ void CL_InitQ3Lamps(void)
     cl_q3_lamp_color = Cvar_Get("cl_q3_lamp_color", "1 0.76 0.76", CVAR_ARCHIVE);
     // full cone, degrees
     cl_q3_lamp_cone = Cvar_Get("cl_q3_lamp_cone", "100", CVAR_ARCHIVE);
+    // fog it lights, as the light editor's volscale; negative = class default
+    cl_q3_lamp_volscale = Cvar_Get("cl_q3_lamp_volscale", "-1", CVAR_ARCHIVE);
 }
