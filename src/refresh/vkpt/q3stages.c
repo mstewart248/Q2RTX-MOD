@@ -1139,19 +1139,53 @@ static void tcmod_transform_d(const q3pstage_t *ps, double time, double m[6])
     }
 }
 
-/* The stage the surface's picture is: the first drawn from an image lying on
-   the surface - not the light, $whiteimage, a reflection map (which follows
-   the view, not the surface) or one left out. A glow or a pulse added over a
-   still base therefore keeps the base's zero, as before. */
+// a stage drawn from an image lying on the surface - not the light,
+// $whiteimage, a reflection map (which follows the view, not the surface) or
+// one left out
+static bool stage_is_picture(const q3pstage_t *ps)
+{
+    if (ps->flags & (Q3P_STAGE_LIGHTMAP | Q3P_STAGE_WHITE | Q3P_STAGE_ENV |
+                     Q3P_STAGE_NO_IMAGE | Q3P_STAGE_HIGHLIGHT))
+        return false;
+    return ps->num_images > 0;
+}
+
+/* Whether the stage paints its own picture over what is under it - a blend or
+   an opaque replace - rather than adding a glow to it (ONE, ONE) or
+   multiplying it (the lightmap, a filter). */
+static bool stage_covers(const q3pstage_t *ps)
+{
+    if (ps->src_blend == Q3BF_ZERO || ps->src_blend == Q3BF_DST_COLOR ||
+        ps->src_blend == Q3BF_ONE_MINUS_DST_COLOR)
+        return false;
+    return ps->dst_blend != Q3BF_ONE;
+}
+
+/* The stage the surface's picture is: the first picture stage. A glow or a
+   pulse added over a still base therefore keeps the base's zero, as before.
+
+   None when a later picture stage is painted OVER it. That is Quake III's
+   way of showing an effect through holes in a skin or a wall: the moving
+   layer goes first and the still skin is alpha-blended on top - Phobos (his
+   fx spun 360 degrees a second, scaled 7), Xaero's hook, Sarge's krusade, the
+   ammo boxes, the _ow and geomtrn walls, the spawn floors. The skin covers
+   nearly all of it (phobos.tga: 94% of texels opaque), so the vector has to
+   stay with the skin. Given the moving layer's, DLSS-RR dragged the whole
+   skin round with it and smeared it, each triangle its own way (Matt,
+   2026-11-19, the podium and the model grid; photo mode, with no motion
+   vectors, was right). Only a picture that is on top moves the vector: the
+   q3dm11 fans, with just the lightmap over them, still do. */
 static const q3pstage_t *motion_stage(const q3program_t *p)
 {
     for (int s = 0; s < p->num_stages; s++) {
         const q3pstage_t *ps = &p->stages[s];
-        if (ps->flags & (Q3P_STAGE_LIGHTMAP | Q3P_STAGE_WHITE | Q3P_STAGE_ENV |
-                         Q3P_STAGE_NO_IMAGE | Q3P_STAGE_HIGHLIGHT))
+        if (!stage_is_picture(ps))
             continue;
-        if (ps->num_images > 0)
-            return ps;
+
+        for (int t = s + 1; t < p->num_stages; t++)
+            if (stage_is_picture(&p->stages[t]) && stage_covers(&p->stages[t]))
+                return NULL;
+        return ps;
     }
     return NULL;
 }
