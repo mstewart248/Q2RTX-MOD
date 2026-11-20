@@ -1179,6 +1179,7 @@ static void cl_blood_void_changed(cvar_t *self)
     }
 
     blood_void_count = n;
+    CL_SetVoidFloor();      // a void surface is not a floor
 }
 
 bool CL_BloodVoidSurface(const csurface_t *surf)
@@ -1195,6 +1196,72 @@ bool CL_BloodVoidSurface(const csurface_t *surf)
             return true;
 
     return false;
+}
+
+/*
+===============
+CL_SetVoidFloor
+
+BELOW THE MAP IS THE VOID TOO. Matt, after a long match on q3dm17: "once the
+blood falls below the map we can stop spawning it and don't have it land and
+pool on the void". The Longest Yard floats over nothing. A gib knocked off the
+edge fell some 2400 units to the sky at the bottom, shedding its trail all the
+way down (2106 droplets in the air at once in his profiler shot), and lay on
+the sky when it got there. Quake III takes debris out in a NODROP brush below
+the map (CG_AddFragment); Quake II maps have nothing like it.
+
+So each map gets a floor: the lowest point of any face that is not void
+(CL_BloodVoidSurface - sky, nodraw, cl_blood_void), less cl_void_depth so a
+fall off a ledge is still seen to fall for a moment. Nothing below it can be
+landed on. Blood droplets go when they pass it, trails stop shedding there,
+and Quake III's gibs and brass go too (q3weapons.c). A map with a real floor
+under everything has its floor under that and never sees it.
+===============
+*/
+static cvar_t *cl_void_depth = NULL;
+
+void CL_SetVoidFloor(void)
+{
+    const bsp_t *bsp = cl.bsp;
+    float lowest = 0;
+    bool found = false;
+
+    cl.void_floor_set = false;
+    if (!bsp || !cl_void_depth || cl_void_depth->value <= 0)
+        return;
+
+    for (int i = 0; i < bsp->numfaces; i++) {
+        const mface_t *f = &bsp->faces[i];
+
+        if (!f->texinfo || CL_BloodVoidSurface(&f->texinfo->c))
+            continue;
+
+        for (int j = 0; j < f->numsurfedges; j++) {
+            const msurfedge_t *se = &f->firstsurfedge[j];
+            const float z = se->edge->v[se->vert]->point[2];
+
+            if (!found || z < lowest)
+                lowest = z;
+            found = true;
+        }
+    }
+
+    if (!found)
+        return;     // nothing but void: no floor to measure from
+
+    cl.void_floor = lowest - cl_void_depth->value;
+    cl.void_floor_set = true;
+    Com_DPrintf("void floor: %.0f (lowest surface %.0f)\n", cl.void_floor, lowest);
+}
+
+bool CL_BelowVoidFloor(const vec3_t point)
+{
+    return cl.void_floor_set && point[2] < cl.void_floor;
+}
+
+static void cl_void_depth_changed(cvar_t *self)
+{
+    CL_SetVoidFloor();
 }
 
 /*
@@ -1532,6 +1599,10 @@ void FX_Init(void)
     cl_blood_void = Cvar_Get("cl_blood_void", "n64/black", 0);
     cl_blood_void->changed = cl_blood_void_changed;
     cl_blood_void_changed(cl_blood_void);
+    // How far below the map's lowest surface that is not void things falling
+    // are dropped - see CL_SetVoidFloor. 0: never.
+    cl_void_depth = Cvar_Get("cl_void_depth", "256", CVAR_ARCHIVE);
+    cl_void_depth->changed = cl_void_depth_changed;
     // How fast a cloud goes see-through as it spreads: opacity falls as its
     // width to this power. 2 is the same blood spread over the area - twice as
     // wide, a quarter as dense - and is what makes it read as dissolving.
@@ -5590,6 +5661,12 @@ static bool CL_SimulateBloodSphere(cparticle_t *p, float dt)
     p->vel[2] -= cl_blood_gravity->value * dt;
     VectorMA(p->org, dt, p->vel, end);
 
+    // Fallen out of the map: nothing down there to land on - see CL_SetVoidFloor.
+    if (CL_BelowVoidFloor(end)) {
+        CL_BloodDetachFromEntity(p);
+        return true;
+    }
+
     // Bounding boxes are deliberately NOT in this trace - see CL_TracePoint. The
     // world and the brush models have real geometry and are handled here; bodies
     // have only a box, and get their real triangles from CL_BloodTraceModels
@@ -6531,6 +6608,11 @@ void CL_DiminishingTrailDrops(const vec3_t start, const vec3_t end, int *trailco
     float       dec;
     float       orgscale;
     float       velscale;
+
+    // A gib fallen out of the map sheds nothing: it would only fall on to
+    // nothing - see CL_SetVoidFloor.
+    if (CL_BelowVoidFloor(start) && CL_BelowVoidFloor(end))
+        return;
 
     VectorCopy(start, move);
     VectorSubtract(end, start, vec);

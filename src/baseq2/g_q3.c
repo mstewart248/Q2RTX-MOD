@@ -822,6 +822,54 @@ static bool q3_jumppad_aim(edict_t *self)
     return true;
 }
 
+/*
+IN THE PAD, NOT ITS BOX. Quake III's G_TouchTriggers asks every trigger
+whether the player is really in its brushes (trap_EntityContact); Quake II's
+touch is the trigger's bounding box. For a sloped pad that box is far more
+than the pad: The Longest Yard's armor pads slope up toward the armor, and
+their boxes run some 60 units above the slab at its low end. The pad sets the
+velocity again on every frame it is touched, so a player still "on" it well
+into the climb was launched from there, on an arc that peaks at the armor
+from the pad's middle - and went over it. Matt: "I am very rarely ever able
+to get the yellow armor on q3dm17".
+
+The pad's brushes carry CONTENTS_TRIGGER (bsp_q3.c), which no trace asks
+for, and a trigger is not in the solid list traces look through. So it is
+made solid for one position test and put back. A pad whose brushes cannot be
+found that way (the test of its own box fails: no trigger contents, or no
+inline model) keeps the box. self->sounds: 0 untested, 1 brushes, -1 box.
+*/
+static bool q3_trigger_overlap(edict_t *self, const vec3_t origin,
+                               const vec3_t mins, const vec3_t maxs, edict_t *pass)
+{
+    trace_t tr;
+
+    self->solid = SOLID_BSP;
+    gi.linkentity(self);
+    tr = gi.trace(origin, mins, maxs, origin, pass, CONTENTS_TRIGGER);
+    self->solid = SOLID_TRIGGER;
+    gi.linkentity(self);
+
+    return tr.startsolid && tr.ent == self;
+}
+
+static bool q3_trigger_contact(edict_t *self, edict_t *other)
+{
+    if (!self->sounds) {
+        self->sounds = -1;
+        if (self->model && self->model[0] == '*' && self->s.modelindex > 1 &&
+            q3_trigger_overlap(self, vec3_origin, self->absmin, self->absmax, NULL))
+            self->sounds = 1;
+        else
+            gi.dprintf("trigger_push at %s: no trigger brushes, touching its box\n",
+                       vtos(self->absmin));
+    }
+    if (self->sounds < 0)
+        return true;
+
+    return q3_trigger_overlap(self, other->s.origin, other->mins, other->maxs, other);
+}
+
 void q3_jumppad_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf)
 {
     gclient_t *client = other->client;
@@ -831,6 +879,8 @@ void q3_jumppad_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t
     if (client->q3_flight_framenum > level.framenum)
         return;     // fliers do not bounce
     if (!q3_jumppad_aim(self))
+        return;
+    if (!q3_trigger_contact(self, other))
         return;
 
     if (client->q3_jumppad != self || client->q3_jumppad_framenum < level.framenum - 1)
@@ -849,6 +899,7 @@ static void SP_q3_trigger_push(edict_t *self)
     self->touch = q3_jumppad_touch;
     self->noise_index = Q3_SoundIndex("world/jumppad.wav");
     self->count = 0;
+    self->sounds = 0;   // brushes untested - q3_trigger_contact
     gi.linkentity(self);
 }
 

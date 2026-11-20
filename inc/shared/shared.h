@@ -669,6 +669,11 @@ COLLISION DETECTION
 
 // remaining contents are non-visible, and don't eat brushes
 
+// A Quake III map's trigger brushes (bsp_q3.c). Nothing traces for it, and a
+// trigger is not in the solid list anyway, except for g_q3.c's exact test of
+// whether a player is in a jump pad (q3_trigger_contact).
+#define CONTENTS_TRIGGER        0x1000
+
 #define CONTENTS_AREAPORTAL     0x8000
 
 #define CONTENTS_PLAYERCLIP     0x10000

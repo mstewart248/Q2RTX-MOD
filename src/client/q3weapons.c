@@ -1351,6 +1351,12 @@ static void q3w_brass_fly(q3wbrass_t *b, float dt)
     b->velocity[2] -= 800 * dt;
     VectorMA(b->origin, dt, b->velocity, next);
 
+    // fallen out of the map (CL_SetVoidFloor): gone, as in Quake III's NODROP
+    if (CL_BelowVoidFloor(next)) {
+        b->kind = -1;
+        return;
+    }
+
     q3w_shell_box(s, (const vec3_t *)b->axis, mins, maxs);
     tr = CL_TraceBox(b->origin, mins, maxs, next, MASK_SOLID, false);
     if (tr.startsolid) {
@@ -1387,8 +1393,10 @@ static void q3w_brass_fly(q3wbrass_t *b, float dt)
         return;
     }
 
-    // into lava or slime: gone (Quake III's CONTENTS_NODROP)
-    if (CL_PointContents(tr.endpos) & (CONTENTS_LAVA | CONTENTS_SLIME)) {
+    // into lava or slime, or down on the void (sky, nodraw - the floor under
+    // a floating map): gone (Quake III's CONTENTS_NODROP)
+    if ((CL_PointContents(tr.endpos) & (CONTENTS_LAVA | CONTENTS_SLIME)) ||
+        (tr.plane.normal[2] > 0.7f && CL_BloodVoidSurface(tr.surface))) {
         b->kind = -1;
         return;
     }
@@ -2483,6 +2491,12 @@ static void q3w_gib_fly(q3wgib_t *g, float dt, int now)
     VectorMA(g->origin, dt, g->velocity, next);
     next[2] -= 400 * dt * dt;
 
+    // fallen out of the map (CL_SetVoidFloor): gone, and no more trail
+    if (CL_BelowVoidFloor(next)) {
+        g->model = -1;
+        return;
+    }
+
     tr = CL_TraceBox(g->origin, q3w.gib_mins[g->model], q3w.gib_maxs[g->model], next, MASK_SOLID, false);
     if (tr.allsolid) {
         // started inside a wall: Quake III's stop
@@ -2496,8 +2510,10 @@ static void q3w_gib_fly(q3wgib_t *g, float dt, int now)
         return;
     }
 
-    // into lava or slime: gone, as the brass (Quake III's CONTENTS_NODROP)
-    if (CL_PointContents(tr.endpos) & (CONTENTS_LAVA | CONTENTS_SLIME)) {
+    // into lava or slime, or down on the void: gone, as the brass (Quake
+    // III's CONTENTS_NODROP) - no splat, no mark
+    if ((CL_PointContents(tr.endpos) & (CONTENTS_LAVA | CONTENTS_SLIME)) ||
+        (tr.plane.normal[2] > 0.7f && CL_BloodVoidSurface(tr.surface))) {
         g->model = -1;
         return;
     }

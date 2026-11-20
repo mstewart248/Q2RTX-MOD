@@ -297,6 +297,8 @@ void CL_RegisterBspModels(void)
     // flag SV_SpawnServer sets from its load of the map (pmove.c)
     cl.pmp.q3 = cl.bsp->q3;
 
+    CL_SetVoidFloor();
+
     for (i = 1; i < MAX_MODELS; i++) {
         name = cl.configstrings[CS_MODELS + i];
         if (!name[0]) {

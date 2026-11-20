@@ -426,6 +426,12 @@ typedef struct client_state_s {
     //
     bsp_t        *bsp;
 
+    // Below void_floor nothing is drawn to land on: the map's lowest surface
+    // that is not void, less cl_void_depth - see CL_SetVoidFloor. Not set: no
+    // map yet, or cl_void_depth 0.
+    float        void_floor;
+    bool         void_floor_set;
+
     qhandle_t model_draw[MAX_MODELS];
     mmodel_t *model_clip[MAX_MODELS];
 
@@ -1435,6 +1441,11 @@ void CL_MakeBloodSphere(cparticle_t *p, float scale);
 // A surface blood never lands on: sky, nodraw and the cl_blood_void textures.
 // Safe from blood_film.c's job thread.
 bool CL_BloodVoidSurface(const csurface_t *surf);
+
+// Below the whole map: blood, trails and Quake III debris go there. The floor
+// is worked out when the map loads (CL_RegisterBspModels).
+void CL_SetVoidFloor(void);
+bool CL_BelowVoidFloor(const vec3_t point);
 
 // Surface blood (cl_blood_film) - blood_film.c.
 void CL_BloodFilmInit(void);

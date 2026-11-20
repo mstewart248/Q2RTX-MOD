@@ -261,10 +261,12 @@ static int translate_contents(int q3)
     if (q3 & Q3_CONTENTS_MONSTERCLIP)   c |= CONTENTS_MONSTERCLIP;
     if (q3 & Q3_CONTENTS_DETAIL)        c |= CONTENTS_DETAIL;
     if (q3 & Q3_CONTENTS_TRANSLUCENT)   c |= CONTENTS_TRANSLUCENT;
+    if (q3 & Q3_CONTENTS_TRIGGER)       c |= CONTENTS_TRIGGER;  // jump pads' exact touch
 
     // dropped: FOG (volumes are not drawn as such), AREAPORTAL (areas are
     // flattened), TELEPORTER/JUMPPAD/CLUSTERPORTAL/DONOTENTER/BOTCLIP (Quake
-    // III bot routing), NODROP, TRIGGER, STRUCTURAL, ORIGIN (never in a BSP)
+    // III bot routing), NODROP (the client's void floor stands in for it,
+    // CL_SetVoidFloor), STRUCTURAL, ORIGIN (never in a BSP)
     return c;
 }
 
