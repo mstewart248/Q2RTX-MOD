@@ -487,6 +487,7 @@ author_mask_bits(uint material_id, vec2 tex_coord)
 		if (global_ubo.author_slot == 1) tex = minfo.metallic_texture;
 		else if (global_ubo.author_slot == 2) tex = minfo.normals_texture;
 		else if (global_ubo.author_slot == 3) tex = minfo.emissive_texture;
+		else if (global_ubo.author_slot == 4) tex = minfo.height_texture;
 		on = tex == uint(global_ubo.author_image);
 	}
 	else

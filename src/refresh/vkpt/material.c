@@ -4759,9 +4759,9 @@ static void material_command_help(void)
 	Com_Printf("        specular_factor, bump_scale, texture_roughness, texture_metallic, texture_normals\n");
 	Com_Printf("        ('none' takes one away; 'map off' leaves the stage out of the drawing).\n");
 	Com_Printf("        In a .mat file: stage2_roughness_override 0.8, stage1_map off\n");
-	Com_Printf("    author [roughness|metallic|normals|emissive]: paint the crosshair's material's\n");
-	Com_Printf("        maps with a brush, in photo mode (pauses the game). Hold the right mouse\n");
-	Com_Printf("        button to look, WASD/QE to fly, left button paints. 'mat author save'\n");
+	Com_Printf("    author [roughness|metallic|normals|emissive|height]: paint the crosshair's\n");
+	Com_Printf("        material's maps with a brush, in photo mode (pauses the game). Hold the right\n");
+	Com_Printf("        mouse button to look, WASD/QE to fly, left button paints. 'mat author save'\n");
 	Com_Printf("        writes the painted maps; 'mat author off' (or Escape) leaves.\n");
 	Com_Printf("        'mat author stage <N|mat>' paints a Quake III stage's own maps;\n");
 	Com_Printf("        'mat author rect <length> <width>' picks a rectangle brush (texels)\n");
@@ -5044,6 +5044,15 @@ static void material_command(void)
 			}
 		}
 
+		/* A height map typed in (or made by 'mat author'): flagged as one, as a
+		   loaded material's is (MAT_Find), and uploaded again so its
+		   mips are the max-filtered chain pt_pom 1 walks, not an average. */
+		if (attr->index == MAT_TEXTURE_HEIGHT && mat->image_height && !(mat->image_height->flags & IF_HEIGHT_MAP))
+		{
+			mat->image_height->flags |= IF_HEIGHT_MAP;
+			IMG_PixelsEdited(mat->image_height);
+		}
+
 		// a map typed in: the surface is no longer "basic diffuse"
 		if ((attr->index == MAT_TEXTURE_ROUGHNESS && mat->image_roughness)
 			|| (attr->index == MAT_TEXTURE_METALLIC && mat->image_metallic)
@@ -5152,6 +5161,7 @@ static void material_complete_from(genctx_t* ctx, int argnum, int first)
 			Prompt_AddMatch(ctx, "metallic");
 			Prompt_AddMatch(ctx, "normals");
 			Prompt_AddMatch(ctx, "emissive");
+			Prompt_AddMatch(ctx, "height");
 			Prompt_AddMatch(ctx, "stage");
 			Prompt_AddMatch(ctx, "rect");
 		}

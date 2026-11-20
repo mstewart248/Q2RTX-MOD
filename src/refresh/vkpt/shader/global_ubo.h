@@ -639,7 +639,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	/* primary_rays.rgen reads back what is under it, tagged author_seq. The    */ \
 	/* map: author_image (r_images index, 0 = not made yet, then any surface of */ \
 	/* author_material counts), in slot author_slot (0 roughness, 1 metallic,   */ \
-	/* 2 normals, 3 emissive), author_map_w x author_map_h texels. The brush:   */ \
+	/* 2 normals, 3 emissive, 4 height), author_map_w x author_map_h texels.    */ \
+	/* The brush:                                                               */ \
 	/* centre x2 in texels (an even size sits on a texel corner), size in       */ \
 	/* texels, shape 0 round / 1 square; author_brush_valid 0 = not on the map. */ \
 	/* author_lock_image: the F/P lock as a texture the map's size (r_images  */ \

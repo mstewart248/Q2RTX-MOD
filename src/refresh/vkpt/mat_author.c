@@ -105,6 +105,18 @@ way to select which stage to edit")
   the $lightmap and reflection maps have no surface to paint. A new stage map
   is the size of the stage's picture, named after it, and set as the console's
   'mat stage<N> texture_roughness' would - Save writes it into the .mat.
+
+ADDED 2026-11-20 EVENING (Matt: "Can we add a height map painter to the texture
+authoring tool too please")
+- HEIGHT, the fifth map (5, 'mat author height'): the POM map, texture_height.
+  Painted like roughness, one grey value 0..100%: white the top, black
+  displace_in below it (material.h), so with displace_out 0 - the default -
+  white is the surface and painting darker carves into it. A new map starts
+  flat at the surface (height_surface_level), named <base>_height.png. The
+  image is flagged IF_HEIGHT_MAP (material.c, for a texture_height set from the
+  console too), so every upload rebuilds the max-filtered mips pt_pom 1 walks.
+  The brush reads back the flat surface's UV, before POM moves it, so painting
+  does not chase the relief it makes. No Quake III stage has one of its own.
 */
 
 #include "vkpt.h"
@@ -129,12 +141,19 @@ static inline float Q_clipf(float a, float lo, float hi)
 	return a < lo ? lo : a > hi ? hi : a;
 }
 
-enum { SLOT_ROUGH, SLOT_METAL, SLOT_NORMAL, SLOT_EMISSIVE, NUM_SLOTS };
+// the stage-capable slots come first: a Quake III stage paints SLOT_NORMAL and below
+enum { SLOT_ROUGH, SLOT_METAL, SLOT_NORMAL, SLOT_EMISSIVE, SLOT_HEIGHT, NUM_SLOTS };
 
-static const char *const slot_label[NUM_SLOTS] = { "rough", "metal", "normal", "emissive" };
-static const char *const slot_word[NUM_SLOTS] = { "roughness", "metallic", "normals", "emissive" };
-static const char *const slot_attribute[NUM_SLOTS] = { "texture_roughness", "texture_metallic", "texture_normals", "texture_emissive" };
-static const char *const slot_suffix[NUM_SLOTS] = { "_rough", "_metal", "_n", "_light" };
+static const char *const slot_label[NUM_SLOTS] = { "rough", "metal", "normal", "emissive", "height" };
+static const char *const slot_word[NUM_SLOTS] = { "roughness", "metallic", "normals", "emissive", "height" };
+static const char *const slot_attribute[NUM_SLOTS] = { "texture_roughness", "texture_metallic", "texture_normals", "texture_emissive", "texture_height" };
+static const char *const slot_suffix[NUM_SLOTS] = { "_rough", "_metal", "_n", "_light", "_height" };
+
+// one grey value per texel: roughness, metallic, height
+static inline bool slot_is_grey(int slot)
+{
+	return slot == SLOT_ROUGH || slot == SLOT_METAL || slot == SLOT_HEIGHT;
+}
 
 enum { TOOL_BRUSH, TOOL_SPRAY, TOOL_HATCH, TOOL_NOISE, TOOL_BLUR, TOOL_FILL, NUM_TOOLS };
 
@@ -163,7 +182,7 @@ static const char *const shape_label[NUM_SHAPES] = { "round", "square", "rect" }
 enum {
 	W_NONE,
 	W_PANEL,
-	W_SLOT0, W_SLOT1, W_SLOT2, W_SLOT3,
+	W_SLOT0, W_SLOT1, W_SLOT2, W_SLOT3, W_SLOT4,
 	W_VALUE,
 	W_DIAL,
 	W_INTENSITY,
@@ -246,7 +265,7 @@ static struct {
 	char mat_name[MAX_QPATH];
 	int slot;
 
-	float value[2];             // roughness, metallic: 0..1
+	float value[NUM_SLOTS];     // roughness, metallic, height: 0..1 (the others' entries unused)
 	float normal_angle;         // the tilt's direction on screen, radians, y down (-pi/2 = up)
 	float normal_intensity;     // 0..1 of AUTHOR_MAX_TILT_DEG
 	float emissive_rgb[3];      // 0..1, as stored
@@ -392,6 +411,7 @@ static image_t *slot_image(const pbr_material_t *mat, int slot)
 	case SLOT_METAL:    return mat->image_metallic;
 	case SLOT_NORMAL:   return mat->image_normals;
 	case SLOT_EMISSIVE: return mat->image_emissive;
+	case SLOT_HEIGHT:   return mat->image_height;
 	default:            return NULL;
 	}
 }
@@ -856,6 +876,7 @@ static void make_paint(const author_hit_t *hit, author_paint_t *p)
 	{
 	case SLOT_ROUGH:
 	case SLOT_METAL:
+	case SLOT_HEIGHT:
 		p->v[0] = p->v[1] = p->v[2] = Q_clipf(au.value[au.slot], 0.f, 1.f);
 		break;
 	case SLOT_NORMAL:
@@ -929,6 +950,7 @@ static void texel_get(const image_t *img, const byte *pix, size_t at, int slot, 
 	{
 	case SLOT_ROUGH:
 	case SLOT_METAL:
+	case SLOT_HEIGHT:
 		v[0] = (float)px[0] / 255.f;
 		if (img->is_srgb)
 			v[0] = srgb_to_linear(v[0]);
@@ -965,6 +987,7 @@ static bool texel_put(image_t *img, int x, int y, int slot, const float v[3])
 		{
 		case SLOT_ROUGH:
 		case SLOT_METAL:
+		case SLOT_HEIGHT:
 			rgb[0] = rgb[1] = rgb[2] = to_byte(img->is_srgb ? linear_to_srgb(v[0]) : v[0]);
 			break;
 		case SLOT_NORMAL:
@@ -1036,6 +1059,7 @@ static void noise_target(const dab_ctx_t *c, int x, int y, float out[3])
 	{
 	case SLOT_ROUGH:
 	case SLOT_METAL:
+	case SLOT_HEIGHT:
 		out[0] = out[1] = out[2] = Q_clipf(out[0] + h * a, 0.f, 1.f);
 		break;
 	case SLOT_NORMAL:
@@ -1261,7 +1285,7 @@ static void dab_sweep(dab_ctx_t *c, int c2x, int c2y, int dx, int dy)
 static float value_distance(int slot, const float a[3], const float b[3])
 {
 	float d = 0.f;
-	const int n = (slot == SLOT_ROUGH || slot == SLOT_METAL) ? 1 : 3;
+	const int n = slot_is_grey(slot) ? 1 : 3;
 	for (int i = 0; i < n; i++)
 		d = max(d, fabsf(a[i] - b[i]) * (slot == SLOT_NORMAL && i < 2 ? 0.5f : 1.f));
 	return d;
@@ -1844,6 +1868,15 @@ static float stage_start_value(void)
 	return Q_clipf(image_average(mat->image_metallic, SLOT_METAL, 0.f) * mat->metalness_factor, 0.f, 1.f);
 }
 
+/* Where the surface itself lies in (mat)'s height map, 0..1: a height h lands at
+   h * (in + out) - in (material.h), so at h = in / (in + out) - 1, white, while
+   nothing rises above it (displace_out 0, the default). */
+static float height_surface_level(const pbr_material_t *mat)
+{
+	const float in = max(mat->displace_in, 0.f), out = max(mat->displace_out, 0.f);
+	return in + out > 0.f ? in / (in + out) : 1.f;
+}
+
 static image_t *create_map(void)
 {
 	pbr_material_t *mat = au.mat;
@@ -1856,6 +1889,8 @@ static image_t *create_map(void)
 	const byte rough_whole = to_byte(mat->roughness_override);
 	// a stage's: one value all over (stored as the new PNG's linear bytes)
 	const byte stage_value = (au.stage >= 0 && au.slot <= SLOT_METAL) ? to_byte(stage_start_value()) : 0;
+	// a height map starts flat at the surface: white, or in / (in + out) when white rises above it
+	const byte surface = to_byte(height_surface_level(mat));
 	for (int y = 0; y < H; y++)
 	{
 		for (int x = 0; x < W; x++)
@@ -1884,6 +1919,10 @@ static image_t *create_map(void)
 				p[1] = 128;
 				p[2] = 255;
 				p[3] = 0;
+				break;
+			case SLOT_HEIGHT:
+				p[0] = p[1] = p[2] = surface;
+				p[3] = 255;
 				break;
 			default:
 				p[0] = p[1] = p[2] = 0;
@@ -2803,6 +2842,7 @@ static void author_start(pbr_material_t *mat, int slot)
 		au.defaults_set = true;
 		au.value[SLOT_ROUGH] = 0.5f;
 		au.value[SLOT_METAL] = 1.f;
+		au.value[SLOT_HEIGHT] = 0.5f;
 		au.normal_angle = -(float)M_PI / 2.f;
 		au.normal_intensity = 0.5f;
 		au.emissive_rgb[0] = au.emissive_rgb[1] = au.emissive_rgb[2] = 1.f;
@@ -2859,7 +2899,7 @@ static void author_start(pbr_material_t *mat, int slot)
 		Com_Printf("mat author: hold the RIGHT mouse button to look (WASD/QE fly, Shift fast, Ctrl slow,\n"
 			"  Ctrl + right button zooms); LEFT paints; Alt + left picks the material under the brush;\n"
 			"  wheel or [ ] = brush size (on the map view the wheel zooms, right-drag pans);\n"
-			"  Shift + wheel = value; Ctrl + wheel = falloff; 1-4 = map; B = round/square/rectangle;\n"
+			"  Shift + wheel = value; Ctrl + wheel = falloff; 1-5 = map; B = round/square/rectangle;\n"
 			"  R = turn the rectangle; L = line (press where it starts, let go where it ends);\n"
 			"  T = next tool (brush spray hatch noise blur fill), G = fill; Tab = map view, O = base under it;\n"
 			"  F = lock to the face under the brush, P = to the piece, Shift adds/removes, U unlocks;\n"
@@ -2887,8 +2927,12 @@ static void set_slot(int slot)
 		return;
 	if (au.stage >= 0 && slot > SLOT_NORMAL)
 	{
-		author_status("a stage has no emissive map of its own: its glow is stage%d_emissive_factor "
-			"('mat stage%d emissive_factor <n>')", au.stage, au.stage);
+		if (slot == SLOT_EMISSIVE)
+			author_status("a stage has no emissive map of its own: its glow is stage%d_emissive_factor "
+				"('mat stage%d emissive_factor <n>')", au.stage, au.stage);
+		else
+			author_status("a stage has no %s map of its own: 'material' in the maps row paints the "
+				"material's", slot_word[slot]);
 		return;
 	}
 	stroke_end();
@@ -3198,7 +3242,8 @@ static void value_step(int dir)
 	switch (au.slot)
 	{
 	case SLOT_ROUGH:
-	case SLOT_METAL:    au.value[au.slot] = Q_clipf(au.value[au.slot] + d, 0.f, 1.f); break;
+	case SLOT_METAL:
+	case SLOT_HEIGHT:   au.value[au.slot] = Q_clipf(au.value[au.slot] + d, 0.f, 1.f); break;
 	case SLOT_NORMAL:   au.normal_intensity = Q_clipf(au.normal_intensity + d, 0.f, 1.f); break;
 	case SLOT_EMISSIVE: au.emissive_strength = Q_clipf(au.emissive_strength + d, 0.f, 1.f); break;
 	}
@@ -3215,7 +3260,7 @@ static void drag_update(int id)
 	const float t = Q_clipf((mx - w->x) / max(w->w, 1.f), 0.f, 1.f);
 	switch (id)
 	{
-	case W_VALUE:     if (au.slot == SLOT_ROUGH || au.slot == SLOT_METAL) au.value[au.slot] = t; break;
+	case W_VALUE:     if (slot_is_grey(au.slot)) au.value[au.slot] = t; break;
 	case W_INTENSITY: au.normal_intensity = t; break;
 	case W_RED:       au.emissive_rgb[0] = t; break;
 	case W_GREEN:     au.emissive_rgb[1] = t; break;
@@ -3290,6 +3335,24 @@ static const char *panel_warning(const char **fix)
 			return "emissive_factor 0: no glow";
 		}
 		break;
+	case SLOT_HEIGHT:
+		// "set ..." is a console command, not a material one: panel_press tells them apart
+		if (Cvar_VariableInteger("pt_pom") == 0)
+		{
+			*fix = "set pt_pom 1";
+			return "pt_pom 0: no relief anywhere";
+		}
+		if (Cvar_VariableValue("pt_pom_scale") <= 0.f)
+		{
+			*fix = "set pt_pom_scale 1";
+			return "pt_pom_scale 0: no relief";
+		}
+		if (m->displace_in <= 0.f && m->displace_out <= 0.f)
+		{
+			*fix = "displace_in 0.05";
+			return "displace_in/out 0: no depth";
+		}
+		break;
 	}
 	return NULL;
 }
@@ -3298,7 +3361,7 @@ static void panel_press(int id)
 {
 	switch (id)
 	{
-	case W_SLOT0: case W_SLOT1: case W_SLOT2: case W_SLOT3:
+	case W_SLOT0: case W_SLOT1: case W_SLOT2: case W_SLOT3: case W_SLOT4:
 		set_slot(id - W_SLOT0);
 		break;
 	case W_VALUE: case W_DIAL: case W_INTENSITY: case W_RED: case W_GREEN: case W_BLUE: case W_STRENGTH: case W_SIZE:
@@ -3331,7 +3394,13 @@ static void panel_press(int id)
 	case W_FIX:
 	{
 		const char *fix;
-		if (panel_warning(&fix) && fix)
+		if (panel_warning(&fix) && fix && !strncmp(fix, "set ", 4))
+		{
+			// a cvar: for the session, as typed in the console
+			Cbuf_AddText(&cmd_buffer, va("%s\n", fix));
+			author_status("%s", fix + 4);
+		}
+		else if (fix)
 		{
 			MAT_CommandFor(au.mat, fix);
 			au.attr_changed = true;
@@ -3543,6 +3612,7 @@ static void under_text(const under_t *u, char *buf, size_t size)
 	{
 	case SLOT_ROUGH:
 	case SLOT_METAL:
+	case SLOT_HEIGHT:
 		Q_snprintf(buf, size, "under %d%%", (int)(u->v[0] * 100.f + 0.5f));
 		break;
 	case SLOT_NORMAL:
@@ -3641,22 +3711,43 @@ static float panel_rows(float x0, float y0, const under_t *under, qhandle_t font
 		}
 	}
 
-	// a stage has no emissive map: its button is left out
+	// a stage has no emissive or height map: their buttons are left out. Each
+	// button its label's width, the room left over shared out evenly.
 	const int slots = au.stage >= 0 ? SLOT_NORMAL + 1 : NUM_SLOTS;
-	const float bw = (iw - (slots - 1) * 4.f) / (float)slots;
+	int label_chars = 0;
 	for (int i = 0; i < slots; i++)
-		ui_button(W_SLOT0 + i, x + i * (bw + 4.f), y, bw, slot_label[i], au.slot == i, font);
+		label_chars += (int)strlen(slot_label[i]);
+	const float spare = max(0.f, (iw - (slots - 1) * 4.f - label_chars * CHAR_WIDTH) / (float)slots);
+	float slot_x = x;
+	for (int i = 0; i < slots; i++)
+	{
+		const float bw = (float)strlen(slot_label[i]) * CHAR_WIDTH + spare;
+		ui_button(W_SLOT0 + i, slot_x, y, bw, slot_label[i], au.slot == i, font);
+		slot_x += bw + 4.f;
+	}
 	y += line + 6.f;
 
 	switch (au.slot)
 	{
 	case SLOT_ROUGH:
 	case SLOT_METAL:
+	case SLOT_HEIGHT:
 		ui_text(x, y, 0, va("%s %d%%", slot_word[au.slot], (int)(au.value[au.slot] * 100.f + 0.5f)), max_chars - under_n - 1, font);
 		ui_text(x + iw - under_n * CHAR_WIDTH, y, UI_ALTCOLOR, under_s, under_n, font);
 		y += line;
 		ui_slider(W_VALUE, x + 3.f, y, iw - 6.f, au.value[au.slot]);
 		y += line + 4.f;
+		if (au.slot == SLOT_HEIGHT)
+		{
+			// what the grey means for this material: where its surface lies, how deep black goes
+			const pbr_material_t *m = au.mat;
+			if (m->displace_out > 0.f)
+				ui_text(x, y, 0, va("surface at %d%% (in %.3g, out %.3g)", (int)(height_surface_level(m) * 100.f + 0.5f),
+					max(m->displace_in, 0.f), m->displace_out), max_chars, font);
+			else
+				ui_text(x, y, 0, va("white = surface, black = %.3g deep", max(m->displace_in, 0.f)), max_chars, font);
+			y += line + 2.f;
+		}
 		break;
 	case SLOT_NORMAL:
 	{
@@ -3854,7 +3945,7 @@ static float panel_rows(float x0, float y0, const under_t *under, qhandle_t font
 	y += line - 2.f;
 	ui_text(x, y, UI_ALTCOLOR, "Shift+wheel value  Ctrl+wheel soft", max_chars, font);
 	y += line - 2.f;
-	ui_text(x, y, UI_ALTCOLOR, "1-4 map  T tool  G fill  Tab 2D  O", max_chars, font);
+	ui_text(x, y, UI_ALTCOLOR, "1-5 map  T tool  G fill  Tab 2D  O", max_chars, font);
 	y += line - 2.f;
 	ui_text(x, y, UI_ALTCOLOR, "L line  R turn rect  F face  P piece", max_chars, font);
 	y += line - 2.f;
@@ -3992,7 +4083,7 @@ static void draw_view2d(qhandle_t font)
 		const float sx0 = cx + (u0 - au.v2_cu) * au.v2_ppt, sx1 = cx + (u1 - au.v2_cu) * au.v2_ppt;
 		const float sy0 = cy + (v0 - au.v2_cv) * au.v2_ppt, sy1 = cy + (v1 - au.v2_cv) * au.v2_ppt;
 		const bool nearest = au.v2_ppt / ui_scale() >= 2.f;
-		const bool red_grey = img && (au.slot == SLOT_ROUGH || au.slot == SLOT_METAL);
+		const bool red_grey = img && slot_is_grey(au.slot);
 		const image_t *base = author_base();
 		if (img && au.show_base && base && base != img)
 		{
@@ -4620,7 +4711,7 @@ bool MAT_AuthorKey(unsigned key, bool down)
 			brush_size_step(key == ']' ? 1 : -1);
 		return true;
 
-	case '1': case '2': case '3': case '4':
+	case '1': case '2': case '3': case '4': case '5':
 		if (down)
 			set_slot(key - '1');
 		return true;
@@ -4767,7 +4858,7 @@ void MAT_AuthorCommand(pbr_material_t *crosshair)
 			slot = i;
 	if (word[0] && slot < 0)
 	{
-		Com_Printf("usage: mat author [roughness|metallic|normals|emissive] | stage <N|mat> | "
+		Com_Printf("usage: mat author [roughness|metallic|normals|emissive|height] | stage <N|mat> | "
 			"rect <length> <width> | save | off\n");
 		return;
 	}

@@ -112,7 +112,7 @@ existing Quake II RTX install.
 * **Tools for modders**: [in-game light placement](#the-light-placement-system),
   an [expanded material system](#the-material-system) with an
   [in-game material painter](#painting-material-maps-mat-author) that paints
-  roughness, metallic, normal and emissive maps straight onto the 3D surfaces,
+  roughness, metallic, normal, emissive and height maps straight onto the 3D surfaces,
   [per-map settings](#per-map-settings-mapcvar), and
   [debugging commands](#authoring-and-debugging-tools).
 * **[Everything Quake II RTX already had](#inherited-from-quake-ii-rtx)**.
@@ -1242,8 +1242,8 @@ In the menu: **options** → **effects setup**.
   DLSS guide-field overrides, MD5 scalar inheritance, and `mat which` /
   `mat reload`.
 * **[The material painter](#painting-material-maps-mat-author)** (`mat author`)
-  — paint a material's roughness, metallic, normal and emissive maps with a
-  mouse brush, on the surfaces in photo mode or on a flat view of the map, and
+  — paint a material's roughness, metallic, normal, emissive and height (POM)
+  maps with a mouse brush, on the surfaces in photo mode or on a flat view of the map, and
   save them back to the texture files and the `.mat` entry.
 * **[`mapcvar`](#per-map-settings-mapcvar)** — set a cvar for the current map
   only, restoring the *player's* value afterwards rather than the compiled-in
@@ -1845,13 +1845,13 @@ lists.
 
 ## Painting material maps: `mat author`
 
-`mat author` paints a material's **roughness**, **metallic**, **normal** and
-**emissive** maps with a mouse brush, straight onto the surfaces in the running
-game, or onto a flat view of the map. It works in both path tracers (Direct3D 12
-and Vulkan).
+`mat author` paints a material's **roughness**, **metallic**, **normal**,
+**emissive** and **height** maps with a mouse brush, straight onto the surfaces
+in the running game, or onto a flat view of the map. It works in both path
+tracers (Direct3D 12 and Vulkan).
 
 Aim the crosshair at the surface and type `mat author`, or
-`mat author roughness` (`metallic`, `normals`, `emissive`) to start on that map.
+`mat author roughness` (`metallic`, `normals`, `emissive`, `height`) to start on that map.
 The game pauses into [photo mode](#photo-mode) and a panel opens in the top-left
 corner.
 If photo mode accumulates, it keeps accumulating, and every change restarts the
@@ -1868,7 +1868,7 @@ controls when it starts.
 | **mouse wheel**, **[ ]** | brush size. Over a size slider the wheel steps one texel (**Shift**: ten) |
 | **Shift + wheel** | the value being painted |
 | **Ctrl + wheel** | falloff |
-| **1**–**4** | the map: roughness, metallic, normals, emissive |
+| **1**–**5** | the map: roughness, metallic, normals, emissive, height |
 | **B** (**Shift + B** back) | brush shape: round, square, rectangle |
 | **R** | turn the rectangle (swap its length and width) |
 | **L** | line mode on or off |
@@ -1893,14 +1893,25 @@ controls when it starts.
   relative to the screen, converted per surface to its texture axes; in the map
   view it is relative to the image. Intensity 0 paints flat.
 * **Emissive** paints a colour and a glow strength. Black erases glow.
+* **Height** paints the [parallax occlusion](#path-tracer) height map
+  (`texture_height`) as a grey value from 0 to 100%. White is the top and black
+  is `displace_in` below it, so with the default `displace_out 0` white is the
+  surface itself and painting darker carves into it: mortar lines, dents,
+  grooves. With `displace_out` set, white rises above the surface, and the panel
+  shows where the surface level falls (`in / (in + out)`) and both depths. The
+  relief updates as you paint. The brush follows the flat surface rather than
+  the relief, so at a grazing angle the outline sits a little off what you see;
+  the map view paints exactly.
 * **A material with no map in that slot** gets one on the first stroke. It
   starts out looking exactly as the surface did — roughness as the shader works
-  it out without a map, a flat normal map, black emission — at the size of the
-  base texture.
+  it out without a map, a flat normal map, black emission, a height map flat at
+  the surface — at the size of the base texture.
 * **The panel warns when the map can't show**, with a **fix** button:
   `specular_factor 0` (no shine), a `roughness_override` that acts as a floor
-  under the map, `metalness_factor 0`, `bump_scale 0` and `emissive_factor 0`.
-  The fix is saved into the `.mat` with the maps.
+  under the map, `metalness_factor 0`, `bump_scale 0`, `emissive_factor 0`, and
+  for height `displace_in` and `displace_out` both 0, `pt_pom 0` or
+  `pt_pom_scale 0`. A material fix is saved into the `.mat` with the maps; a
+  `pt_pom` fix is a console setting for the session.
 * **Under the brush** the panel shows the average of the texels the brush
   covers: 0% and 100% under it read 50%.
 
@@ -1955,7 +1966,7 @@ material's own maps, or one stage's — its `stage<N>_texture_roughness`,
 the material's maps. A stage's map is read through that stage's `tcMod`s
 (scale, scroll and rotate, but not turb), and so is the brush; a `clampMap`
 stage clamps. A stage has no emissive map of its own (its glow is
-`stage<N>_emissive_factor`). The `$lightmap`, environment-mapped stages and
+`stage<N>_emissive_factor`) and no height map. The `$lightmap`, environment-mapped stages and
 stages with no image have nothing to paint and are greyed out, with the reason
 given. A stage's new roughness or metallic map is the size of the stage's
 picture.
@@ -1971,8 +1982,8 @@ carries on from there.
 map:
 
 * **A loose PNG or TGA** is overwritten in place, and the old file is kept as
-  `.bak`. A one-channel 16-bit map stays 16-bit. Normals and emissive can't be
-  painted into one.
+  `.bak`. A one-channel 16-bit map stays 16-bit (a 16-bit height map keeps its
+  fine steps). Normals and emissive can't be painted into one.
 * **Anything else** — a texture inside a `.pak`, a JPG, or a map the first
   stroke created — is written as a new PNG under `materialDev/`, and every
   material that uses it is pointed at the new file. The `.mat` entries are then
