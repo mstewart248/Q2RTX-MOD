@@ -1761,6 +1761,9 @@ void vkpt_draw_push_state(float scale);
 void vkpt_draw_pop_state(void);
 // R_DrawStretchPic with the image's alpha ignored ('mat print', MAT_DrawPreview)
 void vkpt_draw_stretch_pic_opaque(int x, int y, int w, int h, qhandle_t pic);
+// part of an image, optionally nearest-texel, red as grey, alpha ignored ('mat author')
+void vkpt_draw_stretch_subpic_flags(float x, float y, float w, float h,
+	float s1, float t1, float s2, float t2, qhandle_t pic, bool nearest, bool red_grey, bool opaque);
 
 // cpu_trace.c - `cpu_bench`, the frame path traced on the CPU
 void vkpt_cpu_trace_init(void);
@@ -1783,6 +1786,16 @@ void IMG_Load_RTX(image_t *image, byte *pic);
 void IMG_Unload_RTX(image_t *image);
 bool IMG_ReloadFrom(image_t *image, const char *filepath);
 bool IMG_ReloadIfModified(image_t *image);
+// its pixels were changed in place ('mat author'): make its GPU texture again
+void IMG_PixelsEdited(image_t *image);
+
+// 'mat author' (mat_author.c): painting a material's maps in photo mode
+bool MAT_AuthorActive(void);
+bool MAT_AuthorKey(unsigned key, bool down);              // R_InterceptKey_RTX first
+void MAT_AuthorCursorMove(float dx, float dy);             // the mouse, when it isn't looking
+bool MAT_AuthorMouseOverPanel(void);                       // the right button is panning the map view
+void MAT_AuthorFillUBO(QVKUniformBuffer_t *ubo);           // prepare_ubo
+void MAT_AuthorReadback(const ReadbackBuffer *readback);   // process_render_feedback
 // re-read the live textures saved since they were read (reload_textures, mat reload)
 int IMG_ReloadModified(const char *filter, bool force, bool verbose);
 byte *IMG_ReadPixels_RTX(int *width, int *height, int *rowbytes);

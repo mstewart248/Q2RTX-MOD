@@ -931,6 +931,8 @@ void d3d12_frontend_draw_debug(void)
 {
     // 'mat print's picture of the material, over the console (R_EndFrame_RTX's)
     MAT_DrawPreview();
+    // 'mat author's panel, map view and brush cursor (mat_author.c)
+    MAT_AuthorDraw();
 
     if (cvar_tm_debug && cvar_tm_debug->integer)
         vkpt_tone_mapping_draw_debug();

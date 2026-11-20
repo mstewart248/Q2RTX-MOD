@@ -117,6 +117,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	IMG_DO(DLSS5_MASK,                69, R8G8B8A8_UNORM,      rgba8,   IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
 	IMG_DO(DLSS_PARTICLE_LAYER,       70, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
 	IMG_DO(DLSS_PARTICLE_MOTION,      71, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
+	IMG_DO(AUTHOR_MASK,               72, R16_UINT,            r16ui,   IMG_WIDTH,           IMG_HEIGHT     ) \
 
 
 /* PT_PRIMARY_DIST: THE DISTANCE TO THE FIRST HIT, KEPT WHERE reflect_refract CANNOT
@@ -175,7 +176,13 @@ with this program; if not, write to the Free Software Foundation, Inc.,
    behind smoke. The motion image holds the dominant effect's motion in .xy with .z = 1, or 0
    where primary_rays had none to give, which the combine pass in checkerboard_interleave.comp
    fills with the surface's motion. */
-#define NUM_IMAGES_BASE     72
+/* AUTHOR_MASK: 'mat author' (mat_author.c), painting a material's maps in photo mode.
+   Render resolution, indexed by the SCREEN pixel (pixel_center, as the crosshair
+   readback is), written by primary_rays.rgen only while author_active: bit 0 = the
+   primary surface shows the map being painted, bit 1 = its texel is inside the brush.
+   tone_mapping_apply.comp outlines bit 1 over the finished picture, after the
+   accumulation, so moving the brush never restarts it. Nothing reads it otherwise. */
+#define NUM_IMAGES_BASE     73
 
 #define LIST_IMAGES_A_B \
 	IMG_DO(PT_VISBUF_PRIM_A,          NUM_IMAGES_BASE + 0,  R32G32_UINT,         rg32ui,  IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \

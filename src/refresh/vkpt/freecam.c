@@ -93,12 +93,35 @@ static void vkpt_freecam_mousemove(void)
 		return;
 	}
 
-	if (Key_IsDown(K_MOUSE1) && Key_IsDown(K_MOUSE2))
+	/* 'mat author' (mat_author.c): the mouse moves the brush cursor, and looks
+	   round only while the right button is held (Ctrl + right: zoom) - the left
+	   one paints. Photo mode's own: left looks, right zooms, both roll. */
+	bool look, zoom, roll;
+	if (MAT_AuthorActive())
+	{
+		bool right = Key_IsDown(K_MOUSE2) && !MAT_AuthorMouseOverPanel();
+		look = right && !Key_IsDown(K_CTRL);
+		zoom = right && Key_IsDown(K_CTRL);
+		roll = false;
+		if (!look && !zoom)
+		{
+			MAT_AuthorCursorMove(mx, my);
+			return;
+		}
+	}
+	else
+	{
+		roll = Key_IsDown(K_MOUSE1) && Key_IsDown(K_MOUSE2);
+		look = Key_IsDown(K_MOUSE1) && !roll;
+		zoom = Key_IsDown(K_MOUSE2) && !roll;
+	}
+
+	if (roll)
 	{
 		mx *= sensitivity->value;
 		freecam_viewangles[ROLL] += m_yaw->value * mx;
 	}
-	else if (Key_IsDown(K_MOUSE1))
+	else if (look)
 	{
 		Cvar_ClampValue(m_accel, 0, 1);
 
@@ -121,7 +144,7 @@ static void vkpt_freecam_mousemove(void)
 
 		freecam_viewangles[PITCH] = max(-90.f, min(90.f, freecam_viewangles[PITCH]));
 	}
-	else if (Key_IsDown(K_MOUSE2))
+	else if (zoom)
 	{
 		freecam_zoom *= powf(0.5f, my * m_pitch->value * 0.1f);
 		freecam_zoom = max(0.5f, min(20.f, freecam_zoom));
@@ -130,7 +153,8 @@ static void vkpt_freecam_mousemove(void)
 
 void vkpt_freecam_update(float frame_time)
 {
-	if (cl_paused->integer != 2 || !sv_paused->integer || !cvar_pt_freecam->integer)
+	// 'mat author' flies the camera whatever pt_freecam says
+	if (cl_paused->integer != 2 || !sv_paused->integer || (!cvar_pt_freecam->integer && !MAT_AuthorActive()))
 	{
 		vkpt_freecam_reset();
 		return;
@@ -196,14 +220,26 @@ void vkpt_freecam_update(float frame_time)
 
 bool R_InterceptKey_RTX(unsigned key, bool down)
 {
+	// keys.c hands Escape over before its menu: 'mat author' leaves on it
+	if (key == K_ESCAPE)
+		return MAT_AuthorActive() && MAT_AuthorKey(key, down);
+
 	if (cl_paused->integer != 2 || !sv_paused->integer)
 		return false;
+
+	/* 'mat author' (mat_author.c): its keys and buttons first - the brush, the
+	   panel, undo, F/P locks - before a key bound to pause can end photo mode.
+	   What it leaves (WASD/QE, Shift, Ctrl) flies the camera below, and the mouse
+	   buttons and wheel are kept from the game as in photo mode. */
+	const bool author = MAT_AuthorActive();
+	if (author && MAT_AuthorKey(key, down))
+		return true;
 
 	const char* kb = Key_GetBindingForKey(key);
 	if (kb && strstr(kb, "pause"))
 		return false;
 
-	if (cvar_pt_dof->integer != 0 && down && (key == K_MWHEELUP || key == K_MWHEELDOWN))
+	if (!author && cvar_pt_dof->integer != 0 && down && (key == K_MWHEELUP || key == K_MWHEELDOWN))
 	{
 		cvar_t* var;
 		float minvalue;

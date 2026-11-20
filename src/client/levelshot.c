@@ -58,6 +58,13 @@ static const char *const ls_default_maps[] = {
     "q64/dm1", "q64/dm2", "q64/dm3", "q64/dm4", "q64/dm5", "q64/dm6",
     "q64/dm7", "q64/dm8", "q64/dm9", "q64/dm10",
     "q2ctf1", "q2ctf2", "q2ctf3", "q2ctf4", "q2ctf5", "q2kctf1", "q2kctf2", "ndctf0",
+    // the campaign's, which the bot match offers too
+    "base1", "base2", "base3", "train", "bunk1", "ware1", "ware2",
+    "jail1", "jail2", "jail3", "jail4", "jail5", "security",
+    "mintro", "mine1", "mine2", "mine3", "mine4", "fact1", "fact2", "fact3",
+    "power1", "power2", "cool1", "waste1", "waste2", "waste3", "biggun",
+    "hangar1", "hangar2", "lab", "command", "strike", "space",
+    "city1", "city2", "city3", "boss1", "boss2",
 };
 
 static struct {

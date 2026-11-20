@@ -634,6 +634,33 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	/* TEXTURE_FLAG_Q3_QUAD. q3_quad_active 0 = not loaded (not a Quake III map). */ \
 	GLOBAL_UBO_VAR_LIST_DO(vec4,            q3_quad_layer[Q3_SKY_LAYER_VEC4S]) \
 	\
+	/* 'MAT AUTHOR' (mat_author.c MAT_AuthorFillUBO): painting a map in photo    */ \
+	/* mode. author_cursor: the brush cursor in render pixels, -1 = off the view;*/ \
+	/* primary_rays.rgen reads back what is under it, tagged author_seq. The    */ \
+	/* map: author_image (r_images index, 0 = not made yet, then any surface of */ \
+	/* author_material counts), in slot author_slot (0 roughness, 1 metallic,   */ \
+	/* 2 normals, 3 emissive), author_map_w x author_map_h texels. The brush:   */ \
+	/* centre x2 in texels (an even size sits on a texel corner), size in       */ \
+	/* texels, shape 0 round / 1 square; author_brush_valid 0 = not on the map. */ \
+	/* author_lock_image: the F/P lock as a texture the map's size (r_images  */ \
+	/* index, red 1 = a texel inside it), 0 = no lock: nothing outside paints. */ \
+	GLOBAL_UBO_VAR_LIST_DO(int,             author_active) \
+	GLOBAL_UBO_VAR_LIST_DO(int,             author_seq) \
+	GLOBAL_UBO_VAR_LIST_DO(int,             author_cursor_x) \
+	GLOBAL_UBO_VAR_LIST_DO(int,             author_cursor_y) \
+	GLOBAL_UBO_VAR_LIST_DO(int,             author_image) \
+	GLOBAL_UBO_VAR_LIST_DO(int,             author_material) \
+	GLOBAL_UBO_VAR_LIST_DO(int,             author_slot) \
+	GLOBAL_UBO_VAR_LIST_DO(int,             author_brush_valid) \
+	GLOBAL_UBO_VAR_LIST_DO(int,             author_map_w) \
+	GLOBAL_UBO_VAR_LIST_DO(int,             author_map_h) \
+	GLOBAL_UBO_VAR_LIST_DO(int,             author_center2_x) \
+	GLOBAL_UBO_VAR_LIST_DO(int,             author_center2_y) \
+	GLOBAL_UBO_VAR_LIST_DO(int,             author_brush_size) \
+	GLOBAL_UBO_VAR_LIST_DO(int,             author_brush_shape) \
+	GLOBAL_UBO_VAR_LIST_DO(int,             author_lock_image) \
+	GLOBAL_UBO_VAR_LIST_DO(int,             author_pad1) \
+	\
 	UBO_CVAR_LIST // WARNING: Do not put any other members into global_ubo after this: the CVAR list is not vec4-aligned
 
 BEGIN_SHADER_STRUCT( ModelInstance )

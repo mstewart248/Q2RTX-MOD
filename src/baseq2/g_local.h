@@ -2160,6 +2160,10 @@ bool Bot_IsBot(const edict_t *ent);
 void Bot_Damaged(edict_t *self, edict_t *attacker);
 void Bot_ClientConnecting(edict_t *ent);
 bool Bot_ServerCommand(const char *cmd);
+// co-op with bots (g_bot.c CO-OP)
+bool G_BotCoop(void);
+bool Bot_CoopSpawnSpot(edict_t *ent, vec3_t origin, vec3_t angles);
+bool Bot_CoopBlocksExit(const edict_t *ent, const edict_t *trigger);
 
 //
 // g_q3bot.c - Quake III's own bot engine (q3bot/), bot_q3_ai 2

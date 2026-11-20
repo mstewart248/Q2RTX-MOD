@@ -42,6 +42,9 @@ enum {
 #define STRETCH_PIC_FLAG_VIDEO (1u << 30)
 // the image's alpha is ignored: drawn as its colour alone (vkpt_draw_stretch_pic_opaque)
 #define STRETCH_PIC_FLAG_OPAQUE (1u << 31)
+// 'mat author's map view (vkpt_draw_stretch_subpic_flags): nearest texel; red as grey
+#define STRETCH_PIC_FLAG_NEAREST (1u << 28)
+#define STRETCH_PIC_FLAG_RED_GREY (1u << 29)
 
 static drawStatic_t draw = {
 	.scale = 1.0f,
@@ -1427,6 +1430,27 @@ vkpt_draw_stretch_pic_opaque(int x, int y, int w, int h, qhandle_t pic)
 	R_DrawStretchPic_RTX(x, y, w, h, pic);
 	if (num_stretch_pics > before && stretch_pic_queue[before].tex_handle != (uint32_t)TEXNUM_WHITE)
 		stretch_pic_queue[before].tex_handle |= STRETCH_PIC_FLAG_OPAQUE;
+}
+
+/* Part of an image (s1,t1)-(s2,t2), for 'mat author's map view (mat_author.c):
+   nearest = each texel a sharp square, red_grey = its red channel as grey, the
+   way the path tracer reads a roughness or metallic map, opaque = the image's
+   alpha ignored (the draw colour's alpha still blends it: R_SetColor). */
+void
+vkpt_draw_stretch_subpic_flags(float x, float y, float w, float h,
+	float s1, float t1, float s2, float t2, qhandle_t pic, bool nearest, bool red_grey, bool opaque)
+{
+	int before = num_stretch_pics;
+	enqueue_stretch_pic(x, y, w, h, s1, t1, s2, t2, draw.colors[0].u32, pic);
+	if (num_stretch_pics > before && stretch_pic_queue[before].tex_handle != (uint32_t)TEXNUM_WHITE)
+	{
+		if (opaque)
+			stretch_pic_queue[before].tex_handle |= STRETCH_PIC_FLAG_OPAQUE;
+		if (nearest)
+			stretch_pic_queue[before].tex_handle |= STRETCH_PIC_FLAG_NEAREST;
+		if (red_grey)
+			stretch_pic_queue[before].tex_handle |= STRETCH_PIC_FLAG_RED_GREY;
+	}
 }
 
 // A pic w x h centred on (cx, cy), turned clockwise by `angle` radians. The

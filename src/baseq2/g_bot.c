@@ -223,7 +223,8 @@ typedef enum {
     GOAL_ITEM,
     GOAL_ROAM,
     GOAL_CHASE,
-    GOAL_CTF            // CTF: a flag stand, a carrier, a team-mate to escort
+    GOAL_CTF,           // CTF: a flag stand, a carrier, a team-mate to escort
+    GOAL_FOLLOW         // co-op: after the one it is following
 } bot_goal_t;
 
 typedef struct {
@@ -268,6 +269,12 @@ typedef struct {
     float       avoid_until[BOT_AVOIDS];
     vec3_t      leash;              // CTF: stay within leash_radius of here
     float       leash_radius;       // (0 = anywhere)
+
+    // co-op (CO-OP, below)
+    edict_t     *m_cand;            // a monster in sight it is getting to know
+    float       m_aware;            // how well, 0..1, as aware[] is for players
+    float       coop_near_time;     // level.time it was last near, or in sight of, its leader
+    bool        coop_carry;         // played the level before: keeps its inventory
 
     // getting unstuck
     vec3_t      stuck_pos;
@@ -371,6 +378,33 @@ static bool Bot_HumanInGame(void)
             return true;
 
     return false;
+}
+
+// co-op: every player on one side, the monsters the other (CO-OP, below)
+static bool Bot_CoopMatch(void)
+{
+    return coop->value && !deathmatch->value;
+}
+
+// on our side: in co-op every player, in a team game our team
+static bool Bot_Ally(edict_t *self, edict_t *other)
+{
+    if (Bot_CoopMatch())
+        return other->client != NULL && other != self;
+    return OnSameTeam(self, other);
+}
+
+// a monster worth shooting: alive, in the level, and not one of the good guys
+// (misc_insane's marines are AI_GOOD_GUY)
+static bool Bot_ValidMonster(const edict_t *e)
+{
+    if (!e->inuse || e->client || !(e->svflags & SVF_MONSTER))
+        return false;
+    if (e->svflags & (SVF_NOCLIENT | SVF_DEADMONSTER))
+        return false;
+    if (e->health <= 0 || e->deadflag || !e->takedamage || e->solid == SOLID_NOT)
+        return false;
+    return !(e->monsterinfo.aiflags & AI_GOOD_GUY);
 }
 
 static float Bot_Dist2D(const vec3_t a, const vec3_t b)
@@ -513,7 +547,7 @@ bool Team_NoFriendlyFire(void)
 {
     if ((int)dmflags->value & DF_NO_FRIENDLY_FIRE)
         return true;
-    return deathmatch->value && bot_match && bot_match->integer &&
+    return (deathmatch->value || Bot_CoopMatch()) && bot_match && bot_match->integer &&
            bot_friendly_fire && !bot_friendly_fire->integer;
 }
 
@@ -938,6 +972,9 @@ static void Bot_ResetBrain(bot_t *b)
     b->wander_time = 0;
     memset(b->avoid, 0, sizeof(b->avoid));
     b->leash_radius = 0;
+    b->m_cand = NULL;
+    b->m_aware = 0;
+    b->coop_near_time = level.time;
 
     b->crouch = false;
     b->q3_turn[0] = b->q3_turn[1] = 0;
@@ -978,6 +1015,9 @@ static void Bot_SetCharacter(bot_t *b, float q3skill)
 
     memset(&b->ch, 0, sizeof(b->ch));
     b->q3_skill = q3skill;
+    // co-op: Quake II's brain - Quake III's characters fight players in arenas
+    if (Bot_CoopMatch())
+        return;
     // 2: Quake II's bots too, on Quake III's default character - what the
     // engine plays them as, and what they keep on a map with no AAS
     if (!bot_q3_ai->integer || (!name && bot_q3_ai->integer < 2))
@@ -1013,6 +1053,8 @@ static bool Bot_Spawn(int i)
     char    userinfo[MAX_INFO_STRING];
     char    name[BOT_MAX_NAME];
     char    *p;
+    client_persistant_t carried;
+    bool    carry;
 
     // nothing that would end a userinfo value
     Q_strlcpy(name, b->name, sizeof(name));
@@ -1028,6 +1070,13 @@ static bool Bot_Spawn(int i)
     Info_SetValueForKey(userinfo, "spectator", "0");
     Info_SetValueForKey(userinfo, "ip", "bot");
 
+    // co-op: a bot that played the level before keeps what it carried, as a
+    // person does - SpawnEntities' SaveClientData left it in pers, and
+    // ClientConnect would start it afresh
+    carry = Bot_CoopMatch() && b->coop_carry;
+    if (carry)
+        carried = game.clients[i].pers;
+
     ent->inuse = false;
     bot_connecting = true;
     if (!ClientConnect(ent, userinfo)) {
@@ -1038,6 +1087,14 @@ static bool Bot_Spawn(int i)
         return false;
     }
     bot_connecting = false;
+
+    if (carry) {
+        game.clients[i].pers = carried;
+        game.clients[i].pers.connected = true;
+        game.clients[i].resp.coop_respawn = carried;
+        ClientUserinfoChanged(ent, userinfo);
+    }
+    b->coop_carry = Bot_CoopMatch();
 
     b->spawned = true;
     ent->client->resp.team = b->team;
@@ -1052,7 +1109,7 @@ static bool Bot_Spawn(int i)
 
     // Quake III's own bots, where the map has its AAS
     b->q3_engine = false;
-    if (bot_q3_ai->integer >= 2) {
+    if (bot_q3_ai->integer >= 2 && !Bot_CoopMatch()) {
         if (BotEngine_Load()) {
             char charfile[MAX_QPATH];
 
@@ -1076,8 +1133,8 @@ static int Bot_Add(const char *want, int skill, int team, float q3skill)
     char        base[BOT_MAX_NAME], name[BOT_MAX_NAME];
     int         i;
 
-    if (!deathmatch->value) {
-        gi.cprintf(NULL, PRINT_HIGH, "Bots only play deathmatch.\n");
+    if (!deathmatch->value && !Bot_CoopMatch()) {
+        gi.cprintf(NULL, PRINT_HIGH, "Bots only play deathmatch and co-op.\n");
         return -1;
     }
 
@@ -1263,13 +1320,13 @@ void Bot_LevelStart(void)
     for (i = 0; i < game.maxclients; i++) {
         bots[i].spawned = false;
         bots[i].q3_engine = false;      // SpawnEntities dropped the last map's
-        if (bots[i].active && !deathmatch->value)
+        if (bots[i].active && !deathmatch->value && !Bot_CoopMatch())
             bots[i].active = false;
         if (bots[i].active)
             bots_pending = true;
     }
 
-    if (!deathmatch->value)
+    if (!deathmatch->value && !Bot_CoopMatch())
         return;
 
     // A Quake III campaign arena: exactly its own bots, in its order, at the
@@ -1330,7 +1387,7 @@ void Bot_LevelStart(void)
             // map load is the time to spend building a navmesh, not the
             // first frame someone is playing - and loading Quake III's AAS
             Nav_PrepareForBots();
-            if (bot_q3_ai->integer >= 2)
+            if (bot_q3_ai->integer >= 2 && !Bot_CoopMatch())
                 BotEngine_Load();
             break;
         }
@@ -1348,7 +1405,12 @@ static void Bot_EyePos(const edict_t *ent, vec3_t out)
 
 static bool Bot_ValidTarget(edict_t *self, edict_t *other)
 {
-    if (other == self || !other->inuse || !other->client)
+    if (other == self || !other->inuse)
+        return false;
+    // co-op: the monsters, never a player
+    if (Bot_CoopMatch())
+        return Bot_ValidMonster(other);
+    if (!other->client)
         return false;
     if (other->health <= 0 || other->deadflag || other->client->resp.spectator)
         return false;
@@ -1398,7 +1460,7 @@ static bool Bot_InView(edict_t *self, bot_t *b, const vec3_t point, float fov)
 // a client that just fired, the rerelease's "sound" sense
 static bool Bot_Firing(const edict_t *other)
 {
-    return (other->client->buttons & BUTTON_ATTACK) && other->client->weaponstate == WEAPON_FIRING;
+    return other->client && (other->client->buttons & BUTTON_ATTACK) && other->client->weaponstate == WEAPON_FIRING;
 }
 
 // Quake III's InFieldOfVision: the pitch and the yaw each within fov / 2
@@ -1449,6 +1511,69 @@ static bool Bot_Q3Sees(edict_t *self, bot_t *b, edict_t *other, float dist, bool
     VectorSubtract(mid, eye, dir);
     Bot_VecToAngles(dir, angles);
     return Bot_Q3InFov(b->view, fov, angles) && Bot_LineOfSight(self, other);
+}
+
+/*
+Co-op's enemies: the monsters it can see - in its field of view, or any that
+is after it, which a player feels - within BOT_COOP_SIGHT. A new one is
+noticed after the skill's sight time, as a player in a match is; the one it
+is fighting it keeps track of while in sight. One after any of us counts as
+twice as near.
+*/
+#define BOT_COOP_SIGHT  2048
+
+static void Bot_PerceiveMonsters(edict_t *self, bot_t *b, edict_t **best, float *best_dist)
+{
+    const bot_skill_t   *sk = &bot_skills[b->skill];
+    edict_t             *cand = NULL;
+    float               cand_rank = 0;
+    int                 i;
+
+    for (i = game.maxclients + 1; i < globals.num_edicts; i++) {
+        edict_t *other = g_edicts + i;
+        float   dist, rank;
+
+        if (!Bot_ValidMonster(other))
+            continue;
+        dist = Distance(self->s.origin, other->s.origin);
+        if (dist > BOT_COOP_SIGHT && other != b->enemy)
+            continue;
+        if (other != b->enemy && other->enemy != self &&
+            !Bot_InView(self, b, other->s.origin, sk->fov))
+            continue;
+        if (!Bot_LineOfSight(self, other))
+            continue;
+
+        if (other == b->enemy) {
+            if (!b->enemy_visible && level.time - b->enemy_seen > 0.5f)
+                b->enemy_visible_since = level.time;
+            b->enemy_visible = true;
+            b->enemy_seen = level.time;
+            VectorCopy(other->s.origin, b->enemy_pos);
+        }
+
+        rank = dist;
+        if (other->enemy && other->enemy->client)
+            rank *= 0.5f;
+        if (!cand || rank < cand_rank) {
+            cand = other;
+            cand_rank = rank;
+        }
+    }
+
+    if (cand && cand != b->enemy) {
+        if (cand != b->m_cand) {
+            b->m_cand = cand;
+            b->m_aware = 0;
+        }
+        b->m_aware += FRAMETIME / max(sk->sight_time, 0.01f);
+        if (b->m_aware < 1)
+            return;
+    }
+    if (cand) {
+        *best = cand;
+        *best_dist = cand_rank;
+    }
 }
 
 static void Bot_Perceive(edict_t *self, bot_t *b)
@@ -1533,6 +1658,9 @@ static void Bot_Perceive(edict_t *self, bot_t *b)
                 b->aware[i] = 0.5f;
         }
     }
+
+    if (Bot_CoopMatch())
+        Bot_PerceiveMonsters(self, b, &best, &best_dist);
 
     // forget an enemy long out of sight
     if (b->enemy && (!Bot_ValidTarget(self, b->enemy) || level.time - b->enemy_seen > sk->forget)) {
@@ -1802,6 +1930,11 @@ static float Bot_ItemWant(edict_t *self, bot_t *b, edict_t *it, bool fighting)
     if (item->flags & IT_KEY)
         return 0;
 
+    // co-op: health and armour one of the people is nearer are theirs
+    if (Bot_CoopMatch() && (item->pickup == Pickup_Health || (item->flags & IT_ARMOR)) &&
+        Bot_HumanCloser(self, it))
+        return 0;
+
     // CTF: a tech, when it has none; the flags are Bot_CTFGoal's
     if (item->flags & IT_CTF) {
         if (item->pickup != CTFPickup_Tech || fighting || CTF_HasTech(self))
@@ -1813,7 +1946,7 @@ static float Bot_ItemWant(edict_t *self, bot_t *b, edict_t *it, bool fighting)
     if (item->pickup == Pickup_Health) {
         if (it->style & HEALTH_IGNORE_MAX) {
             if (it->count >= 100) {     // megahealth
-                if (!sk->power_items || (sk->defer_power && Bot_HumanCloser(self, it)))
+                if (!sk->power_items || Bot_CoopMatch() || (sk->defer_power && Bot_HumanCloser(self, it)))
                     return 0;
                 return 1.6f;
             }
@@ -1835,7 +1968,7 @@ static float Bot_ItemWant(edict_t *self, bot_t *b, edict_t *it, bool fighting)
         if (!info) {    // power screen / shield
             if (cl->pers.inventory[ITEM_INDEX(item)])
                 return 0;
-            if (!sk->power_items || (sk->defer_power && Bot_HumanCloser(self, it)))
+            if (!sk->power_items || Bot_CoopMatch() || (sk->defer_power && Bot_HumanCloser(self, it)))
                 return 0;
             return 1.2f;
         }
@@ -1861,7 +1994,7 @@ static float Bot_ItemWant(edict_t *self, bot_t *b, edict_t *it, bool fighting)
             if (!cl->pers.inventory[w->index])
                 return fighting ? 0 : 0.5f + w->priority * 0.15f;
             // weapons stay: we can't take it again
-            if (((int)dmflags->value & DF_WEAPONS_STAY) && !(it->spawnflags & DROPPED_ITEM))
+            if ((((int)dmflags->value & DF_WEAPONS_STAY) || coop->value) && !(it->spawnflags & DROPPED_ITEM))
                 return 0;
             if (w->ammo_index >= 0 && cl->pers.inventory[w->ammo_index] <
                 Bot_MaxAmmo(cl, itemlist[w->ammo_index].tag) / 2)
@@ -1899,13 +2032,13 @@ static float Bot_ItemWant(edict_t *self, bot_t *b, edict_t *it, bool fighting)
     if (!strcmp(cn, "item_quad") || !strcmp(cn, "item_invulnerability") ||
         !strcmp(cn, "item_double") || !strcmp(cn, "item_quadfire") ||
         !strcmp(cn, "item_invisibility")) {
-        if (!sk->power_items || (sk->defer_power && Bot_HumanCloser(self, it)))
+        if (!sk->power_items || Bot_CoopMatch() || (sk->defer_power && Bot_HumanCloser(self, it)))
             return 0;
         return 2.0f;
     }
     if (!strcmp(cn, "item_adrenaline") || !strcmp(cn, "item_ancient_head") ||
         !strcmp(cn, "item_legacy_head"))
-        return 0.8f;
+        return Bot_CoopMatch() ? 0 : 0.8f;     // co-op: the people's
     if (!strcmp(cn, "item_bandolier") || !strcmp(cn, "item_pack"))
         return 0.5f;
     if (!strncmp(cn, "item_sphere_", 12))
@@ -2033,6 +2166,10 @@ static void Bot_PickGoal(edict_t *self, bot_t *b, bool fighting)
     if (fighting)
         return;
 
+    // co-op: stays by its leader (Bot_CoopGoal) instead
+    if (Bot_CoopMatch())
+        return;
+
     // nothing worth having: wander to an item or a spawn point somewhere else
     if (b->goal == GOAL_ROAM && b->route_pos < b->route_len)
         return;
@@ -2054,6 +2191,230 @@ static void Bot_PickGoal(edict_t *self, bot_t *b, bool fighting)
         if (b->route_len || !Nav_NumNodes())
             return;
     }
+}
+
+// ==========================================================================
+// CO-OP
+//
+// A bot match played co-op (the menu's game mode 3: deathmatch 0, coop 1,
+// bot_match 1, a campaign map - Matt, 11-20: "play the quake2 campaign maps
+// co-op with bots"): the bots are on your side. They fight the monsters
+// (Bot_ValidTarget, Bot_PerceiveMonsters), never a player, and hold fire with
+// one of you in the way (Bot_FriendInWay). Each follows the nearest person -
+// its leader - and runs its own errands, items and fights, only near them
+// (the leash); the megahealth, power armour and powerups, and health or
+// armour a person is nearer, it leaves (Bot_ItemWant). Left behind - a door
+// it can't work, a lift it missed, back at the start after dying - it catches
+// up beside its leader, behind them where there is room (Bot_CoopCatchUp), and
+// it joins and respawns there too (Bot_CoopSpawnSpot) rather than on a player
+// start, where its KillBox would telefrag whoever stands on it. It never takes
+// a level's exit - the people decide when to leave (Bot_CoopBlocksExit,
+// use_target_changelevel) - and a trigger_coop_relay waits for the people
+// only (g_rerelease.c). It comes along to the next level with what it
+// carried, as a person does (Bot_Spawn, coop_carry). Friendly fire is the
+// menu's, as in a team match (Team_NoFriendlyFire, OnSameTeam).
+
+#define BOT_COOP_FOLLOW     320     // further than this from its leader: follows
+#define BOT_COOP_FIGHTING   900     // ...or this far, while fighting
+#define BOT_COOP_LEASH      640     // items and fights within this of the leader
+#define BOT_COOP_LOST       8       // seconds away from its leader before it catches up
+#define BOT_COOP_FAR        2000    // this far: catches up after 2 seconds
+
+// a co-op bot match: the damage rules' side of it (OnSameTeam)
+bool G_BotCoop(void)
+{
+    return Bot_CoopMatch() && bot_match && bot_match->integer;
+}
+
+// the person it follows: the nearest one alive and playing
+static edict_t *Bot_CoopLeader(edict_t *self)
+{
+    edict_t *best = NULL;
+    float   best_dist = 0;
+    int     i;
+
+    for (i = 0; i < game.maxclients; i++) {
+        edict_t *e = Bot_Edict(i);
+        float   d;
+
+        if (!Bot_IsHuman(e) || e->health <= 0 || e->deadflag || e->client->resp.spectator ||
+            e->movetype == MOVETYPE_NOCLIP)
+            continue;
+        d = Distance(self->s.origin, e->s.origin);
+        if (!best || d < best_dist) {
+            best = e;
+            best_dist = d;
+        }
+    }
+    return best;
+}
+
+// room for a player beside `leader`: behind them first, then the sides, then
+// in front - clear of walls and everyone, on a floor, and not in lava or slime
+static bool Bot_CoopSpotNear(edict_t *leader, vec3_t out)
+{
+    static const float  yaws[] = { 180, 135, -135, 90, -90, 45, -45, 0 };
+    static const float  dists[] = { 64, 104, 152 };
+    static const vec3_t mins = { -16, -16, -24 }, maxs = { 16, 16, 32 };
+    float               base = leader->client->v_angle[YAW];
+    int                 i, j;
+
+    for (j = 0; j < (int)q_countof(dists); j++) {
+        for (i = 0; i < (int)q_countof(yaws); i++) {
+            float   a = DEG2RAD(base + yaws[i]);
+            vec3_t  end, down, feet;
+            trace_t tr;
+
+            VectorSet(end, leader->s.origin[0] + cosf(a) * dists[j],
+                      leader->s.origin[1] + sinf(a) * dists[j], leader->s.origin[2]);
+            tr = gi.trace(leader->s.origin, mins, maxs, end, leader, MASK_PLAYERSOLID);
+            if (tr.startsolid || tr.allsolid || tr.fraction < 1)
+                continue;
+
+            // a floor within a step or two
+            VectorCopy(end, down);
+            down[2] -= 64;
+            tr = gi.trace(end, mins, maxs, down, leader, MASK_PLAYERSOLID);
+            if (tr.startsolid || tr.allsolid || tr.fraction == 1)
+                continue;
+
+            VectorCopy(tr.endpos, feet);
+            feet[2] += mins[2] + 2;
+            if ((gi.pointcontents(feet) | gi.pointcontents(tr.endpos)) & (CONTENTS_LAVA | CONTENTS_SLIME))
+                continue;
+
+            VectorCopy(tr.endpos, out);
+            return true;
+        }
+    }
+    return false;
+}
+
+// to `spot`, facing the way its leader faces, as a teleporter moves a player
+static void Bot_CoopMoveTo(edict_t *self, bot_t *b, edict_t *leader, const vec3_t spot)
+{
+    vec3_t  angles;
+    int     i;
+
+    gi.unlinkentity(self);
+    VectorCopy(spot, self->s.origin);
+    VectorCopy(spot, self->s.old_origin);
+    VectorClear(self->velocity);
+    self->client->ps.pmove.pm_time = 160 >> 3;
+    self->client->ps.pmove.pm_flags |= PMF_TIME_TELEPORT;
+    self->s.event = EV_OTHER_TELEPORT;
+
+    VectorSet(angles, 0, leader->client->v_angle[YAW], 0);
+    for (i = 0; i < 3; i++)
+        self->client->ps.pmove.delta_angles[i] = ANGLE2SHORT(angles[i] - self->client->resp.cmd_angles[i]);
+    VectorClear(self->s.angles);
+    VectorCopy(angles, self->client->ps.viewangles);
+    VectorCopy(angles, self->client->v_angle);
+    gi.linkentity(self);
+
+    // the route and the fight were for where it was
+    b->goal = GOAL_NONE;
+    b->goal_item = NULL;
+    b->route_len = b->route_pos = 0;
+    b->next_goal_time = 0;
+    b->stuck_count = 0;
+    b->unstick_until = 0;
+    b->enemy = NULL;
+    b->enemy_visible = false;
+    b->coop_near_time = level.time;
+
+    if (bot_debug->integer)
+        gi.dprintf("%s caught up with %s\n", b->name, leader->client->pers.netname);
+}
+
+/*
+Left behind: BOT_COOP_LOST seconds neither near its leader nor in sight of
+them close by - two seconds when it is BOT_COOP_FAR away, back at the start
+after a death - and not in a fight here. It appears beside them.
+*/
+static void Bot_CoopCatchUp(edict_t *self, bot_t *b)
+{
+    edict_t *leader = Bot_CoopLeader(self);
+    float   dist;
+    vec3_t  spot;
+
+    if (!leader)
+        return;
+
+    dist = Distance(self->s.origin, leader->s.origin);
+    if (dist < BOT_COOP_FOLLOW * 1.5f || (dist < BOT_COOP_LEASH * 2 && Bot_LineOfSight(self, leader)))
+        b->coop_near_time = level.time;
+
+    if (b->enemy && b->enemy_visible && dist < BOT_COOP_FAR)
+        return;
+    if (level.time - b->coop_near_time < (dist > BOT_COOP_FAR ? 2 : BOT_COOP_LOST))
+        return;
+    if (!Bot_CoopSpotNear(leader, spot))
+        return;
+    Bot_CoopMoveTo(self, b, leader, spot);
+}
+
+/*
+Where to go, before its own errands: after its leader when it is further than
+BOT_COOP_FOLLOW from them (BOT_COOP_FIGHTING in a fight). Closer, its errands
+- items, a monster gone round a corner - only within BOT_COOP_LEASH of them.
+False: nothing to follow, its own errands decide.
+*/
+static bool Bot_CoopGoal(edict_t *self, bot_t *b, bool fighting)
+{
+    edict_t *leader = Bot_CoopLeader(self);
+    float   dist;
+
+    if (!leader) {
+        b->leash_radius = 0;
+        return false;
+    }
+    VectorCopy(leader->s.origin, b->leash);
+    b->leash_radius = BOT_COOP_LEASH;
+
+    dist = Distance(self->s.origin, leader->s.origin);
+    if (dist > (fighting ? BOT_COOP_FIGHTING : BOT_COOP_FOLLOW)) {
+        if (b->goal != GOAL_FOLLOW || !b->route_len || Distance(b->goal_pos, leader->s.origin) > 96) {
+            b->goal = GOAL_FOLLOW;
+            b->goal_item = NULL;
+            Bot_PlanTo(self, b, leader->s.origin);
+        }
+        b->next_goal_time = level.time + 0.5f;
+        return true;
+    }
+
+    if (b->goal == GOAL_FOLLOW) {
+        b->goal = GOAL_NONE;
+        b->route_len = b->route_pos = 0;
+    }
+    return false;
+}
+
+// PutClientInServer's spot for a co-op bot: beside a person, when there is room
+bool Bot_CoopSpawnSpot(edict_t *ent, vec3_t origin, vec3_t angles)
+{
+    edict_t *leader;
+
+    if (!Bot_CoopMatch() || !Bot_IsBot(ent))
+        return false;
+    leader = Bot_CoopLeader(ent);
+    if (!leader || !Bot_CoopSpotNear(leader, origin))
+        return false;
+    VectorSet(angles, 0, leader->client->v_angle[YAW], 0);
+    return true;
+}
+
+// Touch_Multi: a co-op bot does not set off a level's exit
+bool Bot_CoopBlocksExit(const edict_t *ent, const edict_t *trigger)
+{
+    edict_t *t = NULL;
+
+    if (!Bot_CoopMatch() || !Bot_IsBot(ent) || !trigger->target)
+        return false;
+    while ((t = G_Find(t, FOFS(targetname), trigger->target)) != NULL)
+        if (t->classname && !strcmp(t->classname, "target_changelevel"))
+            return true;
+    return false;
 }
 
 // ==========================================================================
@@ -2605,7 +2966,15 @@ static void Bot_AimPoint(edict_t *self, bot_t *b, const bot_weapon_t *w, vec3_t 
     Bot_EyePos(self, eye);
 
     VectorCopy(e->s.origin, target);
-    if (aim == AIM_HEAD)
+    if (!e->client) {
+        // a monster: its box's middle - an origin can be anywhere in it -
+        // a little above for a head shot, its feet as a player's
+        target[2] += (e->mins[2] + e->maxs[2]) * 0.5f;
+        if (aim == AIM_HEAD)
+            target[2] += e->maxs[2] * 0.25f;
+        else if (aim == AIM_FEET && e->groundentity)
+            target[2] = e->s.origin[2] + e->mins[2] + 4;
+    } else if (aim == AIM_HEAD)
         target[2] += e->viewheight - 4;
     else if (aim == AIM_FEET && e->groundentity)
         target[2] += e->mins[2] + 4;
@@ -2675,12 +3044,12 @@ static bool Bot_FriendInWay(edict_t *self, const vec3_t point)
     vec3_t  eye;
     trace_t tr;
 
-    if (!G_TeamPlay())
+    if (!G_TeamPlay() && !Bot_CoopMatch())
         return false;
 
     Bot_EyePos(self, eye);
     tr = gi.trace(eye, NULL, NULL, point, self, MASK_SHOT);
-    return tr.ent && tr.ent->client && tr.ent != self && OnSameTeam(self, tr.ent);
+    return tr.ent && tr.ent->client && tr.ent != self && Bot_Ally(self, tr.ent);
 }
 
 // ==========================================================================
@@ -3266,6 +3635,10 @@ static void Bot_Think(edict_t *self, bot_t *b)
         return;
     }
 
+    // co-op: left behind, it catches up (a new view, taken just below)
+    if (Bot_CoopMatch())
+        Bot_CoopCatchUp(self, b);
+
     // back from the dead (PutClientInServer set a new view): look where we
     // were put
     if (b->dead || memcmp(b->delta, self->client->ps.pmove.delta_angles, sizeof(b->delta))) {
@@ -3308,6 +3681,8 @@ static void Bot_Think(edict_t *self, bot_t *b)
             b->goal = GOAL_NONE;
         if (G_CTF() && Bot_CTFGoal(self, b, fighting))
             ;                                   // the team's errand comes first
+        else if (Bot_CoopMatch() && Bot_CoopGoal(self, b, fighting))
+            ;                                   // co-op: keeping up with its leader
         else if (fighting && (sk->combat_items || q3))
             Bot_PickGoal(self, b, true);        // only what it is short of, close by
         else if (fighting && sk->combat)
@@ -3413,6 +3788,18 @@ static void Bot_Think(edict_t *self, bot_t *b)
         if (!moving && b->goal != GOAL_NONE && !Nav_NumNodes()) {
             Bot_Steer(self, b->goal_pos, wish);
             moving = true;
+        }
+        // co-op: no route to its leader - straight for them, but not off a
+        // ledge (Bot_CoopCatchUp brings it along if that gets nowhere)
+        if (!moving && b->goal == GOAL_FOLLOW && !b->route_len) {
+            vec3_t test;
+
+            Bot_Steer(self, b->goal_pos, wish);
+            VectorMA(self->s.origin, 48, wish, test);
+            if (Bot_SafeFloor(self, test))
+                moving = true;
+            else
+                VectorClear(wish);
         }
 
         // Quake III's fighting move, unless it is on its way to an item
@@ -3572,7 +3959,7 @@ static void Bot_Think(edict_t *self, bot_t *b)
     if (bot_debug->integer && (level.framenum % 10) == 0)
         gi.dprintf("%s: goal %d item %s route %d/%d enemy %s%s\n", b->name, b->goal,
                    b->goal_item ? b->goal_item->classname : "-", b->route_pos, b->route_len,
-                   b->enemy ? b->enemy->client->pers.netname : "-",
+                   !b->enemy ? "-" : b->enemy->client ? b->enemy->client->pers.netname : b->enemy->classname,
                    b->enemy_visible ? " (in sight)" : "");
 }
 
@@ -3588,7 +3975,7 @@ void Bot_RunFrame(void)
 {
     int i;
 
-    if (!bots || !deathmatch->value)
+    if (!bots || (!deathmatch->value && !Bot_CoopMatch()))
         return;
 
     bot_goal_budget = BOT_GOALS_PER_FRAME;

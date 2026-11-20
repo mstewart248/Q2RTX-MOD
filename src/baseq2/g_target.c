@@ -460,6 +460,11 @@ void use_target_changelevel(edict_t *self, edict_t *other, edict_t *activator)
     if (level.intermission_framenum)
         return;     // already activated
 
+    // co-op: a bot never ends the level, however the exit was reached
+    // (g_bot.c CO-OP; Touch_Multi stops the usual way)
+    if (coop->value && !deathmatch->value && activator && Bot_IsBot(activator))
+        return;
+
     if (!deathmatch->value && !coop->value) {
         if (g_edicts[1].health <= 0)
             return;

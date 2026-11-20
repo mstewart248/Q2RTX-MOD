@@ -86,8 +86,9 @@ Q3_LevelRules
 
 The bot match's weapons and physics for the level about to spawn, into
 level.q3_weapons / level.q3_physics, and on to the engine and the clients as
-CS_Q3RULES (written by SP_worldspawn). Deathmatch only; Quake III's weapons
-also need Quake III's data (fs_quake3), and fall back to Quake II's without.
+CS_Q3RULES (written by SP_worldspawn). Deathmatch only, and only with Quake
+III's data (fs_quake3): without it the menu hides both rows, so a value left
+in a config falls back to Quake II's weapons and movement.
 =================
 */
 void Q3_LevelRules(void)
@@ -98,9 +99,11 @@ void Q3_LevelRules(void)
     if (!deathmatch->value)
         return;
 
-    if (gi.cvar("fs_quake3", "0", 0)->integer == 1 && g_q3_weapons)
-        level.q3_weapons = (g_q3_weapons->integer >= 0 && g_q3_weapons->integer <= 2) ? g_q3_weapons->integer : 0;
-    level.q3_physics = g_q3_physics && g_q3_physics->integer;
+    if (gi.cvar("fs_quake3", "0", 0)->integer == 1) {
+        if (g_q3_weapons)
+            level.q3_weapons = (g_q3_weapons->integer >= 0 && g_q3_weapons->integer <= 2) ? g_q3_weapons->integer : 0;
+        level.q3_physics = g_q3_physics && g_q3_physics->integer;
+    }
 
     // a campaign arena is Quake III's game whatever the bot match says (g_sp.c)
     SP_LevelRules();

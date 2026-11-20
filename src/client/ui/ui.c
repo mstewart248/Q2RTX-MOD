@@ -21,6 +21,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "../client.h"
 #include "common/prompt.h"
 #include "shared/bot_roster.h"
+#include "format/bsp.h"
+#include "format/bsp3.h"
 
 uiStatic_t    uis;
 
@@ -303,15 +305,22 @@ UI_Levelshot
 
 A map's picture for the menus: levelshots/<map>.jpg - Quake III's own, in its
 paks, or one `levelshots` made (client/levelshot.c); the image loader tries
-the other formats too. With none, Quake III's "unknown map" picture when
-`unknown` is set and it is installed, else 0. Misses are remembered, so a
-menu drawn every frame does not go to the disk for them; UI_LevelshotForget
-clears them as a menu opens, so new levelshots show up.
+the other formats too. With none, and `unknown` set, the game's own "unknown
+map" picture: Quake III's for a Quake III map (IBSP 46), when it is
+installed, and for every other map Quake II's logo on black
+(baseq2/pics/unknownmap_q2.jpg, made from the rerelease's vault/logo.png -
+Matt, 11-20: "show the quake2 logo instead of the quake 3 logo"); 0 when
+that picture is not there. Misses are remembered with which game the map is
+from, so a menu drawn every frame does not go to the disk for them;
+UI_LevelshotForget clears them as a menu opens, so new levelshots show up.
 =================
 */
 #define UI_LEVELSHOT_MISSES 64
 
-static char ui_levelshot_misses[UI_LEVELSHOT_MISSES][MAX_QPATH];
+static struct {
+    char    map[MAX_QPATH];
+    bool    q3;
+} ui_levelshot_misses[UI_LEVELSHOT_MISSES];
 static int  ui_levelshot_nummisses;
 
 void UI_LevelshotForget(void)
@@ -319,28 +328,57 @@ void UI_LevelshotForget(void)
     ui_levelshot_nummisses = 0;
 }
 
+// maps/<map>.bsp is a Quake III map, told from its header (IBSP 46)
+static bool UI_MapIsQuake3(const char *map)
+{
+    char        path[MAX_QPATH];
+    qhandle_t   f = 0;
+    uint32_t    header[2] = { 0, 0 };
+    int64_t     len;
+    bool        q3;
+
+    if (Q_snprintf(path, sizeof(path), "maps/%s.bsp", map) >= sizeof(path))
+        return false;
+    len = FS_OpenFile(path, &f, FS_MODE_READ);
+    if (!f)
+        return false;
+    q3 = len >= (int64_t)sizeof(header) &&
+         FS_Read(header, sizeof(header), f) == (int)sizeof(header) &&
+         LittleLong(header[0]) == IDBSPHEADER && LittleLong(header[1]) == Q3_BSPVERSION;
+    FS_CloseFile(f);
+    return q3;
+}
+
 qhandle_t UI_Levelshot(const char *map, bool unknown)
 {
     char        path[MAX_QPATH];
     qhandle_t   pic = 0;
+    bool        q3 = false;
     int         i;
 
     if (map && *map) {
         for (i = 0; i < ui_levelshot_nummisses; i++)
-            if (!Q_stricmp(ui_levelshot_misses[i], map))
+            if (!Q_stricmp(ui_levelshot_misses[i].map, map))
                 break;
-        if (i == ui_levelshot_nummisses &&
-            Q_snprintf(path, sizeof(path), "/levelshots/%s.jpg", map) < sizeof(path)) {
+        if (i < ui_levelshot_nummisses) {
+            q3 = ui_levelshot_misses[i].q3;
+        } else if (Q_snprintf(path, sizeof(path), "/levelshots/%s.jpg", map) < sizeof(path)) {
             // filtered (IF_BILERP): a 640x480 or Quake III's 256x256 shot,
             // stretched, shows every texel when sampled nearest
             pic = R_RegisterImage(path, IT_PIC, IF_SRGB | IF_BILERP, NULL);
-            if (!pic && ui_levelshot_nummisses < UI_LEVELSHOT_MISSES)
-                Q_strlcpy(ui_levelshot_misses[ui_levelshot_nummisses++], map, MAX_QPATH);
+            if (!pic) {
+                q3 = UI_MapIsQuake3(map);
+                if (ui_levelshot_nummisses < UI_LEVELSHOT_MISSES) {
+                    Q_strlcpy(ui_levelshot_misses[ui_levelshot_nummisses].map, map, MAX_QPATH);
+                    ui_levelshot_misses[ui_levelshot_nummisses++].q3 = q3;
+                }
+            }
         }
     }
 
     if (!pic && unknown)
-        pic = R_RegisterImage("/menu/art/unknownmap.jpg", IT_PIC, IF_SRGB | IF_BILERP, NULL);
+        pic = R_RegisterImage(q3 ? "/menu/art/unknownmap.jpg" : "/pics/unknownmap_q2.jpg",
+                              IT_PIC, IF_SRGB | IF_BILERP, NULL);
     return pic;
 }
 
@@ -717,7 +755,9 @@ static void UI_BotLabel(int n)
     int     team = Cvar_VariableInteger(va("bot_team%d", n));
 
     Cvar_VariableStringBuffer(va("_ui_botname%d", n), label, sizeof(label));
-    if (Cvar_VariableInteger("bot_mode") >= 1 && (team == 1 || team == 2))
+    // the team games only: co-op (3) is everyone on one side
+    if (Cvar_VariableInteger("bot_mode") >= 1 && Cvar_VariableInteger("bot_mode") <= 2 &&
+        (team == 1 || team == 2))
         Q_strlcat(label, team == 1 ? " (red)" : " (blue)", sizeof(label));
     Cvar_Set(va("_ui_botlabel%d", n), label);
 }
@@ -900,7 +940,9 @@ static void UI_BotInit(void)
     int     i;
 
     // the game mode: 0 deathmatch, 1 team deathmatch, 2 capture the flag
-    // (rerelease only). The start action turns it into teamplay and ctf.
+    // (rerelease only), 3 co-op - the campaign's maps with the bots on your
+    // side (g_bot.c CO-OP). The start action turns it into teamplay, ctf and
+    // coop.
     mode = Cvar_Get("bot_mode", "0", CVAR_ARCHIVE);
     mode->changed = UI_BotModeChanged;
 
@@ -941,6 +983,10 @@ static void UI_BotInit(void)
 
     // the map for each set of maps the menu offers
     Cvar_Get("bot_map_q2", "q2dm1", CVAR_ARCHIVE);
+    Cvar_Get("bot_map_q2sp", "base1", CVAR_ARCHIVE);
+    // co-op's difficulty, as the campaign's skill menu sets it: 0 easy,
+    // 1 medium, 2 hard, 3 nightmare
+    Cvar_Get("bot_coop_skill", "1", CVAR_ARCHIVE);
     Cvar_Get("bot_map_mg", "mgdm1", CVAR_ARCHIVE);
     Cvar_Get("bot_map_xdm", "xdm1", CVAR_ARCHIVE);
     Cvar_Get("bot_map_rdm", "rdm1", CVAR_ARCHIVE);
@@ -948,8 +994,8 @@ static void UI_BotInit(void)
     Cvar_Get("bot_map_any", "q2dm1", CVAR_ARCHIVE);
     Cvar_Get("bot_map_ctf", "q2ctf1", CVAR_ARCHIVE);
     // which of those the menu shows: a number, as the menu's ifeq compares
-    // numbers - 0 quake ii, 1 call of the machine, 2 the reckoning,
-    // 3 ground zero, 4 quake ii 64, 5 any map
+    // numbers - 0 quake ii deathmatch, 1 call of the machine, 2 the reckoning,
+    // 3 ground zero, 4 quake ii 64, 5 any map, 6 quake ii campaign
     Cvar_Get("_ui_botpack", "0", 0);
 
     // Quake III Arena's maps, when baseq3 has them: 0 Quake II's, 1 Quake

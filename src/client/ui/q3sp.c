@@ -983,7 +983,9 @@ static void SP_Button(sp_page_t *p, int id, float x, float y, float w, float h,
         SP_DrawNamedPic(x, y, w, h, focuspic);
         R_ClearColor();
     }
-    SP_AddHot(p, id, w < 0 ? x + w : x, y, fabsf(w), h);
+    // a negative width only mirrors the picture, which still covers x..x+|w|
+    // (SP_DrawPic, Quake III's Bitmap_Init): the click goes there too
+    SP_AddHot(p, id, x, y, fabsf(w), h);
 }
 
 /*

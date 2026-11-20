@@ -4759,6 +4759,10 @@ static void material_command_help(void)
 	Com_Printf("        specular_factor, bump_scale, texture_roughness, texture_metallic, texture_normals\n");
 	Com_Printf("        ('none' takes one away; 'map off' leaves the stage out of the drawing).\n");
 	Com_Printf("        In a .mat file: stage2_roughness_override 0.8, stage1_map off\n");
+	Com_Printf("    author [roughness|metallic|normals|emissive]: paint the crosshair's material's\n");
+	Com_Printf("        maps with a brush, in photo mode (pauses the game). Hold the right mouse\n");
+	Com_Printf("        button to look, WASD/QE to fly, left button paints. 'mat author save'\n");
+	Com_Printf("        writes the painted maps; 'mat author off' (or Escape) leaves\n");
 	Com_Printf("    which: tell where the current material is defined\n");
 	Com_Printf("    view_weapon [N] <command>: any of these for the gun in your hands instead of\n");
 	Com_Printf("        the crosshair's material ('mat view_weapon print', 'mat view_weapon\n");
@@ -4795,6 +4799,17 @@ static void material_command(void)
 	if (strcmp(key, "view_weapon") == 0)
 	{
 		material_command_view_weapon();
+		return;
+	}
+
+	// 'mat author': paint the crosshair's material's maps (mat_author.c). Its own
+	// words ('save', 'off') need no material; 'mat view_weapon author' paints the gun.
+	if (strcmp(key, "author") == 0)
+	{
+		pbr_material_t* target = mat_command_target;
+		if (!target && vkpt_refdef.fd)
+			target = MAT_ForIndex(vkpt_refdef.fd->feedback.view_material_index);
+		MAT_AuthorCommand(target);
 		return;
 	}
 
@@ -5070,6 +5085,28 @@ static void material_command(void)
 	}
 }
 
+/* 'mat <args>' run on (mat), as if it were under the crosshair - how 'mat author'
+   (mat_author.c) points a material at a map it made or saved, so the change goes
+   through everything a typed one does (the image loaded, specular revived, the
+   attribute marked for 'mat save'). Retokenizes: read your own arguments first. */
+void MAT_CommandFor(pbr_material_t* mat, const char* args)
+{
+	char line[MAX_STRING_CHARS];
+	Q_concat(line, sizeof(line), "mat ", args);
+	Cmd_TokenizeString(line, false);
+
+	pbr_material_t* saved = mat_command_target;
+	mat_command_target = mat;
+	material_command();
+	mat_command_target = saved;
+}
+
+// 'mat save' with no file name: every changed material into its own .mat entry
+void MAT_SaveToSourceFiles(void)
+{
+	save_to_source_files();
+}
+
 // the words of a 'mat' command from (first) on: 1 for 'mat ...', 2 or 3 after
 // 'mat view_weapon [N]', which takes the same commands for the gun
 static void material_complete_from(genctx_t* ctx, int argnum, int first)
@@ -5083,6 +5120,7 @@ static void material_complete_from(genctx_t* ctx, int argnum, int first)
 		Prompt_AddMatch(ctx, "view");
 		Prompt_AddMatch(ctx, "save");
 		Prompt_AddMatch(ctx, "which");
+		Prompt_AddMatch(ctx, "author");
 		if (!weapon) {
 			Prompt_AddMatch(ctx, "reload");
 			Prompt_AddMatch(ctx, "create_instance");
@@ -5103,6 +5141,15 @@ static void material_complete_from(genctx_t* ctx, int argnum, int first)
 			// extra arguments for 'save'
 			Prompt_AddMatch(ctx, "all");
 			Prompt_AddMatch(ctx, "force");
+		}
+		else if (strcmp(sub, "author") == 0)
+		{
+			Prompt_AddMatch(ctx, "save");
+			Prompt_AddMatch(ctx, "off");
+			Prompt_AddMatch(ctx, "roughness");
+			Prompt_AddMatch(ctx, "metallic");
+			Prompt_AddMatch(ctx, "normals");
+			Prompt_AddMatch(ctx, "emissive");
 		}
 		else if (strcmp(sub, "print") == 0 || strcmp(sub, "view") == 0)
 		{

@@ -101,6 +101,11 @@ void Use_Multi(edict_t *ent, edict_t *other, edict_t *activator)
 
 void Touch_Multi(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf)
 {
+    // co-op: a bot never sets off a level's exit - the people decide when to
+    // leave (g_bot.c CO-OP)
+    if (other->client && Bot_CoopBlocksExit(other, self))
+        return;
+
     if (other->client) {
         if (self->spawnflags & 2)
             return;

@@ -91,7 +91,8 @@ existing Quake II RTX install.
 * **[Remaster demos](#demo-playback)** play alongside classic `.dm2` files.
 * **[Bot match](#bot-match)**: deathmatch, team deathmatch or capture the flag
   against up to 15 bots, each with its own skill and its own pick of model and
-  skin, on any deathmatch map, classic or remaster.
+  skin, on any deathmatch map, classic or remaster, or on the campaign's maps.
+  [Co-op](#co-op-with-bots) plays the campaign with the bots on your side.
 * **[Quake III Arena](#quake-iii-arena-support)** from your own `baseq3` paks,
   path traced: its campaign with the podium and medals, its arenas and CTF
   maps in bot match, its weapons, movement, player models and bots (Quake
@@ -720,7 +721,8 @@ then asks for the difficulty; a bot match opens its own page instead:
 
 * **Game mode**: deathmatch; **team deathmatch** (`teamplay 1`): red against
   blue, everyone in their team's uniform, team scores on the scoreboard, and
-  friendly fire on or off; or, with the remaster, **capture the flag** (below).
+  friendly fire on or off; with the remaster, **capture the flag** (below); or
+  **co-op**, the campaign with the bots on your side (below).
 * **Teams**: in a team game, **teams...** sets which side you and each bot
   play on — red, blue, or **auto**, the default, which leaves it to the game:
   as the match starts it puts everyone on auto, you included, onto whichever
@@ -728,7 +730,9 @@ then asks for the difficulty; a bot match opens its own page instead:
   **Even teams** puts everyone back on auto. A bot's row on the page shows its
   side once you give it one.
 * **Maps**: the deathmatch maps of each set (the remaster's *The Edge* through
-  *Overflow*, by their real names), or **any map** the game can find. Capture
+  *Overflow*, by their real names), **quake ii campaign** (all 39 campaign
+  maps, *Outer Base* through *Final Showdown*, each of which has deathmatch
+  spawns), or **any map** the game can find. Capture
   the flag has its own: the remaster's eight CTF maps, *McKinley Revival*
   through *Nexus CTF*.
 * **Frag and time limits** (a **capture limit** in place of the frag limit for
@@ -746,6 +750,23 @@ then asks for the difficulty; a bot match opens its own page instead:
   game it plays in its team's uniform whatever you pick; the skin gives it its
   name.
 
+### Co-op with bots
+
+**Co-op** in the game mode row plays a *Quake II* campaign map with the bots on
+your side, at the difficulty you pick, starting from any of the campaign's 39
+maps. The bots fight the monsters and never a player, and hold fire when one of
+you is in the way. Friendly fire is the page's own setting, as in a team game.
+
+Each bot follows the nearest player. It fights and picks up what it needs near
+them, and leaves the megahealth, power armour and powerups, and any health or
+armour a player is closer to, for the players. A bot left behind (a door it
+can't open, a lift it missed, or back at the start after dying) appears beside
+its leader, behind them where there is room. It also joins and respawns
+there, never on a start where it would telefrag someone. Bots never take a
+level's exit, so the players decide when to leave; a door that waits for every
+player waits only for the people. The bots come along to the next level with
+everything they carried.
+
 ### Capture the flag
 
 `ctf 1` in a deathmatch game (the bot match page sets it) plays id's Threewave

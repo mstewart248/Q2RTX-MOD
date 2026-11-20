@@ -1387,6 +1387,18 @@ bool IMG_ReloadIfModified(image_t *image)
     return IMG_ReloadFrom(image, filepath);
 }
 
+// 'mat author' (mat_author.c) changed (image)'s pixels in place: its GPU texture is
+// made again from them, in the same slot, as after IMG_ReloadFrom. Both renderers:
+// IMG_Load is D3D12's there (it drops its own texture), and retire_texture then
+// finds no Vulkan one.
+void IMG_PixelsEdited(image_t *image)
+{
+    if (!image || !image->pix_data)
+        return;
+    IMG_Load(image, image->pix_data);
+    retire_texture(image - r_images);
+}
+
 static const char *reload_time_string(uint64_t t, char *buf, size_t size)
 {
     time_t tt = (time_t)t;

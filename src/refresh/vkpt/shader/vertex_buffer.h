@@ -315,6 +315,48 @@ BEGIN_SHADER_STRUCT( ReadbackBuffer )
 	uint flow_faint;
 	uint flow_pad0;
 	uint flow_pad1;
+
+	/* 'mat author' (mat_author.c): what is under the brush cursor
+	   (global_ubo.author_cursor), from primary_rays.rgen's author_readback.
+	   author_seq is the global_ubo.author_seq of the frame that wrote it: an
+	   old one means nothing was under the cursor (it was off the view).
+	   author_material ~0u = the sky. author_u/v: the mesh UV, unwrapped.
+	   author_t*: one render pixel right (tx) and down (ty), in the tangent
+	   frame the normal map is read in - x along the tangent, y along the
+	   bitangent - so a screen direction can be painted as a normal's tilt.
+	   author_dudx/dvdx/dudy/dvdy: the UV per render pixel, right and down. */
+	uint  author_seq;
+	uint  author_material;
+	float author_u;
+	float author_v;
+	float author_tx_x;
+	float author_tx_y;
+	float author_ty_x;
+	float author_ty_y;
+	float author_dudx;
+	float author_dvdx;
+	float author_dudy;
+	float author_dvdy;
+	/* The triangle under the cursor, for 'mat author's face and piece locks
+	   (F, P): its three UVs as the mesh holds them, and its three corners
+	   where they are drawn - a model's posed, the world's as built. The CPU
+	   finds it in the model or the world by these. */
+	float author_tri_u0;
+	float author_tri_v0;
+	float author_tri_u1;
+	float author_tri_v1;
+	float author_tri_u2;
+	float author_tri_v2;
+	float author_tri_p0x;
+	float author_tri_p0y;
+	float author_tri_p0z;
+	float author_tri_p1x;
+	float author_tri_p1y;
+	float author_tri_p1z;
+	float author_tri_p2x;
+	float author_tri_p2y;
+	float author_tri_p2z;
+	uint  author_pad0;
 }
 END_SHADER_STRUCT( ReadbackBuffer )
 

@@ -228,6 +228,14 @@ void MAT_ReportImages(const char* filter);
 void MAT_ImagesReloaded(void);
 // The index of a live material (one of r_materials), or -1 for a definition.
 int MAT_IndexOf(const pbr_material_t* mat);
+// 'mat <args>' on (mat), as if typed with it under the crosshair ('mat author')
+void MAT_CommandFor(pbr_material_t* mat, const char* args);
+// 'mat save': every changed material written into its .mat file
+void MAT_SaveToSourceFiles(void);
+// 'mat author' (mat_author.c): the command, with the crosshair's material, and
+// its panel - both renderers' R_EndFrame, after MAT_DrawPreview
+void MAT_AuthorCommand(pbr_material_t* crosshair);
+void MAT_AuthorDraw(void);
 
 // update material when a skin is applied
 pbr_material_t* MAT_ForSkin(image_t * image_base);

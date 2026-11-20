@@ -1390,11 +1390,12 @@ free itself once it fires. No shipped map sets it.
 */
 #define SPAWNFLAG_COOP_RELAY_AUTO_FIRE  1
 
+// a co-op bot is not waited for: the people are (g_bot.c CO-OP)
 static bool trigger_coop_relay_skip(edict_t *player)
 {
     return !player->inuse || !player->client || player->health <= 0 ||
            player->deadflag || player->movetype == MOVETYPE_NOCLIP ||
-           player->client->resp.spectator;
+           player->client->resp.spectator || Bot_IsBot(player);
 }
 
 static bool trigger_coop_relay_inside(edict_t *self, edict_t *player)

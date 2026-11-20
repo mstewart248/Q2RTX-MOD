@@ -691,6 +691,12 @@ void Key_Event(unsigned key, bool down, unsigned time)
             return;
         }
 
+        // 'mat author' (vkpt/mat_author.c): Escape leaves painting - the renderer
+        // takes it only while that is on
+        if (cls.key_dest == KEY_GAME && keydown[key] == 1 && R_InterceptKey && R_InterceptKey(key, down)) {
+            return;
+        }
+
         if (cls.key_dest == KEY_GAME &&
             cl.frame.ps.stats[STAT_LAYOUTS] &&
             cls.demo.playback == false) {

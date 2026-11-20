@@ -3495,8 +3495,8 @@ models/players/tankjr/tankjr:
 #	stage1: map models/players/tankjr/tankjr.tga; blendFunc GL_DST_COLOR GL_SRC_ALPHA; rgbGen identity; alphaGen lightingSpecular
 	stage1_map materialDev/models/players/tankjr/tankjr.tga
 #	texture_normals materialDev/models/players/tankjr/tankjr_n.png
-#	texture_roughness materialDev/models/players/tankjr/tankjr_rough.png
-#	texture_metallic materialDev/models/players/tankjr/tankjr_metal.png
+	texture_roughness materialDev/models/players/tankjr/tankjr_rough.png
+	texture_metallic materialDev/models/players/tankjr/tankjr_metal.png
 #	texture_height materialDev/models/players/tankjr/tankjr_height.png
 #	texture_emissive materialDev/models/players/tankjr/tankjr_light.png
 

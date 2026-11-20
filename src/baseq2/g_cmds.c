@@ -48,6 +48,11 @@ bool OnSameTeam(edict_t *ent1, edict_t *ent2)
     char    ent1Team [512];
     char    ent2Team [512];
 
+    // a co-op bot match: every player on one side, so friendly fire is the
+    // menu's (Team_NoFriendlyFire) - as the rerelease's coop has it
+    if (G_BotCoop())
+        return ent1->client && ent2->client && ent1 != ent2;
+
     // team deathmatch: red and blue (g_bot.c)
     if (G_TeamPlay()) {
         if (!ent1->client || !ent2->client)

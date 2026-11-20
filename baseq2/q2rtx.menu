@@ -746,7 +746,13 @@ begin effects
         range --status "how far a triangle may lean away from the normal the model file stored at a corner before it counts as a different surface and is left out of that corner's average. LOW keeps more hard edges and smooths less; HIGH rounds everything off. 60 smooths a gun barrel while leaving the edge where it meets the receiver (pt_model_smooth_angle)" \
             -f "%.0f deg" "smoothing crease angle" pt_model_smooth_angle 10 120 5
         endif
-        toggle --status "off: Q2RTX's redesigned railgun - and with Quake III's guns in a bot match it stands in for Quake III's railgun too, in your hand and on the ground. On: the classic railgun, and Quake III's own with Quake III's guns (cl_classic_railgun)" "classic railgun" cl_classic_railgun
+        // Quake III's railgun is only spoken of with its data installed (fs_quake3)
+        ifeq fs_quake3 1
+            toggle --status "off: Q2RTX's redesigned railgun - and with Quake III's guns in a bot match it stands in for Quake III's railgun too, in your hand and on the ground. On: the classic railgun, and Quake III's own with Quake III's guns (cl_classic_railgun)" "classic railgun" cl_classic_railgun
+        endif
+        ifneq fs_quake3 1
+            toggle --status "off: Q2RTX's redesigned railgun. On: the classic railgun (cl_classic_railgun)" "classic railgun" cl_classic_railgun
+        endif
         blank
     endif
     ifeqor vid_rtx 1 vid_rtx 3
@@ -1397,8 +1403,8 @@ begin startserver
     ifeqor bot_mapset 1 _ui_server_coop 0
     ifeq fs_quake3 1
         pairs --status "quake iii arena: its gauntlet, machinegun, shotgun, grenade and rocket launchers, lightning gun, railgun, plasma gun and bfg10k for everyone. by player model: quake iii's for quake iii models, quake ii's for quake ii models (g_q3_weapons)" "weapons" g_q3_weapons "quake ii" 0 "quake iii arena" 1 "by player model" 2
-    endif
         pairs --status "quake iii arena: its faster running, air control, jumps and knockback, for everyone (g_q3_physics)" "movement" g_q3_physics "quake ii" 0 "quake iii arena" 1
+    endif
     ifge bot_mode 1
         toggle --status "teammates' shots hurt each other. off as in quake iii arena (bot_friendly_fire)" "friendly fire" bot_friendly_fire
     endif
@@ -1545,8 +1551,10 @@ end
 // own choice (bot_map_*), so each has its own start action. "any map" is
 // every map the game can find, a custom one included; a map with no navmesh
 // gets one built as it loads. _ui_botpack is a number because the menu's
-// ifeq compares numbers: 0 quake ii, 1 call of the machine, 2 the reckoning,
-// 3 ground zero, 4 quake ii 64, 5 any map. The controls that show or hide
+// ifeq compares numbers: 0 quake ii's deathmatch maps, 1 call of the machine,
+// 2 the reckoning, 3 ground zero, 4 quake ii 64, 5 any map, 6 quake ii's
+// campaign maps (bot_map_q2sp - Matt, 11-20: "all the quake2 single player
+// maps can be used in deathmatch"). The controls that show or hide
 // rows are --live, so the rows change as they do.
 //
 // The game mode is bot_mode, which the start action turns into the game's
@@ -1555,6 +1563,14 @@ end
 // are in its pak - so it is offered only there, with its own maps
 // (bot_map_ctf, titles from mapdb.json) and a capture limit for the frag
 // limit.
+//
+// 3 is co-op (Matt, 11-20: "play the quake2 campaign maps co-op with bots"):
+// deathmatch 0, coop 1, a campaign map (bot_map_q2sp, the same list as the
+// "quake ii campaign" maps) at a difficulty (bot_coop_skill, into skill).
+// Everyone is on one side and the bots fight the monsters, follow you, and
+// come along to the next level (src/baseq2/g_bot.c CO-OP). The rows that are
+// deathmatch's - the map set, the other maps, Quake III's rules, the limits,
+// deathmatch flags, teams, bot ai - go while it is chosen.
 //
 // In a team game, "teams..." opens 'botteams': which side you and each bot
 // play on (bot_player_team, bot_team1..15: 0 auto, 1 red, 2 blue). Auto, the
@@ -1570,21 +1586,24 @@ end
 // Quake III amounts bring its Battle Suit, Quake II's the Environment Suit),
 // and what you spawn holding (g_q3_kit).
 //
-// On any map, "weapons" (g_q3_weapons, with Quake III installed) arms everyone
+// On any map, with Quake III installed, "weapons" (g_q3_weapons) arms everyone
 // with Quake II's guns, Quake III's (src/baseq2/g_q3weap.c, drawn by
 // src/client/q3weapons.c), or each player with their own model's game's; and
 // "movement" (g_q3_physics) is Quake II's or Quake III's running, jumping and
 // knockback (src/common/pmove.c). Both take effect when the match starts.
+// Every Quake III row hides without its data (fs_quake3 0), and the game
+// then treats both as Quake II's whatever a config says (Q3_LevelRules).
 begin botmatch
     background #212F3CD0
     style --compact
     title "Bot Match"
     ifeq fs_rerelease 1
-        pairs --live --status "team deathmatch: red against blue, teams kept even. capture the flag: take their flag to yours" "game mode" bot_mode deathmatch 0 "team deathmatch" 1 "capture the flag" 2
+        pairs --live --status "team deathmatch: red against blue, teams kept even. capture the flag: take their flag to yours. co-op: the campaign's maps, you and the bots against the monsters" "game mode" bot_mode deathmatch 0 "team deathmatch" 1 "capture the flag" 2 co-op 3
     endif
     ifneq fs_rerelease 1
-        pairs --live --status "team deathmatch: red against blue, teams kept even" "game mode" bot_mode deathmatch 0 "team deathmatch" 1
+        pairs --live --status "team deathmatch: red against blue, teams kept even. co-op: the campaign's maps, you and the bots against the monsters" "game mode" bot_mode deathmatch 0 "team deathmatch" 1 co-op 3
     endif
+    ifle bot_mode 2
     ifeq fs_quake3 1
         pairs --live --status "quake iii arena: its maps, with the weapons chosen below and quake ii's items in its items' places" "map set" bot_mapset "quake ii" 0 "quake iii arena" 1
     endif
@@ -1606,10 +1625,10 @@ begin botmatch
     endif
     ifneq bot_mode 2
     ifeq fs_rerelease 1
-        pairs --live "maps" _ui_botpack "quake ii" 0 "call of the machine" 1 "the reckoning" 2 "ground zero" 3 "quake ii 64" 4 "any map" 5
+        pairs --live "maps" _ui_botpack "quake ii deathmatch" 0 "quake ii campaign" 6 "call of the machine" 1 "the reckoning" 2 "ground zero" 3 "quake ii 64" 4 "any map" 5
     endif
     ifneq fs_rerelease 1
-        pairs --live "maps" _ui_botpack "quake ii" 0 "any map" 5
+        pairs --live "maps" _ui_botpack "quake ii deathmatch" 0 "quake ii campaign" 6 "any map" 5
     endif
     ifeq _ui_botpack 0
         pairs --levelshot "map" bot_map_q2 "The Edge" q2dm1 "Tokay's Towers" q2dm2 "The Frag Pipe" q2dm3 "Lost Hallways" q2dm4 "The Pits" q2dm5 "Lava Tomb" q2dm6 "The Slimy Place" q2dm7 "WareHouse" q2dm8
@@ -1629,37 +1648,54 @@ begin botmatch
     ifeq _ui_botpack 5
         strings --levelshot "map" bot_map_any $$com_maplist
     endif
+    // the campaign's maps: every one has deathmatch spawn points
+    ifeq _ui_botpack 6
+        pairs --levelshot "map" bot_map_q2sp "Outer Base" base1 "Installation" base2 "Comm Center" base3 "Lost Station" train "Ammo Depot" bunk1 "Supply Station" ware1 "Warehouse" ware2 "Main Gate" jail1 "Detention Center" jail2 "Security Complex" jail3 "Torture Chambers" jail4 "Guard House" jail5 "Grid Control" security "Mine Entrance" mintro "Upper Mines" mine1 "Bore Hole" mine2 "Drilling Area" mine3 "Lower Mines" mine4 "Receiving Center" fact1 "Processing Plant" fact2 "Sudden Death" fact3 "Power Plant" power1 "The Reactor" power2 "Cooling Facility" cool1 "Toxic Waste Dump" waste1 "Pumping Station 1" waste2 "Pumping Station 2" waste3 "Big Gun" biggun "Outer Hangar" hangar1 "Inner Hangar" hangar2 "Research Lab" lab "Launch Command" command "Outlands" strike "Comm Satellite" space "Outer Courts" city1 "Lower Palace" city2 "Upper Palace" city3 "Inner Chamber" boss1 "Final Showdown" boss2
+    endif
     endif
     endif
     ifeq fs_quake3 1
         pairs --status "quake iii arena: its gauntlet, machinegun, shotgun, grenade and rocket launchers, lightning gun, railgun, plasma gun and bfg10k for everyone. by player model: quake iii's for quake iii models, quake ii's for quake ii models (g_q3_weapons)" "weapons" g_q3_weapons "quake ii" 0 "quake iii arena" 1 "by player model" 2
+        pairs --status "quake iii arena: its faster running, air control, jumps and knockback, for everyone (g_q3_physics)" "movement" g_q3_physics "quake ii" 0 "quake iii arena" 1
     endif
-    pairs --status "quake iii arena: its faster running, air control, jumps and knockback, for everyone (g_q3_physics)" "movement" g_q3_physics "quake ii" 0 "quake iii arena" 1
+    endif
+    // co-op (bot_mode 3): a campaign map, you and the bots against its
+    // monsters (g_bot.c CO-OP), at the campaign's difficulty
+    ifeq bot_mode 3
+        pairs --levelshot "map" bot_map_q2sp "Outer Base" base1 "Installation" base2 "Comm Center" base3 "Lost Station" train "Ammo Depot" bunk1 "Supply Station" ware1 "Warehouse" ware2 "Main Gate" jail1 "Detention Center" jail2 "Security Complex" jail3 "Torture Chambers" jail4 "Guard House" jail5 "Grid Control" security "Mine Entrance" mintro "Upper Mines" mine1 "Bore Hole" mine2 "Drilling Area" mine3 "Lower Mines" mine4 "Receiving Center" fact1 "Processing Plant" fact2 "Sudden Death" fact3 "Power Plant" power1 "The Reactor" power2 "Cooling Facility" cool1 "Toxic Waste Dump" waste1 "Pumping Station 1" waste2 "Pumping Station 2" waste3 "Big Gun" biggun "Outer Hangar" hangar1 "Inner Hangar" hangar2 "Research Lab" lab "Launch Command" command "Outlands" strike "Comm Satellite" space "Outer Courts" city1 "Lower Palace" city2 "Upper Palace" city3 "Inner Chamber" boss1 "Final Showdown" boss2
+        pairs --status "how hard the monsters are, as the campaign's own difficulty (skill)" "difficulty" bot_coop_skill easy 0 medium 1 hard 2 nightmare 3
+    endif
     ifge bot_mode 1
         toggle --status "your team's shots hurt you, and yours hurt them. off as in quake iii arena (bot_friendly_fire)" "friendly fire" bot_friendly_fire
     endif
+    ifle bot_mode 2
     ifneq bot_mode 2
         field --integer --status "0 - no frag limit" --width 3 "frag limit" fraglimit
     endif
     ifeq bot_mode 2
         field --integer --status "0 - no capture limit" --width 3 "capture limit" capturelimit
     endif
-    field --integer --status "0 - no time limit" --width 3 "time limit" timelimit
+        field --integer --status "0 - no time limit" --width 3 "time limit" timelimit
+    endif
     toggle --status "noclip, god, notarget and give work in this match (cheats)" "allow cheats" bot_cheats
     // the path tracer's tone mapping (vkpt/main.c prepare_ubo): bots are never
     // dazzled by a flash, so the player's eye can recover faster to even it out
     ifeqor vid_rtx 1 vid_rtx 3
         pairs --status "how fast your eye recovers from an explosion's flash - bots are never dazzled. normal = as in single player (tm_exposure_speed_bots)" "eye adjustment" tm_exposure_speed_bots normal 1 fast 3 "very fast" 6
     endif
-    action --align "deathmatch flags..." pushmenu gameflags
+    ifle bot_mode 2
+        action --align "deathmatch flags..." pushmenu gameflags
+    endif
     blank
     pairs --live --status "0: no bots, the map to yourself" "bots" bot_count 0 0 1 1 2 2 3 3 4 4 5 5 6 6 7 7 8 8 9 9 10 10 11 11 12 12 13 13 14 14 15 15
     ifge bot_count 1
     ifeq fs_quake3 1
         pairs --live --status "whose player models the bots wear: quake ii's, quake iii arena's, or both" "bot models" bot_models "quake ii" 0 "quake iii arena" 1 both 2
-        pairs --status "how bots think. quake ii: its own bots. quake iii characters: quake iii's bots aim, fight and move by their own characters and rules. quake iii engine: quake iii's whole bot ai and navigation, on maps with its .aas (quake iii's own), and quake iii characters elsewhere (bot_q3_ai)" "bot ai" bot_q3_ai "quake ii" 0 "quake iii characters" 1 "quake iii engine" 2
+        ifle bot_mode 2
+            pairs --status "how bots think. quake ii: its own bots. quake iii characters: quake iii's bots aim, fight and move by their own characters and rules. quake iii engine: quake iii's whole bot ai and navigation, on maps with its .aas (quake iii's own), and quake iii characters elsewhere (bot_q3_ai)" "bot ai" bot_q3_ai "quake ii" 0 "quake iii characters" 1 "quake iii engine" 2
+        endif
         ifeq bot_q3_ai 2
-        ifge bot_mode 1
+        ifeqor bot_mode 1 bot_mode 2
             pairs --status "who leads your team. bots: a bot leads and gives the orders - say i am the leader in team chat to take over, i quit being the leader to hand it back. you: quake iii's rule - your bots defend until you order them (bot_q3_human_leader)" "team leader" bot_q3_human_leader bots 0 you 1
         endif
         endif
@@ -1668,7 +1704,7 @@ begin botmatch
     ifge bot_count 1
         action --align --status "new faces: every bot in another skin" "shuffle bots" "bot_lineup shuffle"
     endif
-    ifge bot_mode 1
+    ifeqor bot_mode 1 bot_mode 2
         action --align --status "which side you and each bot play on - auto evens the teams out" "teams..." pushmenu botteams
     endif
     ifge bot_count 1
@@ -1717,6 +1753,7 @@ begin botmatch
         pairs --status "enter: pick its model and skin, left and right: its skill" --command "set _ui_botslot 15; pushmenu botpick" "$_ui_botlabel15" bot_skill15 practice 0 easy 1 medium 2 hard 3 expert 4 nightmare 5
     endif
     blank
+    ifle bot_mode 2
     ifeq bot_mapset 1
     ifeq bot_mode 2
         action --align "start match" "forcemenuoff; set sp_campaign 0; set bot_match 1; set teamplay 0; set ctf 1; deathmatch 1; coop 0; maxclients 16; set cheats $bot_cheats; map $bot_map_q3ctf force"
@@ -1748,7 +1785,14 @@ begin botmatch
     ifeq _ui_botpack 5
         action --align "start match" "forcemenuoff; set sp_campaign 0; set bot_match 1; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; maxclients 16; set cheats $bot_cheats; map $bot_map_any force"
     endif
+    ifeq _ui_botpack 6
+        action --align "start match" "forcemenuoff; set sp_campaign 0; set bot_match 1; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; maxclients 16; set cheats $bot_cheats; map $bot_map_q2sp force"
     endif
+    endif
+    endif
+    endif
+    ifeq bot_mode 3
+        action --align "start match" "forcemenuoff; set sp_campaign 0; set bot_match 1; set teamplay 0; set ctf 0; deathmatch 0; coop 1; skill $bot_coop_skill; maxclients 16; set cheats $bot_cheats; map $bot_map_q2sp force"
     endif
 end
 

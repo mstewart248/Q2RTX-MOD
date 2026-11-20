@@ -1223,6 +1223,13 @@ void    SelectSpawnPoint(edict_t *ent, vec3_t origin, vec3_t angles)
 {
     edict_t *spot = NULL;
 
+    // a co-op bot: beside a person, not on a start someone may stand on
+    // (g_bot.c CO-OP)
+    if (Bot_CoopSpawnSpot(ent, origin, angles)) {
+        spawn_spot = NULL;
+        return;
+    }
+
     spawn_for = ent;
     if (G_CTF())
         spot = CTF_SpawnPoint(ent);
@@ -1645,7 +1652,9 @@ void PutClientInServer(edict_t *ent)
     } else
         client->resp.spectator = false;
 
-    if (!KillBox(ent)) {
+    // a co-op bot never telefrags: with no room beside anyone it shares a
+    // start rather than kill the person on it (g_bot.c CO-OP)
+    if (!(coop->value && !deathmatch->value && Bot_IsBot(ent)) && !KillBox(ent)) {
         // could't spawn in?
     }
 

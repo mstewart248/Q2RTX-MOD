@@ -436,6 +436,7 @@ SET(SRC_VKPT
 	refresh/vkpt/freecam.c
 	refresh/vkpt/main.c
 	refresh/vkpt/material.c
+	refresh/vkpt/mat_author.c
 	refresh/vkpt/matrix.c
 	refresh/vkpt/mgpu.c
 	refresh/vkpt/models.c

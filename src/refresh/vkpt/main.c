@@ -4887,6 +4887,7 @@ process_render_feedback(ref_feedback_t *feedback, mleaf_t* viewleaf, bool* sun_v
 		ReadbackBuffer readback;
 		vkpt_readback(&readback);
 		vkpt_flow_stats(&readback);
+		MAT_AuthorReadback(&readback);
 		if (readback.material != ~0u)
 		{
 			int material_id = readback.material & MATERIAL_INDEX_MASK;
@@ -6578,6 +6579,9 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 	}
 
 	ubo->num_cameras = wm->num_cameras;
+
+	// 'mat author': the brush cursor and the map it paints (mat_author.c)
+	MAT_AuthorFillUBO(ubo);
 }
 
 /* pt_fog_froxel_dyn_split puts a cluster's model lights on the SHORT froxel
@@ -8714,6 +8718,8 @@ R_EndFrame_RTX(void)
 
 	// 'mat print's picture of the material, over the console
 	MAT_DrawPreview();
+	// 'mat author's panel, map view and brush cursor
+	MAT_AuthorDraw();
 
 	if (cvar_profiler->integer) {
 		VkCommandBuffer cmd_buf = vkpt_begin_command_buffer(&qvk.cmd_buffers_transfer);
