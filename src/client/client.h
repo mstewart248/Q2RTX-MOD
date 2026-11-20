@@ -1468,6 +1468,7 @@ bool CL_RocketUnderwater(const vec3_t origin);
 void CL_RocketWaterLight(const vec3_t origin);
 void CL_DiminishingTrail(const vec3_t start, const vec3_t end, centity_t *old, int flags);
 void CL_DiminishingTrailCount(const vec3_t start, const vec3_t end, int *trailcount, int flags);
+void CL_DiminishingTrailDrops(const vec3_t start, const vec3_t end, int *trailcount, int flags, int drops);
 bool CL_BloodSpheresActive(void);
 void CL_FlyEffect(centity_t *ent, const vec3_t origin);
 void CL_BfgParticles(entity_t *ent);

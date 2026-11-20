@@ -136,6 +136,7 @@ static cvar_t   *cl_q3_debug;
 static cvar_t   *cl_q3_plasma_from_gun;
 static cvar_t   *cl_q3_gibs_time;
 static cvar_t   *cl_q3_gibs_max;
+static cvar_t   *cl_q3_gib_drops;
 
 // cl_q3_debug 1: what the plasma ball, the marks and the impact flashes did,
 // once a second (q3w_debug_print) - Matt saw none of them on 11-18; the
@@ -2335,7 +2336,8 @@ sphereical blood ... If someone has the blood simulation turned off maybe
 they should just get the quake 3 blood graphics and effects. The blood also
 sometimes leaves decals"):
   - with the blood simulation on, each piece trails the sphere drip Quake
-    II's gibs do (CL_DiminishingTrailCount), and its first landing throws a
+    II's gibs do, cl_q3_gib_drops times as thick (CL_DiminishingTrailDrops;
+    3 by default - Matt, 11-19), and its first landing throws a
     splash of spheres that stain where they fall
   - with it off, Quake III's own: a puff of its bloodTrail every 150 ms in
     the air (20 units, growing as it falls 40 over 2 s), and its bloodMark on
@@ -2431,7 +2433,8 @@ static void q3w_gib_trail(q3wgib_t *g, const vec3_t from, const vec3_t to, int m
         return;
 
     if (!q3w_blood_pictures()) {
-        CL_DiminishingTrailCount(from, to, &g->trailcount, EF_GIB);
+        CL_DiminishingTrailDrops(from, to, &g->trailcount, EF_GIB,
+                                 Cvar_ClampInteger(cl_q3_gib_drops, 1, 8));
         return;
     }
 
@@ -2715,6 +2718,9 @@ void CL_Q3W_Init(void)
     // pieces there can be (eleven a gibbing); past that the oldest go
     cl_q3_gibs_time = Cvar_Get("cl_q3_gibs_time", "-1", CVAR_ARCHIVE);
     cl_q3_gibs_max = Cvar_Get("cl_q3_gibs_max", "512", CVAR_ARCHIVE);
+    // droplets for each drip of a gib's blood trail with the simulation on
+    // (Matt, 11-19: "3x the amount of blood in the trails"); Blood menu
+    cl_q3_gib_drops = Cvar_Get("cl_q3_gib_drops", "3", CVAR_ARCHIVE);
 
     CL_Q3W_Clear();
 }

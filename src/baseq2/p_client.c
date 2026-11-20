@@ -997,11 +997,46 @@ static edict_t *NextDeathmatchSpot(edict_t *spot)
     return NULL;
 }
 
+/* A live player stands on the spot: spawning there telefrags them (Quake
+   III's SpotWouldTelefrag). Two player boxes meet when their centres are
+   within 32 across and 56 up; 64 either way covers both, with the 9 unit
+   spawn lift. */
+#define SPOT_TELEFRAG_RANGE     64
+
+static bool SpotOccupied(edict_t *spot)
+{
+    return PlayersRangeFromSpot(spot) < SPOT_TELEFRAG_RANGE;
+}
+
+// the spots a random pick may take: not `skip1` / `skip2`, and not one a
+// live player is standing on unless `occupied` allows it
+static bool SpotPickable(edict_t *spot, edict_t *skip1, edict_t *skip2, bool occupied)
+{
+    if (spot == skip1 || spot == skip2)
+        return false;
+    return occupied || !SpotOccupied(spot);
+}
+
+/* A random spot, not the two nearest to a player and never one a player is
+   standing on.
+
+   Vanilla Quake II only kept off the two nearest, so with three or more
+   players on spots a new one could land on any of the others. Its note of
+   the two nearest also lost one: a nearer spot found later replaced the
+   nearest without moving it down to second, so a player who had stepped a
+   little off their spot could lose it from the pair. A bot match on q3dm17
+   telefragged the host on joining, twice in a row (Matt, 2026-11-19: "me and
+   all the bots start on the same deathmatch start"; his log: "MinusHuman1
+   tried to invade Razor 2's personal space" as the second bot came in).
+
+   When every spot but the two nearest has someone on it, the two nearest are
+   allowed back if free; when every spot is taken, any spot will do (the
+   telefrag meltdown Quake II always had then). */
 edict_t *SelectRandomDeathmatchSpawnPoint(void)
 {
     edict_t *spot, *spot1, *spot2;
-    int     count = 0;
-    int     selection;
+    int     count = 0, pickable;
+    int     selection, pass;
     float   range, range1, range2;
 
     spot = NULL;
@@ -1012,6 +1047,9 @@ edict_t *SelectRandomDeathmatchSpawnPoint(void)
         count++;
         range = PlayersRangeFromSpot(spot);
         if (range < range1) {
+            // the old nearest is now the second nearest
+            range2 = range1;
+            spot2 = spot1;
             range1 = range;
             spot1 = spot;
         } else if (range < range2) {
@@ -1023,21 +1061,31 @@ edict_t *SelectRandomDeathmatchSpawnPoint(void)
     if (!count)
         return NULL;
 
-    if (count <= 2) {
+    if (count <= 2)
         spot1 = spot2 = NULL;
-    } else
-        count -= 2;
 
-    selection = Q_rand_uniform(count);
+    // 0: free and not the two nearest; 1: free; 2: anything
+    for (pass = 0; pass < 3; pass++) {
+        edict_t *skip1 = pass ? NULL : spot1;
+        edict_t *skip2 = pass ? NULL : spot2;
+        bool    occupied = pass == 2;
 
-    spot = NULL;
-    do {
-        spot = NextDeathmatchSpot(spot);
-        if (spot == spot1 || spot == spot2)
-            selection++;
-    } while (selection--);
+        pickable = 0;
+        spot = NULL;
+        while ((spot = NextDeathmatchSpot(spot)) != NULL)
+            if (SpotPickable(spot, skip1, skip2, occupied))
+                pickable++;
+        if (!pickable)
+            continue;
 
-    return spot;
+        selection = Q_rand_uniform(pickable);
+        spot = NULL;
+        while ((spot = NextDeathmatchSpot(spot)) != NULL)
+            if (SpotPickable(spot, skip1, skip2, occupied) && !selection--)
+                return spot;
+    }
+
+    return NextDeathmatchSpot(NULL);
 }
 
 /*

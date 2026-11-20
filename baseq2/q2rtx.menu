@@ -868,6 +868,10 @@ begin blood
             "collide with the world" cl_blood_collision
         blank
         action --align "droplet look and detail..." pushmenu blood_droplets
+        ifeq fs_quake3 1
+            range --status "how thick a Quake III gib's blood trail is: each drip becomes this many droplets, a little apart. 1 is the trail a Quake II gib leaves (cl_q3_gib_drops)" \
+                "quake iii gib trail" cl_q3_gib_drops 1 8 1
+        endif
 
         ifeq cl_blood_collision 1
             blank

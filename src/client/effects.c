@@ -6514,6 +6514,15 @@ void CL_DiminishingTrail(const vec3_t start, const vec3_t end, centity_t *old, i
 // by the client (q3weapons.c), each keeping its own count (1024 to start)
 void CL_DiminishingTrailCount(const vec3_t start, const vec3_t end, int *trailcount, int flags)
 {
+    CL_DiminishingTrailDrops(start, end, trailcount, flags, 1);
+}
+
+/* The same trail with `drops` particles wherever it would put one - each
+   with its own jitter and speed, so a drip becomes a small cluster. A
+   Quake III gib's trail takes cl_q3_gib_drops (q3weapons.c); the trail
+   still thins out over its flight exactly as with one. */
+void CL_DiminishingTrailDrops(const vec3_t start, const vec3_t end, int *trailcount, int flags, int drops)
+{
     vec3_t      move;
     vec3_t      vec;
     float       len;
@@ -6545,7 +6554,7 @@ void CL_DiminishingTrailCount(const vec3_t start, const vec3_t end, int *trailco
         len -= dec;
 
         // drop less particles as it flies
-        if ((Q_rand() & 1023) < *trailcount) {
+        if ((Q_rand() & 1023) < *trailcount) for (int d = 0; d < drops; d++) {
             p = CL_AllocParticle();
             if (!p)
                 return;
