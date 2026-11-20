@@ -1319,15 +1319,15 @@ VkResult vkpt_blood_initialize(void)
 	// default, so THESE STRINGS MUST MATCH the UBO_CVAR_DO list in global_ubo.h.
 	Cvar_Get("pt_blood_roughness",       "0.06", CVAR_ARCHIVE);
 	Cvar_Get("pt_blood_specular",        "1.6",  CVAR_ARCHIVE);
-	Cvar_Get("pt_blood_normal_strength", "0.35", CVAR_ARCHIVE);
+	Cvar_Get("pt_blood_normal_strength", "0.9",  CVAR_ARCHIVE);
 	Cvar_Get("pt_blood_normal_scale",    "1.4",  CVAR_ARCHIVE);
 	Cvar_Get("pt_blood_normal_speed",    "1.0",  CVAR_ARCHIVE);
 	Cvar_Get("pt_blood_splat_dark",      "0.55", CVAR_ARCHIVE);
 	Cvar_Get("pt_blood_thin_dark",       "0.12", CVAR_ARCHIVE);
 	Cvar_Get("pt_blood_thin_power",      "2.0",  CVAR_ARCHIVE);
 	Cvar_Get("pt_blood_skin_dark",       "0.45", CVAR_ARCHIVE);   // cl_blood_skin's look
-	Cvar_Get("pt_blood_skin_roughness",  "0.1",  CVAR_ARCHIVE);
-	Cvar_Get("pt_blood_skin_specular",   "1.0",  CVAR_ARCHIVE);
+	Cvar_Get("pt_blood_skin_roughness",  "0.06", CVAR_ARCHIVE);
+	Cvar_Get("pt_blood_skin_specular",   "1.2",  CVAR_ARCHIVE);
 
 	// Distance LOD. Inside _near a droplet gets the full pt_blood_tess; past
 	// _far it drops two levels; between them, one. Set _near very large to

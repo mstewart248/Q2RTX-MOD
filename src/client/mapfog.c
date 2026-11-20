@@ -598,7 +598,8 @@ void CL_InitMapFog(void)
 {
     // Registered at client init, not lazily at map load, because the video
     // menu binds to these by name when it is built.
-    cl_fog = Cvar_Get("cl_fog", "0", CVAR_ARCHIVE);
+    // On by default (Matt, 2026-11-20: his rerelease settings became the defaults)
+    cl_fog = Cvar_Get("cl_fog", "1", CVAR_ARCHIVE);
     cl_fog->changed = cl_fog_changed;
     cl_fog_changed(cl_fog);
 
@@ -610,17 +611,20 @@ void CL_InitMapFog(void)
        Registered here only to make them ARCHIVE; the renderer owns them (the
        first two are UBO cvars in global_ubo.h, the other three are read in
        vertex_buffer.c) and the defaults must match theirs. A map cfg may set
-       any of them with mapcvar. */
-    Cvar_Get("pt_fog_scale_sun",      "2.0", CVAR_ARCHIVE);   // physical sky
-    Cvar_Get("pt_fog_scale_skybox",   "1.0", CVAR_ARCHIVE);   // the map's skybox
-    Cvar_Get("pt_fog_scale_emissive", "1.0", CVAR_ARCHIVE);
-    Cvar_Get("pt_fog_scale_dynamic",  "1.0", CVAR_ARCHIVE);
-    Cvar_Get("pt_fog_scale_model",    "1.0", CVAR_ARCHIVE);
-    Cvar_Get("pt_fog_lava_scale",     "5.0", CVAR_ARCHIVE);   // lava, x10 in vertex_buffer.c
+       any of them with mapcvar.
+       Defaults = Matt's own settings (2026-11-20; were 2 / 1 / 1 / 1 / 1 / 5).
+       The rerelease map cfgs that set these with mapcvar are unaffected. */
+    Cvar_Get("pt_fog_scale_sun",      "0.2",  CVAR_ARCHIVE);   // physical sky
+    Cvar_Get("pt_fog_scale_skybox",   "0.01", CVAR_ARCHIVE);   // the map's skybox
+    Cvar_Get("pt_fog_scale_emissive", "0.2",  CVAR_ARCHIVE);
+    Cvar_Get("pt_fog_scale_dynamic",  "0.2",  CVAR_ARCHIVE);
+    Cvar_Get("pt_fog_scale_model",    "0.2",  CVAR_ARCHIVE);
+    Cvar_Get("pt_fog_lava_scale",     "1.0",  CVAR_ARCHIVE);   // lava, x10 in vertex_buffer.c
 
     // Not a brightness knob - the quality of the physical sky's fog, fast or
     // accurate. See its note in global_ubo.h; the default must match it.
-    Cvar_Get("pt_fog_sky_sun_only",   "1",   CVAR_ARCHIVE);
+    // 0 (accurate) is Matt's (2026-11-20; was 1, fast).
+    Cvar_Get("pt_fog_sky_sun_only",   "0",   CVAR_ARCHIVE);
 }
 
 /*

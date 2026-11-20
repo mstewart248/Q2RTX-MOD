@@ -22,6 +22,15 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "system/system.h"
 #include "shader/froxel_shared.h"
 
+// The froxel grid's size: what its volumes were last MADE with, which is what the
+// dispatches, the UBO (froxel_grid_x/y/z) and the D3D12 backend all read through
+// FROXEL_GRID_X/Y/Z. The settings (pt_fog_froxel_grid, pt_fog_froxel_slices) only
+// reach it through froxel_wanted_grid, at the moment the volumes are (re)made.
+int vkpt_froxel_grid[3] = { FROXEL_GRID_DEFAULT_X, FROXEL_GRID_DEFAULT_Y, FROXEL_GRID_DEFAULT_Z };
+
+static cvar_t *cvar_pt_fog_froxel_grid;
+static cvar_t *cvar_pt_fog_froxel_slices;
+
 static const uint32_t THREAD_GROUP_SIZE = 16;
 static const uint32_t FILTER_THREAD_GROUP_SIZE = 16;
 
@@ -175,8 +184,8 @@ enum {
 // Smallest voxel edge, so a small map does not get a needlessly fine grid.
 #define SKY_EXPOSURE_MIN_VOXEL 8.f
 
-static void create_froxel_volumes(void);
-static void destroy_froxel_volumes(void);
+static void create_froxel_volumes(bool grid_only);
+static void destroy_froxel_volumes(bool grid_only);
 
 static void create_image_views(void);
 static void create_pipeline_layout(void);
@@ -194,20 +203,50 @@ extern cvar_t *physical_sky_space;
    memset that clears god_rays' copies. */
 void vkpt_god_rays_init_cvars(void)
 {
-	// DEFAULTS OFF while the grid's in-scatter magnitude is still being
-	// calibrated against the march - see the note in froxel_scatter.comp.
-	// Same treatment cl_fog itself got: land it, default it off, tune in play.
-	cvar_pt_fog_froxel = Cvar_Get("pt_fog_froxel", "0", CVAR_ARCHIVE);
+	// On by default. This said "0" long after the UBO_CVAR_DO default became 1.0;
+	// the UBO list registers first in vkpt_init_frontend, so 1 was always the real
+	// default and this "0" never took effect. Matched 2026-11-20.
+	cvar_pt_fog_froxel = Cvar_Get("pt_fog_froxel", "1", CVAR_ARCHIVE);
 
 	// Must match the UBO_CVAR_DO default in global_ubo.h - the shaders read that
 	// copy, this one only decides whether to dispatch the two extra passes.
-	cvar_pt_fog_restir = Cvar_Get("pt_fog_restir", "0", CVAR_ARCHIVE);
+	cvar_pt_fog_restir = Cvar_Get("pt_fog_restir", "1", CVAR_ARCHIVE);
 
 	god_rays.intensity = Cvar_Get("gr_intensity", "2.0", 0);
 	god_rays.eccentricity = Cvar_Get("gr_eccentricity", "0.75", 0);
 	god_rays.enable = Cvar_Get("gr_enable", "1", 0);
 
 	cvar_pt_fog_sky_exposure_bake = Cvar_Get("pt_fog_sky_exposure_bake", "16384", 0);
+
+	/* THE FROXEL GRID'S SIZE (fog menu "fog grid detail" / "fog grid depth"). Live:
+	   vkpt_froxel_ensure remakes the volumes the next frame. See froxel_shared.h
+	   for which axis does what - in short, the slices are the NOISE axis (more
+	   independent samples along every view ray) and the grid is the DETAIL axis
+	   (smaller cells: tighter glow round a fixture, sharper shaft edges, finer
+	   but not less noise). Cost and VRAM scale with the cell count. */
+	cvar_pt_fog_froxel_grid = Cvar_Get("pt_fog_froxel_grid", "1", CVAR_ARCHIVE);
+	cvar_pt_fog_froxel_slices = Cvar_Get("pt_fog_froxel_slices", va("%d", FROXEL_GRID_DEFAULT_Z), CVAR_ARCHIVE);
+}
+
+// The size pt_fog_froxel_grid (x and y, scaling the defaults) and
+// pt_fog_froxel_slices (z) ask for, clamped to what froxel_shared.h allows.
+static void froxel_wanted_grid(int out[3])
+{
+	float s = cvar_pt_fog_froxel_grid ? cvar_pt_fog_froxel_grid->value : 1.f;
+	if (!(s >= FROXEL_GRID_MIN_SCALE))   // also catches NaN
+		s = FROXEL_GRID_MIN_SCALE;
+	if (s > FROXEL_GRID_MAX_SCALE)
+		s = FROXEL_GRID_MAX_SCALE;
+
+	int z = cvar_pt_fog_froxel_slices ? cvar_pt_fog_froxel_slices->integer : FROXEL_GRID_DEFAULT_Z;
+	if (z < FROXEL_GRID_MIN_Z)
+		z = FROXEL_GRID_MIN_Z;
+	if (z > FROXEL_GRID_MAX_Z)
+		z = FROXEL_GRID_MAX_Z;
+
+	out[0] = (int)(FROXEL_GRID_DEFAULT_X * s + 0.5f);
+	out[1] = (int)(FROXEL_GRID_DEFAULT_Y * s + 0.5f);
+	out[2] = z;
 }
 
 VkResult vkpt_initialize_god_rays(void)
@@ -252,7 +291,7 @@ VkResult vkpt_initialize_god_rays(void)
 
 VkResult vkpt_destroy_god_rays(void)
 {
-	destroy_froxel_volumes();
+	destroy_froxel_volumes(false);
 
 	buffer_destroy(&god_rays.sky_exposure_mask);
 	sky_exposure.have_map = false;
@@ -998,7 +1037,14 @@ void vkpt_god_rays_prepare_ubo(
 	ubo->god_rays_eccentricity = god_rays.eccentricity->value;
 
 	// allocate the froxel volumes if this is the first frame that wants them
+	// (or remake them at a new pt_fog_froxel_grid / pt_fog_froxel_slices size)
 	vkpt_froxel_ensure();
+
+	// After the ensure, so the shaders index the volumes this frame binds
+	ubo->froxel_grid_x = FROXEL_GRID_X;
+	ubo->froxel_grid_y = FROXEL_GRID_Y;
+	ubo->froxel_grid_z = FROXEL_GRID_Z;
+	ubo->froxel_grid_pad = 0;
 
 	// pt_fog_sky_exposure. 2, the default, means "only under the physical sky":
 	// with a map's own skybox the rerelease maps' heavy fog went dark under every
@@ -1509,12 +1555,20 @@ are created once and a vid_restart leaves them alone.
 They stay in VK_IMAGE_LAYOUT_GENERAL for their whole life.  A storage image
 that is also sampled has to be in GENERAL for the store, and bouncing to
 SHADER_READ_ONLY_OPTIMAL and back between the two uses would buy nothing here.
+
+grid_only: a RESIZE (pt_fog_froxel_grid / pt_fog_froxel_slices) - the grid's
+volumes only, at vkpt_froxel_grid, which the caller has already set. The sky
+exposure volume is world space, not a froxel grid, so it and its bake stay, and
+so does the sampler.
 =================
 */
-static void create_froxel_volumes(void)
+static void create_froxel_volumes(bool grid_only)
 {
-	if (god_rays.froxel_initialized)
+	if (god_rays.froxel_initialized && !grid_only)
 		return;
+
+	if (!grid_only)
+		froxel_wanted_grid(vkpt_froxel_grid);
 
 	enum { MAX_FROXEL_VOLUMES = MAX_FRAMES_IN_FLIGHT * 3 + 2 + 1 };
 
@@ -1579,13 +1633,16 @@ static void create_froxel_volumes(void)
 
 	// pt_fog_sky_exposure: world space, not a froxel grid - its own size. Cleared
 	// to zero with the rest, which the shaders never read: sky_exposure_ready
-	// stays 0 until a bake has finished.
-	image_slots[num_volumes] = &god_rays.sky_exposure.image;
-	views[num_volumes] = &god_rays.sky_exposure.view;
-	memories[num_volumes] = &god_rays.sky_exposure.memory;
-	formats[num_volumes] = VK_FORMAT_R32_UINT;
-	extents[num_volumes] = (VkExtent3D) { SKY_EXPOSURE_DIM_X, SKY_EXPOSURE_DIM_Y, SKY_EXPOSURE_DIM_Z };
-	num_volumes++;
+	// stays 0 until a bake has finished. Kept through a resize.
+	if (!grid_only)
+	{
+		image_slots[num_volumes] = &god_rays.sky_exposure.image;
+		views[num_volumes] = &god_rays.sky_exposure.view;
+		memories[num_volumes] = &god_rays.sky_exposure.memory;
+		formats[num_volumes] = VK_FORMAT_R32_UINT;
+		extents[num_volumes] = (VkExtent3D) { SKY_EXPOSURE_DIM_X, SKY_EXPOSURE_DIM_Y, SKY_EXPOSURE_DIM_Z };
+		num_volumes++;
+	}
 
 	for (int i = 0; i < num_volumes; i++)
 	{
@@ -1657,7 +1714,8 @@ static void create_froxel_volumes(void)
 		.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
 		.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK
 	};
-	_VK(vkCreateSampler(qvk.device, &sampler_create_info, NULL, &god_rays.froxel_sampler));
+	if (!grid_only)
+		_VK(vkCreateSampler(qvk.device, &sampler_create_info, NULL, &god_rays.froxel_sampler));
 
 	// Move all three out of UNDEFINED and zero them, once.  The first frame's
 	// history read happens before anything has written that volume, and a
@@ -1721,12 +1779,48 @@ may still be reading means idling the device mid-frame.  So the memory is held
 until the renderer is torn down.  Turning the grid on is a one-way decision for
 the session; turning it off stops the passes running but does not give the VRAM
 back until a vid_restart.
+
+A SIZE CHANGE (pt_fog_froxel_grid / pt_fog_froxel_slices) is the one exception,
+and it pays exactly that price on purpose: the device is idled once, the grid's
+volumes are remade at the new size and the sets rewritten. A menu step is a
+one-frame hitch, and the fog fades back in over its history (the new volumes
+start at zero).
 =================
 */
+static void froxel_resize_if_changed(void)
+{
+	int want[3];
+	froxel_wanted_grid(want);
+	if (!memcmp(want, vkpt_froxel_grid, sizeof(want)))
+		return;
+
+	memcpy(vkpt_froxel_grid, want, sizeof(want));
+
+	// D3D12: its create remakes the grid itself when the size it was made with
+	// differs from vkpt_froxel_grid. A failure (out of VRAM) leaves the grid off
+	// until the renderer restarts, as a failed first create does.
+	if (!qvk.device)
+	{
+		if (!vkpt_prep_backend->create_froxel_volumes || !vkpt_prep_backend->create_froxel_volumes())
+			god_rays.froxel_initialized = false;
+		return;
+	}
+
+	// the sets name the old views, and a frame in flight - on either queue under
+	// pt_async_compute - may still be reading them
+	vkDeviceWaitIdle(qvk.device);
+	destroy_froxel_volumes(true);
+	create_froxel_volumes(true);
+	update_descriptor_set();
+}
+
 void vkpt_froxel_ensure(void)
 {
 	if (god_rays.froxel_initialized)
+	{
+		froxel_resize_if_changed();
 		return;
+	}
 
 	if (!cvar_pt_fog_froxel || !cvar_pt_fog_froxel->integer)
 		return;
@@ -1739,18 +1833,21 @@ void vkpt_froxel_ensure(void)
 	// the D3D12 renderer's, made through its backend (which remembers a failure)
 	if (!qvk.device)
 	{
+		froxel_wanted_grid(vkpt_froxel_grid);
 		if (vkpt_prep_backend->create_froxel_volumes && vkpt_prep_backend->create_froxel_volumes())
 			god_rays.froxel_initialized = true;
 		return;
 	}
 
-	create_froxel_volumes();
+	create_froxel_volumes(false);
 
 	// the sets were written without bindings 2-5; they exist now
 	update_descriptor_set();
 }
 
-static void destroy_froxel_volumes(void)
+// grid_only: the resize's half - the grid's volumes, not the sky exposure volume,
+// its bake or the sampler, and the grid stays "initialized" (it is remade at once)
+static void destroy_froxel_volumes(bool grid_only)
 {
 	if (!god_rays.froxel_initialized)
 		return;
@@ -1783,16 +1880,20 @@ static void destroy_froxel_volumes(void)
 		vkFreeMemory(qvk.device, god_rays.froxel_sky[i].memory, NULL);
 	}
 
+	memset(god_rays.froxel_scatter, 0, sizeof(god_rays.froxel_scatter));
+	memset(god_rays.froxel_integrated, 0, sizeof(god_rays.froxel_integrated));
+	memset(god_rays.froxel_reservoir, 0, sizeof(god_rays.froxel_reservoir));
+	memset(god_rays.froxel_sky, 0, sizeof(god_rays.froxel_sky));
+
+	if (grid_only)
+		return;
+
 	vkDestroyImageView(qvk.device, god_rays.sky_exposure.view, NULL);
 	vkDestroyImage(qvk.device, god_rays.sky_exposure.image, NULL);
 	vkFreeMemory(qvk.device, god_rays.sky_exposure.memory, NULL);
 
 	vkDestroySampler(qvk.device, god_rays.froxel_sampler, NULL);
 
-	memset(god_rays.froxel_scatter, 0, sizeof(god_rays.froxel_scatter));
-	memset(god_rays.froxel_integrated, 0, sizeof(god_rays.froxel_integrated));
-	memset(god_rays.froxel_reservoir, 0, sizeof(god_rays.froxel_reservoir));
-	memset(god_rays.froxel_sky, 0, sizeof(god_rays.froxel_sky));
 	memset(&god_rays.sky_exposure, 0, sizeof(god_rays.sky_exposure));
 	god_rays.froxel_sampler = VK_NULL_HANDLE;
 	god_rays.froxel_initialized = false;

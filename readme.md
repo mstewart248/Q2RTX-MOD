@@ -477,9 +477,8 @@ the **density of a real scattering medium** instead.
 | `0` | No fog. Under the physical sky the original Quake II RTX sun shafts still show; `gr_enable 0` turns those off too. |
 | `1` | **Volumetric fog**: a real medium lit by the sun, the sky and every light in the map, each sampled with its own occlusion ray, so inverse square falls out of the pdf and walls cast shadows into it. |
 
-It is on by default in the remaster, whose maps author fog, and off in the
-classic campaign. A map with no fog of its own gets an even white medium, so
-turning it on looks the same in both. Older configs' `cl_fog 2` and `3` now read
+It is on by default, in the remaster and the classic campaign alike. A map with
+no fog of its own gets an even white medium, so it looks the same in both. Older configs' `cl_fog 2` and `3` now read
 as `1`.
 
 **The map's fog sets the shape, not the brightness.** The authored density is
@@ -489,28 +488,39 @@ the fog is comes only from six knobs, one per kind of light, plus each light's o
 
 | cvar | Default | What it scales |
 |---|---|---|
-| `pt_fog_scale_sun` | `2.0` | sunlight under the physical sky: the shafts through windows and openings |
-| `pt_fog_scale_skybox` | `1.0` | the sky's own light: the soft glow under open sky, under a map's skybox (and the physical sky when `pt_fog_sky_sun_only 0`) |
-| `pt_fog_scale_emissive` | `1.0` | the map's emissive surfaces, which are most of its lights |
-| `pt_fog_scale_dynamic` | `1.0` | weapon fire, muzzle flashes, flares, the flashlight and placed lights |
-| `pt_fog_scale_model` | `1.0` | lights on models |
-| `pt_fog_lava_scale` | `5.0` | lava's glow in the air above it; how lava lights the room is unchanged |
+| `pt_fog_scale_sun` | `0.2` | sunlight under the physical sky: the shafts through windows and openings |
+| `pt_fog_scale_skybox` | `0.01` | the sky's own light: the soft glow under open sky, under a map's skybox (and the physical sky when `pt_fog_sky_sun_only 0`) |
+| `pt_fog_scale_emissive` | `0.2` | the map's emissive surfaces, which are most of its lights |
+| `pt_fog_scale_dynamic` | `0.2` | weapon fire, muzzle flashes, flares, the flashlight and placed lights |
+| `pt_fog_scale_model` | `0.2` | lights on models |
+| `pt_fog_lava_scale` | `1.0` | lava's glow in the air above it; how lava lights the room is unchanged |
 
 `pt_fog_sky_sun_only` picks how the physical sky lights the fog: `1` (fast) is the
-sun's shafts through the shadow map only; `0` (accurate) adds the sky's own light,
-with a traced ray per fog cell so it clips crisply under roofs. The rerelease's
+sun's shafts through the shadow map only; `0` (accurate, the default) adds the
+sky's own light, with a traced ray per fog cell so it clips crisply under roofs. The rerelease's
 map cfgs tune the six knobs per map with `mapcvar`.
 
 **The froxel grid** (`pt_fog_froxel`, on by default) is what `cl_fog 1` renders
-in. It is a 160 × 88 × 64 view-frustum-aligned volume — screen-space in X and Y,
+in. It is a 160 × 88 × 128 view-frustum-aligned volume — screen-space in X and Y,
 and *exponentially* distributed in Z, because a linear slice distribution would
-spend most of its cells on distance nobody can resolve. That is ~900k cells
+spend most of its cells on distance nobody can resolve. That is ~1.8M cells
 against the tens of millions of light evaluations a per-pixel march costs, and
 because each cell is a fixed point in view space, last frame's result can be
 reprojected into this one, which is what removes the noise
 (`pt_fog_froxel_history`, rate-corrected by `pt_fog_froxel_history_hz` so the
 *time* constant stays fixed whatever framerate the machine runs at).
 `pt_fog_froxel 0` falls back to the old per-pixel march, kept for comparison.
+
+The grid's size is a setting (fog menu, live, archived):
+
+| cvar | Default | Range | What it does |
+|---|---|---|---|
+| `pt_fog_froxel_grid` | `1` | `0.5`–`2` | scales X and Y (160 × 88 at 1). Finer cells keep the glow tighter around a light and shaft edges sharper; the noise gets finer-grained, not weaker. Cost and VRAM go with the square |
+| `pt_fog_froxel_slices` | `128` | `32`–`256` | Z, the slices away from the eye. This is the *noise* axis: every view ray sums one sample per slice, so doubling it halves the variance. Cost and VRAM go with the count |
+
+The grid takes 80 bytes a cell (~144 MB at the default size). Changing either
+waits for the GPU once and remakes the volumes, so the fog fades back in over
+about a history length.
 
 Also in the fog system:
 
@@ -750,23 +760,23 @@ then asks for the difficulty; a bot match opens its own page instead:
   game it plays in its team's uniform whatever you pick; the skin gives it its
   name.
 
-### Co-op with bots
-
-**Co-op** in the game mode row plays a *Quake II* campaign map with the bots on
-your side, at the difficulty you pick, starting from any of the campaign's 39
-maps. The bots fight the monsters and never a player, and hold fire when one of
-you is in the way. Friendly fire is the page's own setting, as in a team game.
-
-Each bot follows the nearest player. It fights and picks up what it needs near
-them, and leaves the megahealth, power armour and powerups, and any health or
-armour a player is closer to, for the players. A bot left behind (a door it
-can't open, a lift it missed, or back at the start after dying) appears beside
-its leader, behind them where there is room. It also joins and respawns
-there, never on a start where it would telefrag someone. Bots never take a
-level's exit, so the players decide when to leave; a door that waits for every
-player waits only for the people. The bots come along to the next level with
-everything they carried.
-
+### Co-op with bots
+
+**Co-op** in the game mode row plays a *Quake II* campaign map with the bots on
+your side, at the difficulty you pick, starting from any of the campaign's 39
+maps. The bots fight the monsters and never a player, and hold fire when one of
+you is in the way. Friendly fire is the page's own setting, as in a team game.
+
+Each bot follows the nearest player. It fights and picks up what it needs near
+them, and leaves the megahealth, power armour and powerups, and any health or
+armour a player is closer to, for the players. A bot left behind (a door it
+can't open, a lift it missed, or back at the start after dying) appears beside
+its leader, behind them where there is room. It also joins and respawns
+there, never on a start where it would telefrag someone. Bots never take a
+level's exit, so the players decide when to leave; a door that waits for every
+player waits only for the people. The bots come along to the next level with
+everything they carried.
+
 ### Capture the flag
 
 `ctf 1` in a deathmatch game (the bot match page sets it) plays id's Threewave
@@ -1603,9 +1613,9 @@ Nothing in *Quake II*'s data carries such a number, so the resolution order is:
 
 | Class | cvar | Default | What is in it |
 |---|---|---|---|
-| dynamic | `pt_fog_scale_dynamic` | `1.0` | every `dlight_t`: weapon fire and muzzle flashes, `misc_flare`, `target_light`, the flashlight, the rerelease `dynamic_light` entities, and the lights placed with `light place` |
-| emissive | `pt_fog_scale_emissive` | `1.0` | every triangle of a BSP or model face whose material is `is_light` — with `cl_dynamic_lights 0`, nearly all of a map's lighting |
-| model | `pt_fog_scale_model` | `1.0` | emissive surfaces on md2/md5 models, and beam and laser cylinder lights |
+| dynamic | `pt_fog_scale_dynamic` | `0.2` | every `dlight_t`: weapon fire and muzzle flashes, `misc_flare`, `target_light`, the flashlight, the rerelease `dynamic_light` entities, and the lights placed with `light place` |
+| emissive | `pt_fog_scale_emissive` | `0.2` | every triangle of a BSP or model face whose material is `is_light` — with `cl_dynamic_lights 0`, nearly all of a map's lighting |
+| model | `pt_fog_scale_model` | `0.2` | emissive surfaces on md2/md5 models, and beam and laser cylinder lights |
 | sky | `pt_fog_scale_sky` | `0.0` | sky brushes |
 
 All four are plain (non-archived) cvars, so changing one really does change

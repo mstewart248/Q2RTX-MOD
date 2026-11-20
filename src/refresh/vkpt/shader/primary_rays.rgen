@@ -434,17 +434,53 @@ author_field_owns(uint secondField)
 		&& (global_ubo.pt_fullres_fields == PT_FIELDS_CHECKERBOARD || secondField == 0u);
 }
 
+/* Whether offset q (doubled texels, from the brush's first centre) is inside
+   the brush swept along d - mat_author.c's sweep_row and sweep_inside, the same
+   arithmetic. A box: the t in 0..1 whose centre t d is within h of q on y, then
+   q.x within h.x of t d.x for one of them. Round: within h.x of the segment. */
+bool
+author_swept(vec2 q, vec2 d, vec2 h, bool round_brush)
+{
+	if (round_brush)
+	{
+		float dd = dot(d, d);
+		float t = dd > 0.0 ? clamp(dot(q, d) / dd, 0.0, 1.0) : 0.0;
+		vec2 e = q - d * t;
+		return dot(e, e) <= h.x * h.x;
+	}
+	float t0 = 0.0, t1 = 1.0;
+	if (d.y == 0.0)
+	{
+		if (abs(q.y) > h.y)
+			return false;
+	}
+	else
+	{
+		float ta = (q.y - h.y) / d.y, tb = (q.y + h.y) / d.y;
+		t0 = max(t0, min(ta, tb));
+		t1 = min(t1, max(ta, tb));
+		if (t0 > t1)
+			return false;
+	}
+	float lo = min(t0 * d.x, t1 * d.x) - h.x, hi = max(t0 * d.x, t1 * d.x) + h.x;
+	return q.x >= lo && q.x <= hi;
+}
+
 /* AUTHOR_MASK's bits for a primary surface: 1 = it shows the map being painted
    (the image itself, on whichever material uses it; or, while the map does not
    exist yet, the material), 2 = its texel is inside the brush and would paint,
    4 = a lock (F/P) is on and its texel is outside it, 8 = ... inside it. The
    brush test is mat_author.c's brush_row exactly: doubled texel coordinates, so
-   an even size centres on a texel corner, and the map's tiling wraps. */
+   an even size centres on a texel corner, and the map's tiling wraps. A Quake
+   III stage's own map (author_stage) is the material's surfaces, read through
+   the stage's tcMods; a line (author_line) is the brush swept along it. */
 uint
 author_mask_bits(uint material_id, vec2 tex_coord)
 {
 	bool on;
-	if (global_ubo.author_image != 0)
+	if (global_ubo.author_stage >= 0)
+		on = (material_id & MATERIAL_INDEX_MASK) == uint(global_ubo.author_material);
+	else if (global_ubo.author_image != 0)
 	{
 		MaterialInfo minfo = get_material_info(material_id);
 		uint tex = minfo.roughness_texture;
@@ -458,6 +494,19 @@ author_mask_bits(uint material_id, vec2 tex_coord)
 
 	if (!on)
 		return 0u;
+
+	bool wrap = true;
+	if (global_ubo.author_stage >= 0)
+	{
+		vec4 m = global_ubo.author_stage_tc;
+		tex_coord = vec2(m.x * tex_coord.x + m.y * tex_coord.y, m.z * tex_coord.x + m.w * tex_coord.y)
+			+ global_ubo.author_stage_tc_offset;
+		if (global_ubo.author_stage_clamp != 0)
+		{
+			tex_coord = clamp(tex_coord, vec2(0), vec2(0.99999));
+			wrap = false;
+		}
+	}
 
 	ivec2 size = max(ivec2(global_ubo.author_map_w, global_ubo.author_map_h), ivec2(1));
 	ivec2 texel = clamp(ivec2(floor(fract(tex_coord) * vec2(size))), ivec2(0), size - 1);
@@ -475,15 +524,46 @@ author_mask_bits(uint material_id, vec2 tex_coord)
 		return bits;
 
 	ivec2 d = 2 * texel + 1 - ivec2(global_ubo.author_center2_x, global_ubo.author_center2_y);
-	if (d.x >= size.x) d.x -= 2 * size.x;
-	if (d.x < -size.x) d.x += 2 * size.x;
-	if (d.y >= size.y) d.y -= 2 * size.y;
-	if (d.y < -size.y) d.y += 2 * size.y;
+	ivec2 h = ivec2(global_ubo.author_brush_size, global_ubo.author_brush_h);
+	bool round_brush = global_ubo.author_brush_shape == 0;
 
-	int s = global_ubo.author_brush_size;
-	bool inside = (global_ubo.author_brush_shape != 0)
-		? (abs(d.x) <= s && abs(d.y) <= s)
-		: (d.x * d.x + d.y * d.y <= s * s);
+	if (global_ubo.author_line != 0)
+	{
+		// the brush swept from the centre along (dx2, dy2), which may run over
+		// several copies of a tiled map: every copy of this texel near it
+		ivec2 dl = ivec2(global_ubo.author_line_dx2, global_ubo.author_line_dy2);
+		ivec2 period = 2 * size;
+		ivec2 lo = min(ivec2(0), dl) - h, hi = max(ivec2(0), dl) + h;
+		ivec2 k0 = ivec2(0), k1 = ivec2(0);
+		if (wrap)
+		{
+			k0 = ivec2(ceil(vec2(lo - d) / vec2(period)));
+			k1 = ivec2(floor(vec2(hi - d) / vec2(period)));
+			k1 = min(k1, k0 + 3);
+		}
+		for (int ky = k0.y; ky <= k1.y; ky++)
+		{
+			for (int kx = k0.x; kx <= k1.x; kx++)
+			{
+				vec2 q = vec2(d + ivec2(kx, ky) * period);
+				if (author_swept(q, vec2(dl), vec2(h), round_brush))
+					return bits | 2u;
+			}
+		}
+		return bits;
+	}
+
+	if (wrap)
+	{
+		if (d.x >= size.x) d.x -= 2 * size.x;
+		if (d.x < -size.x) d.x += 2 * size.x;
+		if (d.y >= size.y) d.y -= 2 * size.y;
+		if (d.y < -size.y) d.y += 2 * size.y;
+	}
+
+	bool inside = round_brush
+		? (d.x * d.x + d.y * d.y <= h.x * h.x)
+		: (abs(d.x) <= h.x && abs(d.y) <= h.y);
 	return inside ? (bits | 2u) : bits;
 }
 

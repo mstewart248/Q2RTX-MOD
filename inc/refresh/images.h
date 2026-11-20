@@ -161,8 +161,9 @@ extern bool IMG_ReadPixelsTakesHDR;
 
 // A map's thumbnail (client/levelshot.c): the last frame drawn, read back, its
 // middle 4:3 cut out and shrunk to width x height (averaged in linear light),
-// written as a JPEG at `path` under the game's write directory.
-int IMG_SaveLevelshot(const char *path, int width, int height, int quality);
+// encoded as a JPEG into *data (Z_Malloc'd, the caller Z_Frees it). *brightness
+// is the picture's mean luma, 0..255.
+int IMG_GrabLevelshot(int width, int height, int quality, void **data, size_t *len, float *brightness);
 
 #endif // IMAGES_H
 

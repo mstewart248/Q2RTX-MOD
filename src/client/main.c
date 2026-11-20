@@ -3189,7 +3189,8 @@ static void CL_InitLocal(void)
     // Draw blood as shaded, path-traced spheres instead of the flat particle
     // quads. Read once at SPAWN, so flipping it mid-fight leaves the droplets
     // already in the air alone rather than making them change form in place.
-    cl_blood_spheres = Cvar_Get("cl_blood_spheres", "0", CVAR_ARCHIVE);
+    // On by default since 2026-11-20 (Matt's setting).
+    cl_blood_spheres = Cvar_Get("cl_blood_spheres", "1", CVAR_ARCHIVE);
     cl_blood_sphere_radius = Cvar_Get("cl_blood_sphere_radius", "1.2", CVAR_ARCHIVE);
 
     // Twins of the game's weapon-switch cvars, registered here only so the
@@ -4050,6 +4051,11 @@ void CL_Shutdown(void)
     if (!cl_running || !cl_running->integer) {
         return;
     }
+
+    // a levelshot run's sky and guns are not the player's, and must not be
+    // what CL_WriteConfig below saves; the renderer is still up here for the
+    // sky cvars' callbacks
+    CL_ShutdownLevelshots();
 
     CL_GTV_Shutdown();
 

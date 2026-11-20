@@ -318,6 +318,7 @@ static struct {
     ID3D12Resource      *sky_exposure_mask;
     ID3D12Resource      *froxel[NUM_FROXEL_VOLUMES];
     bool                fog_ready, froxel_made, froxel_failed;
+    int                 froxel_grid[3];     // the vkpt_froxel_grid they were made at
     uint64_t            froxel_bytes;       // the froxel volumes' VRAM (d3d12_world_memory)
 
     cvar_t              *show;              // d3d12_show: TAA_OUTPUT, or a G-buffer image
@@ -1591,15 +1592,28 @@ bool d3d12_world_zero_volume(ID3D12Resource *volume)
 
 bool d3d12_world_froxel_create(void)
 {
-    if (w.froxel_made)
+    if (w.froxel_made && !memcmp(w.froxel_grid, vkpt_froxel_grid, sizeof(w.froxel_grid)))
         return true;
     if (!d3d12_world_fog_ready() || w.froxel_failed)
         return false;
+
+    // A NEW SIZE (pt_fog_froxel_grid / pt_fog_froxel_slices, god_rays.c's
+    // froxel_resize_if_changed): frames in flight read the old volumes through the
+    // sets, so wait for them, then remake every volume but the sky exposure - world
+    // space, not a froxel grid, so it and its bake are kept.
+    if (w.froxel_made) {
+        d3d12_wait_idle();
+        for (int v = 0; v < NUM_FROXEL_VOLUMES; v++)
+            if (v != FROXEL_SKY_EXPOSURE)
+                D3D12_RELEASE(w.froxel[v]);
+        w.froxel_made = false;
+    }
 
     // storage and sampled with no state changes, as the G-buffer: simultaneous-access,
     // in COMMON (god_rays.c keeps its volumes in VK_IMAGE_LAYOUT_GENERAL)
     uint64_t total = 0;
     bool ok = true;
+    bool made[NUM_FROXEL_VOLUMES] = { 0 };
     for (int v = 0; v < NUM_FROXEL_VOLUMES && ok; v++) {
         uint32_t e[3];
         froxel_extent(v, e);
@@ -1613,14 +1627,17 @@ bool d3d12_world_froxel_create(void)
         rd.Format = froxel_format(v);
         rd.SampleDesc.Count = 1;
         rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
-        ok = D3D_CHECK(ID3D12Device5_CreateCommittedResource(d3d.device, &hp, D3D12_HEAP_FLAG_NONE, &rd,
-                                                            D3D12_RESOURCE_STATE_COMMON, NULL, &IID_ID3D12Resource,
-                                                            (void **)&w.froxel[v]));
-        if (!ok) {
-            w.froxel[v] = NULL;
-            break;
+        if (!w.froxel[v]) {     // a resize keeps the sky exposure volume
+            ok = D3D_CHECK(ID3D12Device5_CreateCommittedResource(d3d.device, &hp, D3D12_HEAP_FLAG_NONE, &rd,
+                                                                D3D12_RESOURCE_STATE_COMMON, NULL, &IID_ID3D12Resource,
+                                                                (void **)&w.froxel[v]));
+            if (!ok) {
+                w.froxel[v] = NULL;
+                break;
+            }
+            d3d12_set_name((ID3D12Object *)w.froxel[v], v == FROXEL_SKY_EXPOSURE ? "sky exposure" : "froxel volume");
+            made[v] = true;
         }
-        d3d12_set_name((ID3D12Object *)w.froxel[v], v == FROXEL_SKY_EXPOSURE ? "sky exposure" : "froxel volume");
         D3D12_RESOURCE_ALLOCATION_INFO ai;
         ID3D12Device5_GetResourceAllocationInfo(d3d.device, &ai, 0, 1, &rd);
         total += ai.SizeInBytes;
@@ -1636,14 +1653,17 @@ bool d3d12_world_froxel_create(void)
         w.froxel_failed = true;
         return false;
     }
+    // only the new ones: zeroing a kept sky exposure volume would wipe its bake
     for (int v = 0; v < NUM_FROXEL_VOLUMES; v++)
-        zero_volume(up, w.froxel[v]);
+        if (made[v])
+            zero_volume(up, w.froxel[v]);
 
     // frames in flight read the sets
     d3d12_wait_idle();
     for (int f = 0; f < D3D12_FRAMES_IN_FLIGHT; f++)
         write_froxel_bindings(&w.frame[f].god_rays_set, f);
     w.froxel_made = true;
+    memcpy(w.froxel_grid, vkpt_froxel_grid, sizeof(w.froxel_grid));
     w.froxel_bytes = total;
     Com_Printf("froxel grid: %d volumes of %dx%dx%d, %.1f MB of VRAM\n", NUM_FROXEL_VOLUMES, FROXEL_GRID_X,
                FROXEL_GRID_Y, FROXEL_GRID_Z, total / (1024.0 * 1024.0));

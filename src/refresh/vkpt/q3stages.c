@@ -70,6 +70,7 @@ typedef struct {
     bool        has_props;              // a stage has prop_flags: Q3P_PROG_PROPS
     uint32_t    off;                    // 1 << stage: "stage<N>_map off", left out ('mat print')
     int         num_stages;
+    int         script_stages;          // ... of which the script's own, stage0 on: the rest are added
     q3pstage_t  stages[Q3P_MAX_STAGES];
     uint32_t    offset;                 // this frame's first vec4 + 1, 0 when not uploaded
     // for the glow as a light (vkpt_q3_light_glow):
@@ -835,6 +836,8 @@ void vkpt_q3_build_program(pbr_material_t *mat, const q3shader_t *q3, imagetype_
          above: shinymetaldoor_outside3a2_light.png) - unless a stage<N>_map line
          already does - or, with no glow stage, is added over the whole program
          as a glow, the way a Quake II texture's _light map is. */
+    p->script_stages = p->num_stages;
+
     if (named_stage >= 0 && named_stage != q3->emissive_stage && named_stage < p->num_stages) {
         q3pstage_t *ps = &p->stages[named_stage];
         if (!(ps->flags & Q3P_STAGE_NO_IMAGE)) {
@@ -1576,6 +1579,69 @@ const image_t *vkpt_q3_stage_image(const pbr_material_t *mat, int stage, int whi
 
     *file = image ? image->name : why;
     return image;
+}
+
+int vkpt_q3_paint_stage_count(const pbr_material_t *mat)
+{
+    if (!mat || !mat->q3_program || mat->q3_program > MAX_Q3_PROGRAMS || !programs[mat->q3_program - 1].in_use)
+        return 0;
+    return programs[mat->q3_program - 1].script_stages;
+}
+
+bool vkpt_q3_stage_paint_info(const pbr_material_t *mat, int stage, const image_t **picture, bool *clamp,
+                              float tc[6], const char **why)
+{
+    static char reason[128];
+    const image_t *pic = NULL;
+    bool clamped = false;
+    float m1[6], m2[6], turb_amp, turb_now;
+
+    affine_identity(m1);
+    *why = reason;
+    reason[0] = 0;
+
+    if (stage < 0 || stage >= vkpt_q3_paint_stage_count(mat)) {
+        Q_snprintf(reason, sizeof(reason), "no stage%d drawn by a stage program", stage);
+        goto done;
+    }
+
+    const q3program_t *p = &programs[mat->q3_program - 1];
+    const q3pstage_t *ps = &p->stages[stage];
+    if (p->off & (1u << stage)) {
+        Q_snprintf(reason, sizeof(reason), "stage%d_map off - it is not drawn", stage);
+        goto done;
+    }
+    if (ps->flags & Q3P_STAGE_LIGHTMAP) {
+        Q_strlcpy(reason, "it is the $lightmap: the light, not a surface", sizeof(reason));
+        goto done;
+    }
+    if (ps->flags & Q3P_STAGE_ENV) {
+        Q_strlcpy(reason, "a reflection map (tcGen environment): it slides with the view", sizeof(reason));
+        goto done;
+    }
+    if (ps->flags & Q3P_STAGE_NO_IMAGE) {
+        Q_strlcpy(reason, "its image did not load: it is not drawn", sizeof(reason));
+        goto done;
+    }
+
+    pic = stage_frame(ps, last_upload_time);
+    clamped = (ps->flags & Q3P_STAGE_CLAMP) != 0;
+    eval_tcmods(ps, last_upload_time, m1, m2, &turb_amp, &turb_now);
+    affine_then(m1, m2);    // a turb between them is left out: it wobbles the picture in place
+    memcpy(tc, m1, sizeof(m1));
+    if (picture)
+        *picture = pic;
+    if (clamp)
+        *clamp = clamped;
+    return true;
+
+done:
+    memcpy(tc, m1, sizeof(m1));
+    if (picture)
+        *picture = NULL;
+    if (clamp)
+        *clamp = false;
+    return false;
 }
 
 /*

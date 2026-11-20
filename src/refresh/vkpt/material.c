@@ -4762,7 +4762,9 @@ static void material_command_help(void)
 	Com_Printf("    author [roughness|metallic|normals|emissive]: paint the crosshair's material's\n");
 	Com_Printf("        maps with a brush, in photo mode (pauses the game). Hold the right mouse\n");
 	Com_Printf("        button to look, WASD/QE to fly, left button paints. 'mat author save'\n");
-	Com_Printf("        writes the painted maps; 'mat author off' (or Escape) leaves\n");
+	Com_Printf("        writes the painted maps; 'mat author off' (or Escape) leaves.\n");
+	Com_Printf("        'mat author stage <N|mat>' paints a Quake III stage's own maps;\n");
+	Com_Printf("        'mat author rect <length> <width>' picks a rectangle brush (texels)\n");
 	Com_Printf("    which: tell where the current material is defined\n");
 	Com_Printf("    view_weapon [N] <command>: any of these for the gun in your hands instead of\n");
 	Com_Printf("        the crosshair's material ('mat view_weapon print', 'mat view_weapon\n");
@@ -5150,6 +5152,8 @@ static void material_complete_from(genctx_t* ctx, int argnum, int first)
 			Prompt_AddMatch(ctx, "metallic");
 			Prompt_AddMatch(ctx, "normals");
 			Prompt_AddMatch(ctx, "emissive");
+			Prompt_AddMatch(ctx, "stage");
+			Prompt_AddMatch(ctx, "rect");
 		}
 		else if (strcmp(sub, "print") == 0 || strcmp(sub, "view") == 0)
 		{

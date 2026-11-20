@@ -434,14 +434,19 @@ static int IMG_SaveJPG(screenshot_t *s)
 
 /*
 =================
-IMG_SaveLevelshot
+IMG_GrabLevelshot
 
 What the levelshot generator saves (client/levelshot.c): the frame read back,
 the middle 4:3 of it, each output pixel the average of the screen pixels it
-covers - in linear light, or a shrunk bright edge goes dark - and written
-through the filesystem, so it lands under the game's write directory and the
-menus find it as levelshots/<map>.jpg. Rows stay bottom-up throughout, as
-IMG_ReadPixels hands them over and as the other writers expect.
+covers - in linear light, or a shrunk bright edge goes dark - encoded as a JPEG
+in memory. The caller writes it through the filesystem, so it lands under the
+game's write directory and the menus find it as levelshots/<map>.jpg. Rows stay
+bottom-up throughout, as IMG_ReadPixels hands them over and as the other
+writers expect.
+
+Handed back rather than written so the caller can look at *brightness first -
+the picture's mean luma, 0..255 in sRGB (Rec. 601 weights) - and try another
+camera when this one came out black, keeping the brightest grab if none do.
 =================
 */
 typedef struct {
@@ -466,13 +471,18 @@ static void levelshot_write(void *context, void *data, int size)
     b->len += size;
 }
 
-int IMG_SaveLevelshot(const char *path, int width, int height, int quality)
+int IMG_GrabLevelshot(int width, int height, int quality, void **data, size_t *len, float *brightness)
 {
     static float    to_linear[256];
     static bool     table_ready;
     byte            *pixels, *out;
     int             w, h, stride, crop_w, crop_h, x0, y0, x, y, i, ret;
+    double          luma = 0;
     levelshot_buf_t buf = { 0 };
+
+    *data = NULL;
+    *len = 0;
+    *brightness = 0;
 
     if (!IMG_ReadPixels || width <= 0 || height <= 0)
         return Q_ERR(EINVAL);
@@ -526,17 +536,23 @@ int IMG_SaveLevelshot(const char *path, int width, int height, int quality)
                 v = v <= 0.0031308f ? v * 12.92f : 1.055f * powf(v, 1.0f / 2.4f) - 0.055f;
                 out[(y * width + x) * 3 + c] = (byte)max(0, min(255, (int)(v * 255.0f + 0.5f)));
             }
+            luma += 0.299 * out[(y * width + x) * 3 + 0] + 0.587 * out[(y * width + x) * 3 + 1] +
+                    0.114 * out[(y * width + x) * 3 + 2];
         }
     }
     Z_Free(pixels);
 
     stbi_flip_vertically_on_write(1);
-    if (stbi_write_jpg_to_func(levelshot_write, &buf, width, height, 3, out, quality))
-        ret = FS_WriteFile(path, buf.data, buf.len);
-    else
+    if (stbi_write_jpg_to_func(levelshot_write, &buf, width, height, 3, out, quality) && buf.len) {
+        *data = buf.data;
+        *len = buf.len;
+        *brightness = (float)(luma / ((double)width * height));
+        ret = Q_ERR_SUCCESS;
+    } else {
+        Z_Free(buf.data);
         ret = Q_ERR_LIBRARY_ERROR;
+    }
 
-    Z_Free(buf.data);
     Z_Free(out);
     return ret;
 }

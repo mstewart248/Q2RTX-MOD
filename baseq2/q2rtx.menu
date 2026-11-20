@@ -728,8 +728,8 @@ begin effects
     toggle --status "let the muzzle flash light the room as a real area light, on top of the dynamic light it already casts - costs ~48 short-lived lights per shot (cl_muzzleflash_light)" "muzzle flash casts light" cl_muzzleflash_light
     blank
     pairs --status "(cl_blaster_color)" "blaster color" cl_blaster_color "violet" 1 "original orange" 0
-    blank
-    pairs --status "(g_ludicrous_gibs)" "ludicrous gibs" g_ludicrous_gibs "off - classic quake ii" 0 "on" 1
+    // g_ludicrous_gibs is off the menu (Matt, 2026-11-20: "it doesn't work right
+    // anymore. It spawns too many particles"). The cvar still exists, default 0.
     blank
     ifeqor vid_rtx 1 vid_rtx 3
         toggle --status "(cl_md5_models)" "md5 models" cl_md5_models
@@ -1215,19 +1215,23 @@ begin fog
             "rerelease level fog" cl_fog_rerelease
         blank
         range --status "how much SUNLIGHT the fog scatters under the physical sky - the shafts through windows and openings (pt_fog_scale_sun)" \
-            "physical sky" pt_fog_scale_sun 0 16 0.5
+            "physical sky" pt_fog_scale_sun 0 16 0.1
         pairs --status "how the PHYSICAL sky lights the fog. fast: sun shafts through the shadow map only. accurate: also the sky's own light (set by sky light), with a traced ray per fog cell so it clips crisply under roofs and overhangs - costs more (pt_fog_sky_sun_only)" \
             "physical sky fog" pt_fog_sky_sun_only "fast" 1 "accurate" 0
         pairs --status "gives the sky light and the dynamic lights - weapon fire, muzzle flashes, rockets - their own short history in the fog grid, so moving things like a spinning fan cast sky shadows and a flash shows in the fog without lingering. Costs some GPU time and ~28 MB (pt_fog_froxel_sky_history, pt_fog_froxel_dyn_split)" \
             "split froxel histories" pt_fog_froxel_sky_history off 0 on 0.6
+        pairs --status "how small the fog grid's cells are ACROSS the screen: finer keeps the glow tighter around each light and the shaft edges sharper, and makes any blotchiness smaller - but no less noisy. Cost and VRAM go with the square: normal 160x88, about 144 MB; fine 2.25x; finest 4x (pt_fog_froxel_grid)" \
+            "fog grid detail" pt_fog_froxel_grid "coarse" 0.75 "normal" 1 "fine" 1.5 "finest" 2
+        pairs --status "how many layers the fog grid has going AWAY from you: more layers average more samples along every view, so the fog is LESS noisy and its depth bands finer. Cost and VRAM go with the count; 128 is normal (pt_fog_froxel_slices)" \
+            "fog grid depth" pt_fog_froxel_slices "64" 64 "96" 96 "128" 128 "192" 192 "256" 256
         range --status "how much of the SKY's own light the fog scatters - the soft glow under open sky, apart from the sun's shafts. Applies to a map's skybox, and to the physical sky when physical sky fog is accurate (pt_fog_scale_skybox)" \
-            "sky light" pt_fog_scale_skybox 0 8 0.25
+            "sky light" pt_fog_scale_skybox 0 8 0.01
         range --status "how much fog EMISSIVE SURFACES make - the map's own light fixtures, which are most of its light (pt_fog_scale_emissive)" \
-            "emissive lights" pt_fog_scale_emissive 0 8 0.25
+            "emissive lights" pt_fog_scale_emissive 0 8 0.05
         range --status "how much fog DYNAMIC lights make - weapon fire, muzzle flashes, flares, the flashlight and placed lights (pt_fog_scale_dynamic)" \
-            "dynamic lights" pt_fog_scale_dynamic 0 8 0.25
+            "dynamic lights" pt_fog_scale_dynamic 0 8 0.05
         range --status "how much fog lights on MODELS make (pt_fog_scale_model)" \
-            "model lights" pt_fog_scale_model 0 8 0.25
+            "model lights" pt_fog_scale_model 0 8 0.05
         range --status "how much fog LAVA makes - its glow in the air above it. Does not change how lava lights the room (pt_fog_lava_scale)" \
             "lava" pt_fog_lava_scale 1 10 0.5
     endif

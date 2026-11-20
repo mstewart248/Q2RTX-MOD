@@ -5940,7 +5940,7 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 			static int   fm_clfog = -1;
 			static int   fm_envt = -1;
 			static int   fm_sunonly = -1;
-			cvar_t *fm_cv = Cvar_Get("cl_fog", "0", 0);
+			cvar_t *fm_cv = Cvar_Get("cl_fog", "1", 0);   // mapfog.c's default
 			int fm_now = fm_cv ? fm_cv->integer : -1;
 			int fm_m = got_mapfog ? mf.mode : 0;
 

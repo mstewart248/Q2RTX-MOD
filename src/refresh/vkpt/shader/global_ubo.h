@@ -153,8 +153,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	/* the shaders' view, and if the exe and .spv ever go out of sync (a failed link) that */ \
 	/* silently corrupts the tm_* tone-mapping values. Appending keeps that blast radius 0. */ \
 	UBO_CVAR_DO(pt_rr_white_noise, 0) /* hashed white noise instead of the tiled blue-noise texture, per DLSS-RR guide 3.5; 0 keeps the blue noise */ \
-	UBO_CVAR_DO(pt_fog_light_scale, 1.0) /* brightness of local lights scattered in map fog (cl_fog 2) */ \
-	UBO_CVAR_DO(pt_fog_scale_skybox, 1.0) /* FOG KNOB "sky light": brightness of the SKY's own ambient light scattered in the fog - a map's skybox, or the physical sky when pt_fog_sky_sun_only is 0 (accurate). The sun's shafts are pt_fog_scale_sun */ \
+	UBO_CVAR_DO(pt_fog_light_scale, 1.5) /* (1.5 = Matt's, 2026-11-20) brightness of local lights scattered in map fog (cl_fog 2) */ \
+	UBO_CVAR_DO(pt_fog_scale_skybox, 0.01) /* (default = Matt's, 2026-11-20; was 1.0 - must match mapfog.c) FOG KNOB "sky light": brightness of the SKY's own ambient light scattered in the fog - a map's skybox, or the physical sky when pt_fog_sky_sun_only is 0 (accurate). The sun's shafts are pt_fog_scale_sun */ \
 	UBO_CVAR_DO(pt_fog_light_knee, 2.0) /* soft roll-off on the SUMMED local-light total; SATURATES AT THIS VALUE, so it crushes the bright-core-to-dim-wash contrast that makes a light read as a glowing cloud. 0 disables it, and 0 is the right starting point for tuning localised glow. NOT a distance falloff - that is pt_fog_light_falloff */ \
 	UBO_CVAR_DO(pt_fog_light_falloff, 4.0) /* distance exponent for a light's fog glow. 2 = plain inverse square; 4 is Matt's calibration - it pulls the glow in tight around each fixture instead of washing the whole room. Only ever steepens BEYOND pt_fog_light_pivot, so the near field keeps its correct brightness at any setting */ \
 	UBO_CVAR_DO(pt_fog_light_pivot, 128.0) /* world radius inside which a light keeps plain inverse-square brightness; pt_fog_light_falloff only steepens the decay BEYOND this, so the near field can never brighten however high the exponent goes */ \
@@ -182,8 +182,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	UBO_CVAR_DO(pt_fog_restir_radius, 3.0) \
 	/* Radius of the reuse neighbourhood along DEPTH, in slices, 0..8. Kept separate from the screen radius because the axes are not comparable: slices are exponentially spaced, so one z step is a fixed 6.3% of the distance and out in the distance is a far bigger world-space stride than several cells of x or y. */ \
 	UBO_CVAR_DO(pt_fog_restir_radius_z, 1.0) \
-	/* FOG KNOB: brightness of the SUN scattered in the fog under the physical sky. Replaces gr_intensity while fog is on; 2.0 is gr_intensity's default, so the classic campaign's shafts are unchanged by turning fog on. See fog_sun_scale(). */ \
-	UBO_CVAR_DO(pt_fog_scale_sun, 2.0) \
+	/* FOG KNOB: brightness of the SUN scattered in the fog under the physical sky. Replaces gr_intensity while fog is on. Was 2.0, gr_intensity's default, so the classic campaign's shafts were unchanged by turning fog on; 0.2 is Matt's (2026-11-20) and must match mapfog.c. See fog_sun_scale(). */ \
+	UBO_CVAR_DO(pt_fog_scale_sun, 0.2) \
 	/* cl_fog 3 only. Ceiling on one light sample's luminance, which is what stops a froxel cell that landed very close to a small emitter from blowing out into a solid bright block. Biased on purpose; RTX Remix calls this froxelFireflyFilteringLuminanceThreshold. LOWER THIS FIRST if the fog looks blotchy. 0 disables it. */ \
 	UBO_CVAR_DO(pt_fog_firefly, 20.0) \
 	/* 3x3 blur across each froxel SLICE, applied in the integrate pass. Every cell is one light sample with one BINARY visibility ray, and that all-or-nothing term is the one thing RIS cannot importance-sample away - this is what smooths it. Blurring within a slice is sound because every cell of a given z sits at the same view depth. RTX Remix does the same thing in a pass of its own. 0 = off. */ \
@@ -249,20 +249,20 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	   mass spreads and none leaks into empty cells. It costs some temporal
 	   aliasing while turning, which is the trade to judge. */ \
 	UBO_CVAR_DO(pt_fog_froxel_history_snap, 0.0) \
-	UBO_CVAR_DO(pt_fog_sky_sun_only, 1) /* FOG MENU "physical sky fog". 1 = fast: under the PHYSICAL sky the per-pixel march carries the shadow-mapped sun on its own and no sky ray is traced. 0 = accurate: the froxel grid also adds the sky's ambient light, occluded by a TRACED ray per cell, which clips the fog crisply under overhangs - at the cost of that ray. The SUN is in the march in both modes (fog_sun_in_march), so neither leaks sun fog indoors. No effect under a map skybox. Appended at the END of the cvar list on purpose; see the alignment note at the top of this file */ \
+	UBO_CVAR_DO(pt_fog_sky_sun_only, 0) /* (default 0 = accurate, Matt's, 2026-11-20; was 1 - must match mapfog.c) FOG MENU "physical sky fog". 1 = fast: under the PHYSICAL sky the per-pixel march carries the shadow-mapped sun on its own and no sky ray is traced. 0 = accurate: the froxel grid also adds the sky's ambient light, occluded by a TRACED ray per cell, which clips the fog crisply under overhangs - at the cost of that ray. The SUN is in the march in both modes (fog_sun_in_march), so neither leaks sun fog indoors. No effect under a map skybox. Appended at the END of the cvar list on purpose; see the alignment note at the top of this file */ \
 	UBO_CVAR_DO(pt_physical_sky_brightness, 1.0) /* how bright the PHYSICAL sky LOOKS, independent of the light it casts. The map-skybox equivalent is pt_sky_brightness, and the two are deliberately separate cvars: a value tuned to stop a map's skybox blowing out (Matt runs 0.005 for mgu5m1) has no business dimming a procedural atmosphere. 1 = show it at exactly the brightness it casts, which is the physically honest default */ \
 	/* Appearance of the cl_blood_spheres droplets. Blood is a glossy DIELECTRIC, so metallic stays 0 and the wet look comes from a low roughness against a high specular factor - NOT from the chrome path, which would make it a mirror ball and cost a second traced ray at half resolution. */ \
 	UBO_CVAR_DO(pt_blood_roughness, 0.06) /* surface roughness of a blood droplet. Below ~0.02 the highlight becomes a point the denoiser cannot hold on to; above ~0.2 the droplet stops reading as wet */ \
 	UBO_CVAR_DO(pt_blood_specular, 1.6) /* specular factor of a blood droplet, above 1 on purpose - a droplet is small and its highlight is the whole effect */ \
-	UBO_CVAR_DO(pt_blood_normal_strength, 0.35) /* how hard the animated ripple perturbs the sphere's normal. 0 = a perfectly smooth ball */ \
+	UBO_CVAR_DO(pt_blood_normal_strength, 0.9) /* (Matt's, 2026-11-20; was 0.35) how hard the animated ripple perturbs the sphere's normal. 0 = a perfectly smooth ball */ \
 	UBO_CVAR_DO(pt_blood_normal_scale, 1.4) /* ripple features per droplet, in normal-map tiles across the sphere's direction cube. Small numbers = a few big wobbles, large = a fine seethe */ \
 	UBO_CVAR_DO(pt_blood_normal_speed, 1.0) /* how fast the ripple animates */ 	UBO_CVAR_DO(pt_fog_step, 8.0) /* multiplies the fog march's step length. 1 = the original step; 8 is Matt's tuned default. THE COST KNOB - see getStep in fog_medium.glsl, and read it before touching cl_fog_scale */ \
 	/* How dark a LANDED splat is drawn, and how much darker its feather edge. Airborne droplets are untouched: a bead in flight is a lit red sphere and reads correctly bright, while blood lying on a floor is a thin absorbing film over a surface and almost never reads as saturated red. The thickness the ramp runs on comes from the puddle's own shading normal against the surface plane it is lying on - see the tangent-slot note in blood.c's write_blood_geometry */ \
 	UBO_CVAR_DO(pt_blood_splat_dark, 0.55) /* colour multiplier over the body of a landed splat. 1 = the old behaviour, a splat exactly as bright as the droplet that made it */ \
 	UBO_CVAR_DO(pt_blood_thin_dark, 0.12) /* colour multiplier at the feather edge, where the film is thinnest. Well below pt_blood_splat_dark on purpose: a hard bright rim is most of what makes a puddle read as a decal */ \
 	UBO_CVAR_DO(pt_blood_skin_dark, 0.45) /* cl_blood_skin: colour multiplier of blood soaked into a monster's or an item's skin (blood_skin.c), over the droplet's colour - as pt_blood_splat_dark is for a pool */ \
-	UBO_CVAR_DO(pt_blood_skin_roughness, 0.1) /* cl_blood_skin: roughness where the skin is wet with blood. 0.1 is Matt's (11-15; 0.3 read as matte, the monster's own roughness). A droplet is 0.06 */ \
-	UBO_CVAR_DO(pt_blood_skin_specular, 1.0) /* cl_blood_skin: specular factor where the skin is wet with blood */ \
+	UBO_CVAR_DO(pt_blood_skin_roughness, 0.06) /* cl_blood_skin: roughness where the skin is wet with blood. 0.06 is Matt's (11-20; 0.1 before, and 0.3 read as matte, the monster's own roughness). A droplet is 0.06 too */ \
+	UBO_CVAR_DO(pt_blood_skin_specular, 1.2) /* (Matt's, 2026-11-20; was 1.0) cl_blood_skin: specular factor where the skin is wet with blood */ \
 	UBO_CVAR_DO(pt_blood_thin_power, 2.0) /* how far the dark edge reaches inward. The dome's normals are steepened by cl_blood_flatten, so the raw thickness saturates quickly and a power above 1 is what gives the edge a visible width. Higher = a wider dark band */ \
 	UBO_CVAR_DO(pt_blood_splat_alpha, 0.95) /* opacity of a LANDED splat. DEFAULT 0.95 - just off solid, so the floor reads through the blood a little. 1 = fully solid, the behaviour before this existed. Below 1 the surface under the splat is traced through it, so the floor's own texture and lighting show through the blood. Airborne droplets are always solid - a bead in flight is a body of liquid, and making it translucent would mean tracing through every droplet of a spray. Read by blood.c as well as by the shader: it is written into each landed primitive's alpha, and it also drops blood out of the SHADOW ray mask, without which a splat shadows the very floor you are looking through it at */ \
 	UBO_CVAR_DO(pt_blood_edge_alpha, 0.2) /* opacity multiplier at the feather edge of a translucent LANDED splat, ramping to 1 over its body with the same thickness pt_blood_thin_power shapes. A film is clearest where it is thinnest; without this the edge read MORE opaque than the pool, most of all seen through water. Only acts while pt_blood_splat_alpha is below 1 */ \
@@ -644,6 +644,13 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	/* texels, shape 0 round / 1 square; author_brush_valid 0 = not on the map. */ \
 	/* author_lock_image: the F/P lock as a texture the map's size (r_images  */ \
 	/* index, red 1 = a texel inside it), 0 = no lock: nothing outside paints. */ \
+	/* Added 11-20: the brush's height author_brush_h (author_brush_size is   */ \
+	/* its width; shape 0 round uses the size alone, else a box w x h);       */ \
+	/* author_line 1 = a line from the centre on by (author_line_dx2, _dy2),   */ \
+	/* doubled texels, the brush swept along it. author_stage >= 0: painting  */ \
+	/* that Quake III stage's own map, read through its tcMods - st = (a s +  */ \
+	/* b t, c s + d t) + offset from author_stage_tc (a b c d) and            */ \
+	/* author_stage_tc_offset; author_stage_clamp: clampMap, no tiling.       */ \
 	GLOBAL_UBO_VAR_LIST_DO(int,             author_active) \
 	GLOBAL_UBO_VAR_LIST_DO(int,             author_seq) \
 	GLOBAL_UBO_VAR_LIST_DO(int,             author_cursor_x) \
@@ -660,6 +667,23 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	GLOBAL_UBO_VAR_LIST_DO(int,             author_brush_shape) \
 	GLOBAL_UBO_VAR_LIST_DO(int,             author_lock_image) \
 	GLOBAL_UBO_VAR_LIST_DO(int,             author_pad1) \
+	GLOBAL_UBO_VAR_LIST_DO(int,             author_brush_h) \
+	GLOBAL_UBO_VAR_LIST_DO(int,             author_line) \
+	GLOBAL_UBO_VAR_LIST_DO(int,             author_line_dx2) \
+	GLOBAL_UBO_VAR_LIST_DO(int,             author_line_dy2) \
+	GLOBAL_UBO_VAR_LIST_DO(vec4,            author_stage_tc) \
+	GLOBAL_UBO_VAR_LIST_DO(vec2,            author_stage_tc_offset) \
+	GLOBAL_UBO_VAR_LIST_DO(int,             author_stage) \
+	GLOBAL_UBO_VAR_LIST_DO(int,             author_stage_clamp) \
+	\
+	/* FROXEL GRID SIZE (pt_fog_froxel_grid, pt_fog_froxel_slices): the cells the */ \
+	/* volumes were made with - god_rays.c's vkpt_froxel_grid, written by        */ \
+	/* vkpt_god_rays_prepare_ubo - read by froxel_shared.h's FROXEL_GRID_X/Y/Z.  */ \
+	/* One full std140 slot, placed before the cvar list like the groups above.  */ \
+	GLOBAL_UBO_VAR_LIST_DO(int,             froxel_grid_x) \
+	GLOBAL_UBO_VAR_LIST_DO(int,             froxel_grid_y) \
+	GLOBAL_UBO_VAR_LIST_DO(int,             froxel_grid_z) \
+	GLOBAL_UBO_VAR_LIST_DO(int,             froxel_grid_pad) \
 	\
 	UBO_CVAR_LIST // WARNING: Do not put any other members into global_ubo after this: the CVAR list is not vec4-aligned
 

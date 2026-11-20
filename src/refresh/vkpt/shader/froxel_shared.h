@@ -56,10 +56,10 @@ nobody can resolve.
 /*
 WHICH AXIS TO RAISE, AND WHY IT IS NOT THE ONE YOU EXPECT.
 
-These are compile-time because the volumes are allocated once from them and the
-descriptor sets name those views; changing one needs a rebuild AND a vid_restart.
-Memory is 3 volumes x X*Y*Z x RGBA16F (8 bytes), so the whole grid is ~21.6 MB at
-the sizes below and cost is dominated by RAYS, not by storage.
+(These were compile-time until 2026-11-20; they are settings now - see the note
+above FROXEL_GRID_DEFAULT_X.) Memory today is 8 volumes - scatter, integrated and
+sky pairs at RGBA16F plus two RGBA32F reservoirs, 80 bytes per cell - so ~144 MB
+at the default size, and cost is dominated by RAYS, not by storage.
 
 **Z IS THE NOISE AXIS. X AND Y ARE THE DETAIL AXES.** Raising X/Y to fix noise is
 the intuitive move and it does not work:
@@ -92,9 +92,38 @@ not a Monte Carlo estimate and it never needed averaging; Matt's observation tha
 stationary camera recomputes a constant. Caching it per cell and refreshing only
 when the camera moves would give back most of what this Z doubling costs.
 */
-#define FROXEL_GRID_X       160
-#define FROXEL_GRID_Y       88
-#define FROXEL_GRID_Z       128
+/*
+THE SIZE IS A SETTING NOW (2026-11-20): pt_fog_froxel_grid scales X and Y from
+the defaults below (0.5 .. 2), pt_fog_froxel_slices sets Z (32 .. 256). Both are
+archived and live: vkpt_froxel_ensure (god_rays.c) waits for the GPU, remakes the
+grid's volumes at the new size (the sky exposure bake is kept) and rewrites the
+sets, so the fog fades back in over about one history length.
+
+FROXEL_GRID_X/Y/Z are therefore NOT constants. In C they read vkpt_froxel_grid,
+the size the volumes were last MADE with (god_rays.c); in GLSL they read the
+same three numbers out of the UBO (froxel_grid_x/y/z, written by
+vkpt_god_rays_prepare_ubo). The dispatch, the volumes and the shaders' indexing
+can still not drift apart, because all three come from that one array.
+*/
+#define FROXEL_GRID_DEFAULT_X   160
+#define FROXEL_GRID_DEFAULT_Y   88
+#define FROXEL_GRID_DEFAULT_Z   128
+
+#define FROXEL_GRID_MIN_Z       32
+#define FROXEL_GRID_MAX_Z       256
+#define FROXEL_GRID_MIN_SCALE   0.5
+#define FROXEL_GRID_MAX_SCALE   2.0
+
+#ifdef VKPT_SHADER
+#define FROXEL_GRID_X       (global_ubo.froxel_grid_x)
+#define FROXEL_GRID_Y       (global_ubo.froxel_grid_y)
+#define FROXEL_GRID_Z       (global_ubo.froxel_grid_z)
+#else
+extern int vkpt_froxel_grid[3];
+#define FROXEL_GRID_X       (vkpt_froxel_grid[0])
+#define FROXEL_GRID_Y       (vkpt_froxel_grid[1])
+#define FROXEL_GRID_Z       (vkpt_froxel_grid[2])
+#endif
 
 // Thread group for the scatter pass: one thread per froxel.  8x8x1 keeps a
 // group inside one screen tile so neighbouring threads hit the same cluster

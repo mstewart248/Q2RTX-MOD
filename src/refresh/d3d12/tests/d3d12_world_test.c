@@ -126,6 +126,10 @@
 #include <float.h>
 #include "../../vkpt/precomputed_sky_params.h"
 
+// god_rays.c's, which this test does not link: the froxel grid at its default size
+// (froxel_shared.h's FROXEL_GRID_X/Y/Z read it; fog_ubo hands it to the shaders)
+int vkpt_froxel_grid[3] = { FROXEL_GRID_DEFAULT_X, FROXEL_GRID_DEFAULT_Y, FROXEL_GRID_DEFAULT_Z };
+
 #define W               64
 #define H               32
 #define HEAP_BINDLESS   MAX_RIMAGES
@@ -675,6 +679,9 @@ static void fog_ubo(QVKUniformBuffer_t *u, int mode, const float sun[3], const f
     u->fog_camera_cluster = -1;
     u->fog_vol_density_ratio = 1.f;
     u->fog_frame_time = 1.f / 60.f;
+    u->froxel_grid_x = FROXEL_GRID_X;
+    u->froxel_grid_y = FROXEL_GRID_Y;
+    u->froxel_grid_z = FROXEL_GRID_Z;
     u->fog_sky_trace = 1;
     u->pt_reflect_refract = 1.f;
     // pt_fog_sky_exposure's 2 resolved as vkpt_god_rays_prepare_ubo does: the

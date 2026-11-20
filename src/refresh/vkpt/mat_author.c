@@ -81,10 +81,35 @@ ADDED 2026-11-20 (Matt, after a first go: "this looks and works great")
   adjustable opacity over it (O, or the panel), and the lock darkened round.
 - UNDER THE BRUSH: the panel shows the average of the texels the brush covers
   (inside the lock), e.g. 0% and 100% under it read 50%.
+
+ADDED 2026-11-20 AFTERNOON (Matt: "different brush types such as lines and
+rectangles (on the rectangles we should be able to specify length texels and
+width texels)", and "for the Quake3 textures with multiple stages can we have a
+way to select which stage to edit")
+- THE RECTANGLE: a third brush shape beside round and square, its LENGTH
+  along the map's u (across the map view) and its WIDTH along v (down it), each
+  in texels, set apart - slider, -/+ a texel, the wheel over either a texel at
+  a time, or 'mat author rect <length> <width>'. R turns it (swaps the two).
+  B goes round -> square -> rectangle.
+- THE LINE (L, or the panel's "line"): the button goes down where the line
+  starts and comes up where it ends; until then the brush is shown swept along
+  it, and on release it paints that, once, as one stroke with every tool but
+  fill. The swept brush is exact - sweep_row is the texels of a row it covers,
+  primary_rays.rgen's author_swept the same test texel by texel.
+- STAGES: a Quake III shader drawn stage by stage (q3stages.c) gives each stage
+  a surface of its own where it shows - stage<N>_texture_roughness, _metallic,
+  _normals. The panel's "maps" row picks the material's own maps or one
+  stage's; a stage's map is read through that stage's tcMods (scale, scroll,
+  rotate - a turb left out), so the brush is too, on the surface and in the
+  lock. A stage has no emissive map (its glow is stage<N>_emissive_factor), and
+  the $lightmap and reflection maps have no surface to paint. A new stage map
+  is the size of the stage's picture, named after it, and set as the console's
+  'mat stage<N> texture_roughness' would - Save writes it into the .mat.
 */
 
 #include "vkpt.h"
 #include "material.h"
+#include "q3stages.h"
 #include "../../client/client.h"
 #include "../stb/stb_image_write.h"
 
@@ -114,6 +139,12 @@ static const char *const slot_suffix[NUM_SLOTS] = { "_rough", "_metal", "_n", "_
 enum { TOOL_BRUSH, TOOL_SPRAY, TOOL_HATCH, TOOL_NOISE, TOOL_BLUR, TOOL_FILL, NUM_TOOLS };
 
 static const char *const tool_label[NUM_TOOLS] = { "brush", "spray", "hatch", "noise", "blur", "fill" };
+
+enum { SHAPE_ROUND, SHAPE_SQUARE, SHAPE_RECT, NUM_SHAPES };
+
+static const char *const shape_label[NUM_SHAPES] = { "round", "square", "rect" };
+
+#define AUTHOR_MAX_STAGES   8           // Q3P_MAX_STAGES: the panel's stage buttons
 
 #define LOCK_FACE_DEG       12.f        // a flat face: triangles within this of the one picked
 #define LOCK_WELD           (1.f / 64.f) // corners this close are one (model or world units)
@@ -150,6 +181,14 @@ enum {
 	W_UNLOCK,
 	W_SHOWBASE,
 	W_LAYER,
+	W_RECT,
+	W_RECT_W, W_RECT_H,             // the rectangle's length and width sliders
+	W_RECT_W_DEC, W_RECT_W_INC,
+	W_RECT_H_DEC, W_RECT_H_INC,
+	W_STROKE_FREE, W_STROKE_LINE,
+	W_STAGE_MAT,                    // the material's own maps
+	W_STAGE0,                       // ... W_STAGE0 + N: stage N's
+	W_LAST = W_STAGE0 + AUTHOR_MAX_STAGES
 };
 
 typedef struct {
@@ -172,6 +211,7 @@ typedef struct {
 	int image;          // r_images index
 	char name[MAX_IMAGE_PATH];
 	int slot;           // the map it was painted as
+	int stage;          // ... of this Quake III stage, -1 the material's own
 	int width, height, bpp;
 	int x, y, w, h;
 	byte *before;
@@ -212,7 +252,19 @@ static struct {
 	float emissive_rgb[3];      // 0..1, as stored
 	float emissive_strength;    // 0..1
 	int brush_size;             // texels
-	int brush_shape;            // 0 round, 1 square
+	int brush_shape;            // SHAPE_*
+	int rect_w, rect_h;         // SHAPE_RECT: texels along the map's u (its length) and v (its width)
+	bool line_mode;             // L: a stroke is a straight line, from where the button goes down to where it comes up
+	bool line_active;           // ... the button is down on one
+	bool line_have;             // ... and its start is set
+	bool line_commit;           // ... released: painted at the next tick
+	author_hit_t line_hit;      // ... what was under its start (a normal's tilt is turned by its tangent frame)
+	float line_tu0, line_tv0;   // ... its start, texels (unwrapped on a surface)
+	float line_tu1, line_tv1;   // ... its end so far
+
+	int stage;                  // -1: the material's own maps; else Quake III stage N's own (stage<N>_texture_*)
+	float stage_tc[6];          // ... its tcMods as the last frame drew them (vkpt_q3_stage_paint_info)
+	bool stage_clamp;           // ... clampMap: the map does not tile
 	int tool;                   // TOOL_*
 	int prev_tool;              // G goes back to it
 	float falloff;              // 0 hard .. 1 soft from the centre out
@@ -239,6 +291,7 @@ static struct {
 	// the stroke under way
 	int stroke_image;           // r_images index, -1 none
 	int stroke_slot;
+	int stroke_stage;
 	int stroke_w, stroke_h, stroke_bpp;
 	byte *stroke_before;        // the whole map as it was
 	byte *stroke_weight;        // per texel, the most this stroke has painted it (0..255)
@@ -273,10 +326,12 @@ static int undo_count;          // entries held
 static int undo_pos;            // entries applied: undo takes undo_pos - 1, redo undo_pos
 static size_t undo_bytes;
 
-// painted and not saved: the slot it was painted as, + 1
+// painted and not saved: the slot it was painted as, + 1; and the Quake III
+// stage whose own map it is, + 1 (0 = the material's)
 static uint8_t image_dirty[MAX_RIMAGES];
+static uint8_t image_stage[MAX_RIMAGES];
 
-static widget_t widgets[64];
+static widget_t widgets[96];
 static int num_widgets;
 
 static cvar_t *mat_author_cursor_speed;
@@ -351,9 +406,93 @@ static bool material_ok(void)
 	return au.mat && au.mat->registration_sequence && !strcmp(au.mat->name, au.mat_name);
 }
 
+/* The Quake III stage being painted (au.stage), as the last frame drew it: its
+   tcMods into au.stage_tc / au.stage_clamp, its picture into (picture). False,
+   with (why), when it is not one whose maps can be painted. */
+static bool stage_info(const image_t **picture, const char **why)
+{
+	const char *dummy;
+	if (!why)
+		why = &dummy;
+	if (au.stage < 0 || !material_ok())
+	{
+		*why = "no stage";
+		return false;
+	}
+	return vkpt_q3_stage_paint_info(au.mat, au.stage, picture, &au.stage_clamp, au.stage_tc, why);
+}
+
 static image_t *author_image(void)
 {
-	return material_ok() ? slot_image(au.mat, au.slot) : NULL;
+	if (!material_ok())
+		return NULL;
+	if (au.stage >= 0)
+	{
+		const char *file;
+		if (au.slot > SLOT_NORMAL || !stage_info(NULL, NULL))
+			return NULL;
+		return (image_t *)vkpt_q3_stage_image(au.mat, au.stage, au.slot + 1, &file);
+	}
+	return slot_image(au.mat, au.slot);
+}
+
+// the picture the map lies over: a stage's own, or the material's base texture
+static const image_t *author_base(void)
+{
+	if (!material_ok())
+		return NULL;
+	if (au.stage >= 0)
+	{
+		const image_t *pic = NULL;
+		if (stage_info(&pic, NULL) && pic)
+			return pic;
+	}
+	return au.mat->image_base;
+}
+
+// the map tiles over the surface: not a clampMap stage's
+static bool map_wraps(void)
+{
+	return !(au.stage >= 0 && au.stage_clamp);
+}
+
+// surface coordinates (s, t) on the map being painted: a stage's through its tcMods
+static void map_uv(float s, float t, float *u, float *v)
+{
+	if (au.stage < 0)
+	{
+		*u = s;
+		*v = t;
+		return;
+	}
+	const float *m = au.stage_tc;
+	*u = m[0] * s + m[1] * t + m[4];
+	*v = m[2] * s + m[3] * t + m[5];
+	if (au.stage_clamp)
+	{
+		*u = Q_clipf(*u, 0.f, 0.99999f);
+		*v = Q_clipf(*v, 0.f, 0.99999f);
+	}
+}
+
+// where (hit) is on the map, in repeats of it (1 = one), unwrapped
+static void hit_map_uv(const author_hit_t *hit, float *u, float *v)
+{
+	map_uv(hit->u, hit->v, u, v);
+}
+
+// ... in texels of a W x H map: unwrapped, or within the one copy
+static void hit_texel(const author_hit_t *hit, int W, int H, bool wrapped, float *tu, float *tv)
+{
+	float u, v;
+	hit_map_uv(hit, &u, &v);
+	if (wrapped)
+	{
+		u -= floorf(u);
+		v -= floorf(v);
+	}
+	*tu = u * (float)W;
+	*tv = v * (float)H;
 }
 
 static int image_bpp(const image_t *img)
@@ -386,7 +525,7 @@ static void map_size(int *w, int *h)
 {
 	const image_t *img = author_image();
 	if (!img && material_ok())
-		img = au.mat->image_base;
+		img = author_base();
 	if (img && img->upload_width > 0 && img->upload_height > 0)
 	{
 		*w = min(img->upload_width, AUTHOR_MAX_MAP);
@@ -477,14 +616,36 @@ static int hatch_spacing(void)
 }
 
 // the brush as it paints: the fill tool works from the one texel clicked
-static int cur_size(void)
-{
-	return au.tool == TOOL_FILL ? 1 : au.brush_size;
-}
-
 static int cur_shape(void)
 {
-	return au.tool == TOOL_FILL ? 1 : au.brush_shape;
+	return au.tool == TOOL_FILL ? SHAPE_SQUARE : au.brush_shape;
+}
+
+// its texels across (along the map's u) and down (v)
+static int cur_w(void)
+{
+	if (au.tool == TOOL_FILL)
+		return 1;
+	return au.brush_shape == SHAPE_RECT ? au.rect_w : au.brush_size;
+}
+
+static int cur_h(void)
+{
+	if (au.tool == TOOL_FILL)
+		return 1;
+	return au.brush_shape == SHAPE_RECT ? au.rect_h : au.brush_size;
+}
+
+// the larger of the two
+static int cur_size(void)
+{
+	return max(cur_w(), cur_h());
+}
+
+// a line is being drawn and has its start: the brush is swept along it
+static bool line_preview(void)
+{
+	return au.line_active && au.line_have && au.tool != TOOL_FILL;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -510,15 +671,16 @@ static int centre2(float t, int size)
 
 /* Row (ty)'s texels inside the brush centred at (c2x, c2y): [x0, x1], or false.
    primary_rays.rgen's author_mask_bits asks the same thing texel by texel:
-   square |2t+1-c2| <= size on both axes, round dx^2 + dy^2 <= size^2. */
+   square |2t+1-c2| <= size on both axes (a rectangle: its width across, its
+   height down), round dx^2 + dy^2 <= size^2. */
 static bool brush_row(int c2x, int c2y, int ty, int *x0, int *x1)
 {
-	const int s = cur_size();
+	const int s = cur_w();
 	const int dy = 2 * ty + 1 - c2y;
 	int k;
-	if (cur_shape())
+	if (cur_shape() != SHAPE_ROUND)
 	{
-		if (abs(dy) > s)
+		if (abs(dy) > cur_h())
 			return false;
 		k = s;
 	}
@@ -540,8 +702,122 @@ static bool brush_row(int c2x, int c2y, int ty, int *x0, int *x1)
 
 static void brush_rows(int c2y, int *ty0, int *ty1)
 {
-	*ty0 = ceil_div2(c2y - cur_size() - 1);
-	*ty1 = floor_div2(c2y + cur_size() - 1);
+	*ty0 = ceil_div2(c2y - cur_h() - 1);
+	*ty1 = floor_div2(c2y + cur_h() - 1);
+}
+
+/* THE BRUSH SWEPT ALONG A LINE, from a centre (c2x, c2y) on by (dx, dy), all in
+   doubled texels - what the line tool paints. q is a texel's offset from the
+   first centre (2t + 1 - c2). A box (square, rectangle) covers q when some
+   centre t (dx, dy), 0 <= t <= 1, is within its half-sizes of q on both axes;
+   round when q is within the radius of the segment. primary_rays.rgen's
+   author_swept is this arithmetic, for the outline. */
+static bool sweep_inside(float qx, float qy, float dx, float dy)
+{
+	const float hx = (float)cur_w(), hy = (float)cur_h();
+	if (cur_shape() == SHAPE_ROUND)
+	{
+		const float dd = dx * dx + dy * dy;
+		const float t = dd > 0.f ? Q_clipf((qx * dx + qy * dy) / dd, 0.f, 1.f) : 0.f;
+		const float ex = qx - dx * t, ey = qy - dy * t;
+		return ex * ex + ey * ey <= hx * hx;
+	}
+	float t0 = 0.f, t1 = 1.f;
+	if (dy == 0.f)
+	{
+		if (fabsf(qy) > hy)
+			return false;
+	}
+	else
+	{
+		const float ta = (qy - hy) / dy, tb = (qy + hy) / dy;
+		t0 = max(t0, min(ta, tb));
+		t1 = min(t1, max(ta, tb));
+		if (t0 > t1)
+			return false;
+	}
+	const float lo = min(t0 * dx, t1 * dx) - hx, hi = max(t0 * dx, t1 * dx) + hx;
+	return qx >= lo && qx <= hi;
+}
+
+// the rows the swept brush covers
+static void sweep_rows(int c2y, int dy, int *ty0, int *ty1)
+{
+	*ty0 = ceil_div2(c2y + min(0, dy) - cur_h() - 1);
+	*ty1 = floor_div2(c2y + max(0, dy) + cur_h() - 1);
+}
+
+/* Row (ty)'s texels the swept brush covers: [x0, x1], or false. For a box it
+   is worked out (the centres within reach of the row, then their reach
+   across); round it is that, narrowed from both ends to the texels
+   sweep_inside takes - the shape is convex, so what is left is one run. */
+static bool sweep_row(int c2x, int c2y, int dx, int dy, int ty, int *x0, int *x1)
+{
+	const float qy = (float)(2 * ty + 1 - c2y);
+	const float hx = (float)cur_w(), hy = (float)cur_h();
+	float t0 = 0.f, t1 = 1.f;
+	if (dy == 0)
+	{
+		if (fabsf(qy) > hy)
+			return false;
+	}
+	else
+	{
+		const float ta = (qy - hy) / (float)dy, tb = (qy + hy) / (float)dy;
+		t0 = max(t0, min(ta, tb));
+		t1 = min(t1, max(ta, tb));
+		if (t0 > t1)
+			return false;
+	}
+	const float lo = min(t0 * dx, t1 * dx) - hx, hi = max(t0 * dx, t1 * dx) + hx;
+	// 2 tx + 1 - c2x within [lo, hi]
+	*x0 = (int)ceilf(((float)c2x + lo - 1.f) * 0.5f);
+	*x1 = (int)floorf(((float)c2x + hi - 1.f) * 0.5f);
+	// round: narrowed to the capsule; a box: to its own test, to the last float - the shader's
+	while (*x0 <= *x1 && !sweep_inside((float)(2 * *x0 + 1 - c2x), qy, (float)dx, (float)dy))
+		(*x0)++;
+	while (*x1 >= *x0 && !sweep_inside((float)(2 * *x1 + 1 - c2x), qy, (float)dx, (float)dy))
+		(*x1)--;
+	return *x0 <= *x1;
+}
+
+/* How far into the swept brush q is, 0 on the line to 1 at the brush's edge
+   plus a texel - as dab's r, for the falloff. Round: the distance to the
+   segment. A box: the least over t of max(|qx - t dx| / (hx + 1), |qy - t dy| /
+   (hy + 1)), which is convex and piecewise linear in t, so it is least at an
+   end or where a term turns or the two cross. */
+static float sweep_r(float qx, float qy, float dx, float dy)
+{
+	const float ax = (float)cur_w() + 1.f, ay = (float)cur_h() + 1.f;
+	if (cur_shape() == SHAPE_ROUND)
+	{
+		const float dd = dx * dx + dy * dy;
+		const float t = dd > 0.f ? Q_clipf((qx * dx + qy * dy) / dd, 0.f, 1.f) : 0.f;
+		const float ex = qx - dx * t, ey = qy - dy * t;
+		return sqrtf(ex * ex + ey * ey) / ax;
+	}
+	float cand[8];
+	int n = 0;
+	cand[n++] = 0.f;
+	cand[n++] = 1.f;
+	if (dx != 0.f)
+		cand[n++] = qx / dx;
+	if (dy != 0.f)
+		cand[n++] = qy / dy;
+	// (qx - t dx) / ax = +-(qy - t dy) / ay
+	const float p = dx / ax - dy / ay, m = dx / ax + dy / ay;
+	if (p != 0.f)
+		cand[n++] = (qx / ax - qy / ay) / p;
+	if (m != 0.f)
+		cand[n++] = (qx / ax + qy / ay) / m;
+	float best = 1e30f;
+	for (int i = 0; i < n; i++)
+	{
+		const float t = Q_clipf(cand[i], 0.f, 1.f);
+		const float r = max(fabsf(qx - t * dx) / ax, fabsf(qy - t * dy) / ay);
+		best = min(best, r);
+	}
+	return best;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -600,6 +876,22 @@ static void make_paint(const author_hit_t *hit, author_paint_t *p)
 				{
 					au.tangent_warned = true;
 					author_status("this surface has no tangents: the tilt follows its texture axes");
+				}
+			}
+			if (au.stage >= 0)
+			{
+				/* A stage's normal map leans along the stage's own axes, which
+				   q3_stages.glsl turns back onto the surface's by transpose(lin)
+				   (the turn, not the scale): so the lean wanted on the surface is
+				   turned the other way, by the inverse of that. */
+				const float *m = au.stage_tc;
+				const float det = m[0] * m[3] - m[1] * m[2];
+				if (fabsf(det) > 1e-8f)
+				{
+					const float sx2 = (m[3] * ts[0] - m[2] * ts[1]) / det;
+					const float sy2 = (-m[1] * ts[0] + m[0] * ts[1]) / det;
+					ts[0] = sx2;
+					ts[1] = sy2;
 				}
 			}
 		}
@@ -776,7 +1068,7 @@ static void blur_target(const dab_ctx_t *c, int x, int y, float out[3])
 {
 	const image_t *img = c->img;
 	const int W = img->upload_width, H = img->upload_height;
-	const int r = Q_clip(au.brush_size / 6, 1, 6);
+	const int r = Q_clip(min(cur_w(), cur_h()) / 6, 1, 6);
 	float sum[3] = { 0.f, 0.f, 0.f };
 	int n = 0;
 	for (int dy = -r; dy <= r; dy++)
@@ -866,15 +1158,15 @@ static void dab_done(dab_ctx_t *c)
 		return;
 	au.upload_image = image_index(c->img);
 	image_dirty[au.upload_image] = (uint8_t)(c->slot + 1);
+	image_stage[au.upload_image] = (uint8_t)(au.stage + 1);
 }
 
 static void dab(dab_ctx_t *c, int c2x, int c2y)
 {
 	image_t *img = c->img;
 	const int W = img->upload_width, H = img->upload_height;
-	const int s = cur_size();
-	const bool square = cur_shape() != 0;
-	const float rs = 1.f / (float)(s + 1);
+	const bool round_brush = cur_shape() == SHAPE_ROUND;
+	const float rx = 1.f / (float)(cur_w() + 1), ry = 1.f / (float)(cur_h() + 1);
 	int ty0, ty1;
 	brush_rows(c2y, &ty0, &ty1);
 	for (int ty = ty0; ty <= ty1; ty++)
@@ -896,18 +1188,30 @@ static void dab(dab_ctx_t *c, int c2x, int c2y)
 			else if (x < 0 || x >= W)
 				continue;
 			const int dx = 2 * tx + 1 - c2x;
-			const float r = (square ? (float)max(abs(dx), abs(dy)) : sqrtf((float)(dx * dx + dy * dy))) * rs;
+			const float r = round_brush ? sqrtf((float)(dx * dx + dy * dy)) * rx
+				: max((float)abs(dx) * rx, (float)abs(dy) * ry);
 			dab_texel(c, x, y, r);
 		}
 	}
 	dab_done(c);
 }
 
+// the brush's centre, doubled (centre2), for a point (tu, tv) in texels
+static int centre2_x(float tu)
+{
+	return centre2(tu, cur_w());
+}
+
+static int centre2_y(float tv)
+{
+	return centre2(tv, cur_h());
+}
+
 static void dab_line(dab_ctx_t *c, float tu0, float tv0, float tu1, float tv1)
 {
 	const float dx = tu1 - tu0, dy = tv1 - tv0;
 	const float dist = sqrtf(dx * dx + dy * dy);
-	const float step = max(1.f, (float)cur_size() * 0.25f);
+	const float step = max(1.f, (float)min(cur_w(), cur_h()) * 0.25f);
 	int n = (int)ceilf(dist / step);
 	n = Q_clip(n, 1, 8192);
 	// the spray's chance this tick, shared out over the dabs
@@ -916,9 +1220,41 @@ static void dab_line(dab_ctx_t *c, float tu0, float tv0, float tu1, float tv1)
 	for (int i = 1; i <= n; i++)
 	{
 		const float t = (float)i / (float)n;
-		dab(c, centre2(tu0 + dx * t, cur_size()), centre2(tv0 + dy * t, cur_size()));
+		dab(c, centre2_x(tu0 + dx * t), centre2_y(tv0 + dy * t));
 	}
 	c->spray_p = spray_total;
+}
+
+/* The line tool: the brush swept from centre (c2x, c2y) on by (dx, dy), doubled
+   texels - every texel it covers once, its falloff from the line itself. */
+static void dab_sweep(dab_ctx_t *c, int c2x, int c2y, int dx, int dy)
+{
+	image_t *img = c->img;
+	const int W = img->upload_width, H = img->upload_height;
+	int ty0, ty1;
+	sweep_rows(c2y, dy, &ty0, &ty1);
+	for (int ty = ty0; ty <= ty1; ty++)
+	{
+		int x0, x1;
+		if (!sweep_row(c2x, c2y, dx, dy, ty, &x0, &x1))
+			continue;
+		int y = ty;
+		if (c->wrap)
+			y = ((y % H) + H) % H;
+		else if (y < 0 || y >= H)
+			continue;
+		const float qy = (float)(2 * ty + 1 - c2y);
+		for (int tx = x0; tx <= x1; tx++)
+		{
+			int x = tx;
+			if (c->wrap)
+				x = ((x % W) + W) % W;
+			else if (x < 0 || x >= W)
+				continue;
+			dab_texel(c, x, y, sweep_r((float)(2 * tx + 1 - c2x), qy, (float)dx, (float)dy));
+		}
+	}
+	dab_done(c);
 }
 
 // how far apart two texels' values are, 0..1, for the fill's tolerance
@@ -934,7 +1270,7 @@ static float value_distance(int slot, const float a[3], const float b[3])
 // the base texture's colour at texel (x, y) of a W x H map, nearest; false if it can't say
 static bool base_rgb(int x, int y, int W, int H, byte rgb[3])
 {
-	const image_t *b = au.mat ? au.mat->image_base : NULL;
+	const image_t *b = author_base();
 	if (!b || !b->pix_data || b->pixel_format != PF_R8G8B8A8_UNORM || b->upload_width <= 0 || b->upload_height <= 0)
 		return false;
 	const int sx = (int)((int64_t)x * b->upload_width / W), sy = (int)((int64_t)y * b->upload_height / H);
@@ -1112,6 +1448,7 @@ static void stroke_touch(image_t *img)
 	au.stroke_seed = hash32(Sys_Milliseconds() ^ (au.rng += 0x9e3779b9u));
 	au.stroke_image = idx;
 	au.stroke_slot = au.slot;
+	au.stroke_stage = au.stage;
 	au.stroke_w = img->upload_width;
 	au.stroke_h = img->upload_height;
 	au.stroke_bpp = image_bpp(img);
@@ -1140,6 +1477,7 @@ static void stroke_end(void)
 		e.image = au.stroke_image;
 		Q_strlcpy(e.name, img->name, sizeof(e.name));
 		e.slot = au.stroke_slot;
+		e.stage = au.stroke_stage;
 		e.width = au.stroke_w;
 		e.height = au.stroke_h;
 		e.bpp = au.stroke_bpp;
@@ -1198,7 +1536,10 @@ static void undo_apply(bool redo)
 	undo_pos += redo ? 1 : -1;
 
 	if (!image_dirty[e->image])
+	{
 		image_dirty[e->image] = (uint8_t)(e->slot + 1);
+		image_stage[e->image] = (uint8_t)(e->stage + 1);
+	}
 	if (e->slot == SLOT_EMISSIVE)
 		after_emissive_change(img);
 	IMG_PixelsEdited(img);
@@ -1455,16 +1796,66 @@ static byte alpha_at(const image_t *img, int x, int y, int W, int H)
    metal comes out of it), black emission - write it as a PNG under materialDev/
    and point the material at it, as 'mat texture_roughness <file>' would. Runs
    between frames ('mat author _tick'): that can reload the map. */
+// the average of (img)'s texels as (slot) reads them, on a grid of at most 64 x 64; (def) without one
+static float image_average(const image_t *img, int slot, float def)
+{
+	if (!img || !img->pix_data || img->upload_width <= 0 || img->upload_height <= 0
+		|| (img->pixel_format != PF_R8G8B8A8_UNORM && img->pixel_format != PF_R16_UNORM))
+		return def;
+	const int W = img->upload_width, H = img->upload_height;
+	const int sx = max(1, W / 64), sy = max(1, H / 64);
+	double sum = 0.0;
+	int n = 0;
+	for (int y = sy / 2; y < H; y += sy)
+	{
+		for (int x = sx / 2; x < W; x += sx)
+		{
+			float v[3];
+			texel_get(img, img->pix_data, (size_t)y * W + x, slot, v);
+			sum += v[0];
+			n++;
+		}
+	}
+	return n ? (float)(sum / n) : def;
+}
+
+/* A stage's new roughness or metallic map starts as one value - it is read
+   through the stage's own coordinates, so the material's map can't be copied
+   in: what the stage states (its roughness_override, the floor under a map;
+   its metalness_factor, which then scales a map of 1s), else the material's
+   own - its roughness_override when that is the whole of it, else its map's
+   average. Linear 0..1. */
+static float stage_start_value(void)
+{
+	const pbr_material_t *mat = au.mat;
+	q3stagesettings_t s;
+	const bool have = vkpt_q3_stage_settings(mat->name, au.stage, &s);
+	if (au.slot == SLOT_ROUGH)
+	{
+		const float r = s.values[Q3SS_ROUGHNESS_OVERRIDE - Q3SS_NUM_PATHS];
+		if (have && (s.set & (1u << Q3SS_ROUGHNESS_OVERRIDE)) && r >= 0.f)
+			return Q_clipf(r, 0.f, 1.f);
+		if (MAT_RoughnessIsWhole(mat))
+			return Q_clipf(mat->roughness_override, 0.f, 1.f);
+		return image_average(mat->image_roughness, SLOT_ROUGH, 1.f);
+	}
+	if (have && (s.set & (1u << Q3SS_METALNESS_FACTOR)))
+		return 1.f;
+	return Q_clipf(image_average(mat->image_metallic, SLOT_METAL, 0.f) * mat->metalness_factor, 0.f, 1.f);
+}
+
 static image_t *create_map(void)
 {
 	pbr_material_t *mat = au.mat;
-	const image_t *base = mat->image_base;
+	const image_t *base = author_base();
 	int W, H;
 	map_size(&W, &H);
 
 	byte *rgba = Z_Malloc((size_t)W * H * 4);
 	const bool whole = MAT_RoughnessIsWhole(mat);
 	const byte rough_whole = to_byte(mat->roughness_override);
+	// a stage's: one value all over (stored as the new PNG's linear bytes)
+	const byte stage_value = (au.stage >= 0 && au.slot <= SLOT_METAL) ? to_byte(stage_start_value()) : 0;
 	for (int y = 0; y < H; y++)
 	{
 		for (int x = 0; x < W; x++)
@@ -1473,12 +1864,18 @@ static image_t *create_map(void)
 			switch (au.slot)
 			{
 			case SLOT_ROUGH:
-				p[0] = whole ? rough_whole : (mat->image_normals ? alpha_at(base, x, y, W, H) : 255);
+				if (au.stage >= 0)
+					p[0] = stage_value;
+				else
+					p[0] = whole ? rough_whole : (mat->image_normals ? alpha_at(base, x, y, W, H) : 255);
 				p[1] = p[2] = p[0];
 				p[3] = 255;
 				break;
 			case SLOT_METAL:
-				p[0] = mat->image_normals ? alpha_at(mat->image_normals, x, y, W, H) : 0;
+				if (au.stage >= 0)
+					p[0] = stage_value;
+				else
+					p[0] = mat->image_normals ? alpha_at(mat->image_normals, x, y, W, H) : 0;
 				p[1] = p[2] = p[0];
 				p[3] = 255;
 				break;
@@ -1522,16 +1919,24 @@ static image_t *create_map(void)
 		return NULL;
 	}
 
-	MAT_CommandFor(mat, va("%s \"%s\"", slot_attribute[au.slot], path));
-	image_t *img = slot_image(mat, au.slot);
+	if (au.stage >= 0)
+		MAT_CommandFor(mat, va("stage%d %s \"%s\"", au.stage, slot_attribute[au.slot], path));
+	else
+		MAT_CommandFor(mat, va("%s \"%s\"", slot_attribute[au.slot], path));
+	image_t *img = author_image();
 	if (!img || !img->pix_data)
 	{
 		author_status("wrote %s, but %s did not load it", path, mat->name);
 		return NULL;
 	}
 	au.attr_changed = true;
-	author_status("%s had no %s map: made %s (%dx%d) - Save writes it into the .mat", mat->name,
-		slot_word[au.slot], path, img->upload_width, img->upload_height);
+	if (au.stage >= 0)
+		author_status("%s stage%d had no %s map: made %s (%dx%d) - Save writes stage%d_%s into the .mat",
+			mat->name, au.stage, slot_word[au.slot], path, img->upload_width, img->upload_height, au.stage,
+			slot_attribute[au.slot]);
+	else
+		author_status("%s had no %s map: made %s (%dx%d) - Save writes it into the .mat", mat->name,
+			slot_word[au.slot], path, img->upload_width, img->upload_height);
 	return img;
 }
 
@@ -1600,10 +2005,28 @@ static void author_save(void)
 			loose ? "not a PNG or TGA" : "in a pack", ospath);
 
 		const image_t *loaded = NULL;
+		const int stage = image_stage[i] - 1;
 		for (int k = 0; k < MAX_PBR_MATERIALS; k++)
 		{
 			pbr_material_t *m2 = MAT_ForIndex(k);
-			if (!m2 || !m2->registration_sequence || slot_image(m2, slot) != img)
+			if (!m2 || !m2->registration_sequence)
+				continue;
+			if (stage >= 0)
+			{
+				// a Quake III stage's own map: every material whose stage N draws it
+				const char *file;
+				if (slot > SLOT_NORMAL || vkpt_q3_stage_image(m2, stage, slot + 1, &file) != img)
+					continue;
+				MAT_CommandFor(m2, va("stage%d %s \"%s\"", stage, slot_attribute[slot], new_path));
+				const image_t *now = vkpt_q3_stage_image(m2, stage, slot + 1, &file);
+				if (now && now != img)
+				{
+					loaded = now;
+					repointed++;
+				}
+				continue;
+			}
+			if (slot_image(m2, slot) != img)
 				continue;
 			MAT_CommandFor(m2, va("%s \"%s\"", slot_attribute[slot], new_path));
 			if (slot_image(m2, slot) && slot_image(m2, slot) != img)
@@ -1613,6 +2036,7 @@ static void author_save(void)
 			}
 		}
 		image_dirty[i] = 0;
+		image_stage[i] = 0;
 		if (loaded)
 		{
 			undo_remap(i, loaded);
@@ -2093,18 +2517,33 @@ static void raster_tri(const float *uv, int W, int H, byte *mask)
    model, LOCK_BLEED texels further into texels NO triangle of the mesh uses - the
    space round a UV island - so filtering at a seam finds paint, not the old value,
    while a neighbouring face's texels inside the island are left alone. */
+// (uv)'s triangle onto the map being painted: a stage's through its tcMods
+static void raster_map_tri(const float *uv, int W, int H, byte *mask)
+{
+	if (au.stage < 0)
+	{
+		raster_tri(uv, W, H, mask);
+		return;
+	}
+	float st[6];
+	for (int k = 0; k < 3; k++)
+		map_uv(uv[k * 2], uv[k * 2 + 1], &st[k * 2], &st[k * 2 + 1]);
+	raster_tri(st, W, H, mask);
+}
+
 static void lock_rasterize(int W, int H)
 {
 	const size_t n = (size_t)W * H;
 	byte *mask = Z_Mallocz(n);
+	stage_info(NULL, NULL);     // the stage's tcMods as they are now
 	for (int i = 0; i < lk.num_tris; i++)
-		raster_tri(lk.tris[i].uv, W, H, mask);
+		raster_map_tri(lk.tris[i].uv, W, H, mask);
 
 	if (lk.num_cover)
 	{
 		byte *cover = Z_Mallocz(n);
 		for (int i = 0; i < lk.num_cover; i++)
-			raster_tri(lk.cover[i].uv, W, H, cover);
+			raster_map_tri(lk.cover[i].uv, W, H, cover);
 		byte *prev = Z_Malloc(n);
 		for (int pass = 0; pass < LOCK_BLEED; pass++)
 		{
@@ -2216,8 +2655,10 @@ static void lock_command(int kind, bool toggle)
 	map_size(&W, &H);
 	if (!toggle && lk.on && lk.mask && lk.mask_w == W && lk.mask_h == H)
 	{
-		const int x = Q_clip((int)floorf((au.hit.u - floorf(au.hit.u)) * W), 0, W - 1);
-		const int y = Q_clip((int)floorf((au.hit.v - floorf(au.hit.v)) * H), 0, H - 1);
+		float hu, hv;
+		hit_texel(&au.hit, W, H, true, &hu, &hv);
+		const int x = Q_clip((int)floorf(hu), 0, W - 1);
+		const int y = Q_clip((int)floorf(hv), 0, H - 1);
 		if (lk.mask[(size_t)y * W + x])
 		{
 			lock_clear("unlocked");
@@ -2367,7 +2808,10 @@ static void author_start(pbr_material_t *mat, int slot)
 		au.emissive_rgb[0] = au.emissive_rgb[1] = au.emissive_rgb[2] = 1.f;
 		au.emissive_strength = 1.f;
 		au.brush_size = 8;
-		au.brush_shape = 0;
+		au.brush_shape = SHAPE_ROUND;
+		au.rect_w = 32;
+		au.rect_h = 4;
+		au.stage = -1;
 		au.tool = au.prev_tool = TOOL_BRUSH;
 		au.falloff = 0.f;
 		au.tool_opt[TOOL_SPRAY] = 0.25f;
@@ -2386,12 +2830,14 @@ static void author_start(pbr_material_t *mat, int slot)
 	{
 		stroke_end();
 		lock_clear(NULL);
+		au.stage = -1;
 	}
 	au.mat = mat;
 	Q_strlcpy(au.mat_name, mat->name, sizeof(au.mat_name));
-	if (slot >= 0)
+	if (slot >= 0 && !(au.stage >= 0 && slot > SLOT_NORMAL))
 		au.slot = slot;
 	au.v2_fit_image = -2;
+	au.line_active = au.line_have = au.line_commit = false;
 
 	if (!au.active)
 	{
@@ -2413,18 +2859,25 @@ static void author_start(pbr_material_t *mat, int slot)
 		Com_Printf("mat author: hold the RIGHT mouse button to look (WASD/QE fly, Shift fast, Ctrl slow,\n"
 			"  Ctrl + right button zooms); LEFT paints; Alt + left picks the material under the brush;\n"
 			"  wheel or [ ] = brush size (on the map view the wheel zooms, right-drag pans);\n"
-			"  Shift + wheel = value; Ctrl + wheel = falloff; 1-4 = map; B = round/square;\n"
+			"  Shift + wheel = value; Ctrl + wheel = falloff; 1-4 = map; B = round/square/rectangle;\n"
+			"  R = turn the rectangle; L = line (press where it starts, let go where it ends);\n"
 			"  T = next tool (brush spray hatch noise blur fill), G = fill; Tab = map view, O = base under it;\n"
 			"  F = lock to the face under the brush, P = to the piece, Shift adds/removes, U unlocks;\n"
+			"  a Quake III shader drawn in stages: the panel's 'maps' row paints one stage's own maps;\n"
 			"  Ctrl+Z / Ctrl+Y = undo / redo; Ctrl+S = save; Esc = leave\n");
 	}
 
 	image_t *img = author_image();
+	char whose[MAX_QPATH + 16];
+	if (au.stage >= 0)
+		Q_snprintf(whose, sizeof(whose), "%s stage%d", mat->name, au.stage);
+	else
+		Q_strlcpy(whose, mat->name, sizeof(whose));
 	if (img)
-		author_status("painting %s's %s map, %s (%dx%d)", mat->name, slot_word[au.slot],
+		author_status("painting %s's %s map, %s (%dx%d)", whose, slot_word[au.slot],
 			img->filepath[0] ? img->filepath : img->name, img->upload_width, img->upload_height);
 	else
-		author_status("painting %s's %s map - it has none yet: the first stroke makes one", mat->name,
+		author_status("painting %s's %s map - it has none yet: the first stroke makes one", whose,
 			slot_word[au.slot]);
 }
 
@@ -2432,6 +2885,12 @@ static void set_slot(int slot)
 {
 	if (slot == au.slot || slot < 0 || slot >= NUM_SLOTS)
 		return;
+	if (au.stage >= 0 && slot > SLOT_NORMAL)
+	{
+		author_status("a stage has no emissive map of its own: its glow is stage%d_emissive_factor "
+			"('mat stage%d emissive_factor <n>')", au.stage, au.stage);
+		return;
+	}
 	stroke_end();
 	au.slot = slot;
 	au.v2_fit_image = -2;
@@ -2439,8 +2898,77 @@ static void set_slot(int slot)
 	if (img)
 		author_status("%s map: %s (%dx%d)", slot_word[slot], img->filepath[0] ? img->filepath : img->name,
 			img->upload_width, img->upload_height);
+	else if (au.stage >= 0)
+		author_status("%s stage%d has no %s map of its own yet: the first stroke makes one", au.mat->name,
+			au.stage, slot_word[slot]);
 	else
 		author_status("%s has no %s map yet: the first stroke makes one", au.mat->name, slot_word[slot]);
+}
+
+/* Paint the material's own maps (-1) or Quake III stage N's own: its
+   stage<N>_texture_roughness, _metallic, _normals, read through its tcMods. */
+static void set_stage(int stage)
+{
+	if (stage == au.stage)
+		return;
+	if (stage >= 0)
+	{
+		const image_t *pic;
+		const char *why;
+		bool clamp;
+		float tc[6];
+		if (!vkpt_q3_stage_paint_info(au.mat, stage, &pic, &clamp, tc, &why))
+		{
+			author_status("stage%d's maps can't be painted: %s", stage, why);
+			return;
+		}
+	}
+	stroke_end();
+	au.stage = stage;
+	au.line_active = au.line_have = au.line_commit = false;
+	if (stage >= 0 && au.slot > SLOT_NORMAL)
+		au.slot = SLOT_ROUGH;
+	au.v2_fit_image = -2;
+	if (lk.on)
+		lk.dirty = true;    // the same triangles, laid on another map
+	if (stage < 0)
+	{
+		author_status("painting %s's own maps", au.mat->name);
+		return;
+	}
+	const image_t *pic = NULL;
+	stage_info(&pic, NULL);
+	image_t *img = author_image();
+	if (img)
+		author_status("stage%d (%s): its %s map %s (%dx%d)", stage, pic ? COM_SkipPath(pic->name) : "$whiteimage",
+			slot_word[au.slot], img->filepath[0] ? img->filepath : img->name, img->upload_width, img->upload_height);
+	else
+		author_status("stage%d (%s) has no %s map of its own yet: the first stroke makes one", stage,
+			pic ? COM_SkipPath(pic->name) : "$whiteimage", slot_word[au.slot]);
+}
+
+static void set_shape(int shape)
+{
+	if (shape < 0 || shape >= NUM_SHAPES)
+		return;
+	au.brush_shape = shape;
+	if (shape == SHAPE_RECT)
+		author_status("rectangle %d x %d texels: R turns it", au.rect_w, au.rect_h);
+}
+
+static void set_line_mode(bool on)
+{
+	au.line_mode = on;
+	au.line_active = au.line_have = au.line_commit = false;
+	author_status(on ? "line: press where it starts, let go where it ends" : "free strokes");
+}
+
+static void rect_turn(void)
+{
+	const int t = au.rect_w;
+	au.rect_w = au.rect_h;
+	au.rect_h = t;
+	author_status("rectangle %d x %d texels", au.rect_w, au.rect_h);
 }
 
 static void set_tool(int tool)
@@ -2474,7 +3002,10 @@ static void pick_material(void)
 		return;
 	stroke_end();
 	if (mat != au.mat)
+	{
 		lock_clear(NULL);
+		au.stage = -1;
+	}
 	au.mat = mat;
 	Q_strlcpy(au.mat_name, mat->name, sizeof(au.mat_name));
 	au.v2_fit_image = -2;
@@ -2619,14 +3150,45 @@ static int t_to_size(float t)
 	return Q_clip((int)(1.f + t * t * (AUTHOR_MAX_BRUSH - 1) + 0.5f), 1, AUTHOR_MAX_BRUSH);
 }
 
-static void brush_size_step(int dir)
+static int size_step(int s, int dir)
 {
-	int s = au.brush_size;
 	if (dir > 0)
 		s = s < 10 ? s + 1 : (int)(s * 1.15f + 0.5f);
 	else
 		s = s <= 10 ? s - 1 : (int)(s / 1.15f + 0.5f);
-	au.brush_size = Q_clip(s, 1, AUTHOR_MAX_BRUSH);
+	return Q_clip(s, 1, AUTHOR_MAX_BRUSH);
+}
+
+// the wheel: the brush's size - a rectangle's two sides together
+static void brush_size_step(int dir)
+{
+	if (au.brush_shape == SHAPE_RECT)
+	{
+		// stop both at once at either end, so the shape keeps its proportions
+		const int w = size_step(au.rect_w, dir), h = size_step(au.rect_h, dir);
+		if (w != au.rect_w && h != au.rect_h)
+		{
+			au.rect_w = w;
+			au.rect_h = h;
+		}
+		return;
+	}
+	au.brush_size = size_step(au.brush_size, dir);
+}
+
+// one of the size sliders a texel (or ten) at a time: the wheel over it, or its - / + buttons
+static bool size_slider_step(int id, int by)
+{
+	int *v;
+	switch (id)
+	{
+	case W_SIZE:   v = &au.brush_size; break;
+	case W_RECT_W: v = &au.rect_w; break;
+	case W_RECT_H: v = &au.rect_h; break;
+	default:       return false;
+	}
+	*v = Q_clip(*v + by, 1, AUTHOR_MAX_BRUSH);
+	return true;
 }
 
 // the main value of the map being painted, by Shift + wheel
@@ -2660,6 +3222,8 @@ static void drag_update(int id)
 	case W_BLUE:      au.emissive_rgb[2] = t; break;
 	case W_STRENGTH:  au.emissive_strength = t; break;
 	case W_SIZE:      au.brush_size = t_to_size(t); break;
+	case W_RECT_W:    au.rect_w = t_to_size(t); break;
+	case W_RECT_H:    au.rect_h = t_to_size(t); break;
 	case W_FALLOFF:   au.falloff = t; break;
 	case W_TOOLOPT:   au.tool_opt[au.tool] = t; break;
 	case W_LAYER:     au.layer_alpha = t; break;
@@ -2687,6 +3251,9 @@ static const char *panel_warning(const char **fix)
 {
 	const pbr_material_t *m = au.mat;
 	*fix = NULL;
+	// a stage's own maps answer to its stage<N>_* settings, not the material's
+	if (au.stage >= 0)
+		return NULL;
 	switch (au.slot)
 	{
 	case SLOT_ROUGH:
@@ -2735,10 +3302,18 @@ static void panel_press(int id)
 		set_slot(id - W_SLOT0);
 		break;
 	case W_VALUE: case W_DIAL: case W_INTENSITY: case W_RED: case W_GREEN: case W_BLUE: case W_STRENGTH: case W_SIZE:
-	case W_FALLOFF: case W_TOOLOPT: case W_LAYER:
+	case W_FALLOFF: case W_TOOLOPT: case W_LAYER: case W_RECT_W: case W_RECT_H:
 		au.drag = id;
 		drag_update(id);
 		break;
+	case W_RECT_W_DEC: size_slider_step(W_RECT_W, Key_IsDown(K_SHIFT) ? -10 : -1); break;
+	case W_RECT_W_INC: size_slider_step(W_RECT_W, Key_IsDown(K_SHIFT) ? 10 : 1); break;
+	case W_RECT_H_DEC: size_slider_step(W_RECT_H, Key_IsDown(K_SHIFT) ? -10 : -1); break;
+	case W_RECT_H_INC: size_slider_step(W_RECT_H, Key_IsDown(K_SHIFT) ? 10 : 1); break;
+	case W_RECT:        set_shape(SHAPE_RECT); break;
+	case W_STROKE_FREE: if (au.line_mode) set_line_mode(false); break;
+	case W_STROKE_LINE: if (!au.line_mode) set_line_mode(true); break;
+	case W_STAGE_MAT:   set_stage(-1); break;
 	case W_TOOL0: case W_TOOL1: case W_TOOL2: case W_TOOL3: case W_TOOL4: case W_TOOL5:
 		set_tool(id - W_TOOL0);
 		break;
@@ -2746,8 +3321,8 @@ static void panel_press(int id)
 	case W_FILL_COLOUR: au.fill_by_colour = true; break;
 	case W_UNLOCK:      lock_clear("unlocked"); break;
 	case W_SHOWBASE:    au.show_base = !au.show_base; break;
-	case W_ROUND:  au.brush_shape = 0; break;
-	case W_SQUARE: au.brush_shape = 1; break;
+	case W_ROUND:  set_shape(SHAPE_ROUND); break;
+	case W_SQUARE: set_shape(SHAPE_SQUARE); break;
 	case W_SHOW2D: au.show_2d = !au.show_2d; au.v2_fit_image = -2; break;
 	case W_UNDO:   undo_apply(false); break;
 	case W_REDO:   undo_apply(true); break;
@@ -2765,6 +3340,8 @@ static void panel_press(int id)
 		break;
 	}
 	default:
+		if (id >= W_STAGE0 && id < W_STAGE0 + AUTHOR_MAX_STAGES)
+			set_stage(id - W_STAGE0);
 		break;
 	}
 }
@@ -2888,16 +3465,17 @@ static bool brush_centre(int W, int H, int *c2x, int *c2y, bool *wrap)
 	float tu, tv;
 	if (view2d_texel(&tu, &tv))
 	{
-		*c2x = centre2(tu, cur_size());
-		*c2y = centre2(tv, cur_size());
+		*c2x = centre2_x(tu);
+		*c2y = centre2_y(tv);
 		*wrap = false;
 		return true;
 	}
 	if (cursor_on_ui() || !hit_on_map(&au.hit, author_image()))
 		return false;
-	*c2x = centre2((au.hit.u - floorf(au.hit.u)) * W, cur_size());
-	*c2y = centre2((au.hit.v - floorf(au.hit.v)) * H, cur_size());
-	*wrap = true;
+	hit_texel(&au.hit, W, H, true, &tu, &tv);
+	*c2x = centre2_x(tu);
+	*c2y = centre2_y(tv);
+	*wrap = map_wraps();
 	return true;
 }
 
@@ -2916,7 +3494,7 @@ static void brush_under(under_t *u)
 	if (!brush_centre(W, H, &c2x, &c2y, &wrap))
 		return;
 
-	const int step = max(1, cur_size() / 96);
+	const int step = max(1, cur_size() / 96);   // the larger side: a long thin rectangle still reads every few
 	double sum[3] = { 0.0, 0.0, 0.0 };
 	int n = 0, ty0, ty1;
 	brush_rows(c2y, &ty0, &ty1);
@@ -3016,8 +3594,57 @@ static float panel_rows(float x0, float y0, const under_t *under, qhandle_t font
 		ui_text(x, y, 0, va("no %s map: painting makes one (%dx%d)", slot_word[au.slot], W, H), max_chars, font);
 	y += line + 2.f;
 
-	const float bw = (iw - 3 * 4.f) / 4.f;
-	for (int i = 0; i < NUM_SLOTS; i++)
+	// a Quake III shader drawn in stages: whose maps - the material's, or one stage's own
+	const int stages = min(vkpt_q3_paint_stage_count(au.mat), AUTHOR_MAX_STAGES);
+	if (stages > 0)
+	{
+		const float lw = 5 * CHAR_WIDTH, mw = 8 * CHAR_WIDTH + 6.f;
+		ui_text(x, y + 2.f, 0, "maps", 4, font);
+		ui_button(W_STAGE_MAT, x + lw, y, mw, "material", au.stage < 0, font);
+		const float sx = x + lw + mw + 4.f;
+		const float sw = min(24.f, (x + iw - sx + 3.f) / (float)stages - 3.f);
+		for (int i = 0; i < stages; i++)
+		{
+			const image_t *pic;
+			const char *why;
+			bool clamp;
+			float tc[6];
+			const bool ok = vkpt_q3_stage_paint_info(au.mat, i, &pic, &clamp, tc, &why);
+			const float bx = sx + i * (sw + 3.f);
+			char label[4];
+			Q_snprintf(label, sizeof(label), "%d", i);
+			if (ok || au.stage == i)
+				ui_button(W_STAGE0 + i, bx, y, sw, label, au.stage == i, font);
+			else
+			{
+				// no surface to paint: dim, and a click says why
+				ui_fill(bx, y, sw, 11.f, MakeColor(32, 32, 32, 240));
+				ui_text(bx + (sw - CHAR_WIDTH) * 0.5f, y + 2.f, UI_ALTCOLOR, label, 1, font);
+				add_widget(W_STAGE0 + i, bx, y, sw, 11.f);
+			}
+		}
+		y += line + 1.f;
+		if (au.stage >= 0)
+		{
+			const image_t *pic = NULL;
+			const char *why;
+			if (stage_info(&pic, &why))
+			{
+				const char *what = va("stage%d%s over ", au.stage, au.stage_clamp ? " (clamp)" : "");
+				const int n = (int)strlen(what);
+				ui_text(x, y, UI_ALTCOLOR, what, n, font);
+				ui_tail(x + n * CHAR_WIDTH, y, UI_ALTCOLOR, pic ? pic->name : "$whiteimage", max_chars - n, font);
+			}
+			else
+				ui_text(x, y, UI_ALTCOLOR, va("stage%d: %s", au.stage, why), max_chars, font);
+			y += line + 2.f;
+		}
+	}
+
+	// a stage has no emissive map: its button is left out
+	const int slots = au.stage >= 0 ? SLOT_NORMAL + 1 : NUM_SLOTS;
+	const float bw = (iw - (slots - 1) * 4.f) / (float)slots;
+	for (int i = 0; i < slots; i++)
 		ui_button(W_SLOT0 + i, x + i * (bw + 4.f), y, bw, slot_label[i], au.slot == i, font);
 	y += line + 6.f;
 
@@ -3117,12 +3744,49 @@ static float panel_rows(float x0, float y0, const under_t *under, qhandle_t font
 			y += line + 4.f;
 		}
 
-		ui_text(x, y, 0, va("brush %d texel%s", au.brush_size, au.brush_size == 1 ? "" : "s"), max_chars, font);
-		const float sbw = 52.f;
-		ui_button(W_ROUND, x + iw - 2 * sbw - 4.f, y - 1.f, sbw, "round", au.brush_shape == 0, font);
-		ui_button(W_SQUARE, x + iw - sbw, y - 1.f, sbw, "square", au.brush_shape == 1, font);
+		// the shape: round, square or a rectangle of its own length and width
+		const float sbw = 46.f;
+		const float shx = x + iw - 3 * sbw - 2 * 3.f;
+		if (au.brush_shape == SHAPE_RECT)
+			ui_text(x, y, 0, va("rect %dx%d", au.rect_w, au.rect_h), (int)((shx - x) / CHAR_WIDTH), font);
+		else
+			ui_text(x, y, 0, va("brush %d texel%s", au.brush_size, au.brush_size == 1 ? "" : "s"),
+				(int)((shx - x) / CHAR_WIDTH), font);
+		ui_button(W_ROUND, shx, y - 1.f, sbw, shape_label[SHAPE_ROUND], au.brush_shape == SHAPE_ROUND, font);
+		ui_button(W_SQUARE, shx + sbw + 3.f, y - 1.f, sbw, shape_label[SHAPE_SQUARE], au.brush_shape == SHAPE_SQUARE, font);
+		ui_button(W_RECT, shx + 2 * (sbw + 3.f), y - 1.f, sbw, shape_label[SHAPE_RECT], au.brush_shape == SHAPE_RECT, font);
 		y += line + 1.f;
-		ui_slider(W_SIZE, x + 3.f, y, iw - 6.f, size_to_t(au.brush_size));
+		if (au.brush_shape == SHAPE_RECT)
+		{
+			// length across the map (u), width down it (v): a label, - and +, the slider
+			static const char *const side[2] = { "length", "width" };
+			const int ids[2][3] = { { W_RECT_W, W_RECT_W_DEC, W_RECT_W_INC }, { W_RECT_H, W_RECT_H_DEC, W_RECT_H_INC } };
+			const int vals[2] = { au.rect_w, au.rect_h };
+			const float lw = 10 * CHAR_WIDTH, pm = 14.f;
+			for (int k = 0; k < 2; k++)
+			{
+				ui_text(x, y + 1.f, 0, va("%s %d", side[k], vals[k]), 10, font);
+				ui_button(ids[k][1], x + lw, y, pm, "-", false, font);
+				ui_button(ids[k][2], x + lw + pm + 2.f, y, pm, "+", false, font);
+				const float slx = x + lw + 2 * pm + 10.f;
+				ui_slider(ids[k][0], slx, y, x + iw - slx - 3.f, size_to_t(vals[k]));
+				y += line + 1.f;
+			}
+			ui_text(x, y, UI_ALTCOLOR, "length across, width down; R turns", max_chars, font);
+			y += line + 3.f;
+		}
+		else
+		{
+			ui_slider(W_SIZE, x + 3.f, y, iw - 6.f, size_to_t(au.brush_size));
+			y += line + 4.f;
+		}
+
+		// the stroke: free, or a straight line from where the button goes down to where it comes up
+		const float lbw = 40.f;
+		ui_text(x, y + 2.f, 0, au.line_mode ? (line_preview() ? "stroke: let go to paint" : "stroke: line")
+			: "stroke: free", (int)((iw - 2 * lbw - 4.f) / CHAR_WIDTH), font);
+		ui_button(W_STROKE_FREE, x + iw - 2 * lbw - 3.f, y, lbw, "free", !au.line_mode, font);
+		ui_button(W_STROKE_LINE, x + iw - lbw, y, lbw, "line", au.line_mode, font);
 		y += line + 4.f;
 	}
 
@@ -3192,9 +3856,11 @@ static float panel_rows(float x0, float y0, const under_t *under, qhandle_t font
 	y += line - 2.f;
 	ui_text(x, y, UI_ALTCOLOR, "1-4 map  T tool  G fill  Tab 2D  O", max_chars, font);
 	y += line - 2.f;
-	ui_text(x, y, UI_ALTCOLOR, "F face  P piece  Shift add  U unlock", max_chars, font);
+	ui_text(x, y, UI_ALTCOLOR, "L line  R turn rect  F face  P piece", max_chars, font);
 	y += line - 2.f;
-	ui_text(x, y, UI_ALTCOLOR, "Ctrl+Z/Y undo/redo  Ctrl+S save  Esc", max_chars, font);
+	ui_text(x, y, UI_ALTCOLOR, "Shift+F/P add  U unlock  Ctrl+S save", max_chars, font);
+	y += line - 2.f;
+	ui_text(x, y, UI_ALTCOLOR, "Ctrl+Z/Y undo/redo  Esc leave", max_chars, font);
 	y += line;
 	return y;
 }
@@ -3215,27 +3881,63 @@ static void draw_panel(qhandle_t font)
 	panel_rows(x0, y0, &under, font);
 }
 
+// what an outline is of: the brush at a centre, or swept from it by (dx, dy) - all doubled texels
+typedef struct {
+	int c2x, c2y;
+	int dx, dy;
+	bool sweep;
+} outline_t;
+
+static bool outline_row(const outline_t *o, int ty, int *x0, int *x1)
+{
+	return o->sweep ? sweep_row(o->c2x, o->c2y, o->dx, o->dy, ty, x0, x1) : brush_row(o->c2x, o->c2y, ty, x0, x1);
+}
+
+/* The line being drawn, in doubled texels of a W x H map: its first centre and
+   how far the last is from it. On a tiled surface the first is moved into the
+   map's one copy - the shader wraps what it tests, and the map view shows that
+   copy - the line keeping its length. */
+static void line_centres(int W, int H, outline_t *o)
+{
+	o->sweep = true;
+	o->c2x = centre2_x(au.line_tu0);
+	o->c2y = centre2_y(au.line_tv0);
+	o->dx = centre2_x(au.line_tu1) - o->c2x;
+	o->dy = centre2_y(au.line_tv1) - o->c2y;
+	if (!au.paint_2d && map_wraps())
+	{
+		o->c2x -= 2 * W * (int)floorf((float)o->c2x / (float)(2 * W));
+		o->c2y -= 2 * H * (int)floorf((float)o->c2y / (float)(2 * H));
+	}
+}
+
 // the brush's texels as an outline on the map view, edge by edge
-static void outline_2d(float vx, float vy, float vs, int c2x, int c2y, uint32_t color)
+static void outline_2d(float vx, float vy, float vs, const outline_t *o, uint32_t color)
 {
 	const float cx = vx + vs * 0.5f, cy = vy + vs * 0.5f, ppt = au.v2_ppt;
 	#define SX(t) (cx + ((float)(t) - au.v2_cu) * ppt)
 	#define SY(t) (cy + ((float)(t) - au.v2_cv) * ppt)
 
-	if (cur_size() * ppt < 3.f)
+	int ty0, ty1;
+	if (o->sweep)
+		sweep_rows(o->c2y, o->dy, &ty0, &ty1);
+	else
+		brush_rows(o->c2y, &ty0, &ty1);
+
+	if ((!o->sweep && cur_size() * ppt < 3.f) || ty1 - ty0 > 8192)
 	{
-		// smaller than a few pixels on screen: a marker
-		ui_dot(SX(c2x * 0.5f), SY(c2y * 0.5f), 3, color);
+		// smaller than a few pixels on screen (or a line beyond reason): a marker at each end
+		ui_dot(SX(o->c2x * 0.5f), SY(o->c2y * 0.5f), 3, color);
+		if (o->sweep)
+			ui_dot(SX((o->c2x + o->dx) * 0.5f), SY((o->c2y + o->dy) * 0.5f), 3, color);
 		return;
 	}
 
-	int ty0, ty1;
-	brush_rows(c2y, &ty0, &ty1);
 	int px0 = 0, px1 = -1;   // the row above: none
 	for (int ty = ty0; ty <= ty1 + 1; ty++)
 	{
 		int x0 = 0, x1 = -1;
-		if (ty <= ty1 && !brush_row(c2x, c2y, ty, &x0, &x1))
+		if (ty <= ty1 && !outline_row(o, ty, &x0, &x1))
 			x1 = x0 - 1;
 
 		// the horizontal edge between this row and the one above: where exactly one has texels
@@ -3273,7 +3975,7 @@ static void draw_view2d(qhandle_t font)
 	view2d_check_fit();
 
 	image_t *img = author_image();
-	const image_t *shown = img ? img : au.mat->image_base;
+	const image_t *shown = img ? img : author_base();
 	int W, H;
 	map_size(&W, &H);
 
@@ -3291,7 +3993,7 @@ static void draw_view2d(qhandle_t font)
 		const float sy0 = cy + (v0 - au.v2_cv) * au.v2_ppt, sy1 = cy + (v1 - au.v2_cv) * au.v2_ppt;
 		const bool nearest = au.v2_ppt / ui_scale() >= 2.f;
 		const bool red_grey = img && (au.slot == SLOT_ROUGH || au.slot == SLOT_METAL);
-		const image_t *base = au.mat->image_base;
+		const image_t *base = author_base();
 		if (img && au.show_base && base && base != img)
 		{
 			// the base texture, and the map over it as a layer (O, or the panel's slider)
@@ -3319,22 +4021,40 @@ static void draw_view2d(qhandle_t font)
 		}
 	}
 
-	// the brush where it would paint: under the cursor here, or where the cursor is on a surface
+	// the brush where it would paint: under the cursor here, or where the cursor is on a surface;
+	// a line being drawn, swept from its start to where the cursor is
 	float tu, tv;
-	if (view2d_texel(&tu, &tv))
-		outline_2d(vx, vy, vs, centre2(tu, cur_size()), centre2(tv, cur_size()), MakeColor(255, 255, 255, 255));
+	outline_t o;
+	memset(&o, 0, sizeof(o));
+	if (line_preview())
+	{
+		line_centres(W, H, &o);
+		outline_2d(vx, vy, vs, &o, au.paint_2d ? MakeColor(255, 255, 255, 255) : MakeColor(255, 170, 60, 255));
+	}
+	else if (view2d_texel(&tu, &tv))
+	{
+		o.c2x = centre2_x(tu);
+		o.c2y = centre2_y(tv);
+		outline_2d(vx, vy, vs, &o, MakeColor(255, 255, 255, 255));
+	}
 	else if (au.hit.valid && hit_on_map(&au.hit, img))
 	{
-		const float hu = (au.hit.u - floorf(au.hit.u)) * W, hv = (au.hit.v - floorf(au.hit.v)) * H;
-		outline_2d(vx, vy, vs, centre2(hu, cur_size()), centre2(hv, cur_size()), MakeColor(255, 170, 60, 255));
+		hit_texel(&au.hit, W, H, true, &tu, &tv);
+		o.c2x = centre2_x(tu);
+		o.c2y = centre2_y(tv);
+		outline_2d(vx, vy, vs, &o, MakeColor(255, 170, 60, 255));
 	}
 
-	char caption[160];
+	char caption[160], what[48];
+	if (au.stage >= 0)
+		Q_snprintf(what, sizeof(what), "stage%d %s", au.stage, slot_word[au.slot]);
+	else
+		Q_strlcpy(what, slot_word[au.slot], sizeof(what));
 	if (view2d_texel(&tu, &tv))
-		Q_snprintf(caption, sizeof(caption), "%s %dx%d  zoom %d%%  texel %d,%d", slot_word[au.slot], W, H,
+		Q_snprintf(caption, sizeof(caption), "%s %dx%d  zoom %d%%  texel %d,%d", what, W, H,
 			(int)(au.v2_ppt / ui_scale() * 100.f + 0.5f), (int)tu, (int)tv);
 	else
-		Q_snprintf(caption, sizeof(caption), "%s %dx%d  zoom %d%%  wheel zooms, right-drag pans, O base", slot_word[au.slot],
+		Q_snprintf(caption, sizeof(caption), "%s %dx%d  zoom %d%%  wheel zooms, right-drag pans, O base", what,
 			W, H, (int)(au.v2_ppt / ui_scale() * 100.f + 0.5f));
 	ui_text(vx, vy + vs + 6.f, 0, caption, (int)(vs / CHAR_WIDTH), font);
 }
@@ -3377,24 +4097,100 @@ static bool hit_on_map(const author_hit_t *hit, const image_t *img)
 	const pbr_material_t *m = MAT_ForIndex(hit->material);
 	if (!m)
 		return false;
-	if (img)
+	// a stage's own map: the material's surfaces (the shader's test too)
+	if (img && au.stage < 0)
 		return slot_image(m, au.slot) == img;
 	return m == au.mat;
 }
 
+/* The line tool, each tick while the button is down: where it starts (the first
+   place the cursor is on the map) and where it ends so far; once the button
+   has come up, the brush swept along it, painted once as a stroke of its own. */
+static void line_step(image_t *img, dab_ctx_t *c)
+{
+	const int W = img->upload_width, H = img->upload_height;
+	float tu, tv;
+	bool have;
+	if (au.paint_2d)
+		have = view2d_texel(&tu, &tv);
+	else
+	{
+		have = hit_on_map(&au.hit, img);
+		if (have)
+			hit_texel(&au.hit, W, H, false, &tu, &tv);     // unwrapped: the line can cross a tile's edge
+	}
+	if (have)
+	{
+		if (!au.line_have)
+		{
+			au.line_have = true;
+			au.line_tu0 = tu;
+			au.line_tv0 = tv;
+			au.line_hit = au.hit;
+		}
+		au.line_tu1 = tu;
+		au.line_tv1 = tv;
+	}
+	if (!au.line_commit)
+		return;
+
+	au.line_commit = au.line_active = false;
+	au.painting = false;
+	if (!au.line_have)
+		return;
+	au.line_have = false;
+
+	// ends on two parts of a model whose UVs lie far apart make no line on it
+	if (!au.paint_2d && (fabsf(au.line_tu1 - au.line_tu0) > 8.f * W || fabsf(au.line_tv1 - au.line_tv0) > 8.f * H))
+	{
+		author_status("the line's ends are too far apart on the map (two parts of it far apart?): not painted");
+		return;
+	}
+
+	outline_t o;
+	line_centres(W, H, &o);
+	make_paint(au.paint_2d ? NULL : &au.line_hit, &c->paint);
+	c->wrap = !au.paint_2d && map_wraps();
+	// the spray, once: density is the share of the texels it dots
+	c->spray_p = au.tool_opt[TOOL_SPRAY];
+	stroke_touch(img);
+	dab_sweep(c, o.c2x, o.c2y, o.dx, o.dy);
+	stroke_end();
+	const float len = sqrtf((au.line_tu1 - au.line_tu0) * (au.line_tu1 - au.line_tu0)
+		+ (au.line_tv1 - au.line_tv0) * (au.line_tv1 - au.line_tv0));
+	author_status("line, %d texels long", (int)(len + 0.5f));
+}
+
 static void paint_step(void)
 {
+	// a Quake III stage's maps: only while the stage still has a surface to paint
+	if (au.stage >= 0)
+	{
+		const char *why;
+		if (!stage_info(NULL, &why))
+		{
+			author_status("can't paint stage%d: %s", au.stage, why);
+			au.painting = au.line_active = au.line_commit = false;
+			return;
+		}
+	}
+
 	image_t *img = author_image();
 	if (!img)
 	{
 		const bool on = au.paint_2d ? cursor_in_view2d() : hit_on_map(&au.hit, NULL);
 		if (!on || au.create_tried)
+		{
+			// a line let go of before it ever touched the map
+			if (au.line_commit)
+				au.painting = au.line_active = au.line_commit = au.line_have = false;
 			return;
+		}
 		au.create_tried = true;
 		img = create_map();
 		if (!img)
 		{
-			au.painting = false;
+			au.painting = au.line_active = au.line_commit = au.line_have = false;
 			return;
 		}
 	}
@@ -3403,7 +4199,7 @@ static void paint_step(void)
 	if (!image_paintable(img, &why))
 	{
 		author_status("can't paint %s: %s", img->name, why);
-		au.painting = false;
+		au.painting = au.line_active = au.line_commit = au.line_have = false;
 		return;
 	}
 
@@ -3424,6 +4220,12 @@ static void paint_step(void)
 		au.spray_ms = now;
 		const float rate = 0.3f + au.tool_opt[TOOL_SPRAY] * 8.f;   // per second
 		c.spray_p = 1.f - expf(-rate * dt);
+	}
+
+	if (au.line_active)
+	{
+		line_step(img, &c);
+		return;
 	}
 
 	if (au.paint_2d)
@@ -3447,7 +4249,7 @@ static void paint_step(void)
 		if (au.have_last)
 			dab_line(&c, au.last_tu, au.last_tv, tu, tv);
 		else
-			dab(&c, centre2(tu, cur_size()), centre2(tv, cur_size()));
+			dab(&c, centre2_x(tu), centre2_y(tv));
 		au.last_tu = tu;
 		au.last_tv = tv;
 		au.have_last = true;
@@ -3459,14 +4261,15 @@ static void paint_step(void)
 		au.have_last = false;
 		return;
 	}
-	const float tu = au.hit.u * W, tv = au.hit.v * H;   // unwrapped: a line across a tile edge stays short
+	float tu, tv;
+	hit_texel(&au.hit, W, H, false, &tu, &tv);   // unwrapped: a line across a tile edge stays short
 	make_paint(&au.hit, &c.paint);
 	stroke_touch(img);
-	c.wrap = true;
+	c.wrap = map_wraps();
 	if (au.tool == TOOL_FILL)
 	{
 		if (!au.fill_done)
-			fill_at(&c, wrap_i((int)floorf(tu), W), wrap_i((int)floorf(tv), H));
+			fill_at(&c, Q_clip(wrap_i((int)floorf(tu), W), 0, W - 1), Q_clip(wrap_i((int)floorf(tv), H), 0, H - 1));
 		au.fill_done = true;
 		return;
 	}
@@ -3474,7 +4277,7 @@ static void paint_step(void)
 	if (au.have_last && fabsf(tu - au.last_tu) < reach && fabsf(tv - au.last_tv) < reach)
 		dab_line(&c, au.last_tu, au.last_tv, tu, tv);
 	else
-		dab(&c, centre2(tu, cur_size()), centre2(tv, cur_size()));
+		dab(&c, centre2_x(tu), centre2_y(tv));
 	au.last_tu = tu;
 	au.last_tv = tv;
 	au.have_last = true;
@@ -3556,6 +4359,8 @@ void MAT_AuthorFillUBO(QVKUniformBuffer_t *ubo)
 	ubo->author_active = 0;
 	ubo->author_cursor_x = ubo->author_cursor_y = -1;
 	ubo->author_brush_valid = 0;
+	ubo->author_line = 0;
+	ubo->author_stage = -1;
 	if (!au.active || !material_ok())
 		return;
 
@@ -3580,24 +4385,59 @@ void MAT_AuthorFillUBO(QVKUniformBuffer_t *ubo)
 	ubo->author_slot = au.slot;
 	ubo->author_map_w = W;
 	ubo->author_map_h = H;
-	ubo->author_brush_size = cur_size();
-	ubo->author_brush_shape = cur_shape();
+	ubo->author_brush_size = cur_w();
+	ubo->author_brush_h = cur_h();
+	ubo->author_brush_shape = cur_shape() == SHAPE_ROUND ? 0 : 1;
 	// the lock, once rasterised for this map (lock_sync, between frames)
 	ubo->author_lock_image = (lk.on && lk.mask_w == W && lk.mask_h == H && lock_image_ok()) ? (int)lk.image : 0;
 
-	// the brush's centre: under the cursor in the map view, else where it is on a surface
+	// a Quake III stage's own map: the material's surfaces, through the stage's tcMods
+	if (au.stage >= 0 && stage_info(NULL, NULL))
+	{
+		ubo->author_stage = au.stage;
+		ubo->author_stage_clamp = au.stage_clamp ? 1 : 0;
+		ubo->author_stage_tc[0] = au.stage_tc[0];
+		ubo->author_stage_tc[1] = au.stage_tc[1];
+		ubo->author_stage_tc[2] = au.stage_tc[2];
+		ubo->author_stage_tc[3] = au.stage_tc[3];
+		ubo->author_stage_tc_offset[0] = au.stage_tc[4];
+		ubo->author_stage_tc_offset[1] = au.stage_tc[5];
+	}
+	else if (au.stage >= 0)
+	{
+		// the stage has nothing to paint (the panel says why): no surface marked, no brush -
+		// the cursor's readback still runs, for Alt + click
+		ubo->author_image = 0;
+		ubo->author_material = -1;
+		return;
+	}
+
+	// the brush's centre: a line being drawn, swept from its start; under the cursor in the map
+	// view; else where it is on a surface
 	float tu, tv;
-	if (view2d_texel(&tu, &tv))
+	if (line_preview())
+	{
+		outline_t o;
+		line_centres(W, H, &o);
+		ubo->author_brush_valid = 1;
+		ubo->author_line = 1;
+		ubo->author_center2_x = o.c2x;
+		ubo->author_center2_y = o.c2y;
+		ubo->author_line_dx2 = o.dx;
+		ubo->author_line_dy2 = o.dy;
+	}
+	else if (view2d_texel(&tu, &tv))
 	{
 		ubo->author_brush_valid = 1;
-		ubo->author_center2_x = centre2(tu, cur_size());
-		ubo->author_center2_y = centre2(tv, cur_size());
+		ubo->author_center2_x = centre2_x(tu);
+		ubo->author_center2_y = centre2_y(tv);
 	}
 	else if (on_view && hit_on_map(&au.hit, img))
 	{
+		hit_texel(&au.hit, W, H, true, &tu, &tv);
 		ubo->author_brush_valid = 1;
-		ubo->author_center2_x = centre2((au.hit.u - floorf(au.hit.u)) * W, cur_size());
-		ubo->author_center2_y = centre2((au.hit.v - floorf(au.hit.v)) * H, cur_size());
+		ubo->author_center2_x = centre2_x(tu);
+		ubo->author_center2_y = centre2_y(tv);
 	}
 }
 
@@ -3674,7 +4514,13 @@ bool MAT_AuthorKey(unsigned key, bool down)
 	case K_MOUSE1:
 		if (!down)
 		{
-			if (au.painting)
+			if (au.painting && au.line_active)
+			{
+				// the line ends here: painted at the next tick, between frames
+				au.line_commit = true;
+				queue_tick();
+			}
+			else if (au.painting)
 			{
 				au.painting = false;
 				stroke_end();
@@ -3699,6 +4545,9 @@ bool MAT_AuthorKey(unsigned key, bool down)
 				au.create_tried = false;
 				au.fill_done = false;
 				au.spray_ms = 0;
+				// a line starts where the cursor first is on the map (paint_step)
+				au.line_active = au.line_mode && au.tool != TOOL_FILL;
+				au.line_have = au.line_commit = false;
 				queue_tick();
 			}
 			else
@@ -3716,6 +4565,8 @@ bool MAT_AuthorKey(unsigned key, bool down)
 			return true;
 		if (au.show_2d && widget_at(mx, my) == W_VIEW2D)
 			view2d_zoom(key == K_MWHEELUP);
+		else if (size_slider_step(widget_at(mx, my), (key == K_MWHEELUP ? 1 : -1) * (shift ? 10 : 1)))
+			;   // over a size slider: a texel at a time (Shift: ten)
 		else if (shift)
 			value_step(key == K_MWHEELUP ? 1 : -1);
 		else if (ctrl)
@@ -3776,7 +4627,22 @@ bool MAT_AuthorKey(unsigned key, bool down)
 
 	case 'b':
 		if (down)
-			au.brush_shape = !au.brush_shape;
+			set_shape((au.brush_shape + (shift ? NUM_SHAPES - 1 : 1)) % NUM_SHAPES);
+		return true;
+
+	case 'l':
+		if (down)
+			set_line_mode(!au.line_mode);
+		return true;
+
+	case 'r':
+		if (down)
+		{
+			if (au.brush_shape == SHAPE_RECT)
+				rect_turn();
+			else
+				author_status("R turns the rectangle brush - B picks it");
+		}
 		return true;
 
 	case K_TAB:
@@ -3840,13 +4706,69 @@ void MAT_AuthorCommand(pbr_material_t *crosshair)
 		return;
 	}
 
+	// mat author stage <N|mat> (or stageN): paint a Quake III stage's own maps, or the material's
+	const bool stage_word = !Q_stricmp(word, "stage");
+	if (stage_word || (!Q_strncasecmp(word, "stage", 5) && Q_isdigit(word[5])))
+	{
+		const char *arg = stage_word ? (Cmd_Argc() >= 4 ? Cmd_Argv(3) : "") : word + 5;
+		if (!au.active)
+			author_start(crosshair, -1);
+		if (!au.active)
+			return;
+		const int count = vkpt_q3_paint_stage_count(au.mat);
+		if (!arg[0])
+		{
+			if (au.stage >= 0)
+				Com_Printf("painting %s stage%d (of %d)\n", au.mat->name, au.stage, count);
+			else
+				Com_Printf("painting %s's own maps (%d Quake III stages)\n", au.mat->name, count);
+			return;
+		}
+		if (!Q_stricmp(arg, "mat") || !Q_stricmp(arg, "material") || !strcmp(arg, "-1"))
+		{
+			set_stage(-1);
+			return;
+		}
+		if (!Q_isdigit(arg[0]))
+		{
+			Com_Printf("usage: mat author stage <0..%d | mat>\n", max(count - 1, 0));
+			return;
+		}
+		if (!count)
+		{
+			author_status("%s has no Quake III stages", au.mat->name);
+			return;
+		}
+		set_stage(atoi(arg));
+		return;
+	}
+
+	// mat author rect <length> <width>: the rectangle brush, in texels (length across the map, width down)
+	if (!Q_stricmp(word, "rect"))
+	{
+		if (Cmd_Argc() < 5)
+		{
+			Com_Printf("usage: mat author rect <length texels> <width texels>\n");
+			return;
+		}
+		if (!au.active)
+			author_start(crosshair, -1);
+		if (!au.active)
+			return;
+		au.rect_w = Q_clip(atoi(Cmd_Argv(3)), 1, AUTHOR_MAX_BRUSH);
+		au.rect_h = Q_clip(atoi(Cmd_Argv(4)), 1, AUTHOR_MAX_BRUSH);
+		set_shape(SHAPE_RECT);
+		return;
+	}
+
 	int slot = -1;
 	for (int i = 0; i < NUM_SLOTS; i++)
 		if (!Q_stricmp(word, slot_word[i]) || !Q_stricmp(word, slot_label[i]))
 			slot = i;
 	if (word[0] && slot < 0)
 	{
-		Com_Printf("usage: mat author [roughness|metallic|normals|emissive] | save | off\n");
+		Com_Printf("usage: mat author [roughness|metallic|normals|emissive] | stage <N|mat> | "
+			"rect <length> <width> | save | off\n");
 		return;
 	}
 

@@ -389,7 +389,11 @@ backend has any film-specific code.
 // so ~130 MB of system memory and ~43 MB of VRAM (2026-11-14, sizeof(VboPrimitive)
 // 128 + positions 36). cl_blood_film_tiles has to rise with it (~1 tile per 500
 // triangles) or the tiles run out first.
-#define BLOOD_FILM_TRIS_DEFAULT "262144"
+//
+// 1M is Matt's (2026-11-20; was 256K): by the figures above ~170 MB of VRAM and
+// ~520 MB of system memory while cl_blood_film is on, and ~1.1 ms of BLAS
+// rebuild on a frame the section changes. 0 film cost while cl_blood_film is 0.
+#define BLOOD_FILM_TRIS_DEFAULT "1048576"
 
 typedef struct {
     vec3_t  pos;

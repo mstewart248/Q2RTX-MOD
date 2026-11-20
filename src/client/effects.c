@@ -1690,7 +1690,8 @@ void FX_Init(void)
     // At 0.5 a pool needs twice the droplets to reach any given width, so the
     // early droplets still visibly grow it and the hundredth one barely moves
     // it. Independent of cl_blood_pool_max, which is still the hard ceiling.
-    cl_blood_pool_gain = Cvar_Get("cl_blood_pool_gain", "0.5", CVAR_ARCHIVE);
+    // 0.7 is Matt's (2026-11-20; was 0.5).
+    cl_blood_pool_gain = Cvar_Get("cl_blood_pool_gain", "0.7", CVAR_ARCHIVE);
 
     // LONGEST a mark may be drawn ON A FLOOR, tip to tip, in world units - see
     // CL_BloodStretchLimit. 0 removes the limit and leaves only
@@ -1905,7 +1906,8 @@ void FX_Init(void)
     // sits at mean -16 dB / peak 0 dB, and the source mp3s arrived ~10 dB under
     // that - which is why this was inaudible however far the slider went. The
     // wavs are regenerated from the mp3s with matching gain plus a limiter.
-    cl_blood_sound_volume = Cvar_Get("cl_blood_sound_volume", "0.7", CVAR_ARCHIVE);
+    // 0.9 is Matt's (2026-11-20; was 0.7).
+    cl_blood_sound_volume = Cvar_Get("cl_blood_sound_volume", "0.9", CVAR_ARCHIVE);
 
     // Minimum milliseconds between two impact sounds.
     //
@@ -1941,10 +1943,10 @@ void FX_Init(void)
     // which is why winding the landing skip up to 16 barely changed what a
     // firefight sounded like. This is the one with the volume in it.
     //
-    // 1 by default, leaving the gaps to do the work; the range reaches 32
-    // because a measured burst merged 668 times in a second, and one in thirty
-    // of that is still twenty-odd sounds.
-    cl_blood_sound_pool_skip = Cvar_Get("cl_blood_sound_pool_skip", "1", CVAR_ARCHIVE);
+    // 2 by default (Matt's, 2026-11-20; was 1, leaving the gaps to do all the
+    // work); the range reaches 32 because a measured burst merged 668 times in
+    // a second, and one in thirty of that is still twenty-odd sounds.
+    cl_blood_sound_pool_skip = Cvar_Get("cl_blood_sound_pool_skip", "2", CVAR_ARCHIVE);
 
     // The POOLING sound's own gap. Matt asked for "every blood drop that starts
     // to pool up", i.e. 0, and MEASUREMENT SAYS THAT CANNOT BE ONE VOICE PER
@@ -1961,8 +1963,9 @@ void FX_Init(void)
     // Still the OPPOSITE treatment to the impacts, which is the point: an impact
     // is a loud transient and fifty at once is mush, while the pooling sound is
     // quieter and wetter and reads as texture when it overlaps - so this one is
-    // thinned by its gap alone, with no skip on top.
-    cl_blood_sound_pool_gap = Cvar_Get("cl_blood_sound_pool_gap", "200", CVAR_ARCHIVE);
+    // thinned by its gap alone, with no skip on top. 400 is Matt's (2026-11-20;
+    // was 200).
+    cl_blood_sound_pool_gap = Cvar_Get("cl_blood_sound_pool_gap", "400", CVAR_ARCHIVE);
 
     // THE FLOOR UNDER BOTH SOUNDS AT ONCE, in milliseconds.
     //
@@ -1980,7 +1983,8 @@ void FX_Init(void)
     //
     // Checked LAST, after a sound has already earned its own window, so it only
     // removes the overlap between the two streams rather than reordering them.
-    cl_blood_sound_any_gap = Cvar_Get("cl_blood_sound_any_gap", "60", CVAR_ARCHIVE);
+    // 80 is Matt's (2026-11-20; was 60).
+    cl_blood_sound_any_gap = Cvar_Get("cl_blood_sound_any_gap", "80", CVAR_ARCHIVE);
 
     // Beyond this many units a landing droplet makes no sound at all. Distance
     // attenuation would make it inaudible anyway, but it would still take a

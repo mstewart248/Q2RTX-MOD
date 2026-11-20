@@ -207,6 +207,21 @@ void vkpt_q3_stage_saved(const char *material, bool map_scope);
    when there is none; *file then says why, else names the image. */
 const image_t *vkpt_q3_stage_image(const pbr_material_t *mat, int stage, int which, const char **file);
 
+/* 'mat author' painting one stage's own maps (stage<N>_texture_roughness,
+   _metallic, _normals). vkpt_q3_paint_stage_count: how many of the script's
+   stages `mat`'s program draws, stage0 on - 0 without a program (a Quake III
+   shader drawn still has no stage surfaces). vkpt_q3_stage_paint_info: false,
+   with *why, for a stage whose maps can't be painted - left out, the
+   $lightmap, a reflection map (tcGen environment), an image that did not
+   load. Else its picture as the last frame drew it (NULL for $whiteimage),
+   whether it is clampMap, and its texture-coordinate transform at that time:
+   s' = tc[0] s + tc[1] t + tc[4], t' = tc[2] s + tc[3] t + tc[5], applied to
+   the surface's coordinates - a tcMod turb left out. `picture` and `clamp`
+   may be NULL. */
+int vkpt_q3_paint_stage_count(const pbr_material_t *mat);
+bool vkpt_q3_stage_paint_info(const pbr_material_t *mat, int stage, const image_t **picture, bool *clamp,
+                              float tc[6], const char **why);
+
 /* QUAKE III SKY. R_SetSky_RTX hands over the map's sky shader (NULL for a map
    without one). Its cloud layers are drawn per ray, moving (shader/q3_sky.glsl),
    unless pt_q3_sky_clouds is 0; its q3map_sun is the map's sun under its own

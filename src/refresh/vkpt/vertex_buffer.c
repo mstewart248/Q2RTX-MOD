@@ -1924,11 +1924,12 @@ vkpt_vertex_buffer_init_cvars(void)
 	cvar_pt_upload_ranges = Cvar_Get("pt_upload_ranges", "1", 0);
 
 	// see the block comment on these at the top of the file
-	cvar_pt_fog_scale_emissive = Cvar_Get("pt_fog_scale_emissive", "1.0", 0);
+	// defaults must match mapfog.c's (CL_InitMapFog)
+	cvar_pt_fog_scale_emissive = Cvar_Get("pt_fog_scale_emissive", "0.2", 0);
 	cvar_pt_fog_scale_sky      = Cvar_Get("pt_fog_scale_sky",      "0.0", 0);
-	cvar_pt_fog_scale_dynamic  = Cvar_Get("pt_fog_scale_dynamic",  "1.0", 0);
-	cvar_pt_fog_scale_model    = Cvar_Get("pt_fog_scale_model",    "1.0", 0);
-	cvar_pt_fog_lava_scale     = Cvar_Get("pt_fog_lava_scale",     "5.0", 0);
+	cvar_pt_fog_scale_dynamic  = Cvar_Get("pt_fog_scale_dynamic",  "0.2", 0);
+	cvar_pt_fog_scale_model    = Cvar_Get("pt_fog_scale_model",    "0.2", 0);
+	cvar_pt_fog_lava_scale     = Cvar_Get("pt_fog_lava_scale",     "1.0", 0);
 	cvar_pt_fog_q3_map_lights  = Cvar_Get("pt_fog_q3_map_lights",  "0", 0);
 }
 

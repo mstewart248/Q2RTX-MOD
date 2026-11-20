@@ -959,7 +959,7 @@ models/mapobjects/kmlamp_white:
 # shape (vertex normals) - focus spots, dark bands past ~41 deg. Needs
 # pt_caustics 1. "caustic 0.5" halves the bend, "caustic 0" turns it off.
 	kind GLASSCAUSTIC
-	caustic 0.5
+	caustic 1
 #	texture_normals materialDev/models/mapobjects/kmlamp_white_n.png
 #	texture_roughness materialDev/models/mapobjects/kmlamp_white_rough.png
 #	texture_metallic materialDev/models/mapobjects/kmlamp_white_metal.png
@@ -4661,6 +4661,7 @@ models/weapons2/lightning/button:
 # scripts/models.shader
 #	stage0: map models/weapons2/lightning/button.tga; blendFunc GL_ONE GL_ONE; rgbGen wave sin 1 1 0 1
 	stage0_map materialDev/models/weapons2/lightning/button.jpg
+	is_light 1
 #	texture_normals materialDev/models/weapons2/lightning/button_n.png
 #	texture_roughness materialDev/models/weapons2/lightning/button_rough.png
 #	texture_metallic materialDev/models/weapons2/lightning/button_metal.png
@@ -4693,6 +4694,9 @@ models/weapons2/lightning/glass:
 #	stage1: map textures/effects/envmapdim.tga; tcGen environment; blendfunc GL_ONE GL_ONE; rgbGen lightingDiffuse
 	stage1_map materialDev/textures/effects/envmapdim.jpg
 	kind GLASS
+	is_light 1
+	light_factor 2
+	default_radiance 5
 #	texture_normals materialDev/models/weapons2/lightning/glass_n.png
 #	texture_roughness materialDev/models/weapons2/lightning/glass_rough.png
 #	texture_metallic materialDev/models/weapons2/lightning/glass_metal.png
@@ -4734,6 +4738,9 @@ models/weapons2/lightning/trail2:
 	stage0_map materialDev/models/weapons2/lightning/trail2.jpg
 #	stage1: map models/weapons2/lightning/trail2.tga; tcMod scroll -1.7 1; rgbgen wave triangle 1 1.1 0 5.1; blendfunc GL_ONE GL_ONE
 	stage1_map materialDev/models/weapons2/lightning/trail2.jpg
+	is_light 1
+	light_factor 2
+	default_radiance 5
 #	texture_normals materialDev/models/weapons2/lightning/trail2_n.png
 #	texture_roughness materialDev/models/weapons2/lightning/trail2_rough.png
 #	texture_metallic materialDev/models/weapons2/lightning/trail2_metal.png
@@ -9993,9 +10000,14 @@ textures/base_wall/q3tourneyscreen:
 	stage2_map materialDev/textures/base_wall/chrome_env.jpg
 #	stage3: map textures/base_wall/comp3frame.tga; blendfunc blend; rgbgen identity
 	stage3_map materialDev/textures/base_wall/comp3frame.tga
+	emissive_factor 0
+	is_light 1
+	stage0_emissive_factor 0.5
+	roughness_override -1
+	stage0_roughness_override 0.1
 #	stage4: map $lightmap; blendfunc gl_dst_color gl_zero; rgbgen identity
 #	texture_normals materialDev/textures/base_wall/q3tourneyscreen_n.png
-#	texture_roughness materialDev/textures/base_wall/q3tourneyscreen_rough.png
+	texture_roughness materialDev/textures/base_wall/q3tourney1_rough.png
 #	texture_metallic materialDev/textures/base_wall/q3tourneyscreen_metal.png
 #	texture_height materialDev/textures/base_wall/q3tourneyscreen_height.png
 #	texture_emissive materialDev/textures/base_wall/q3tourneyscreen_light.png
