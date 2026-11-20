@@ -117,6 +117,14 @@ static struct {
     // Q2RTX's railgun in Quake III's place, view and pickup (0 = Quake III's
     // own): see q3w_want_rtx_rail
     qhandle_t   rtx_rail_view, rtx_rail_world;
+    // Quake III's gibs and blood (GIBS, below): the pieces and the box each
+    // collides as, its gib sounds, and the blood pictures shown when the
+    // blood simulation is off - the trail's puff, the stain, the spurt
+    bool        gibs_ready;
+    qhandle_t   gib_model[10];
+    vec3_t      gib_mins[10], gib_maxs[10];
+    qhandle_t   sfx_gib, sfx_gibimp[3];
+    qhandle_t   blood_trail, mark_blood, blood_spurt[3];
 } q3w;
 
 static cvar_t   *cl_brass_time;
@@ -126,6 +134,8 @@ static cvar_t   *cl_q3_marks_time;
 static cvar_t   *cl_q3_marks_max;
 static cvar_t   *cl_q3_debug;
 static cvar_t   *cl_q3_plasma_from_gun;
+static cvar_t   *cl_q3_gibs_time;
+static cvar_t   *cl_q3_gibs_max;
 
 // cl_q3_debug 1: what the plasma ball, the marks and the impact flashes did,
 // once a second (q3w_debug_print) - Matt saw none of them on 11-18; the
@@ -383,11 +393,116 @@ static bool q3w_want_rtx_rail(void)
 
 /*
 =================
+q3w_q3_game
+
+Whether Quake III's game is being played: a Quake III arena, or Quake III's
+guns or movement on any map (CS_Q3RULES). The game throws Quake III's gibs
+under the same rules (g_q3.c Q3_GibStyle), so the gibs' media is loaded
+then, and Quake III's blood shown.
+=================
+*/
+static bool q3w_q3_game(void)
+{
+    return (cl.bsp && cl.bsp->q3) || cl.q3_weapons || cl.pmp.q3move;
+}
+
+// Quake III's own blood pictures rather than the blood simulation's spheres:
+// the path tracers draw them (as the marks), and only with the spheres off.
+// Without Quake III's data, Quake II's blood.
+static bool q3w_blood_pictures(void)
+{
+    return CL_PathTraced() && !CL_BloodSpheresActive() && q3w.blood_trail;
+}
+
+// the box a gib collides as: its .md3's bounds, narrowed to what lies under it
+// whichever way it is turned (it turns about Z only), so it rests on the
+// floor rather than half in it, as Quake III's point did
+static void q3w_gib_box(const char *path, vec3_t mins, vec3_t maxs)
+{
+    byte            *data;
+    dmd3header_t    h;
+    dmd3frame_t     f;
+    int             len, ofs;
+
+    VectorSet(mins, -3, -3, -3);
+    VectorSet(maxs, 3, 3, 3);
+
+    len = FS_LoadFile(path, (void **)&data);
+    if (!data)
+        return;
+    if (len >= (int)sizeof(h)) {
+        memcpy(&h, data, sizeof(h));
+        ofs = LittleLong(h.ofs_frames);
+        if (LittleLong(h.ident) == MD3_IDENT && LittleLong(h.num_frames) >= 1 &&
+            ofs >= 0 && (uint64_t)ofs + sizeof(f) <= (uint64_t)len) {
+            memcpy(&f, data + ofs, sizeof(f));
+            float rx = (LittleFloat(f.maxs[0]) - LittleFloat(f.mins[0])) * 0.5f;
+            float ry = (LittleFloat(f.maxs[1]) - LittleFloat(f.mins[1])) * 0.5f;
+            float r = min(min(rx, ry), 6.0f);
+            float zmin = LittleFloat(f.mins[2]), zmax = LittleFloat(f.maxs[2]);
+
+            if (r > 0.5f && zmax > zmin) {
+                VectorSet(mins, -r, -r, max(zmin, -8.0f));
+                VectorSet(maxs, r, r, min(zmax, 8.0f));
+            }
+        }
+    }
+    FS_FreeFile(data);
+}
+
+/*
+=================
+q3w_register_gibs
+
+Quake III's gibs (cg_main.c): the ten pieces (models/gibs), their sounds, and
+its blood pictures. A piece this install lacks is Quake II's chunk of meat.
+=================
+*/
+static const char *const q3w_gib_names[10] = {
+    "skull", "brain", "abdomen", "arm", "chest", "fist", "foot", "forearm", "intestine", "leg"
+};
+
+static void q3w_register_gibs(void)
+{
+    char    path[MAX_QPATH];
+    int     i;
+
+    for (i = 0; i < 10; i++) {
+        Q_snprintf(path, sizeof(path), "models/gibs/%s.md3", q3w_gib_names[i]);
+        if (!FS_FileExists(path))
+            Q_strlcpy(path, "models/objects/gibs/sm_meat/tris.md2", sizeof(path));
+        q3w.gib_model[i] = R_RegisterModel(path);
+        q3w_gib_box(path, q3w.gib_mins[i], q3w.gib_maxs[i]);
+    }
+    // without Quake III's data: Quake II's gib sound, and no splats
+    if (!Cvar_VariableInteger("fs_quake3")) {
+        q3w.sfx_gib = S_RegisterSound("misc/udeath.wav");
+        q3w.gibs_ready = true;
+        return;
+    }
+
+    q3w.sfx_gib = q3w_sound("player/gibsplt1.wav");
+    for (i = 0; i < 3; i++)
+        q3w.sfx_gibimp[i] = q3w_sound(va("player/gibimp%d.wav", i + 1));
+
+    {
+        q3w.blood_trail = q3w_image("gfx/damage/blood_spurt.tga");
+        q3w.mark_blood = q3w_image("gfx/damage/blood_stain.tga");
+        // its bloodExplosion's animmap runs at 5 a second for half a second:
+        // the first three of its five pictures
+        for (i = 0; i < 3; i++)
+            q3w.blood_spurt[i] = q3w_image(va("models/weaphits/blood20%d.tga", i + 1));
+    }
+    q3w.gibs_ready = true;
+}
+
+/*
+=================
 CL_Q3W_RegisterMedia
 
 CL_RegisterTEntModels, at each level's start: the brass whenever the Quake
-III data is there (Quake II's guns throw it too), and the rest in a game with
-Quake III's guns.
+III data is there (Quake II's guns throw it too), the gibs and the blood in
+Quake III's game (q3w_q3_game), and the rest in a game with Quake III's guns.
 =================
 */
 void CL_Q3W_RegisterMedia(void)
@@ -405,6 +520,9 @@ void CL_Q3W_RegisterMedia(void)
     q3w.brass[1] = R_RegisterModel("models/weapons2/shells/s_shell.md3");
     q3w_load_shell("models/weapons2/shells/m_shell.md3", &q3w.shell[0], 0.42f, -1.69f, 1.86f);
     q3w_load_shell("models/weapons2/shells/s_shell.md3", &q3w.shell[1], 0.92f, -3.56f, 2.05f);
+
+    if (q3w_q3_game())
+        q3w_register_gibs();
 
     if (!cl.q3_weapons)
         return;
@@ -938,7 +1056,16 @@ void CL_Q3W_AddGunParts(const entity_t *gun, int entnum)
         VectorCopy(origin, sh->muzzle);
         sh->muzzle_frame = cls.framecount;
 
-        if (g->flash && (g->continuous ? firing : q3w_firing(sh, 40))) {
+        // Not on your own body in first person (RF_VIEWERMODEL: there only
+        // for mirrors). The renderer puts all of that body's meshes in the
+        // viewer-model BLAS as masked geometry, and the flash, an additive
+        // effect with no mask, is a solid ball there: the mirror took its
+        // depth and motion at the end of the gun, and the lightning gun's
+        // stays up the whole time it fires (Matt, 11-19: "it looks like a
+        // ball at the end of the weapon and that's when I am seeing the
+        // glitching"). Bots' flashes take the transparent pass and are fine.
+        if (g->flash && !(gun->flags & RF_VIEWERMODEL) &&
+            (g->continuous ? firing : q3w_firing(sh, 40))) {
             q3w_part(&e, gun, g->flash, gun->id, origin, axis);
             e.scale = q3w_flash_scale(g, gun->scale);
             e.flags |= RF_FULLBRIGHT;
@@ -1630,7 +1757,9 @@ FLASHES OF IMPACT: short-lived sprites
 ==============================================================================
 */
 
-#define Q3W_MAX_FX  128
+// (the gibs' blood trails are most of them: a puff every 150 ms from each of
+// eleven pieces, lasting 2 s)
+#define Q3W_MAX_FX  1024
 
 typedef struct {
     qhandle_t   image[3];
@@ -1640,6 +1769,12 @@ typedef struct {
     float       size0, size1;
     vec3_t      color;
     int         start, life;
+    // Quake III's blood (GIBS): blended over what is behind rather than added
+    // to it, facing the camera, turned by roll degrees; sinking drop units
+    // over its life; hold: no fade (LE_EXPLOSION); near: gone when the view
+    // is inside it (CG_AddFallScaleFade)
+    bool        blend, hold, near;
+    float       roll, drop;
 } q3wfx_t;
 
 static q3wfx_t  q3w_fx[Q3W_MAX_FX];
@@ -1680,11 +1815,28 @@ static void q3w_add_fx(void)
         e.frame = fx->image[min((int)(frac * fx->images), fx->images - 1)];
         if (!e.frame)
             continue;
-        e.alpha = 1.0f - frac;
+        e.alpha = fx->hold ? 1.0f : 1.0f - frac;
         e.rgba.u32 = q3w_pack_rgb(fx->color);
         VectorCopy(fx->origin, e.origin);
-        VectorCopy(fx->origin, e.oldorigin);
-        if (fx->flat) {
+        e.origin[2] -= fx->drop * frac;
+        VectorCopy(e.origin, e.oldorigin);
+        if (fx->blend) {
+            // a sprite Quake III blends (blendFunc blend): a decal turned to
+            // face the camera, as the renderer's camera-facing sprites only add
+            vec3_t  to_view;
+            float   size = fx->size0 + (fx->size1 - fx->size0) * frac;
+
+            VectorSubtract(cl.refdef.vieworg, e.origin, to_view);
+            if (fx->near && VectorLength(to_view) < size)
+                continue;
+            if (VectorNormalize(to_view) < 0.001f)
+                continue;
+            e.flags = RF_FLARE | RF_DECAL;
+            e.skinnum = DECAL_BLEND;
+            e.scale = size;
+            vectoangles2(to_view, e.angles);
+            e.angles[ROLL] = fx->roll;
+        } else if (fx->flat) {
             e.flags = RF_FLARE | RF_DECAL;
             e.skinnum = DECAL_ADD;
             e.scale = fx->size0 + (fx->size1 - fx->size0) * frac;
@@ -1914,7 +2066,9 @@ void CL_Q3W_Lightning(int shooter, bool hit, const vec3_t start, const vec3_t en
     }
 }
 
-static void q3w_draw_bolt(int index, const vec3_t start, const vec3_t end)
+// `flags`: RF_WEAPONMODEL for our own bolt from the view gun, RF_VIEWERMODEL
+// for its copy from the gun our body holds (q3w_add_bolts)
+static void q3w_draw_bolt(int index, const vec3_t start, const vec3_t end, int flags)
 {
     vec3_t      dist, org, angles;
     entity_t    e;
@@ -1935,7 +2089,7 @@ static void q3w_draw_bolt(int index, const vec3_t start, const vec3_t end)
 
     memset(&e, 0, sizeof(e));
     e.model = q3w.lightning;
-    e.flags = RF_FULLBRIGHT;
+    e.flags = RF_FULLBRIGHT | flags;
     VectorCopy(start, org);
 
     // as CL_AddBeams lays Quake II's lightning: the model points back
@@ -1962,6 +2116,7 @@ static void q3w_add_bolts(void)
         q3wshooter_t    *sh = &q3w_shooters[i];
         vec3_t          start, end, dir;
         bool            hit = b->hit;
+        bool            view = false;
 
         if (!b->endtime || cl.time >= b->endtime || cl.time < b->endtime - 1000) {
             b->endtime = 0;
@@ -1983,6 +2138,7 @@ static void q3w_add_bolts(void)
                 range = tr.fraction * 768;
             hit = b->hit || tr.fraction < 1.0f;
             VectorMA(eye, range, cl.v_forward, end);
+            view = true;
         } else {
             if (sh->muzzle_frame == cls.framecount)
                 VectorCopy(sh->muzzle, start);
@@ -1991,7 +2147,23 @@ static void q3w_add_bolts(void)
             VectorCopy(b->end, end);
         }
 
-        q3w_draw_bolt(i, start, end);
+        if (view) {
+            vec3_t body_muzzle;
+
+            // Two bolts, as Quake II's beams (tent.c CL_AddPlayerBeams): this
+            // one from the view gun for the eye only, which a mirror leaves
+            // out as it does the view gun - it came out of your face there
+            // (Matt, 11-19: "doubling up or ghosting in the mirror") - and,
+            // for mirrors only, one from the gun your body holds there, to
+            // the same end.
+            q3w_draw_bolt(i, start, end, RF_WEAPONMODEL);
+            if (sh->muzzle_frame == cls.framecount)
+                q3w_draw_bolt(i, sh->muzzle, end, RF_VIEWERMODEL);
+            else if (CL_PlayerGunMuzzlePoint(body_muzzle, 0))
+                q3w_draw_bolt(i, body_muzzle, end, RF_VIEWERMODEL);
+        } else {
+            q3w_draw_bolt(i, start, end, 0);
+        }
 
         // the crackle where it hits
         if (hit && q3w.electric && CL_PathTraced()) {
@@ -2146,6 +2318,318 @@ void CL_Q3W_MuzzleFlash(int entnum, int mz, cdlight_t *dl)
 /*
 ==============================================================================
 
+GIBS (cg_effects.c CG_GibPlayer, cg_localents.c CG_AddFragment)
+
+Where Quake III's game is played (q3w_q3_game; the game's g_q3.c
+Q3_GibStyle), a gibbed player's body goes and the game sends TE_Q3_GIBS from
+where it was, as Quake III's EV_GIB_PLAYER. Each client throws the pieces
+itself, as Quake III's did: a skull or a brain, and unless cl_gibs is 0 an
+abdomen, an arm, a chest, a fist, a foot, a forearm, the intestines and two
+legs - eleven, each 250 units a second any way across and 250 +- 250 up,
+under gravity 800, bouncing back 0.6 of the way, and at rest on the first
+floor it meets moving up slower than 40. Like Quake III's they do not turn
+in the air (each starts facing a random way).
+
+Their blood (Matt, 11-19: "the same style blood streams just using our
+sphereical blood ... If someone has the blood simulation turned off maybe
+they should just get the quake 3 blood graphics and effects. The blood also
+sometimes leaves decals"):
+  - with the blood simulation on, each piece trails the sphere drip Quake
+    II's gibs do (CL_DiminishingTrailCount), and its first landing throws a
+    splash of spheres that stain where they fall
+  - with it off, Quake III's own: a puff of its bloodTrail every 150 ms in
+    the air (20 units, growing as it falls 40 over 2 s), and its bloodMark on
+    the first landing (16-47 units); its bloodExplosion spurts where shots
+    hit (CL_Q3W_Bleed). Under GL and software, Quake II's particles.
+The first landing also makes a splat half the time (gibimp1-3), and the
+gibbing Quake III's gibsplt1.
+
+Pieces stay until the level ends in a local game, as the brass does; in a
+network game they go as Quake III's do, 5-8 s, sinking into the floor over
+the last second (cl_q3_gibs_time, as cl_brass_time).
+
+==============================================================================
+*/
+
+#define Q3W_MAX_GIBS    1024
+#define Q3W_GIB_ID      0x3000      // ids for motion vectors, past the brass's
+
+enum { Q3W_GIB_SKULL, Q3W_GIB_BRAIN, Q3W_GIB_ABDOMEN, Q3W_GIB_ARM, Q3W_GIB_CHEST, Q3W_GIB_FIST,
+       Q3W_GIB_FOOT, Q3W_GIB_FOREARM, Q3W_GIB_INTESTINE, Q3W_GIB_LEG };
+
+#define Q3W_GIB_VELOCITY    250     // GIB_VELOCITY
+#define Q3W_GIB_JUMP        250     // GIB_JUMP
+#define Q3W_GIB_BOUNCE      0.6f    // CG_LaunchGib's bounceFactor
+#define Q3W_BLOOD_STEP      150     // CG_BloodTrail: a puff every 150 ms
+
+typedef struct {
+    int         model;          // Q3W_GIB_*; -1 free
+    bool        resting;
+    bool        landed;         // its first landing made its mark and sound
+    vec3_t      origin, velocity;
+    float       yaw;
+    int         trailcount;     // the sphere drip's (CL_DiminishingTrailCount)
+    int         next_puff;      // the next bloodTrail puff, on the 150 ms grid
+    int         end;            // 0: for ever
+} q3wgib_t;
+
+static q3wgib_t q3w_gibs[Q3W_MAX_GIBS];
+static int      q3w_gib_next;
+static int      q3w_gib_time;   // cl.time of the last physics step
+
+static int q3w_gib_cap(void)
+{
+    return Cvar_ClampInteger(cl_q3_gibs_max, 16, Q3W_MAX_GIBS);
+}
+
+static void q3w_launch_gib(int model, const vec3_t origin)
+{
+    q3wgib_t    *g = &q3w_gibs[q3w_gib_next];
+    int         life;
+
+    q3w_gib_next = (q3w_gib_next + 1) % q3w_gib_cap();
+
+    memset(g, 0, sizeof(*g));
+    g->model = model;
+    VectorCopy(origin, g->origin);
+    g->velocity[0] = crand() * Q3W_GIB_VELOCITY;
+    g->velocity[1] = crand() * Q3W_GIB_VELOCITY;
+    g->velocity[2] = Q3W_GIB_JUMP + crand() * Q3W_GIB_VELOCITY;
+    g->yaw = frand() * 360;
+    g->trailcount = 1024;
+    g->next_puff = Q3W_BLOOD_STEP * (cl.time / Q3W_BLOOD_STEP + 1);
+
+    life = q3w_life(cl_q3_gibs_time, 5000 + (Q_rand() % 3000));
+    g->end = life ? cl.time + life : 0;
+}
+
+// Quake III's blood puff: CG_BloodTrail's CG_SmokePuff, LE_FALL_SCALE_FADE
+static void q3w_blood_puff(const vec3_t origin, int start)
+{
+    q3wfx_t *fx;
+
+    if (!q3w.blood_trail)
+        return;
+    fx = q3w_alloc_fx();
+    fx->image[0] = q3w.blood_trail;
+    fx->images = 1;
+    VectorCopy(origin, fx->origin);
+    fx->start = start;
+    fx->life = 2000;
+    fx->size0 = 16;             // its radius grows from 16 to 20 + 16
+    fx->size1 = 36;
+    fx->drop = 40;
+    fx->roll = frand() * 360;
+    fx->blend = fx->near = true;
+}
+
+// the blood of a piece flying from `from` to `to` in the step of `ms` that
+// ends at `now`
+static void q3w_gib_trail(q3wgib_t *g, const vec3_t from, const vec3_t to, int ms, int now)
+{
+    if (cl_disable_particles->integer & NOPART_BLOOD)
+        return;
+
+    if (!q3w_blood_pictures()) {
+        CL_DiminishingTrailCount(from, to, &g->trailcount, EF_GIB);
+        return;
+    }
+
+    // a puff on each 150 ms of the step, where the piece was then
+    while (g->next_puff <= now) {
+        float   f = ms > 0 ? 1.0f - (now - g->next_puff) / (float)ms : 1.0f;
+        vec3_t  at;
+
+        LerpVector(from, to, q3w_clip01(f), at);
+        q3w_blood_puff(at, g->next_puff);
+        g->next_puff += Q3W_BLOOD_STEP;
+    }
+}
+
+// the first time a piece lands: its mark (CG_FragmentBounceMark) and, half
+// the time, a splat (CG_FragmentBounceSound)
+static void q3w_gib_land(q3wgib_t *g, const vec3_t point, const vec3_t normal)
+{
+    g->landed = true;
+
+    if (Q_rand() & 1) {
+        int r = Q_rand() & 3;
+
+        q3w_sound_at(point, q3w.sfx_gibimp[r == 0 ? 0 : r == 1 ? 1 : 2]);
+    }
+
+    if (cl_disable_particles->integer & NOPART_BLOOD)
+        return;
+    if (q3w_blood_pictures()) {
+        q3w_mark(q3w.mark_blood, point, normal, 16 + (Q_rand() & 31), DECAL_BLEND, false, q3w_white);
+        return;
+    }
+    // a splash of the simulation's spheres, which stain where they fall
+    CL_BloodParticleEffect(point, normal, 0xe8, 8 + (Q_rand() & 15));
+}
+
+// one step in the air, of dt seconds ending at `now`
+static void q3w_gib_fly(q3wgib_t *g, float dt, int now)
+{
+    vec3_t  from, next, v;
+    trace_t tr;
+    float   dot;
+    int     ms = (int)(dt * 1000);
+
+    VectorCopy(g->origin, from);
+    VectorMA(g->origin, dt, g->velocity, next);
+    next[2] -= 400 * dt * dt;
+
+    tr = CL_TraceBox(g->origin, q3w.gib_mins[g->model], q3w.gib_maxs[g->model], next, MASK_SOLID, false);
+    if (tr.allsolid) {
+        // started inside a wall: Quake III's stop
+        g->resting = true;
+        return;
+    }
+    if (tr.fraction == 1.0f) {
+        VectorCopy(next, g->origin);
+        g->velocity[2] -= 800 * dt;
+        q3w_gib_trail(g, from, next, ms, now);
+        return;
+    }
+
+    // into lava or slime: gone, as the brass (Quake III's CONTENTS_NODROP)
+    if (CL_PointContents(tr.endpos) & (CONTENTS_LAVA | CONTENTS_SLIME)) {
+        g->model = -1;
+        return;
+    }
+
+    VectorCopy(tr.endpos, g->origin);
+    q3w_gib_trail(g, from, g->origin, ms, now);
+    if (!g->landed)
+        q3w_gib_land(g, tr.endpos, tr.plane.normal);
+
+    // CG_ReflectVelocity: the speed when it hit, reflected, times 0.6
+    VectorCopy(g->velocity, v);
+    v[2] -= 800 * dt * tr.fraction;
+    dot = DotProduct(v, tr.plane.normal);
+    VectorMA(v, -2 * dot, tr.plane.normal, g->velocity);
+    VectorScale(g->velocity, Q3W_GIB_BOUNCE, g->velocity);
+    VectorMA(g->origin, 0.1f, tr.plane.normal, g->origin);
+
+    if (tr.plane.normal[2] > 0 && g->velocity[2] < 40) {
+        g->resting = true;
+        VectorClear(g->velocity);
+    }
+}
+
+static void q3w_add_gibs(void)
+{
+    q3wgib_t    *g;
+    entity_t    e;
+    float       dt;
+    int         i, cap = q3w_gib_cap();
+
+    dt = (cl.time - q3w_gib_time) * 0.001f;
+    q3w_gib_time = cl.time;
+    if (dt < 0 || dt > 0.1f)
+        dt = dt < 0 ? 0 : 0.1f;
+
+    memset(&e, 0, sizeof(e));
+    for (i = 0, g = q3w_gibs; i < cap; i++, g++) {
+        if (g->model < 0 || !q3w.gib_model[g->model])
+            continue;
+        if (g->end && cl.time >= g->end) {
+            g->model = -1;
+            continue;
+        }
+
+        if (dt > 0 && !g->resting) {
+            // two steps when the frame is long, so a fast piece is not missing walls
+            if (dt > 0.05f) {
+                q3w_gib_fly(g, dt * 0.5f, cl.time - (int)(dt * 500));
+                if (g->model >= 0 && !g->resting)
+                    q3w_gib_fly(g, dt * 0.5f, cl.time);
+            } else {
+                q3w_gib_fly(g, dt, cl.time);
+            }
+            if (g->model < 0)
+                continue;
+        }
+
+        if (DistanceSquared(g->origin, cl.refdef.vieworg) > 3072 * 3072)
+            continue;
+
+        e.model = q3w.gib_model[g->model];
+        e.id = Q3W_GIB_ID + i;
+        VectorCopy(g->origin, e.origin);
+        // sink into the ground over its last second (SINK_TIME)
+        if (g->end && g->resting && g->end - cl.time < 1000)
+            e.origin[2] -= 16 * (1.0f - (g->end - cl.time) / 1000.0f);
+        VectorCopy(e.origin, e.oldorigin);
+        VectorSet(e.angles, 0, g->yaw, 0);
+        V_AddEntity(&e);
+    }
+}
+
+/*
+=================
+CL_Q3W_Gibs
+
+TE_Q3_GIBS (tent.c): a player gibbed where `origin` is.
+=================
+*/
+void CL_Q3W_Gibs(const vec3_t origin)
+{
+    int i;
+
+    // a level whose start did not expect Quake III's game: load them now
+    if (!q3w.gibs_ready)
+        q3w_register_gibs();
+
+    q3w_sound_at(origin, q3w.sfx_gib);
+
+    q3w_launch_gib((Q_rand() & 1) ? Q3W_GIB_SKULL : Q3W_GIB_BRAIN, origin);
+
+    // allow gibs to be turned off for speed: the head alone
+    if (!cl_gibs->integer)
+        return;
+
+    for (i = Q3W_GIB_ABDOMEN; i <= Q3W_GIB_LEG; i++)
+        q3w_launch_gib(i, origin);
+    q3w_launch_gib(Q3W_GIB_LEG, origin);
+}
+
+/*
+=================
+CL_Q3W_Bleed
+
+TE_BLOOD (tent.c): where Quake III's game is played and its blood pictures
+are shown (the blood simulation off, a path tracer), Quake III's spurt of
+blood where the shot hit (CG_Bleed: its bloodExplosion, 24 units, for half a
+second) - and true, so Quake II's spray is not drawn too.
+=================
+*/
+bool CL_Q3W_Bleed(const vec3_t origin)
+{
+    q3wfx_t *fx;
+    int     i;
+
+    if (!q3w_q3_game() || !q3w_blood_pictures() || !q3w.blood_spurt[0])
+        return false;
+    if (cl_disable_particles->integer & NOPART_BLOOD)
+        return true;
+
+    fx = q3w_alloc_fx();
+    for (i = 0; i < 3; i++)
+        fx->image[i] = q3w.blood_spurt[i];
+    fx->images = 3;
+    VectorCopy(origin, fx->origin);
+    fx->life = 500;
+    fx->size0 = fx->size1 = 24;
+    fx->roll = (float)(Q_rand() % 360);
+    fx->blend = fx->hold = true;
+    return true;
+}
+
+/*
+==============================================================================
+
 EACH FRAME, AND THE REST
 
 ==============================================================================
@@ -2177,6 +2661,7 @@ static void q3w_debug_print(void)
 void CL_Q3W_AddEntities(void)
 {
     q3w_add_brass();
+    q3w_add_gibs();
     q3w_add_marks();
     q3w_add_fx();
     q3w_add_bolts();
@@ -2192,6 +2677,10 @@ void CL_Q3W_Clear(void)
         q3w_brass[i].kind = -1;
     q3w_brass_next = 0;
     q3w_brass_time = 0;
+    for (i = 0; i < Q3W_MAX_GIBS; i++)
+        q3w_gibs[i].model = -1;
+    q3w_gib_next = 0;
+    q3w_gib_time = 0;
     memset(q3w_marks, 0, sizeof(q3w_marks));
     q3w_mark_next = 0;
     memset(q3w_fx, 0, sizeof(q3w_fx));
@@ -2221,6 +2710,11 @@ void CL_Q3W_Init(void)
     // 1: a plasma ball starts at its gun's muzzle and catches up with the
     // server's ball in 0.1 s; 0: first seen where Quake III has it, 100+ out
     cl_q3_plasma_from_gun = Cvar_Get("cl_q3_plasma_from_gun", "1", 0);
+    // Quake III's gibs (GIBS): ms each piece lasts, as cl_brass_time - -1 for
+    // ever except in a network game, where Quake III's 5-8 s - and how many
+    // pieces there can be (eleven a gibbing); past that the oldest go
+    cl_q3_gibs_time = Cvar_Get("cl_q3_gibs_time", "-1", CVAR_ARCHIVE);
+    cl_q3_gibs_max = Cvar_Get("cl_q3_gibs_max", "512", CVAR_ARCHIVE);
 
     CL_Q3W_Clear();
 }

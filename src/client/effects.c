@@ -5805,6 +5805,13 @@ static inline bool CL_BloodSpheresOn(void)
     return cl_blood_spheres->integer && CL_PathTraced();
 }
 
+// for q3weapons.c: Quake III's gibs bleed spheres when this is on, and its
+// own blood pictures when it is not
+bool CL_BloodSpheresActive(void)
+{
+    return CL_BloodSpheresOn();
+}
+
 void CL_MakeBloodSphere(cparticle_t *p, float scale)
 {
     if (!CL_BloodSpheresOn())
@@ -6500,6 +6507,13 @@ CL_DiminishingTrail
 */
 void CL_DiminishingTrail(const vec3_t start, const vec3_t end, centity_t *old, int flags)
 {
+    CL_DiminishingTrailCount(start, end, &old->trailcount, flags);
+}
+
+// the same, for a piece with no entity of its own: Quake III's gibs, thrown
+// by the client (q3weapons.c), each keeping its own count (1024 to start)
+void CL_DiminishingTrailCount(const vec3_t start, const vec3_t end, int *trailcount, int flags)
+{
     vec3_t      move;
     vec3_t      vec;
     float       len;
@@ -6516,10 +6530,10 @@ void CL_DiminishingTrail(const vec3_t start, const vec3_t end, centity_t *old, i
     dec = 0.5f;
     VectorScale(vec, dec, vec);
 
-    if (old->trailcount > 900) {
+    if (*trailcount > 900) {
         orgscale = 4;
         velscale = 15;
-    } else if (old->trailcount > 800) {
+    } else if (*trailcount > 800) {
         orgscale = 2;
         velscale = 10;
     } else {
@@ -6531,7 +6545,7 @@ void CL_DiminishingTrail(const vec3_t start, const vec3_t end, centity_t *old, i
         len -= dec;
 
         // drop less particles as it flies
-        if ((Q_rand() & 1023) < old->trailcount) {
+        if ((Q_rand() & 1023) < *trailcount) {
             p = CL_AllocParticle();
             if (!p)
                 return;
@@ -6586,9 +6600,9 @@ void CL_DiminishingTrail(const vec3_t start, const vec3_t end, centity_t *old, i
             }
         }
 
-        old->trailcount -= 5;
-        if (old->trailcount < 100)
-            old->trailcount = 100;
+        *trailcount -= 5;
+        if (*trailcount < 100)
+            *trailcount = 100;
 
         VectorAdd(move, vec, move);
     }

@@ -663,7 +663,10 @@ void player_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage
     if (self->client->tracker_pain_framenum)
         RemoveAttackingPainDaemons(self);
 
-    if (self->health < -40) {
+    if (Q3_GibStyle(self) && Q3_GibDeath(self->health)) {
+        // Quake III's gibs: the clients throw them (g_q3.c)
+        Q3_GibEntity(self);
+    } else if (self->health < -40) {
         // gib
         gi.sound(self, CHAN_BODY, gi.soundindex("misc/udeath.wav"), 1, ATTN_NORM, 0);
         for (n = 0; n < 4; n++)
@@ -1267,6 +1270,12 @@ void InitBodyQue(void)
 void body_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point)
 {
     int n;
+
+    if (Q3_GibStyle(self)) {
+        if (self->health <= -40)
+            Q3_GibEntity(self);
+        return;
+    }
 
     if (self->health < -40) {
         gi.sound(self, CHAN_BODY, gi.soundindex("misc/udeath.wav"), 1, ATTN_NORM, 0);

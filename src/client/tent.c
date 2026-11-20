@@ -2766,6 +2766,10 @@ void CL_ParseTEnt(void)
 
     switch (te.type) {
     case TE_BLOOD:          // bullet hitting flesh
+        // Quake III's spurt instead, where Quake III's game is played and the
+        // blood simulation is off (q3weapons.c)
+        if (CL_Q3W_Bleed(te.pos1))
+            break;
         if (!(cl_disable_particles->integer & NOPART_BLOOD))
         {
             // 60 is the count the original game used for TE_BLOOD. This tree
@@ -3118,6 +3122,10 @@ void CL_ParseTEnt(void)
 
     case TE_Q3_LIGHTNING:
         CL_Q3W_Lightning(te.entity1, te.entity2 != 0, te.pos1, te.pos2);
+        break;
+
+    case TE_Q3_GIBS:
+        CL_Q3W_Gibs(te.pos1);
         break;
 
     case TE_BFG_LASER:

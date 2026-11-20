@@ -625,6 +625,75 @@ for that. Its arrival and departure have their own sounds.
 ==============================================================================
 */
 
+/*
+==============================================================================
+
+GIBS
+
+Quake III's GibEntity (g_combat.c): the body vanishes and the clients throw
+the pieces themselves (EV_GIB_PLAYER; here TE_Q3_GIBS, q3weapons.c), eleven of
+them, further than Quake II's five. It gibs at -40 or below where Quake II
+needs less than -40, and the kill command always gibs.
+
+==============================================================================
+*/
+
+// Quake III's game is on for this victim: its map, its campaign, its movement
+// or its guns (g_q3_weapons 2: the player's own model decides). A body in the
+// queue has no client; its skinnum still names the player it was.
+bool Q3_GibStyle(const edict_t *victim)
+{
+    const edict_t   *player = victim;
+    int             n;
+
+    if (level.q3map || SP_Active())
+        return true;
+    if (!deathmatch->value)
+        return false;
+    if (level.q3_physics || level.q3_weapons == 1)
+        return true;
+    if (level.q3_weapons != 2 || !victim)
+        return false;
+
+    if (!player->client) {
+        n = victim->s.skinnum & 0xff;
+        if (n >= game.maxclients)
+            return false;
+        player = g_edicts + 1 + n;
+    }
+    return Q3W_PlayerQ3(player);
+}
+
+// player_die's test, Quake III's way (meansOfDeath is set by now)
+bool Q3_GibDeath(int health)
+{
+    return health <= -40 || (meansOfDeath & ~MOD_FRIENDLY_FIRE) == MOD_SUICIDE;
+}
+
+void Q3_GibEntity(edict_t *self)
+{
+    gi.WriteByte(svc_temp_entity);
+    gi.WriteByte(TE_Q3_GIBS);
+    gi.WritePosition(self->s.origin);
+    gi.multicast(self->s.origin, MULTICAST_PVS);
+
+    // the body goes: nothing drawn, nothing to hit. A player's own view drops
+    // to the floor (PM_GIB), where Quake III's dead camera sits.
+    self->s.modelindex = 0;
+    self->s.modelindex2 = 0;
+    self->s.modelindex3 = 0;
+    self->s.modelindex4 = 0;
+    self->s.effects = 0;
+    self->s.sound = 0;
+    self->takedamage = DAMAGE_NO;
+    self->solid = SOLID_NOT;
+    if (self->client) {
+        self->client->anim_priority = ANIM_DEATH;
+        self->client->anim_end = self->s.frame;
+    }
+    gi.linkentity(self);
+}
+
 void Q3_TeleportPlayer(edict_t *player, const vec3_t origin, const vec3_t angles)
 {
     gclient_t   *client = player->client;

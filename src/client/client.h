@@ -888,6 +888,8 @@ void CL_Q3W_RailImpact(const vec3_t start, const vec3_t end, const vec3_t color)
 void CL_Q3W_RailStart(vec3_t start);
 void CL_Q3W_Lightning(int shooter, bool hit, const vec3_t start, const vec3_t end);
 void CL_Q3W_AddSprite(const entity_state_t *s1, const vec3_t origin);
+void CL_Q3W_Gibs(const vec3_t origin);
+bool CL_Q3W_Bleed(const vec3_t origin);
 void CL_LoadState(load_state_t state);
 void CL_RegisterSounds(void);
 void CL_RegisterBspModels(void);
@@ -1465,6 +1467,8 @@ void CL_GrenadeTrail(const vec3_t start, const vec3_t end, centity_t *old);
 bool CL_RocketUnderwater(const vec3_t origin);
 void CL_RocketWaterLight(const vec3_t origin);
 void CL_DiminishingTrail(const vec3_t start, const vec3_t end, centity_t *old, int flags);
+void CL_DiminishingTrailCount(const vec3_t start, const vec3_t end, int *trailcount, int flags);
+bool CL_BloodSpheresActive(void);
 void CL_FlyEffect(centity_t *ent, const vec3_t origin);
 void CL_BfgParticles(entity_t *ent);
 void CL_ItemRespawnParticles(const vec3_t org);

@@ -1043,6 +1043,7 @@ static void CL_ParseTEntPacket(void)
     case TE_Q3_ROCKET_EXPLOSION:
     case TE_Q3_GRENADE_EXPLOSION:
     case TE_Q3_BFG_EXPLOSION:
+    case TE_Q3_GIBS:
         MSG_ReadPos(te.pos1);
         break;
 

@@ -1992,6 +1992,9 @@ int  Q3_BattleSuitDamage(edict_t *targ, int damage, int dflags, int mod);
 bool Q3_BattleSuitActive(gclient_t *client);
 int  Q3_FallingDamage(float delta);
 void Q3_Knockback(edict_t *targ, const vec3_t dir, int knockback);
+bool Q3_GibStyle(const edict_t *victim);
+bool Q3_GibDeath(int health);
+void Q3_GibEntity(edict_t *self);
 
 //
 // g_q3weap.c - Quake III's weapons in the bot match (level.q3_weapons)

@@ -1336,6 +1336,10 @@ typedef enum {
 	TE_Q3_RAILTRAIL,
 	TE_Q3_LIGHTNING,
 	TE_Q3_SHOTGUN,      // a shotgun pellet on a wall: TE_Q3_BULLET without the ricochet
+	// a player gibbed the Quake III way (g_q3.c Q3_GibEntity): [pos], the
+	// body's origin. The client throws the pieces itself (q3weapons.c), as
+	// Quake III's EV_GIB_PLAYER did.
+	TE_Q3_GIBS,
 
     TE_NUM_ENTITIES
 } temp_event_t;

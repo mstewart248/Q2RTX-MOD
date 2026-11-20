@@ -4692,6 +4692,7 @@ models/weapons2/lightning/glass:
 	stage0_map materialDev/models/weapons2/lightning/glass.jpg
 #	stage1: map textures/effects/envmapdim.tga; tcGen environment; blendfunc GL_ONE GL_ONE; rgbGen lightingDiffuse
 	stage1_map materialDev/textures/effects/envmapdim.jpg
+	kind GLASS
 #	texture_normals materialDev/models/weapons2/lightning/glass_n.png
 #	texture_roughness materialDev/models/weapons2/lightning/glass_rough.png
 #	texture_metallic materialDev/models/weapons2/lightning/glass_metal.png
@@ -4700,9 +4701,10 @@ models/weapons2/lightning/glass:
 
 models/weapons2/lightning/lightning2:
 	texture_base materialDev/models/weapons2/lightning/lightning2.jpg
+	base_factor 2.5
 #	texture_normals materialDev/models/weapons2/lightning/lightning2_n.png
-#	texture_roughness materialDev/models/weapons2/lightning/lightning2_rough.png
-#	texture_metallic materialDev/models/weapons2/lightning/lightning2_metal.png
+	texture_roughness materialDev/models/weapons2/lightning/lightning2_rough.jpg
+	texture_metallic materialDev/models/weapons2/lightning/lightning2_metal.jpg
 #	texture_height materialDev/models/weapons2/lightning/lightning2_height.png
 #	texture_emissive materialDev/models/weapons2/lightning/lightning2_light.png
 
