@@ -23,10 +23,17 @@ against the limit.
 
 WHAT GOES IN, and the rule behind it:
 
-  * every file git TRACKS under baseq2/, rerelease/ and rogue/. That is the
-    authored content, and using git as the manifest is what keeps a working tree
-    full of local experiments - savegames, configs, map compiles, scratch cfgs -
-    out of a release without needing a hand-maintained exclude list.
+  * every file git TRACKS under baseq2/, baseq3/ and rerelease/. That is the
+    authored content, and using git as the manifest is what keeps a working
+    tree full of local experiments - savegames, configs, map compiles, scratch
+    cfgs - out of a release without needing a hand-maintained exclude list.
+    baseq3/ is Quake III's materials (materials/quake3.mat and the maps under
+    materialDev/) and its map and light cfgs. It was left out until 2026-11-21,
+    so a release drew Quake III with none of it (a player's glass health orbs
+    came out opaque). Only EDITED or new materialDev/ pictures are tracked: a
+    missing copy of a pak picture loads the player's own pak file
+    (vkpt/material.c, load_material_image). Not rogue/ (Matt, 11-21) and not
+    id1/ yet: Quake 1's content is not to ship.
   * the build outputs: q2rtx.exe, q2rtxded.exe, q2rtxded-x86.exe if it was
     built, baseq2/gamex86_64.dll, the compiled shaders both loose in
     baseq2/shader_vkpt and packed in baseq2/shaders.pkz, and the Direct3D 12
@@ -57,8 +64,10 @@ WHAT STAYS OUT:
   * Valve's PREBUILT phonon.dll from the Steam Audio SDK zip. It links Intel
     IPP and oneMKL, which are not open source and cannot ship with a GPL
     program; the package is refused if the phonon.dll found carries them.
-  * every .pak file. They are id Software's and cannot be redistributed; the
-    README tells the player where to get their own.
+  * every .pak and .pk3 file. They are id Software's and cannot be
+    redistributed; the README tells the player where to get their own. baseq3/
+    is where a player's Quake III paks go, so one that was ever tracked there
+    is refused by name too.
   * music/ and video/ - the player's own copies from the remaster.
   * rerelease/screenshots/, although tracked: 111 MB of the readme's images.
     The game never reads them, and they would land in the player's own
@@ -143,7 +152,7 @@ def build_manifest(repo):
     def add(disk, arc, required):
         if arc in seen:
             return
-        if is_vendor_runtime(arc):
+        if is_vendor_runtime(arc) or arc.lower().endswith(('.pak', '.pk3')):
             refused.append(arc)
             return
         if not os.path.isfile(disk):
@@ -184,7 +193,7 @@ def build_manifest(repo):
             if n.endswith('.dxil'):
                 add(os.path.join(shaders, n), 'baseq2/shader_d3d12/' + n, True)
 
-    for prefix in ('baseq2', 'rerelease', 'rogue'):
+    for prefix in ('baseq2', 'baseq3', 'rerelease'):
         for f in tracked(repo, prefix):
             if not f.startswith(EXCLUDE_TRACKED):
                 add(os.path.join(repo, f), f, False)
@@ -241,7 +250,7 @@ def main():
     bad_phonon = [r for r in refused if r.startswith('phonon.dll')]
     refused = [r for r in refused if not r.startswith('phonon.dll')]
     if refused:
-        print('left out NVIDIA / Agility SDK runtime file(s) - players supply their own:')
+        print('left out NVIDIA / Agility SDK runtime file(s) and game archives - players supply their own:')
         for r in refused:
             print('   ' + r)
 

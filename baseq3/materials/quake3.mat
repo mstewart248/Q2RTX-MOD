@@ -1485,8 +1485,8 @@ models/mapobjects/spotlamp/spotlamp:
 #	stage0: map models/mapobjects/spotlamp/spotlamp.tga; alphaFunc GE128; depthWrite; rgbGen vertex
 	stage0_map materialDev/models/mapobjects/spotlamp/spotlamp.tga
 #	texture_normals materialDev/models/mapobjects/spotlamp/spotlamp_n.png
-#	texture_roughness materialDev/models/mapobjects/spotlamp/spotlamp_rough.png
-#	texture_metallic materialDev/models/mapobjects/spotlamp/spotlamp_metal.png
+	texture_roughness materialDev/models/mapobjects/spotlamp/spotlamp_rough.png
+	texture_metallic materialDev/models/mapobjects/spotlamp/spotlamp_metal.png
 #	texture_height materialDev/models/mapobjects/spotlamp/spotlamp_height.png
 #	texture_emissive materialDev/models/mapobjects/spotlamp/spotlamp_light.png
 
@@ -8653,9 +8653,9 @@ textures/base_trim/xred1_2:
 
 textures/base_trim/xspiderbit4:
 	texture_base materialDev/textures/base_trim/xspiderbit4.jpg
-#	texture_normals materialDev/textures/base_trim/xspiderbit4_n.png
-#	texture_roughness materialDev/textures/base_trim/xspiderbit4_rough.png
-#	texture_metallic materialDev/textures/base_trim/xspiderbit4_metal.png
+	texture_normals materialDev/textures/base_trim/xspiderbit4_n.png
+	texture_roughness materialDev/textures/base_trim/xspiderbit4_rough.png
+	texture_metallic materialDev/textures/base_trim/xspiderbit4_metal.png
 #	texture_height materialDev/textures/base_trim/xspiderbit4_height.png
 #	texture_emissive materialDev/textures/base_trim/xspiderbit4_light.png
 
@@ -9058,6 +9058,7 @@ textures/base_wall/bluemetalsupport2c_1:
 	stage0_map materialDev/textures/base_wall/chrome_env.jpg
 #	stage1: map textures/base_wall/bluemetalsupport2c_1.tga; blendFunc blend; rgbGen identity
 	stage1_map materialDev/textures/base_wall/bluemetalsupport2c_1.tga
+	metalness_factor 1
 #	stage2: map $lightmap; blendfunc filter; rgbGen identity
 #	texture_normals materialDev/textures/base_wall/bluemetalsupport2c_1_n.png
 #	texture_roughness materialDev/textures/base_wall/bluemetalsupport2c_1_rough.png
@@ -9071,11 +9072,12 @@ textures/base_wall/bluemetalsupport2c_1vent:
 	stage0_map materialDev/textures/base_wall/chrome_env.jpg
 #	stage1: map textures/base_wall/bluemetalsupport2c_1vent.tga; blendFunc blend; rgbGen identity
 	stage1_map materialDev/textures/base_wall/bluemetalsupport2c_1vent.tga
+	metalness_factor 1
 #	stage2: map $lightmap; blendfunc filter; rgbGen identity
-#	texture_normals materialDev/textures/base_wall/bluemetalsupport2c_1vent_n.png
+	texture_normals materialDev/textures/base_wall/bluemetalsupport2c_1vent_n.png
 #	texture_roughness materialDev/textures/base_wall/bluemetalsupport2c_1vent_rough.png
 #	texture_metallic materialDev/textures/base_wall/bluemetalsupport2c_1vent_metal.png
-#	texture_height materialDev/textures/base_wall/bluemetalsupport2c_1vent_height.png
+	texture_height materialDev/textures/base_wall/bluemetalsupport2c_1vent_height.png
 #	texture_emissive materialDev/textures/base_wall/bluemetalsupport2c_1vent_light.png
 
 textures/base_wall/bluemetalsupport2clight:
@@ -9087,6 +9089,7 @@ textures/base_wall/bluemetalsupport2clight:
 #	stage2: map $lightmap; blendfunc filter; rgbGen identity
 #	stage3: map textures/base_wall/bluemetalsupport2clight.glow.tga; blendFunc add; rgbgen wave sawtooth .6 .1 0 4
 	stage3_map materialDev/textures/base_wall/bluemetalsupport2clight.glow.tga
+	metalness_factor 1
 #	texture_normals materialDev/textures/base_wall/bluemetalsupport2clight_n.png
 #	texture_roughness materialDev/textures/base_wall/bluemetalsupport2clight_rough.png
 #	texture_metallic materialDev/textures/base_wall/bluemetalsupport2clight_metal.png
@@ -10008,6 +10011,10 @@ textures/base_wall/q3tourneyscreen:
 #	stage4: map $lightmap; blendfunc gl_dst_color gl_zero; rgbgen identity
 #	texture_normals materialDev/textures/base_wall/q3tourneyscreen_n.png
 	texture_roughness materialDev/textures/base_wall/q3tourney1_rough.png
+	stage1_emissive_factor 1
+	stage3_texture_roughness materialDev/textures/base_wall/comp3frame_rough.png
+	stage1_texture_roughness materialDev/textures/base_wall/comp3textd_rough.png
+	stage0_texture_roughness materialDev/textures/base_wall/q3tourney2_rough.png
 #	texture_metallic materialDev/textures/base_wall/q3tourneyscreen_metal.png
 #	texture_height materialDev/textures/base_wall/q3tourneyscreen_height.png
 #	texture_emissive materialDev/textures/base_wall/q3tourneyscreen_light.png
@@ -15416,9 +15423,10 @@ textures/gothic_trim/metalsupport4:
 
 textures/gothic_trim/metalsupport4b:
 	texture_base materialDev/textures/gothic_trim/metalsupport4b.jpg
-#	texture_normals materialDev/textures/gothic_trim/metalsupport4b_n.png
-#	texture_roughness materialDev/textures/gothic_trim/metalsupport4b_rough.png
-#	texture_metallic materialDev/textures/gothic_trim/metalsupport4b_metal.png
+	texture_normals materialDev/textures/gothic_trim/metalsupport4b_n.png
+	texture_roughness materialDev/textures/gothic_trim/metalsupport4b_rough.png
+	texture_metallic materialDev/textures/gothic_trim/metalsupport4b_metal.png
+	base_factor 1.5
 #	texture_height materialDev/textures/gothic_trim/metalsupport4b_height.png
 #	texture_emissive materialDev/textures/gothic_trim/metalsupport4b_light.png
 
@@ -16465,9 +16473,10 @@ textures/gothic_wall/killblock:
 
 textures/gothic_wall/metalciclesdark:
 	texture_base materialDev/textures/gothic_wall/metalciclesdark.jpg
+	specular_factor 0
 #	texture_normals materialDev/textures/gothic_wall/metalciclesdark_n.png
-#	texture_roughness materialDev/textures/gothic_wall/metalciclesdark_rough.png
-#	texture_metallic materialDev/textures/gothic_wall/metalciclesdark_metal.png
+	texture_roughness materialDev/textures/gothic_wall/metalciclesdark_rough.png
+	texture_metallic materialDev/textures/gothic_wall/metalciclesdark_metal.png
 #	texture_height materialDev/textures/gothic_wall/metalciclesdark_height.png
 #	texture_emissive materialDev/textures/gothic_wall/metalciclesdark_light.png
 
