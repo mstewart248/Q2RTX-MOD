@@ -4186,10 +4186,14 @@ static void add_quake1_paths(void)
         }
     }
 
-    add_dir_path(FS_PATH_BASE | FS_PATH_GAME | FS_SEARCH_QUAKE1, root);
-
-    if (count)
+    /* The loose directory only with an episode to go with it. A release carries
+       <basedir>/id1 - quake1.mat, its maps, the maps/ cfgs - for whoever copies
+       Quake's paks in; without them, none of it has anything to apply to, and
+       quake1.mat's 2,700 definitions would load into every Quake II game. */
+    if (count) {
+        add_dir_path(FS_PATH_BASE | FS_PATH_GAME | FS_SEARCH_QUAKE1, root);
         Com_Printf("Quake 1 data: %d episode(s) in %s (%s)\n", count, root, games);
+    }
     Cvar_SetByVar(fs_quake1, va("%d", count), FROM_CODE);
     Cvar_SetByVar(fs_quake1_games, games, FROM_CODE);
 }

@@ -134,7 +134,9 @@ jobs:
     # a release; keep the two lists in step. baseq3/ (Quake III's materials and
     # map cfgs) was missing from this list until 2026-11-21, so every build
     # artifact drew Quake III without them even after the release had them.
-    # rogue/ and id1/ stay out of both (Matt, 2026-11-21).
+    # id1/ (Quake 1's materials, PBR maps and map cfgs; never its paks, which
+    # are not in git) joined both on 2026-11-21. rogue/ stays out of both
+    # (Matt, 2026-11-21).
     # Two required files can never be committed:
     #
     #   baseq2/q2rtx_media.pkz   862 MB - over GitHub's 100 MB per-file limit
@@ -182,7 +184,7 @@ jobs:
         test -d baseq2/shader_vkpt || { echo "MISSING baseq2/shader_vkpt"; missing=1; }
         ls baseq2/shader_d3d12/*.dxil >/dev/null 2>&1 || { echo "MISSING baseq2/shader_d3d12"; missing=1; }
         # the material files of each game folder the Upload step takes
-        for f in baseq3/materials/quake3.mat rerelease/materials/rerelease.mat; do
+        for f in baseq3/materials/quake3.mat rerelease/materials/rerelease.mat id1/materials/quake1.mat; do
           if [ -s "$f" ]; then echo "ok   $f"; else echo "MISSING $f"; missing=1; fi
         done
         exit $missing
@@ -204,6 +206,7 @@ jobs:
           baseq2/
           baseq3/
           rerelease/
+          id1/
           license.txt
           notice.txt
 
@@ -255,5 +258,6 @@ jobs:
           baseq2/
           baseq3/
           rerelease/
+          id1/
           license.txt
           notice.txt

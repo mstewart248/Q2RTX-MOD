@@ -69,6 +69,27 @@ to baseq2/ and rerelease/.
     Copy music/ and video/ from the remaster if you want them. They are large
     and purely optional; nothing else depends on them.
 
+(e) QUAKE (2021 RE-RELEASE)  -  optional, for the Quake 1 campaigns
+
+    Copy the episode folders out of Quake's rerelease folder into the id1
+    folder here, so you end up with:
+
+        id1/id1/pak0.pak            Quake
+        id1/hipnotic/pak0.pak       Scourge of Armagon      (if you have it)
+        id1/rogue/pak0.pak          Dissolution of Eternity (if you have it)
+        id1/dopa/pak0.pak, id1/mg1/pak0.pak, ...  the other add-ons
+        id1/<episode>/music/        (optional - each episode's soundtrack)
+
+    On Steam the source folder is  steamapps/common/Quake/rerelease
+    Copy every folder in it that holds a pak0.pak; the .exe, .dll and .kpf
+    files beside them are not needed.
+
+    Merge, do not replace. This archive already ships id1/materials,
+    id1/materialDev and id1/maps - the Quake 1 materials, PBR maps and map
+    settings this project adds. The game finds the episodes itself: the
+    Quake 1 entries appear in the menu once a pak0.pak is in place, and
+    nothing of Quake 1's loads without one.
+
 
 --------------------------------------------------------------------------------
  2. RUNNING IT
@@ -143,6 +164,8 @@ Windows 10, the game says so in the console and stays on Vulkan.
     rerelease/textures/         additional textures
     rerelease/materialDev/      material authoring sources
     rerelease/maps/             map configuration
+    id1/                        Quake 1's materials, PBR maps and map settings
+                                (no Quake 1 game data - see 1e)
     readme.md                   full feature documentation and cvar reference
     changelog.md                upstream Quake II RTX change log
     license.txt, notice.txt     licensing

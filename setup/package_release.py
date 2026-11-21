@@ -32,8 +32,15 @@ WHAT GOES IN, and the rule behind it:
     so a release drew Quake III with none of it (a player's glass health orbs
     came out opaque). Only EDITED or new materialDev/ pictures are tracked: a
     missing copy of a pak picture loads the player's own pak file
-    (vkpt/material.c, load_material_image). Not rogue/ (Matt, 11-21) and not
-    id1/ yet: Quake 1's content is not to ship.
+    (vkpt/material.c, load_material_image). Not rogue/ (Matt, 11-21).
+    id1/ is Quake 1's (Matt, 11-21: "everything people need for it to work if
+    they just copy in their game data"): materials/quake1.mat, the per-map
+    maps/q1/*.mat and *.cfg, maps/quake1.cfg, the light editor's
+    maps/lights/q1/*.cfg, and the materialDev/ maps Matt made (remix/ and
+    edited glows). Not the pictures tools/q1matdev.py extracts from the paks:
+    the engine cuts the same ones out of the player's own (images.c
+    load_q1_texture / load_q1_model_image). The episode folders
+    (id1/<episode>/pak0.pak) are the player's, refused with every .pak.
   * the build outputs: q2rtx.exe, q2rtxded.exe, q2rtxded-x86.exe if it was
     built, baseq2/gamex86_64.dll, the compiled shaders both loose in
     baseq2/shader_vkpt and packed in baseq2/shaders.pkz, and the Direct3D 12
@@ -193,7 +200,7 @@ def build_manifest(repo):
             if n.endswith('.dxil'):
                 add(os.path.join(shaders, n), 'baseq2/shader_d3d12/' + n, True)
 
-    for prefix in ('baseq2', 'baseq3', 'rerelease'):
+    for prefix in ('baseq2', 'baseq3', 'rerelease', 'id1'):
         for f in tracked(repo, prefix):
             if not f.startswith(EXCLUDE_TRACKED):
                 add(os.path.join(repo, f), f, False)

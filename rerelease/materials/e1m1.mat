@@ -1,0 +1,66 @@
+
+# instance of textures/q1/tlight02
+# e1m1, created at (769 2347 -305)
+# Inherits everything from textures/q1/tlight02; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/tlight02#122e579d:
+#	texture_base materialDev/textures/q1/tlight02.png
+#	texture_metallic materialDev/remix/solid*M1.wal
+#	texture_emissive materialDev/remix/TextureDev/Panel_Orange_Lights_emissive.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	roughness_override 0.79
+#	metalness_factor 0.76
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 0.75
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/q1/tlight02
+# e1m1, created at (758 2168 -78)
+# Inherits everything from textures/q1/tlight02; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/tlight02#d6d8b07f:
+#	texture_base materialDev/textures/q1/tlight02.png
+#	texture_emissive materialDev/remix/TextureDev/Panel_Orange_Lights_emissive.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 0.75
+	light_factor 2
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/q1/twall2_2
+# e1m1, created at (254 1972 -162)
+# Inherits everything from textures/q1/twall2_2; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/twall2_2#ac964c07:
+#	texture_base materialDev/textures/q1/twall2_2.png
+#	texture_emissive materialDev/remix/TextureDev/EarthScreen_emissive.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1.25
+	light_factor 10
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+	volumetric_scale 0.25

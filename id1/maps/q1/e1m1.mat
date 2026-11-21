@@ -1,0 +1,64 @@
+# Material overrides for Quake 1's e1m1 only - loaded by MAT_ChangeMap on map load
+# (maps/q1/e1m1.bsp -> maps/q1/e1m1.mat). An entry here replaces materials/
+# quake1.mat's entry of the same name on this map.
+#
+# THE COMPUTER PANELS KEEP QUAKE II RTX'S ART (Matt, 2026-11-21: "this ended up
+# looking pretty cool here"). Quake II reused the names comp1_2 and comp1_3,
+# and until 11-21 every Quake 1 texture took a namesake from rerelease/overrides/
+# (found by base name alone) - here those looked good, elsewhere (start's
+# metal5_4, ...) they did not fit. images.c no longer does that for textures/q1/,
+# so the two panels that showed Quake II's picture name its files here: the
+# same base, normal map and screen glow as before, with quake1.mat's surface
+# settings. Every other map, and every other texture here, now draws Quake's own.
+# (comp1_1, comp1_4 and comp1_5 name a texture_base in quake1.mat, so they never
+# took the override and drew Quake's art all along.)
+#
+# ONLY THE CUBBY'S CEILING LIGHTS BLINK (Matt, 2026-11-21: "only the ceiling
+# lights on the right cubby should blink"). The east cubby (x 656-720) is lit by
+# a light_fluorospark and two more style 10 lights, which give its ceiling's
+# tlight10 72-79% of its light and the computers under it 72-82% - so the screens
+# and the red-light wall (comp1_6, a light) would have flickered with the
+# ceiling. light_styles 0 keeps every computer texture steady on this map; the
+# rest of each entry is quake1.mat's (an entry here replaces it whole).
+
+textures/q1/comp1_1:
+	texture_base materialDev/textures/q1/comp1_1.png
+	texture_roughness materialDev/textures/q1/comp1_1_rough.png
+	roughness_override 0.5
+	texture_metallic materialDev/textures/q1/comp1_1_metal.png
+	metalness_factor 1
+	specular_factor 0
+	emissive_factor 2
+	texture_emissive materialDev/textures/q1/comp1_1_emit.png
+	light_styles 0
+
+textures/q1/comp1_2:
+	texture_base overrides/comp1_2.tga
+	texture_normals overrides/comp1_2_n.tga
+	texture_emissive overrides/comp1_2_light.tga
+	texture_roughness 0
+	roughness_override 0.5
+	texture_metallic materialDev/remix/solid*M1.wal
+	metalness_factor 0.8
+	light_styles 0
+
+textures/q1/comp1_3:
+	texture_base overrides/comp1_3.tga
+	texture_normals overrides/comp1_3_n.tga
+	texture_emissive overrides/comp1_3_light.tga
+	texture_roughness 0
+	roughness_override 0.5
+	texture_metallic materialDev/remix/solid*M1.wal
+	metalness_factor 0.805
+	light_styles 0
+
+textures/q1/comp1_6:
+	texture_base materialDev/textures/q1/comp1_6.png
+	texture_roughness 0
+	roughness_override 0.635
+	texture_metallic materialDev/remix/solid*M1.wal
+	metalness_factor 0.85
+	texture_emissive materialDev/remix/TextureDev/TechWallRedLights_emissive.png
+	is_light 1
+	emissive_factor 1.25
+	light_styles 0

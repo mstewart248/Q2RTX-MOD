@@ -2096,8 +2096,26 @@ static void load_material_image(image_t** image, const char* filename, pbr_mater
 	   same picture - the health crosses' texture_emissive envmap*.jpg, which the
 	   material has no other glow to fall back on for. Nothing else missing
 	   changes here: the callers leave the material as it is without the line. */
-	if (*image == R_NOTEXTURE && !Q_strncasecmp(filename, "materialDev/", 12) && filename[12])
-		load_material_image(image, filename + 12, mat, type, flags);
+	if (*image == R_NOTEXTURE && !Q_strncasecmp(filename, "materialDev/", 12) && filename[12]) {
+		const char* pak_name = filename + 12;
+
+		load_material_image(image, pak_name, mat, type, flags);
+
+		/* A QUAKE 1 PICTURE HAS NO FILE AT THAT PATH: the engine cuts it out of
+		   the user's paks (images.c load_q1_texture, load_q1_model_image) -
+		   a wall from its map, a skin from its .mdl or rerelease .lmp, and
+		   <name>_light from their fullbright colours. id1/materials/quake1.mat
+		   names materialDev copies of those, which tools/q1matdev.py extracts
+		   from the paks and git does not carry (id's pixels; the release
+		   ships only the edited ones). The exact search above never reaches
+		   the pak loaders, so without the copies every skin's named glow -
+		   eyes, flames, a Quad's shine - was lost. Not exact here: the
+		   loaders make the same picture the copy holds. */
+		if (*image == R_NOTEXTURE && (!Q_strncasecmp(pak_name, "textures/q1/", 12) ||
+		                              !Q_strncasecmp(pak_name, "progs/", 6) ||
+		                              !Q_strncasecmp(pak_name, "id1/", 4)))
+			*image = IMG_Find(pak_name, type, flags & ~IF_EXACT);
+	}
 }
 
 /*
