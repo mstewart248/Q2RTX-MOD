@@ -51,7 +51,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
    map moved in. Low half of word 9 only, so the top half is the next knob's. */
 /* Raised from 10 for caustic_ripple (2026-11-16): word 9's top half went to the
    Quake III program offset. Low half of word 10; its top half is spare. */
-#define MATERIAL_UINTS          11
+/* Raised from 11 for stained glass (2026-11-21): its switches and spread in
+   the top half of word 10, its four other numbers as halves in 11 and 12. */
+#define MATERIAL_UINTS          13
 
 // should match the same constant declared in material.h
 #define MAX_PBR_MATERIALS      8192
@@ -428,6 +430,18 @@ struct MaterialInfo
 	/* caustic_ripple: that light thrown in moving water ripples, projected out
 	   from the glass's centre of curvature - see glass_ripple(). 0 = off. */
 	float caustic_ripple;
+	/* stained_glass: thick coloured glass with a made-up light behind it -
+	   material.h, stained_glass.h. The rest only mean anything when it is set:
+	   the light's height up the tile (1 = top), its distance back in tile
+	   heights, sun or lamp, its radius seen from the glass (radians), how much
+	   the glass spreads (0..1) and the bloom's half-width (radians). */
+	bool stained_glass;
+	bool stained_sun;
+	float stained_height;
+	float stained_distance;
+	float stained_size;
+	float stained_scatter;
+	float stained_spread;
 	float bump_scale;
 	float roughness_override;
 	/* roughness_override IS the roughness, all over, rather than a floor: the
@@ -465,6 +479,9 @@ struct LightPolygon
 	// sentinel by the time a shader sees it: 1.0 means "same as the surface
 	// lighting", 0 means "this light makes no fog at all".
 	float volumetric_scale;
+	// DYNLIGHT_WINDOW only: the tile's u and v offsets and the glass's plane
+	// distance - see WindowLight in stained_glass.h. The fifth vec4's yzw.
+	vec3 window;
 };
 
 // The buffers with primitive data, currently two of them: world and instanced.
@@ -729,6 +746,8 @@ get_material_info(uint material_id)
 	data[8] = light_buffer.material_table[material_index * MATERIAL_UINTS + 8];
 	data[9] = light_buffer.material_table[material_index * MATERIAL_UINTS + 9];
 	data[10] = light_buffer.material_table[material_index * MATERIAL_UINTS + 10];
+	data[11] = light_buffer.material_table[material_index * MATERIAL_UINTS + 11];
+	data[12] = light_buffer.material_table[material_index * MATERIAL_UINTS + 12];
 
 	MaterialInfo minfo;
 	minfo.base_texture = data[0] & 0xffff;
@@ -745,6 +764,15 @@ get_material_info(uint material_id)
 	minfo.alpha_glass = Q3_SHADERS && (data[7] & 16u) != 0;
 	minfo.glass_caustic = Q3_SHADERS ? float((data[7] >> 5) & 0x7ffu) * (1.0 / 128.0) : 0.0;
 	minfo.caustic_ripple = Q3_SHADERS ? unpackHalf2x16(data[10]).x : 0.0;
+	// stained glass (vertex_buffer.c): bit 16 on, bit 17 sun, spread in degrees
+	// in bits 24..31, the rest as halves
+	minfo.stained_glass = (data[10] & 0x10000u) != 0u;
+	minfo.stained_sun = (data[10] & 0x20000u) != 0u;
+	minfo.stained_spread = float(data[10] >> 24) * 0.017453293;
+	minfo.stained_height = unpackHalf2x16(data[11]).x;
+	minfo.stained_distance = unpackHalf2x16(data[11]).y;
+	minfo.stained_size = unpackHalf2x16(data[12]).x * 0.017453293;
+	minfo.stained_scatter = unpackHalf2x16(data[12]).y;
 	minfo.bump_scale = unpackHalf2x16(data[2]).x;
 	minfo.roughness_override = unpackHalf2x16(data[2]).y;
 	minfo.roughness_whole = (data[4] & 0x80000000u) != 0u;
@@ -810,6 +838,7 @@ get_light_polygon(uint index)
 	light.type = p3.z;
 	light.spot_emission_profile = p3.w;
 	light.volumetric_scale = p4.x;
+	light.window = p4.yzw;
 	return light;
 }
 

@@ -485,7 +485,8 @@ void R_RenderWorld(void)
     c_drawnode = 0;
 
     // auto cycle the world frame for texture animation
-    r_worldentity.frame = (int)(r_newrefdef.time * 2);
+    // Quake II animates wall textures twice a second, Quake 1 five times
+    r_worldentity.frame = (int)(r_newrefdef.time * (r_worldmodel && r_worldmodel->q1 ? 5 : 2));
     currententity = &r_worldentity;
 
     VectorCopy(r_origin, modelorg);

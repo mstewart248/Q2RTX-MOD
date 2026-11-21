@@ -321,6 +321,24 @@ static void GL_DrawSpriteModel(const model_t *model)
     GL_ArrayBits(GLA_VERTEX | GLA_TC);
     GL_Color(1, 1, 1, alpha);
 
+    vec3_t origin;
+    VectorCopy(e->origin, origin);
+
+	if (model->sprite_oriented)
+	{
+		// Quake's SPR_ORIENTED: the entity's own axes (left = -right), lifted
+		// a little off the wall it lies on, toward the eye
+		vec3_t fwd, rt, upv, to_eye;
+		AngleVectors(e->angles, fwd, rt, upv);
+		VectorScale(rt, -frame->origin_x, left);
+		VectorScale(rt, frame->width - frame->origin_x, right);
+		VectorScale(upv, -frame->origin_y, down);
+		VectorScale(upv, frame->height - frame->origin_y, up);
+		VectorSubtract(glr.fd.vieworg, e->origin, to_eye);
+		VectorMA(origin, DotProduct(fwd, to_eye) >= 0 ? 0.5f : -0.5f, fwd, origin);
+	}
+	else
+	{
     VectorScale(glr.viewaxis[1], frame->origin_x, left);
     VectorScale(glr.viewaxis[1], frame->origin_x - frame->width, right);
 
@@ -334,11 +352,12 @@ static void GL_DrawSpriteModel(const model_t *model)
 		VectorScale(glr.viewaxis[2], -frame->origin_y, down);
 		VectorScale(glr.viewaxis[2], frame->height - frame->origin_y, up);
 	}
+	}
 
-    VectorAdd3(e->origin, down, left, points[0]);
-    VectorAdd3(e->origin, up, left, points[1]);
-    VectorAdd3(e->origin, down, right, points[2]);
-    VectorAdd3(e->origin, up, right, points[3]);
+    VectorAdd3(origin, down, left, points[0]);
+    VectorAdd3(origin, up, left, points[1]);
+    VectorAdd3(origin, down, right, points[2]);
+    VectorAdd3(origin, up, right, points[3]);
 
     GL_TexCoordPointer(2, 0, tcoords);
     GL_VertexPointer(3, 0, &points[0][0]);

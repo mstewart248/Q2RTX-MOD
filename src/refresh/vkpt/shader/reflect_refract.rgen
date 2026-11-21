@@ -443,12 +443,11 @@ main()
 
 		if(Q3_SHADERS && camera_data[0].w < 0.0)
 		{
-			/* A Quake III portal (path_tracer_rgen.h, is_portal_camera): the ray goes
-			   on from the matching point of the far side, turned as the portal turns
-			   it - Quake III's R_MirrorPoint and R_MirrorVector. Fields as chrome
-			   takes them; the motion vector stays the surface's. */
-			position = portal_transform_point(camera_data, position);
-			direction = normalize(portal_transform_vector(camera_data, direction));
+			/* A Quake 1 teleporter's gate or a Quake III portal (path_tracer_rgen.h,
+			   is_portal_camera, portal_carry_ray): the ray goes on from the far
+			   side. Fields as chrome takes them; the motion vector stays the
+			   surface's. */
+			portal_carry_ray(camera_data, normal, position, direction);
 
 			if(spec_bounce_index == 0 && checkerboard_flags == CHECKERBOARD_FLAG_PRIMARY)
 				checkerboard_flags = CHECKERBOARD_FLAG_REFLECTION;
@@ -1068,7 +1067,7 @@ main()
 
 		// Also when the ray hit nothing at all (upstream f6dfa332) - escaping the map
 		// used to leave a black reflection instead of the environment.
-		vec3 env = env_map(direction, false);
+		vec3 env = env_map_seen(direction, false);
 		// seen sky, in a reflection - same treatment as the primary ray,
 		// including pt_sky_brightness being a MAP SKYBOX control only. A
 		// reflection of the physical sky has to match the sky itself or
@@ -1546,7 +1545,10 @@ main()
 	uint transparency_kind = ((material_id & MATERIAL_KIND_MASK) == MATERIAL_KIND_TRANSPARENT || is_blood(material_id))
 		? MATERIAL_KIND_TRANSPARENT : MATERIAL_KIND_TRANSP_MODEL;
 
-	if((is_chrome(material_id) || is_screen(material_id) || is_camera(material_id)) && primary_roughness >= MAX_MIRROR_ROUGHNESS || is_transparent(material_id))
+	// a portal is a view, whatever its texture's roughness (primary_rays.rgen)
+	const bool hit_is_portal = is_camera(material_id) && is_portal_camera(camera_id_of_material(material_id));
+	if((is_chrome(material_id) || is_screen(material_id) || is_camera(material_id)) && primary_roughness >= MAX_MIRROR_ROUGHNESS
+		&& !hit_is_portal || is_transparent(material_id))
 	{
 		material_id = (material_id & ~MATERIAL_KIND_MASK) | MATERIAL_KIND_REGULAR;
 	}

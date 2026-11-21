@@ -99,6 +99,13 @@ static bool     cl_dynamiclights_excluded;
 // shadow edge. V_AddLight uses 10 for an ordinary point light, so do the same.
 #define DLIGHT_EMITTER_RADIUS   10.0f
 
+// A Quake 1 light's brightness on the light editor's scale per "light" squared:
+// QuakeSpasm-RTX's sphere light (5.073e-4 x light^2) x 1/40 over lightedit's
+// 2000 / (255 x 25), so the usual "light 300" is 3.64 - what tools/q1matdev.py
+// writes, and what LE_Q1EntityLights gave the lights it copied. Emitter radius 4.
+#define Q1_BRIGHT_PER_LIGHT2    4.0426e-5f
+#define Q1_EMITTER_RADIUS       4.0f
+
 /*
 =================
 CL_CheckDynamicLightExclusion
@@ -166,21 +173,53 @@ typedef struct {
     float   cone_angle;
     float   vol_scale;
     float   angle;
-    float   q3_light;       // Quake III "light"
+    float   q3_light;       // Quake III "light" - and Quake 1's
     float   q3_radius;      // Quake III spotlight radius at its target
     int     style;
+    int     q1_style;       // Quake 1 "style": 1-31 animate, 32+ the game switches
     int     spawnflags;
     bool    has_origin;
     bool    has_color;
     bool    has_cone;
     bool    has_angle;
+    bool    q1_shadowlight; // Quake 1 "_shadowlight 1": KEX draws it as a real-time light
 } entkeys_t;
 
 // a light this file builds: a rerelease dynamic_light, or a Quake III light
+/*
+QUAKE 1's LIGHTS ARE MAP LIGHTS TOO (Matt, 2026-11-21, mg1: "a bunch of map
+lights came over as light editor lights ... they should be those blacked or
+dormant lights I can choose to override in the light editor like the quake 2
+lights"). Two kinds:
+
+  - KEX's real-time shadow lights: "dynamiclight" (no underscore - the Quake 1
+    rerelease's own class, 7 on mg1/start, 19 on mg1/hub) or any light with
+    "_shadowlight 1", keyed _shadowlightradius / _shadowlightintensity /
+    _shadowlightconeangle / _shadowlightstyle - Quake II's dynamic_light keys
+    with an underscore, read the same way. Before this nothing read them.
+  - the lights Quake's light tool baked into lightmaps: light, light_fluoro,
+    light_globe, light_torch_small_walltorch, mg1's light_candle... These used
+    to be copied into the editor as placed lights on any map without a light
+    file (LE_Q1EntityLights, light_q1_entities, now 0), which is what Matt saw.
+    Now they are dormant here, brightness on the editor's own Quake 1 scale
+    (q1_brightness), and "light replace" makes one a light of the file.
+
+None of them emits unless cl_dynamic_lights is on, as for Quake II. A Quake 1
+light the game switches does it through its style (32 and up), so switch_index
+stays -1 and the style carries it, to a replacement too.
+*/
+static bool CL_IsQ1KexLight(const entkeys_t *ent)
+{
+    return !strcmp(ent->classname, "dynamiclight") || ent->q1_shadowlight;
+}
+
 static bool CL_IsDynamicLightEntity(const entkeys_t *ent)
 {
     if (!strcmp(ent->classname, "dynamic_light"))
         return true;
+    if (cl.bsp && cl.bsp->q1)
+        return CL_IsQ1KexLight(ent) ||
+            (!Q_strncasecmp(ent->classname, "light", 5) && (!ent->classname[5] || ent->classname[5] == '_'));
     return cl.bsp && cl.bsp->q3 && !strcmp(ent->classname, "light");
 }
 
@@ -218,13 +257,23 @@ static bool CL_ParseEntityBlock(const char **data, entkeys_t *out)
         if (!strcmp(token, "}"))
             break;
 
+        // Quake 1's KEX keys are Quake II's with an underscore in front
+        if (!strncmp(token, "_shadowlight", 12))
+            token++;
         Q_strlcpy(key, token, sizeof(key));
 
         token = COM_Parse(data);
         if (!*data && !*token)
             return false;
 
-        if (!strcmp(key, "classname"))
+        if (!strcmp(key, "shadowlight"))
+            out->q1_shadowlight = atoi(token) != 0;
+        else if (!strcmp(key, "style"))
+            out->q1_style = atoi(token);
+        else if (!strcmp(key, "color") && cl.bsp && cl.bsp->q1) {
+            if (sscanf(token, "%f %f %f", &out->color[0], &out->color[1], &out->color[2]) == 3)
+                out->has_color = true;
+        } else if (!strcmp(key, "classname"))
             Q_strlcpy(out->classname, token, sizeof(out->classname));
         else if (!strcmp(key, "targetname"))
             Q_strlcpy(out->targetname, token, sizeof(out->targetname));
@@ -362,8 +411,39 @@ void CL_LoadDynamicLights(void)
         if (!CL_IsDynamicLightEntity(&ent) || !ent.has_origin)
             continue;
 
-        // Quake III: always on, never switched; its keys made into these
-        if (strcmp(ent.classname, "dynamic_light")) {
+        float q1_brightness = 0.0f, q1_light = 0.0f, q1_peak = 1.0f;
+
+        if (cl.bsp->q1 && strcmp(ent.classname, "dynamic_light")) {
+            // Quake 1 (CL_IsQ1KexLight): no CS_DYNAMICLIGHTS - a light the
+            // game switches is switched through its style
+            ent.targetname[0] = 0;
+            if (!CL_IsQ1KexLight(&ent)) {
+                // a baked light: tools/q1matdev.py's brightness_rgb, as
+                // LE_Q1EntityLights had it - the colour at its peak, the peak
+                // in the brightness, 0..255 or 0..1 alike; a negative light
+                // (Quake's darkness) is no light here
+                vec3_t c;
+                VectorCopy(ent.color, c);
+                if (c[0] > 1.5f || c[1] > 1.5f || c[2] > 1.5f)
+                    VectorScale(c, 1.0f / 255.0f, c);
+                q1_peak = max(c[0], max(c[1], c[2]));
+                if (q1_peak <= 0.0f) {
+                    VectorSet(c, 1.0f, 1.0f, 1.0f);
+                    q1_peak = 1.0f;
+                }
+                VectorScale(c, 1.0f / q1_peak, ent.color);
+                q1_light = ent.q3_light;
+                q1_brightness = q1_light * q1_light * Q1_BRIGHT_PER_LIGHT2 * q1_peak;
+                ent.radius = 1.0f;          // reach is in the brightness
+                ent.intensity = q1_light > 0.0f ? 1.0f : 0.0f;
+                ent.style = (ent.q1_style > 0 && ent.q1_style < MAX_LIGHTSTYLES) ? ent.q1_style : 0;
+                ent.target[0] = 0;          // a point light, as its old import was
+                ent.has_cone = false;
+            } else if (!ent.style && ent.q1_style > 0 && ent.q1_style < MAX_LIGHTSTYLES) {
+                ent.style = ent.q1_style;
+            }
+        } else if (strcmp(ent.classname, "dynamic_light")) {
+            // Quake III: always on, never switched; its keys made into these
             CL_Q3LightKeys(&ent, named, num_named);
             ent.targetname[0] = 0;
         }
@@ -392,6 +472,11 @@ void CL_LoadDynamicLights(void)
         dl->style = ent.style;
         dl->switch_index = switch_index;
         dl->vol_scale = ent.vol_scale;
+        dl->q1_brightness = q1_brightness;
+        dl->q1_light = q1_light;
+        // the size the old import gave a Quake 1 light, so replacing one is
+        // the light it was
+        dl->emitter_radius = q1_brightness > 0.0f ? Q1_EMITTER_RADIUS : 0.0f;
 
         // the maps are consistent about writing _color in 0..1, but a stray
         // 0..255 value would be blindingly wrong rather than subtly wrong
@@ -501,7 +586,10 @@ void CL_AddDynamicLightsToScene(void)
 
     for (int i = 0; i < cl_num_dynamiclights; i++) {
         const cdynamiclight_t *dl = &cl_dynamiclights[i];
-        float intensity = dl->intensity * scale;
+        // a Quake 1 light is on the light editor's scale (cdynamiclight_t)
+        float intensity = dl->q1_brightness > 0.0f
+            ? dl->q1_brightness / 255.0f * Cvar_VariableValue("light_scale")
+            : dl->intensity * scale;
 
         // a replaced entity is dead for good - the light editor draws a real
         // light in its place, and emitting here too would double it
@@ -529,7 +617,7 @@ void CL_AddDynamicLightsToScene(void)
         } else {
             V_AddSphereLight(dl->origin, intensity,
                              dl->color[0], dl->color[1], dl->color[2],
-                             DLIGHT_EMITTER_RADIUS);
+                             dl->emitter_radius > 0.0f ? dl->emitter_radius : DLIGHT_EMITTER_RADIUS);
         }
 
         // retunes the light just added; the sentinel puts it back on the

@@ -224,6 +224,9 @@ sample_lights(
 		case DYNLIGHT_SPOT:
 			m = projected_spotlight_area(light.positions, light.spot_emission_profile, p, n, V, phong_exp, phong_scale, phong_weight, max_dyn_irradiance);
 			break;
+		case DYNLIGHT_WINDOW:
+			m = window_light_mass(light, p, n);
+			break;
 		}
 
 		float light_lum = luminance(light.color);
@@ -306,7 +309,10 @@ sample_lights(
 
 		LightPolygon light = get_light_polygon(current_idx);
 
-		vec3 light_normal;
+		// DYNLIGHT_WINDOW has no normal: its sample comes back with the glass's
+		// colour where it crosses, its radiance and 1 / pdfw already in, in this
+		// slot instead (sample_window_light) - one vec3 less held in the loop
+		vec3 light_normal = vec3(0);
 
 		switch (uint(light.type)) {
 		case DYNLIGHT_POLYGON:
@@ -327,6 +333,9 @@ sample_lights(
 		case DYNLIGHT_SPOT:
 			position_light = sample_projected_spotlight(p, light.positions, light.spot_emission_profile, rng.yz, light_normal, pdfw);
 			break;
+		case DYNLIGHT_WINDOW:
+			position_light = sample_window_light(p, light, rng.yz, light_normal, pdfw);
+			break;
 		}
 
 		vec3 L = normalize(position_light - p);
@@ -343,10 +352,14 @@ sample_lights(
 			// The same cap the selection mass above was computed with, so the estimate
 			// stays consistent: a capped light is picked as often as its capped size says
 			// and returns that capped size. 1 / pdfw is the 2 * (1 - cos) size here.
-			if (uint(light.type) != DYNLIGHT_POLYGON)
+			if (uint(light.type) != DYNLIGHT_POLYGON && uint(light.type) != DYNLIGHT_WINDOW)
 				inv_pdfw = min(inv_pdfw, max_dyn_irradiance);
 
-			if (light.color.r >= 0)
+			if (uint(light.type) == DYNLIGHT_WINDOW)
+			{
+				light_color = light.color * light_normal * light.light_style_scale;
+			}
+			else if (light.color.r >= 0)
 			{
 				light_color = light.color * (inv_pdfw * spotlight * light.light_style_scale);
 			}

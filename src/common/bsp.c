@@ -1673,6 +1673,32 @@ int BSP_Load(const char *name, bsp_t **bsp_p)
         return Q_ERR_SUCCESS;
     }
 
+    // a Quake 1 map (BSP 29, BSP2, 2PSB): bsp_q1.c transcodes it likewise
+    if (BSP_IsQ1Header(buf, filelen)) {
+        len = strlen(name);
+        bsp = Z_Mallocz(sizeof(*bsp) + len);
+        memcpy(bsp->name, name, len + 1);
+        bsp->refcount = 1;
+        bsp->checksum = Com_BlockChecksum(buf, filelen);
+
+        ret = BSP_LoadQ1(bsp, buf, filelen);
+        if (ret)
+            goto fail1;
+
+        ret = BSP_ValidateTree(bsp);
+        if (ret)
+            goto fail1;
+
+        BSP_BuildPvsMatrix(bsp);
+
+        Hunk_End(&bsp->hunk);
+        List_Append(&bsp_cache, &bsp->entry);
+        FS_FreeFile(buf);
+
+        *bsp_p = bsp;
+        return Q_ERR_SUCCESS;
+    }
+
     if (LittleLong(header->ident) != IDBSPHEADER &&
         LittleLong(header->ident) != QBSPHEADER) {
         ret = Q_ERR_UNKNOWN_FORMAT;
@@ -1791,6 +1817,55 @@ fail1:
 fail2:
     FS_FreeFile(buf);
     return ret;
+}
+
+/*
+==================
+BSP_Q1ForHeadnode
+
+The trace code gets only a headnode. A Quake 1 map's models collide through
+their clip hulls instead of brushes, so it asks here which loaded Quake 1 map,
+and which of its models, a headnode belongs to.
+==================
+*/
+bsp_t *BSP_Q1ForHeadnode(const mnode_t *headnode, int *model)
+{
+    bsp_t *bsp;
+
+    if (!headnode)
+        return NULL;
+
+    LIST_FOR_EACH(bsp_t, bsp, &bsp_cache, entry) {
+        if (!bsp->q1 || !bsp->q1d)
+            continue;
+        if (headnode < bsp->nodes || headnode >= bsp->nodes + bsp->numnodes)
+            continue;
+        int m = bsp->q1d->node_model[headnode - bsp->nodes];
+        if (m < 0)
+            return NULL;
+        *model = m;
+        return bsp;
+    }
+
+    return NULL;
+}
+
+// a Quake 1 wall texture from whichever loaded Quake 1 map has it, newest first
+const byte *BSP_Q1FindMiptex(const char *name, int *width, int *height)
+{
+    bsp_t *bsp;
+
+    for (bsp = LIST_LAST(bsp_t, &bsp_cache, entry);
+         !LIST_TERM(bsp, &bsp_cache, entry);
+         bsp = LIST_PREV(bsp_t, bsp, entry)) {
+        if (!bsp->q1)
+            continue;
+        const byte *pix = BSP_Q1MiptexFrom(bsp, name, width, height);
+        if (pix)
+            return pix;
+    }
+
+    return NULL;
 }
 
 /*

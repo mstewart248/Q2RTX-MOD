@@ -333,8 +333,10 @@ void ClientObituary(edict_t *self, edict_t *inflictor, edict_t *attacker)
         if (attacker == self) {
             const char *q3_message2;
 
-            // Quake III's guns (g_q3weap.c)
+            // Quake III's guns (g_q3weap.c), Quake's (g_q1weap.c)
             message = (char *)Q3W_Obituary(mod, true, &q3_message2, self);
+            if (!message)
+                message = (char *)Q1W_Obituary(mod, true, &q3_message2, self);
             if (!message) switch (mod) {
             case MOD_HELD_GRENADE:
                 message = "tried to put the pin back in";
@@ -457,8 +459,10 @@ void ClientObituary(edict_t *self, edict_t *inflictor, edict_t *attacker)
             if (!message) {
                 const char *q3_message2;
 
-                // Quake III's guns (g_q3weap.c)
+                // Quake III's guns (g_q3weap.c), Quake's (g_q1weap.c)
                 message = (char *)Q3W_Obituary(mod, false, &q3_message2, self);
+                if (!message)
+                    message = (char *)Q1W_Obituary(mod, false, &q3_message2, self);
                 if (message)
                     message2 = (char *)q3_message2;
             }
@@ -470,6 +474,8 @@ void ClientObituary(edict_t *self, edict_t *inflictor, edict_t *attacker)
                     else
                         attacker->client->resp.score++;
                 }
+                // Quake III's "You fragged X / 2nd place with 5" (g_sp.c)
+                SP_FragMessage(attacker, self);
                 return;
             }
         }
@@ -499,6 +505,8 @@ void TossClientWeapon(edict_t *self)
     if (item && (strcmp(item->pickup_name, "Blaster") == 0))
         item = NULL;
     if (Q3W_KeepsOnDeath(item))     // Quake III's gauntlet and machinegun
+        item = NULL;
+    if (Q1W_KeepsOnDeath(item))     // Quake's axe and shotgun
         item = NULL;
 
     if (!((int)(dmflags->value) & DF_QUAD_DROP))
@@ -848,6 +856,8 @@ void InitClientPersistant(gclient_t *client)
     // Quake III map, the spawn weapons the bot match menu chose (g_q3.c)
     if (q3_weapons)
         Q3W_GiveSpawnKit(client);
+    else if (level.q1_weapons)
+        Q1W_GiveSpawnKit(client);   // Quake's axe and shotgun (g_q1weap.c)
     else
         Q3_GiveSpawnKit(client);
 
@@ -1723,6 +1733,18 @@ void ClientBegin(edict_t *ent)
 
     ent->client = game.clients + (ent - g_edicts - 1);
 
+    // a Quake 1 demo: the player watches it (g_q1demo.c)
+    if (Q1Demo_Active()) {
+        Q1Demo_ClientBegin(ent);
+        return;
+    }
+
+    // a Quake 1 level run by its progs: they make the player (g_q1vm_game.c)
+    if (Q1VM_Active()) {
+        Q1VM_ClientBegin(ent);
+        return;
+    }
+
     // The client cleared its inventory copy when it connected, and a loadgame
     // or hub return below takes the waiting body without PutClientInServer, so
     // reset here too. Otherwise G_SendInventory, still holding what it sent
@@ -1943,6 +1965,18 @@ void ClientDisconnect(edict_t *ent)
 
     gi.bprintf(PRINT_HIGH, "%s disconnected\n", ent->client->pers.netname);
 
+    if (Q1Demo_Active()) {
+        Q1Demo_ClientDisconnect(ent);
+        gi.configstring(CS_PLAYERSKINS + (int)(ent - g_edicts - 1), "");
+        return;
+    }
+
+    if (Q1VM_Active()) {
+        Q1VM_ClientDisconnect(ent);
+        gi.configstring(CS_PLAYERSKINS + (int)(ent - g_edicts - 1), "");
+        return;
+    }
+
     // a flag or tech they held goes back in play
     CTF_PlayerLeft(ent);
 
@@ -2021,6 +2055,16 @@ void ClientThink(edict_t *ent, usercmd_t *ucmd)
 
     level.current_entity = ent;
     client = ent->client;
+
+    // a Quake 1 demo: nothing to move (g_q1demo.c)
+    if (Q1Demo_Active())
+        return;
+
+    // a Quake 1 level run by its progs (g_q1vm_game.c)
+    if (Q1VM_Active()) {
+        Q1VM_ClientThink(ent, ucmd);
+        return;
+    }
 
     if (level.intermission_framenum) {
         client->ps.pmove.pm_type = PM_FREEZE;

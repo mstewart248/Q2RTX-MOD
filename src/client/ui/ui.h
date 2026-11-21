@@ -123,14 +123,15 @@ typedef enum {
 	MENU_COND_NEQ,   // ifneq - show when cvar != value
 	MENU_COND_GE,    // ifge  - show when cvar >= value
 	MENU_COND_LE,    // ifle  - show when cvar <= value
-	MENU_COND_EQ_OR  // ifeqor - show when cvar == value OR cvar2 == value2
+	MENU_COND_EQ_OR, // ifeqor - show when cvar == value OR cvar2 == value2
+	MENU_COND_NEQ_OR // ifneqor - show when cvar != value OR cvar2 != value2
 } menuCondOp_t;
 
 typedef struct menuCondition_s {
 	cvar_t *cvar;
 	int value;
 	menuCondOp_t op;
-	cvar_t *cvar2;   // MENU_COND_EQ_OR only
+	cvar_t *cvar2;   // MENU_COND_EQ_OR / NEQ_OR only
 	int value2;
 } menuCondition_t;
 

@@ -482,7 +482,14 @@ static void AL_PlayChannelSync(channel_t *ch, const channel_t *sync)
 
     qalGetError();
     qalSourcei(ch->srcnum, AL_BUFFER, sc->bufnum);
-    if (ch->autosound /*|| sc->loopstart >= 0*/) {
+    /* A QUAKE 1 SOUND WITH A LOOP POINT LOOPS, as it did in Quake (and does in
+       the software mixer, mix.c): a lift's, door's or train's moving sound
+       ("cue " chunk) hums until the stop sound replaces it on the same channel
+       (S_PickChannel stops the source). Played once, the lift in Matt's shot
+       hummed 1.5 s of a ride several seconds long (2026-11-21). Quake II's
+       sounds stay as they were here: one-shots, whatever their files carry. */
+    const bool q1_loop = sc->loopstart >= 0 && !Q_strncasecmp(ch->sfx->name, "id1/", 4);
+    if (ch->autosound || q1_loop) {
         qalSourcei(ch->srcnum, AL_LOOPING, AL_TRUE);
     } else {
         qalSourcei(ch->srcnum, AL_LOOPING, AL_FALSE);

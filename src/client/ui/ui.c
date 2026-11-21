@@ -912,6 +912,15 @@ static void UI_BotLineup(int how)
     // Quake III Arena's maps only while its paks are there (files.c)
     if (Cvar_VariableInteger("bot_mapset") == 1 && Cvar_VariableInteger("fs_quake3") != 1)
         Cvar_Set("bot_mapset", "0");
+
+    // Quake's the same (id1/*/pak0.pak), and its CTF maps only with its ctf
+    // episode (fs_quake1_games lists the ones found)
+    if (Cvar_VariableInteger("bot_mapset") == 2) {
+        if (Cvar_VariableInteger("fs_quake1") < 1)
+            Cvar_Set("bot_mapset", "0");
+        else if (Cvar_VariableInteger("bot_mode") == 2 && !strstr(Cvar_VariableString("fs_quake1_games"), "ctf"))
+            Cvar_Set("bot_mode", "0");
+    }
 }
 
 static void UI_BotLineup_f(void)
@@ -999,10 +1008,12 @@ static void UI_BotInit(void)
     Cvar_Get("_ui_botpack", "0", 0);
 
     // Quake III Arena's maps, when baseq3 has them: 0 Quake II's, 1 Quake
-    // III's (deathmatch and tourney, or CTF)
+    // III's (deathmatch and tourney, or CTF), 2 Quake's (id1, see g_q1.c)
     Cvar_Get("bot_mapset", "0", CVAR_ARCHIVE);
     Cvar_Get("bot_map_q3", "q3dm17", CVAR_ARCHIVE);
     Cvar_Get("bot_map_q3ctf", "q3ctf1", CVAR_ARCHIVE);
+    Cvar_Get("bot_map_q1", "q1/dm4", CVAR_ARCHIVE);
+    Cvar_Get("bot_map_q1ctf", "q1/ctf/ctf1", CVAR_ARCHIVE);
 
     // the game's own, registered here too so the menu has a value to show
     // before any game has run

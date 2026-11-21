@@ -94,6 +94,14 @@ typedef struct
 	byte* blend_weights; // byte4 per vertex
 	
 	char* jointNames;
+	// [num_joints], or NULL: 1 = a joint that JUMPS between frames and is not
+	// blended - a Quake muzzle flash (model_md5.c md5_snap_joint), R_ComputeIQMTransforms
+	byte* jointSnap;
+	// [num_frames * num_joints], or NULL: for each frame, the joint a snap joint
+	// RIDES there (-1: none) and its 3x4 offset from that joint - a muzzle flash
+	// on its barrel through the barrel's blended spin (model_md5.c MD5_SnapRiders)
+	short* jointSnapRider;
+	float* jointSnapOffset;     // [num_frames * num_joints * 12]
 	int* jointParents;
 	float* bindJoints; // [num_joints * 12]
 	float* invBindJoints; // [num_joints * 12]
@@ -133,6 +141,12 @@ typedef struct light_poly_s {
 	// EVERY site that creates a light_poly_t must set this - the struct is not
 	// zero-initialised on any of the paths that build one on the stack.
 	float volumetric_scale;
+	// DYNLIGHT_WINDOW only (a stained glass tile's light, bsp_mesh.c): the
+	// tile's u and v offsets and the glass's plane distance. positions[0..2]
+	// then hold the tile's S and T axes and the glass's room-side normal, not
+	// points - see WindowLight in shader/stained_glass.h. Only read for that
+	// type, so no other site need set it.
+	float window[3];
 	// A Quake III program's glow (q3stages.c vkpt_q3_light_glow): copy_light
 	// takes the light's colour from the program every frame - what the surface
 	// shows at this moment, averaged over the triangle - instead of `color`,
@@ -189,6 +203,7 @@ typedef struct model_s {
     // sprite models
     struct mspriteframe_s *spriteframes;
 	bool sprite_vertical;
+	bool sprite_oriented;	// Quake's SPR_ORIENTED: flat in the plane the entity's angles give (hipnotic's bullet holes)
 
 	iqm_model_t* iqmData;
 
@@ -325,6 +340,29 @@ typedef struct {
 } md5_skin_t;
 
 int MD5_ResolveSkins(const char *mod_name, md5_skin_t *skins);
+
+// The next MOD_LoadMD5_Base scales the whole model by (scale) about its origin
+// and then moves it by (offset) - bind pose, joints and every frame - and
+// drops the .md5anim's bounds; NULL (and scale 1) stops it. Quake 1's box
+// stand-ins (model_q1.c) are drawn 1.5 times as big and stand centred where
+// the box had its corner.
+void MD5_SetLoadOffset(const vec_t *offset);
+void MD5_SetLoadScale(float scale);
+
+// Quake 1's model formats (model_q1.c), each turned into one every renderer
+// loads: .mdl -> .md2 (or its rerelease .md5mesh), .spr -> .sp2, a box's
+// maps/b_*.bsp -> .md3 (or its .md5mesh). MOD_Q1Build's (*data) is Z_Free'd
+// by the caller and loaded under (load_name), an md5 scaled by (md5_scale)
+// and moved by (md5_offset); (*sprite_type) is a sprite's Quake orientation,
+// -1 for anything else.
+bool MOD_Q1IsModel(const char *name);
+int MOD_Q1Build(const char *name, bool md5, void **data, size_t *length,
+                char *load_name, size_t size, vec3_t md5_offset, float *md5_scale, int *sprite_type);
+// the 8-bit pixels images.c turns into an .mdl's skins and a sprite's frames,
+// Z_Free'd by the caller; a box's wall texture, kept by model_q1.c
+byte *MOD_Q1ModelSkin(const char *path, int skin, int frame, int *width, int *height);
+byte *MOD_Q1SpriteFrame(const char *path, int frame, int *width, int *height);
+const byte *MOD_Q1ItemMiptex(const char *name, int *width, int *height);
 
 // GL and software: skin a skeletal model (model->iqmData) on the CPU for one
 // entity. Writes num_vertexes positions and normals, model space, from

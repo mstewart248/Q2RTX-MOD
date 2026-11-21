@@ -417,6 +417,18 @@ void SV_CalcGunOffset(edict_t *ent)
         ent->client->ps.gunoffset[i] += right[i] * gun_x->value;
         ent->client->ps.gunoffset[i] += up[i] * (-gun_z->value);
     }
+
+    // Quake's guns (g_q1weap.c) are held as Quake held them (view.c
+    // V_CalcRefdef): no sway, in and out with the bob, two units up
+    if (ent->client->pers.weapon && (ent->client->pers.weapon->flags & IT_Q1)) {
+        float bob = xyspeed * 0.02f * (0.3f + 0.7f * bobfracsin);
+
+        if (bob > 4)
+            bob = 4;
+        VectorClear(ent->client->ps.gunangles);
+        VectorMA(ent->client->ps.gunoffset, bob * 0.4f, forward, ent->client->ps.gunoffset);
+        ent->client->ps.gunoffset[2] += 2;
+    }
 }
 
 

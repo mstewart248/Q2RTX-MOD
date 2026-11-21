@@ -38,7 +38,11 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #define PRIMARY_RAY_T_MAX 10000
 
-#define MAX_CAMERAS 8
+// security cameras and portals - Quake III's, and Quake 1's teleporters (up to
+// 15 on one map: mg3/dm1, mg1/mgdm2). A power of two, at most 16: the camera
+// number is 4 bits of the camera UV word (primary_rays.rgen) and the slot,
+// camera * 4, 6 bits of the material's light style field.
+#define MAX_CAMERAS 16
 
 #define MAX_FOG_VOLUMES 16  // the "fog" command's boxes, then a Quake III map's fog brushes (fog.c)
 
@@ -476,6 +480,11 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define DYNLIGHT_POLYGON        0
 #define DYNLIGHT_SPHERE         1
 #define DYNLIGHT_SPOT           2
+// The straight-through light behind one tile of stained glass (material.h
+// stained_glass): a lamp or sun seen through the tile, in the colour of the
+// glass where the line to it crosses. Not a shape the light lists' usual tests
+// understand - see WindowLight in stained_glass.h for its record.
+#define DYNLIGHT_WINDOW         3
 
 //
 // Spotlight styles (emission profiles)

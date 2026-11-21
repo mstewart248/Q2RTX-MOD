@@ -94,6 +94,34 @@ typedef struct pbr_material_s {
 	// through stays the same. Separate from `caustic`, which it multiplies.
 	// Needs pt_caustics 1. Shadow rays only.
 	float caustic_ripple;
+	// stained_glass 1 (or "kind STAINEDGLASS" = REGULAR + stained_glass 1 +
+	// is_light 1): the texture is thick coloured glass with a made-up light
+	// behind it (Matt, 2026-11-21, Quake 1's window02_1). The glass glows in
+	// the light that comes through it, the lead stays dark, and the light comes
+	// out into the room in the glass's colours - a sharp image of the window
+	// thrown by the light (a window light, DYNLIGHT_WINDOW) plus a soft glow
+	// in its average colour (an ordinary light poly). emissive_factor sets how
+	// bright it all is. The surface itself is opaque: nothing behind the wall
+	// is ever traced. See stained_glass.h.
+	bool stained_glass;
+	// where the light sits behind the glass, up the texture tile: 1 = level
+	// with the tile's top edge, 0 = its bottom, 0.5 = straight behind the middle
+	float stained_light_height;
+	// how far behind the glass, in tile heights
+	float stained_light_distance;
+	// stained_light_sun 1: a sun instead of a lamp - parallel light, from
+	// where the lamp would be as seen from the middle of the tile
+	bool stained_light_sun;
+	// the light's radius as seen from the middle of the tile, in degrees: the
+	// softness of the window's image on the floor (the sun is 0.27)
+	float stained_light_size;
+	// how much of the light the glass spreads (antique glass): 0 = clear, all
+	// of it goes straight through (sharp image, the lamp seen as a spot), 1 =
+	// all spread (only the soft glow)
+	float stained_scatter;
+	// how wide the bright bloom round the light is, in degrees: the angle at
+	// which the spread light's forward half falls to half
+	float stained_spread;
 	float roughness_override;
 	float metalness_factor;
 	float emissive_factor;
@@ -113,18 +141,21 @@ typedef struct pbr_material_s {
 	imagetype_t image_type;
 	bool synth_emissive;
 	int emissive_threshold;
+	// a .mat section names an instance of this skin for one placed model
+	// (MAT_EntityInstance) - set by MAT_RegisterEntityInstances
+	bool has_entity_instances;
 	// One bit per .mat attribute (enum AttributeIndex in material.c) that this
 	// definition stated ITSELF, as opposed to inheriting it or auto-detecting
 	// it. Two things read it: the sidecar auto-detection in MAT_Find, which
 	// only fills a texture slot the definition left unsaid, and
 	// MAT_InheritScalars, which never overwrites a value the definition spelled
 	// out.
-	uint32_t specified_fields;
+	uint64_t specified_fields;
 	// The same bits, for the attributes changed with 'mat <attribute> <value>'
 	// since the material was loaded: what 'mat save' with no file name writes
 	// back into the entry the material came from (material.c save_to_source_files).
 	// Only ever set on a live material, never on a definition.
-	uint32_t console_fields;
+	uint64_t console_fields;
 	// The material whose layout-independent tuning this one inherits, recorded
 	// by MAT_InheritScalars - for an md5 skin, the classic .md2 skin it
 	// replaces. Kept because 'mat reload' has to re-apply that inheritance and
@@ -198,6 +229,14 @@ void MAT_InstanceName(const char* base_name, uint32_t instance_hash, char* out, 
 // sorted lookup that fails fast and allocates nothing.
 pbr_material_t* MAT_FindInstance(const pbr_material_t* base, uint32_t instance_hash);
 
+// ENTITY INSTANCES: one placed model's own material, <skin>#<hash of the map's
+// name and where the model stands> (MAT_EntityInstanceHash). They are created
+// between frames, at the end of registration (MAT_RegisterEntityInstances);
+// MAT_EntityInstance only looks one up, and is NULL when (base) has none there.
+uint32_t MAT_EntityInstanceHash(const float origin[3]);
+void MAT_RegisterEntityInstances(void);
+const pbr_material_t* MAT_EntityInstance(const pbr_material_t* base, const float origin[3]);
+
 // The Quake III shader a material draws (an instance's is its base's), or NULL
 // when no script defines one.
 const struct q3shader_s* MAT_Q3Shader(const pbr_material_t* mat);
@@ -209,6 +248,11 @@ bool MAT_KindSpecified(const pbr_material_t* mat);
 // True if (mat)'s roughness_override is its roughness all over, not a floor
 // under its maps: no roughness map, normal map or metallic map to carry one.
 bool MAT_RoughnessIsWhole(const pbr_material_t* mat);
+
+// A Quake III Arena material: its .mat entry is in baseq3/ (or, with none, it is
+// a Quake III shader or its texture is Quake III's). The mat author writes its
+// new maps into baseq3/materialDev for these.
+bool MAT_IsQuake3(const pbr_material_t* mat);
 
 // returns a material by index, if it's valid - NULL otherwise
 pbr_material_t* MAT_ForIndex(int index);

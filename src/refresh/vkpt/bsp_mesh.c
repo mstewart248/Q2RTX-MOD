@@ -24,6 +24,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "q3deform.h"
 #include "cameras.h"
 #include "conversion.h"
+#include "color.h"
 
 #include <assert.h>
 #include <float.h>
@@ -37,6 +38,13 @@ extern cvar_t *cvar_pt_enable_surface_lights_warp;
 extern cvar_t* cvar_pt_bsp_radiance_scale;
 extern cvar_t *cvar_pt_light_style_reach;
 extern cvar_t *cvar_pt_bsp_sky_lights;
+extern cvar_t *cvar_pt_q1_sky_lights;
+
+// A Quake 1 map's sky face is a sky light (pt_q1_sky_lights, main.c)
+static inline bool q1_sky_light(const bsp_t *bsp, int surf_flags)
+{
+	return bsp->q1 && (surf_flags & SURF_SKY) && cvar_pt_q1_sky_lights && cvar_pt_q1_sky_lights->integer;
+}
 extern cvar_t *cvar_pt_fog_lava;
 
 static void
@@ -177,6 +185,13 @@ face_has_back(const bsp_t* bsp, const pbr_material_t* material, uint32_t materia
 		&& !MAT_IsKind(material_id, MATERIAL_KIND_GLASS) && !MAT_IsKind(material_id, MATERIAL_KIND_SKY);
 }
 
+/* THE MOST EDGES ONE FACE CAN HAVE HERE. Quake II's compiler stops at 32, and
+   the arrays below were that size; Quake 1's BSP2 maps from ericw-tools go to
+   64 - mg1/start has a 33-edge face, mge3m2 a 41 - and loading q1/mg1/start
+   overran the stack (a /GS fast-fail, 2026-11-20). A face with more than this
+   is left out of the mesh and the light lists. */
+#define MAX_FACE_VERTS  64
+
 static uint32_t
 create_poly(
 	const bsp_t* bsp,
@@ -190,14 +205,14 @@ create_poly(
 	uint32_t max_prim,
 	VboPrimitive* primitives_out)
 {
-	static const int max_vertices = 32;
-	float positions [3 * /*max_vertices*/ 32];
-	float tex_coords[2 * /*max_vertices*/ 32];
-	mbasis_t bases  [    /*max_vertices*/ 32];
+	float positions [3 * MAX_FACE_VERTS];
+	float tex_coords[2 * MAX_FACE_VERTS];
+	mbasis_t bases  [    MAX_FACE_VERTS];
 	mtexinfo_t *texinfo = surf->texinfo;
-	assert(surf->numsurfedges < max_vertices);
-	(void)max_vertices;
-	
+
+	if (surf->numsurfedges > MAX_FACE_VERTS)
+		return 0;
+
 	float sc[2] = { 1.f, 1.f };
 	if (texinfo->material && texinfo->material->original_width && texinfo->material->original_height) {
 		sc[0] = 1.0f / (float)texinfo->material->original_width;
@@ -1288,6 +1303,17 @@ collect_surfaces(uint32_t *prim_ctr, bsp_mesh_t *wm, bsp_t *bsp, int model_idx, 
 		if (surf_flags & SURF_FLOWING)
 			material_id |= MATERIAL_FLAG_FLOWING;
 
+		/* A Quake 1 teleporter's gate: a window onto where it sends you
+		   (cameras.c, vkpt_cameras_load_q1), solid, with none of its texture's
+		   water, warp or glow. Decided before the filter, so it goes in with the
+		   opaque world rather than the water. */
+		const int q1_gate = bsp->q1 && model_idx < 0 ? vkpt_cameras_q1_face(wm, surf) : -1;
+		if (q1_gate >= 0) {
+			material_id &= ~(MATERIAL_FLAG_LIGHT | MATERIAL_FLAG_WARP | MATERIAL_FLAG_FLOWING | MATERIAL_LIGHT_STYLE_MASK);
+			material_id = MAT_SetKind(material_id, MATERIAL_KIND_CAMERA);
+			surf_flags &= ~(SURF_WARP | SURF_FLOWING | SURF_TRANS_MASK | SURF_NODRAW);
+		}
+
 		if (!filter(material_id, surf_flags))
 			continue;
 
@@ -1297,7 +1323,12 @@ collect_surfaces(uint32_t *prim_ctr, bsp_mesh_t *wm, bsp_t *bsp, int model_idx, 
 			material_id |= (light_style << MATERIAL_LIGHT_STYLE_SHIFT) & MATERIAL_LIGHT_STYLE_MASK;
 		}
 
-		if (MAT_IsKind(material_id, MATERIAL_KIND_CAMERA) && bsp->q3)
+		if (q1_gate >= 0)
+		{
+			// its slot fixed, as a Quake III portal's below
+			material_id |= ((q1_gate * 4) << MATERIAL_LIGHT_STYLE_SHIFT) & MATERIAL_LIGHT_STYLE_MASK;
+		}
+		else if (MAT_IsKind(material_id, MATERIAL_KIND_CAMERA) && bsp->q3)
 		{
 			/* A Quake III portal shader: the view through the misc_portal_surface
 			   next to it (cameras.c), its slot fixed - animate_materials.comp leaves
@@ -1415,7 +1446,8 @@ collect_surfaces(uint32_t *prim_ctr, bsp_mesh_t *wm, bsp_t *bsp, int model_idx, 
 				if (cluster >= 0 && (MAT_IsKind(material_id, MATERIAL_KIND_SKY) || MAT_IsKind(material_id, MATERIAL_KIND_LAVA)))
 				{
 					bool is_bsp_sky_light = (surf_flags & (SURF_LIGHT | SURF_SKY)) == (SURF_LIGHT | SURF_SKY);
-					if (is_sky_or_lava_cluster(wm, surf, cluster, material_id) || (cvar_pt_bsp_sky_lights->integer && is_bsp_sky_light))
+					if (is_sky_or_lava_cluster(wm, surf, cluster, material_id) || (cvar_pt_bsp_sky_lights->integer && is_bsp_sky_light)
+						|| q1_sky_light(bsp, surf_flags))
 					{
 						surface_prims[k].material_id |= MATERIAL_FLAG_LIGHT;
 					}
@@ -1471,7 +1503,9 @@ typedef struct {
 	float x, y;
 } point2_t;
 
-#define MAX_POLY_VERTS 32
+// a face's (MAX_FACE_VERTS) clipped by a texture tile's square, which can add
+// as many corners again
+#define MAX_POLY_VERTS (2 * MAX_FACE_VERTS)
 typedef struct {
 	point2_t v[MAX_POLY_VERTS];
 	int len;
@@ -1647,8 +1681,11 @@ collect_one_light_poly_entire_texture(bsp_t *bsp, mface_t *surf, mtexinfo_t *tex
 									  const vec3_t light_color, float emissive_factor, int light_style, bool q3_glow,
 									  int *num_lights, int *allocated_lights, light_poly_t **lights)
 {
-	float positions[3 * /*max_vertices*/ 32];
-	float tex_coords[2 * /*max_vertices*/ 32];
+	float positions[3 * MAX_FACE_VERTS];
+	float tex_coords[2 * MAX_FACE_VERTS];
+
+	if (surf->numsurfedges > MAX_FACE_VERTS)
+		return;
 
 	for (int i = 0; i < surf->numsurfedges; i++)
 	{
@@ -1723,6 +1760,9 @@ collect_one_light_poly(bsp_t *bsp, mface_t *surf, mtexinfo_t *texinfo, pbr_mater
 					   const vec3_t light_color, float emissive_factor, int light_style, bool q3_glow,
 					   int* num_lights, int* allocated_lights, light_poly_t** lights)
 {
+	if (surf->numsurfedges > MAX_FACE_VERTS)
+		return;
+
 	// Scale the texture axes according to the original resolution of the game's .wal textures
 	vec4_t tex_axis0, tex_axis1;
 	if (surf->uv_mapped) {
@@ -1970,11 +2010,260 @@ add_back_faces(bsp_t *bsp, int model_idx, int first, int *num_lights, int *alloc
 	}
 }
 
+/*
+=================
+STAINED GLASS (material.h stained_glass, shader/stained_glass.h)
+
+A stained glass face makes no light from its emissive texture. It makes two:
+  * its soft FILL, the share the glass spreads (stained_scatter): ordinary
+    light polys over the whole face, in the glass's average colour - what the
+    texture lets through on average, the base image times base_factor, less
+    the two faces' reflection. copy_light scales it by stained_scatter, so the
+    console can change that live.
+  * a WINDOW LIGHT (DYNLIGHT_WINDOW), the share that comes straight through:
+    one for each window, which is the faces on the same tile of the same
+    plane with the same material - a window the BSP compiler cut into
+    several faces is still one light, with one lamp behind it. World faces
+    only: a brush entity's lights are moved with it as triangles
+    (instance_model_lights), which a window light is not.
+=================
+*/
+typedef struct {
+	const pbr_material_t *material;
+	vec3_t n;           // the glass's normal, room side
+	float d;            // dot(x, n) on the glass
+	vec3_t S, T;        // the texture axes in the glass's plane, 1 = one tile
+	float off[2];       // ... and their offsets, the tile's own index taken out
+	float rect[4];      // the glass's extent in the tile: u0, v0, u1, v1
+	int style;
+	float emissive;     // the face's emissive scale (compute_emissive)
+	float area;         // to place the cluster point on the biggest face
+	vec3_t centre;      // the biggest face's middle
+} stained_window_t;
+
+// The glass's average colour: what the texture lets through, linear
+static void
+stained_average_transmission(const pbr_material_t *material, vec3_t out)
+{
+	VectorSet(out, 0.5f, 0.5f, 0.5f);
+	const image_t *image = material->image_base;
+	if (!image || !image->pix_data || image->pixel_format != PF_R8G8B8A8_UNORM)
+		return;
+
+	const int count = image->upload_width * image->upload_height;
+	if (count <= 0)
+		return;
+
+	const float f = material->base_factor;
+	double sum[3] = { 0, 0, 0 };
+	const byte *p = image->pix_data;
+	for (int i = 0; i < count; i++, p += 4)
+	{
+		for (int c = 0; c < 3; c++)
+		{
+			float x = image->is_srgb ? decode_srgb(p[c]) : (float)p[c] * (1.f / 255.f);
+			sum[c] += max(0.f, min(1.f, x * f));
+		}
+	}
+	// the two faces' reflection at normal incidence (stained_face_transmit)
+	const float faces = 0.96f * 0.96f;
+	for (int c = 0; c < 3; c++)
+		out[c] = (float)(sum[c] / (double)count) * faces;
+}
+
+// two of a window's extents, 12 bits each over -1..2 of the tile, rounded outward
+static float
+stained_pack_extent(float lo, float hi)
+{
+	int a = (int)floorf((lo + 1.f) * (4095.f / 3.f));
+	int b = (int)ceilf((hi + 1.f) * (4095.f / 3.f));
+	a = max(0, min(4095, a));
+	b = max(0, min(4095, b));
+	return (float)(a | (b << 12));
+}
+
+/* One stained glass face: its fill now, and its share of a window, which is
+   made into a light when all the faces are in (stained_emit_windows). */
+static void
+collect_stained_face(bsp_t *bsp, mface_t *surf, mtexinfo_t *texinfo, pbr_material_t *material, int model_idx,
+                     int light_style, float emissive, stained_window_t **windows, int *num_windows, int *allocated_windows,
+                     int *num_lights, int *allocated_lights, light_poly_t **lights)
+{
+	const bool both_faces = (material->flags & MATERIAL_FLAG_DOUBLE_SIDED) != 0;
+	const int first_light = *num_lights;
+
+	vec3_t fill;
+	stained_average_transmission(material, fill);
+	collect_one_light_poly_entire_texture(bsp, surf, texinfo, material, model_idx, fill, emissive, light_style,
+	                                      false, num_lights, allocated_lights, lights);
+	if (both_faces)
+		add_back_faces(bsp, model_idx, first_light, num_lights, allocated_lights, lights);
+
+	if (model_idx >= 0 || !surf->plane || surf->numsurfedges < 3 || surf->numsurfedges > MAX_FACE_VERTS)
+		return;
+
+	// the face's front, where the room is
+	stained_window_t w;
+	memset(&w, 0, sizeof(w));
+	const float side = (surf->drawflags & DSURF_PLANEBACK) ? -1.f : 1.f;
+	VectorScale(surf->plane->normal, side, w.n);
+	w.d = surf->plane->dist * side;
+
+	// the face's texture axes and offsets, as create_poly maps it
+	vec3_t S, T;
+	float off[2];
+	if (surf->uv_mapped)
+	{
+		VectorCopy(surf->uv_axis[0], S);
+		VectorCopy(surf->uv_axis[1], T);
+		off[0] = surf->uv_axis[0][3];
+		off[1] = surf->uv_axis[1][3];
+	}
+	else
+	{
+		float sc[2] = { 1.f / (float)max(1, material->original_width), 1.f / (float)max(1, material->original_height) };
+		if (texinfo->c.flags & SURF_N64_UV)
+		{
+			sc[0] *= 0.5f;
+			sc[1] *= 0.5f;
+		}
+		VectorScale(texinfo->axis[0], sc[0], S);
+		VectorScale(texinfo->axis[1], sc[1], T);
+		off[0] = texinfo->offset[0] * sc[0];
+		off[1] = texinfo->offset[1] * sc[1];
+	}
+
+	// into the plane: on it, dot(x, S) = dot(x, S - (S.n) n) + (S.n) d
+	const float sn = DotProduct(S, w.n), tn = DotProduct(T, w.n);
+	VectorMA(S, -sn, w.n, w.S);
+	VectorMA(T, -tn, w.n, w.T);
+	off[0] += sn * w.d;
+	off[1] += tn * w.d;
+
+	vec3_t cross;
+	CrossProduct(w.S, w.T, cross);
+	if (VectorLength(cross) < 1e-12f)
+		return;
+
+	// the face's extent in texture repeats, and its middle
+	float lo[2] = { FLT_MAX, FLT_MAX }, hi[2] = { -FLT_MAX, -FLT_MAX };
+	vec3_t mid = { 0, 0, 0 };
+	for (int i = 0; i < surf->numsurfedges; i++)
+	{
+		const msurfedge_t *se = surf->firstsurfedge + i;
+		const float *p = se->edge->v[se->vert]->point;
+		const float u = DotProduct(p, w.S) + off[0];
+		const float v = DotProduct(p, w.T) + off[1];
+		lo[0] = min(lo[0], u); hi[0] = max(hi[0], u);
+		lo[1] = min(lo[1], v); hi[1] = max(hi[1], v);
+		VectorAdd(mid, p, mid);
+	}
+	VectorScale(mid, 1.f / (float)surf->numsurfedges, mid);
+	if (!(hi[0] - lo[0] > 1e-4f) || !(hi[1] - lo[1] > 1e-4f))
+		return;
+
+	// the tile its middle is on
+	const float tile[2] = { floorf(0.5f * (lo[0] + hi[0])), floorf(0.5f * (lo[1] + hi[1])) };
+	w.off[0] = off[0] - tile[0];
+	w.off[1] = off[1] - tile[1];
+	w.rect[0] = lo[0] - tile[0];
+	w.rect[1] = lo[1] - tile[1];
+	w.rect[2] = hi[0] - tile[0];
+	w.rect[3] = hi[1] - tile[1];
+	w.material = material;
+	w.style = light_style;
+	w.emissive = emissive;
+	w.area = (hi[0] - lo[0]) * (hi[1] - lo[1]);
+	VectorCopy(mid, w.centre);
+
+	// a window already begun: the same glass, plane and tile
+	for (int k = 0; k < *num_windows; k++)
+	{
+		stained_window_t *o = *windows + k;
+		if (o->material != w.material || DotProduct(o->n, w.n) < 0.9999f || fabsf(o->d - w.d) > 0.25f)
+			continue;
+		vec3_t ds, dt;
+		VectorSubtract(o->S, w.S, ds);
+		VectorSubtract(o->T, w.T, dt);
+		if (DotProduct(ds, ds) > 1e-10f || DotProduct(dt, dt) > 1e-10f)
+			continue;
+		if (fabsf(o->off[0] - w.off[0]) > 1e-3f || fabsf(o->off[1] - w.off[1]) > 1e-3f)
+			continue;
+
+		o->rect[0] = min(o->rect[0], w.rect[0]);
+		o->rect[1] = min(o->rect[1], w.rect[1]);
+		o->rect[2] = max(o->rect[2], w.rect[2]);
+		o->rect[3] = max(o->rect[3], w.rect[3]);
+		if (w.area > o->area)
+		{
+			o->area = w.area;
+			VectorCopy(w.centre, o->centre);
+		}
+		return;
+	}
+
+	if (*num_windows == *allocated_windows)
+	{
+		*allocated_windows = max(*allocated_windows * 2, 16);
+		*windows = Z_Realloc(*windows, *allocated_windows * sizeof(stained_window_t));
+	}
+	(*windows)[(*num_windows)++] = w;
+}
+
+// the windows collect_stained_face gathered, as DYNLIGHT_WINDOW lights
+static void
+stained_emit_windows(bsp_t *bsp, const stained_window_t *windows, int num_windows,
+                     int *num_lights, int *allocated_lights, light_poly_t **lights)
+{
+	for (int k = 0; k < num_windows; k++)
+	{
+		const stained_window_t *w = windows + k;
+
+		light_poly_t light;
+		memset(&light, 0, sizeof(light));
+		VectorCopy(w->S, light.positions + 0);
+		VectorCopy(w->T, light.positions + 3);
+		light.positions[6] = stained_pack_extent(w->rect[0], w->rect[2]);
+		light.positions[7] = stained_pack_extent(w->rect[1], w->rect[3]);
+		light.positions[8] = 0.f;
+		light.window[0] = w->off[0];
+		light.window[1] = w->off[1];
+		light.window[2] = w->d;
+
+		vec3_t cross;
+		CrossProduct(w->S, w->T, cross);
+		light.spot_emission_profile = DotProduct(cross, w->n) < 0.f ? 1 : 0;
+
+		// the irradiance on the glass at the middle of the tile, before
+		// emissive_factor x light_factor (copy_light): pi x the face's scale,
+		// so that fully spread glass glows like an emissive texture would
+		VectorSet(light.color, (float)M_PI * w->emissive, (float)M_PI * w->emissive, (float)M_PI * w->emissive);
+		light.emissive_factor = w->emissive;
+		light.material = (pbr_material_t *)w->material;
+		light.style = w->style;
+		light.type = DYNLIGHT_WINDOW;
+		light.volumetric_scale = LIGHT_VOLUMETRIC_SCALE_UNSET;
+		set_light_q3_glow(&light, false, NULL, NULL, NULL);
+
+		// the room just in front of the biggest of its faces
+		VectorMA(w->centre, 2.f, w->n, light.off_center);
+		light.cluster = BSP_PointLeaf(bsp->nodes, light.off_center)->cluster;
+		if (light.cluster < 0)
+			continue;
+
+		*append_light_poly(num_lights, allocated_lights, lights) = light;
+	}
+}
+
 static void
 collect_light_polys(bsp_mesh_t *wm, bsp_t *bsp, int model_idx, int* num_lights, int* allocated_lights, light_poly_t** lights)
 {
 	mface_t *surfaces = model_idx < 0 ? bsp->faces : bsp->models[model_idx].firstface;
 	int num_faces = model_idx < 0 ? bsp->numfaces : bsp->models[model_idx].numfaces;
+
+	// stained glass's windows, made into lights at the end (collect_stained_face)
+	stained_window_t *windows = NULL;
+	int num_windows = 0, allocated_windows = 0;
 
 	for (int i = 0; i < num_faces; i++)
 	{
@@ -1986,6 +2275,11 @@ collect_light_polys(bsp_mesh_t *wm, bsp_t *bsp, int model_idx, int* num_lights, 
 		mtexinfo_t *texinfo = surf->texinfo;
 
 		if(!texinfo->material)
+			continue;
+
+		// a Quake 1 teleporter's gate is a window, without its texture's glow
+		// (collect_surfaces)
+		if (bsp->q1 && model_idx < 0 && vkpt_cameras_q1_face(wm, surf) >= 0)
 			continue;
 
 		/* Everything below asks about the material on this face, and all of it
@@ -2012,6 +2306,19 @@ collect_light_polys(bsp_mesh_t *wm, bsp_t *bsp, int model_idx, int* num_lights, 
 		// not drawn, so no light either (collect_surfaces)
 		if (MAT_IsKind(material->flags, MATERIAL_KIND_INVISIBLE))
 			continue;
+
+		// stained glass: a fill and a window light, not its emissive texture's
+		if (material->stained_glass && MAT_IsKind(material->flags, MATERIAL_KIND_REGULAR))
+		{
+			const float emissive = compute_emissive(texinfo, material);
+			if (emissive != 0.f)
+			{
+				const int style = material->light_styles ? get_surf_light_style(surf) : 0;
+				collect_stained_face(bsp, surf, texinfo, material, model_idx, style, emissive,
+				                     &windows, &num_windows, &allocated_windows, num_lights, allocated_lights, lights);
+			}
+			continue;
+		}
 
 		// Check if any animation frame is a light material
 		bool any_light_frame = false;
@@ -2088,6 +2395,14 @@ collect_light_polys(bsp_mesh_t *wm, bsp_t *bsp, int model_idx, int* num_lights, 
 		if (both_faces)
 			add_back_faces(bsp, model_idx, first_light, num_lights, allocated_lights, lights);
 	}
+
+	if (num_windows > 0)
+	{
+		const int before = *num_lights;
+		stained_emit_windows(bsp, windows, num_windows, num_lights, allocated_lights, lights);
+		Com_DPrintf("Stained glass: %d window lights\n", *num_lights - before);
+	}
+	Z_Free(windows);
 }
 
 static void
@@ -2121,7 +2436,10 @@ collect_sky_and_lava_light_polys(bsp_mesh_t *wm, bsp_t* bsp)
 		if (is_lava && is_invisible_lava(flags, material))
 			continue;
 
-		float positions[3 * /*max_vertices*/ 32];
+		float positions[3 * MAX_FACE_VERTS];
+
+		if (surf->numsurfedges > MAX_FACE_VERTS)
+			continue;
 
 		for (int i = 0; i < surf->numsurfedges; i++)
 		{
@@ -2171,7 +2489,8 @@ collect_sky_and_lava_light_polys(bsp_mesh_t *wm, bsp_t* bsp)
 			light.cluster = BSP_PointLeaf(bsp->nodes, light.off_center)->cluster;
 			
 			if (is_sky_or_lava_cluster(wm, surf, light.cluster, surf->texinfo->material->flags) ||
-				(cvar_pt_bsp_sky_lights->integer && is_sky && is_light && (cvar_pt_bsp_sky_lights->integer > 1 || !is_nodraw)))
+				(cvar_pt_bsp_sky_lights->integer && is_sky && is_light && (cvar_pt_bsp_sky_lights->integer > 1 || !is_nodraw)) ||
+				q1_sky_light(bsp, flags))
 			{
 				light_poly_t* list_light = append_light_poly(&wm->num_light_polys, &wm->allocated_light_polys, &wm->light_polys);
 				memcpy(list_light, &light, sizeof(light_poly_t));
@@ -2466,6 +2785,25 @@ light_affects_cluster(light_poly_t* light, const aabb_t* aabb)
 	if (aabb->mins[0] > aabb->maxs[0])
 		return false;
 
+	// a stained glass window light (stained_emit_windows): positions are its
+	// texture axes, and the glass's plane is n . x = window[2]
+	if (light->type == DYNLIGHT_WINDOW)
+	{
+		vec3_t n;
+		CrossProduct(light->positions + 0, light->positions + 3, n);
+		VectorNormalize(n);
+		if (light->spot_emission_profile & 1)
+			VectorInverse(n);
+		for (int corner_idx = 0; corner_idx < 8; corner_idx++)
+		{
+			vec3_t corner;
+			get_aabb_corner(aabb, corner_idx, corner);
+			if (DotProduct(n, corner) - light->window[2] > 0.f)
+				return true;
+		}
+		return false;
+	}
+
 	const float* v0 = light->positions + 0;
 	const float* v1 = light->positions + 3;
 	const float* v2 = light->positions + 6;
@@ -2628,8 +2966,8 @@ collect_fog_lava_lights(bsp_mesh_t *wm, bsp_t *bsp)
 		if (material->flags & MATERIAL_FLAG_LIGHT)
 			continue;
 
-		float positions[3 * /*max_vertices*/ 32];
-		int num_vertices = min(surf->numsurfedges, 32);
+		float positions[3 * MAX_FACE_VERTS];
+		int num_vertices = min(surf->numsurfedges, MAX_FACE_VERTS);
 
 		for (int k = 0; k < num_vertices; k++)
 		{
@@ -2800,7 +3138,9 @@ bsp_mesh_create_from_bsp(bsp_mesh_t *wm, bsp_t *bsp, const char* map_name)
 	load_sky_and_lava_clusters(wm, full_game_map_name);
 	vkpt_cameras_load(wm, full_game_map_name);
 	vkpt_cameras_load_q3(wm, bsp);	// a Quake III map's portals
+	vkpt_cameras_load_q1(wm, bsp);	// a Quake 1 map's teleporters, seen through
 	wm->q3 = bsp->q3;
+	wm->q1 = bsp->q1;
 
 	wm->models = Z_Malloc(bsp->nummodels * sizeof(bsp_model_t));
 	memset(wm->models, 0, bsp->nummodels * sizeof(bsp_model_t));
@@ -3061,6 +3401,9 @@ static void animate_light_polys(int num_light_polys, light_poly_t *light_polys)
 	{
 		pbr_material_t *material = light_polys[i].material;
 		if(!material || (material->num_frames <= 1))
+			continue;
+		// stained glass's colour is not its emissive image's (collect_stained_face)
+		if (light_polys[i].type == DYNLIGHT_WINDOW || material->stained_glass)
 			continue;
 
 		pbr_material_t *new_material = r_materials + material->next_frame;

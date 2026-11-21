@@ -40,6 +40,7 @@ void OGG_InitTrackList(void);
 void OGG_Init(void);
 void OGG_PlayTrack(int track);
 void OGG_PlayMusicFiles(const char *intro, const char *loop);   // Quake III map music
+void OGG_PlayQuake1Track(const char *episode, int track);       // Quake 1 map music
 void OGG_RecoverState(void);
 void OGG_RestartTrackList(void);
 void OGG_SaveState(void);

@@ -36,7 +36,7 @@ enum {
 #define TEXNUM_WHITE (~0)
 #define MAX_STRETCH_PICS (1<<14)
 
-/* Per-quad flags in the top two bits of StretchPic_t.tex_handle; image handles
+/* Per-quad flags in the top five bits (27-31) of StretchPic_t.tex_handle; image handles
    stay far below them (NUM_GLOBAL_TEXTUES). TEXNUM_WHITE, ~0, is exempt and
    still means "no texture". stretch_pic.vert splits them off - keep in sync. */
 #define STRETCH_PIC_FLAG_VIDEO (1u << 30)
@@ -45,6 +45,9 @@ enum {
 // 'mat author's map view (vkpt_draw_stretch_subpic_flags): nearest texel; red as grey
 #define STRETCH_PIC_FLAG_NEAREST (1u << 28)
 #define STRETCH_PIC_FLAG_RED_GREY (1u << 29)
+// ... and the map as a layer over the base texture (vkpt_draw_stretch_subpic_layer):
+// then the quad's colour holds the base's handle and the layer's opacity, not a tint
+#define STRETCH_PIC_FLAG_LAYER (1u << 27)
 
 static drawStatic_t draw = {
 	.scale = 1.0f,
@@ -1446,6 +1449,47 @@ vkpt_draw_stretch_subpic_flags(float x, float y, float w, float h,
 	{
 		if (opaque)
 			stretch_pic_queue[before].tex_handle |= STRETCH_PIC_FLAG_OPAQUE;
+		if (nearest)
+			stretch_pic_queue[before].tex_handle |= STRETCH_PIC_FLAG_NEAREST;
+		if (red_grey)
+			stretch_pic_queue[before].tex_handle |= STRETCH_PIC_FLAG_RED_GREY;
+	}
+}
+
+/* 'mat author's map view with the base texture under the map: one opaque quad,
+   the map (pic) over the base at (alpha), both over the same (s1,t1)-(s2,t2).
+
+   The two used to be drawn as two quads, the map blended over the base by the
+   draw colour's alpha. That mixes LIGHT - and with vid_hdr after the UI is
+   scaled to ui_hdr_nits - so a Quake 1 base, most of it below 10% linear,
+   added about 2 nits to a grey map's 120: "a problem seeing the base texture
+   under the map preview" (Matt, 11-21, textures/q1/m5_5 under an 82% metal map).
+   The vertex shader also raises the colour's alpha to the 2.4th power, so the
+   panel's 60% drew the map at 29%. stretch_pic.frag now mixes the two itself,
+   in sRGB-encoded values - the way an image editor's layer opacity reads - so
+   (alpha) is exactly the panel's number and a dark base shows through.
+   The image's alpha is ignored for both, as the map view's 'opaque' does.
+
+   (glow), DRAW_GLOW_* (vkpt.h): the emissive map's view instead - the base as
+   bright as (pic) makes it glow, a purple veil (alpha) strong over what does
+   not glow at all (stretch_pic.frag). */
+void
+vkpt_draw_stretch_subpic_layer(float x, float y, float w, float h,
+	float s1, float t1, float s2, float t2, qhandle_t pic, qhandle_t base, float alpha, bool nearest, bool red_grey,
+	int glow)
+{
+	int before = num_stretch_pics;
+	if (pic == (qhandle_t)TEXNUM_WHITE || base == (qhandle_t)TEXNUM_WHITE || (uint32_t)base > 0xffffu)
+		return;
+	// the colour: the base's handle in the low 16 bits, the opacity in the next 8, the glow
+	// view in the next 2 (stretch_pic.vert)
+	const float opacity = alpha < 0.f ? 0.f : alpha > 1.f ? 1.f : alpha;
+	const uint32_t packed = ((uint32_t)base & 0xffffu) | ((uint32_t)(opacity * 255.f + 0.5f) << 16)
+		| (((uint32_t)glow & 3u) << 24);
+	enqueue_stretch_pic(x, y, w, h, s1, t1, s2, t2, packed, pic);
+	if (num_stretch_pics > before)
+	{
+		stretch_pic_queue[before].tex_handle |= STRETCH_PIC_FLAG_LAYER | STRETCH_PIC_FLAG_OPAQUE;
 		if (nearest)
 			stretch_pic_queue[before].tex_handle |= STRETCH_PIC_FLAG_NEAREST;
 		if (red_grey)

@@ -24,8 +24,12 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "common/error.h"
 
 // the rerelease's dynamic_light entities are submitted as dlights and the
-// busiest map (mine1/mine2) has 69 of them, on top of the transient ones
-#define MAX_DLIGHTS     256
+// busiest map (mine1/mine2) has 69 of them, on top of the transient ones. The
+// light editor's are added LAST (CL_AddEntities) and fill up to 256 on a
+// Quake 1 map lit from its own light entities (lightedit.c LE_Q1EntityLights),
+// so the budget is twice that: a rocket's light must not push a map light out
+// for the frames it flies, which would blink it.
+#define MAX_DLIGHTS     512
 
 #define MAX_ENTITIES    8192    // == MAX_PACKET_ENTITIES * 2
 #define MAX_PARTICLES   1000000
@@ -456,9 +460,13 @@ typedef struct ref_feedback_s {
 
 	/* The geometry the crosshair is on, for the material system's per-surface
 	   instances. view_prim_instance_hash names the connected group of BSP faces
-	   under the crosshair and is 0 when there is none - the crosshair is on a
-	   model, a brush entity or nothing at all. See `mat create_instance`. */
+	   under the crosshair, or - view_on_model - the placed model there by where
+	   it stands (MAT_EntityInstanceHash, view_model_origin); 0 when there is
+	   neither: a brush entity, the gun in hand or nothing at all. See
+	   `mat create_instance`. */
 	uint32_t    view_prim_instance_hash;
+	bool        view_on_model;
+	vec3_t      view_model_origin;
 
 	vec3_t      hdr_color;
 	float       adapted_luminance;
@@ -826,6 +834,9 @@ typedef struct {
     // are a rocket's. R_FLOW_BURN: a wisp of smoke and no flame - a gib the
     // railgun blew off
     bool            smoke_only;
+    // R_FLOW_TRAIL of fire with smoke_only: a Quake lava ball's - a rocket's
+    // smoke, all the way, with the grenade's lift and no flame
+    bool            lava;
     // R_FLOW_HEATBEAM: `end` is on something the beam burns - not the sky,
     // not the end of its range
     bool            hit;

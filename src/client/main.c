@@ -77,6 +77,7 @@ cvar_t  *cl_disable_explosions;
 cvar_t  *cl_dlight_hacks;
 cvar_t  *cl_blaster_color;
 cvar_t  *cl_ludicrous_gibs;
+cvar_t  *cl_q1_gib_drops;
 cvar_t  *cl_spheretrans_alpha;
 cvar_t  *cl_tracker_bubble;
 cvar_t  *cl_tracker_bubble_scale;
@@ -3160,6 +3161,10 @@ static void CL_InitLocal(void)
     // apart. Registered here as well so the Options -> Effects toggle works at
     // the main menu, before any game library has been loaded.
     cl_ludicrous_gibs = Cvar_Get("g_ludicrous_gibs", "0", CVAR_ARCHIVE);
+    // droplets for each drip of a Quake 1 gib's blood trail (the QuakeC
+    // campaign, cl.q1vm), as cl_q3_gib_drops does for Quake III's (Matt, 11-21:
+    // "3x as much blood to the quake1 gib trails"); Blood menu
+    cl_q1_gib_drops = Cvar_Get("cl_q1_gib_drops", "3", CVAR_ARCHIVE);
     // [Q2RTX] Opacity of EF_SPHERETRANS models (the monster-spawn sphere).
     //
     // LEAVE THIS AT 1 for anything whose material is "kind WATER".

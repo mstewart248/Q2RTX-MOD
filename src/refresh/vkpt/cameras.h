@@ -37,4 +37,13 @@ int vkpt_cameras_q3_face(bsp_mesh_t* wm, const mface_t* surf);
 // Fills a portal's slot of the UBO's security_camera_data, every frame.
 void vkpt_cameras_q3_transform(const bsp_mesh_t* wm, int index, float time, float data[16]);
 
+// Quake 1 maps: each trigger_teleport whose gate (*teleport faces in its box)
+// can be seen through, onto its info_teleport_destination.
+void vkpt_cameras_load_q1(bsp_mesh_t* wm, const bsp_t* bsp);
+// The teleporter a face is the gate of: a *teleport face, standing (not a
+// floor or ceiling), its centre in a trigger_teleport's box. -1 for none.
+int vkpt_cameras_q1_face(const bsp_mesh_t* wm, const mface_t* surf);
+// Fills a teleporter's slot of security_camera_data, every frame.
+void vkpt_cameras_q1_gate(const bsp_mesh_t* wm, int index, float data[16]);
+
 #endif

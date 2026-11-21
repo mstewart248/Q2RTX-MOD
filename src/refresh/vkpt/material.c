@@ -203,6 +203,13 @@ static void MAT_SetIndex(pbr_material_t* mat)
 // does there.
 #define MAT_DEFAULT_DISPLACE_IN 0.05f
 
+// stained glass's defaults - material.h stained_glass
+#define MAT_DEFAULT_STAINED_LIGHT_HEIGHT   0.5f
+#define MAT_DEFAULT_STAINED_LIGHT_DISTANCE 1.0f
+#define MAT_DEFAULT_STAINED_LIGHT_SIZE     2.0f
+#define MAT_DEFAULT_STAINED_SCATTER        0.6f
+#define MAT_DEFAULT_STAINED_SPREAD         25.0f
+
 static void MAT_Reset(pbr_material_t * mat)
 {
 	memset(mat, 0, sizeof(pbr_material_t));
@@ -228,6 +235,13 @@ static void MAT_Reset(pbr_material_t * mat)
 	mat->dlss_guide_field = -1;
 	// negative means "not stated", so pt_bounce_albedo_power decides
 	mat->albedo_strength = -1.f;
+	// stained glass (off until stated): a lamp straight behind the middle of
+	// the tile, one tile height back, 2 degrees across, antique glass
+	mat->stained_light_height = MAT_DEFAULT_STAINED_LIGHT_HEIGHT;
+	mat->stained_light_distance = MAT_DEFAULT_STAINED_LIGHT_DISTANCE;
+	mat->stained_light_size = MAT_DEFAULT_STAINED_LIGHT_SIZE;
+	mat->stained_scatter = MAT_DEFAULT_STAINED_SCATTER;
+	mat->stained_spread = MAT_DEFAULT_STAINED_SPREAD;
 }
 
 //
@@ -325,6 +339,44 @@ static pbr_material_t* find_material(const char* name, uint32_t hash, pbr_materi
 	return NULL;
 }
 
+static pbr_material_t* find_material_sorted(const char* name, pbr_material_t* first, uint32_t count);
+
+/* A QUAKE 1 MODEL'S SKIN is named for its episode - id1/rogue/progs/
+   ogre_mdl_00_00 - because Dissolution of Eternity's ogre has pixels of its
+   own (model_q1.c). id1/materials/quake1.mat names it once, as progs/
+   ogre_mdl_00_00, for every episode. So a name with no entry of its own
+   takes the bare one's: the entry applies everywhere, the pixels stay each
+   episode's. An entry made for one episode, under its full name, still
+   wins. (name) is lower case, as every material name is. */
+static const char* q1_episode_key(const char* name)
+{
+	if (strncmp(name, "id1/", 4))
+		return NULL;
+	const char* slash = strchr(name + 4, '/');
+	return (slash && slash[1]) ? slash + 1 : NULL;
+}
+
+static pbr_material_t* find_global_definition(const char* name)
+{
+	pbr_material_t* matdef = find_material_sorted(name, r_global_materials, num_global_materials);
+	const char* key;
+	if (!matdef && (key = q1_episode_key(name)) != NULL)
+		matdef = find_material_sorted(key, r_global_materials, num_global_materials);
+	return matdef;
+}
+
+// the name of (name)'s entry in its .mat file, as find_global_definition
+// found it
+static const char* definition_entry_name(const char* name)
+{
+	const char* key;
+	if (!find_material_sorted(name, r_global_materials, num_global_materials)
+		&& (key = q1_episode_key(name)) != NULL
+		&& find_material_sorted(key, r_global_materials, num_global_materials))
+		return key;
+	return name;
+}
+
 static pbr_material_t* find_material_sorted(const char* name, pbr_material_t* first, uint32_t count)
 {
 	// binary search in a sorted table: global and per-map material dictionaries
@@ -420,6 +472,13 @@ enum AttributeIndex
 	MAT_CAUSTIC,
 	MAT_LIGHT_FACTOR,
 	MAT_CAUSTIC_RIPPLE,
+	MAT_STAINED_GLASS,
+	MAT_STAINED_LIGHT_HEIGHT,
+	MAT_STAINED_LIGHT_DISTANCE,
+	MAT_STAINED_LIGHT_SUN,
+	MAT_STAINED_LIGHT_SIZE,
+	MAT_STAINED_SCATTER,
+	MAT_STAINED_SPREAD,
 };
 enum AttributeType { ATTR_BOOL, ATTR_FLOAT, ATTR_STRING, ATTR_INT };
 
@@ -463,20 +522,28 @@ static struct MaterialAttribute {
 	// texture to look the same"). Live: copy_light reads it every frame.
 	{MAT_LIGHT_FACTOR, "light_factor", ATTR_FLOAT},
 	{MAT_CAUSTIC_RIPPLE, "caustic_ripple", ATTR_FLOAT},
+	// thick coloured glass with a made-up light behind it - material.h
+	// stained_glass, shader stained_glass.h (Matt, 2026-11-21)
+	{MAT_STAINED_GLASS, "stained_glass", ATTR_BOOL},
+	{MAT_STAINED_LIGHT_HEIGHT, "stained_light_height", ATTR_FLOAT},
+	{MAT_STAINED_LIGHT_DISTANCE, "stained_light_distance", ATTR_FLOAT},
+	{MAT_STAINED_LIGHT_SUN, "stained_light_sun", ATTR_BOOL},
+	{MAT_STAINED_LIGHT_SIZE, "stained_light_size", ATTR_FLOAT},
+	{MAT_STAINED_SCATTER, "stained_scatter", ATTR_FLOAT},
+	{MAT_STAINED_SPREAD, "stained_spread", ATTR_FLOAT},
 };
 
 static int c_NumAttributes = sizeof(c_Attributes) / sizeof(struct MaterialAttribute);
 
 // pbr_material_t::specified_fields is one bit per entry of c_Attributes, so the
-// table has to stay inside a uint32_t. caustic_ripple took the LAST bit
-// (2026-11-16): the next attribute needs specified_fields and console_fields
-// widened to uint64_t and every `1u << attr` made 64-bit.
-static_assert(sizeof(c_Attributes) / sizeof(struct MaterialAttribute) <= 32,
+// table has to stay inside a uint64_t (widened from 32 bits for the stained
+// glass attributes, 2026-11-21 - every bit test is `1ull << attr`).
+static_assert(sizeof(c_Attributes) / sizeof(struct MaterialAttribute) <= 64,
 	"too many material attributes for pbr_material_t::specified_fields");
 
 // true if this material's definition stated (attr) itself, rather than leaving
 // it at the default for something else to fill in
-#define MAT_SPECIFIED(mat, attr) (((mat)->specified_fields & (1u << (attr))) != 0)
+#define MAT_SPECIFIED(mat, attr) (((mat)->specified_fields & (1ull << (attr))) != 0)
 
 /* A TEXTURE SLOT CLEARED ON PURPOSE. "texture_roughness 0", "texture_roughness"
    with nothing after it, "texture_roughness \"\"" in a .mat file (which has no
@@ -676,6 +743,19 @@ static int set_material_attribute(pbr_material_t* mat, const char* attribute, co
 	case MAT_CAUSTIC: mat->glass_caustic = max(0.f, min(fvalue, 15.f)); break;
 	// that light thrown in moving water ripples - see material.h
 	case MAT_CAUSTIC_RIPPLE: mat->caustic_ripple = max(0.f, min(fvalue, 4.f)); break;
+	// stained glass - see material.h. The switch decides which faces become
+	// window lights (bsp_mesh.c), so changing it reloads the map; the tuning
+	// is read live (the material table and copy_light, every frame).
+	case MAT_STAINED_GLASS:
+		mat->stained_glass = bvalue;
+		if (reload_flags) *reload_flags |= RELOAD_MAP;
+		break;
+	case MAT_STAINED_LIGHT_HEIGHT: mat->stained_light_height = fvalue; break;
+	case MAT_STAINED_LIGHT_DISTANCE: mat->stained_light_distance = max(0.01f, min(fvalue, 1000.f)); break;
+	case MAT_STAINED_LIGHT_SUN: mat->stained_light_sun = bvalue; break;
+	case MAT_STAINED_LIGHT_SIZE: mat->stained_light_size = max(0.05f, min(fvalue, 60.f)); break;
+	case MAT_STAINED_SCATTER: mat->stained_scatter = max(0.f, min(fvalue, 1.f)); break;
+	case MAT_STAINED_SPREAD: mat->stained_spread = max(1.f, min(fvalue, 90.f)); break;
 	case MAT_VOLUMETRIC_SCALE: mat->volumetric_scale = fvalue; break;
 	case MAT_ROUGHNESS_OVERRIDE: mat->roughness_override = fvalue; break;
 	case MAT_METALNESS_FACTOR: mat->metalness_factor = fvalue; break;
@@ -687,18 +767,34 @@ static int set_material_attribute(pbr_material_t* mat, const char* attribute, co
 		// glass with a per-pixel test, and prints and saves as the two lines.
 		// "kind GLASSCAUSTIC" likewise: GLASS + caustic 1, unless an earlier
 		// line of the same entry already gave its own caustic strength.
+		// "kind STAINEDGLASS": REGULAR + stained_glass 1 + is_light 1 - an
+		// opaque surface that glows with the light behind it (material.h). A
+		// kind other than REGULAR named after it turns stained_glass off again.
 		const bool alpha_glass_kind = !Q_stricmp(svalue, "ALPHA_GLASS");
 		const bool caustic_kind = !Q_stricmp(svalue, "GLASSCAUSTIC") || !Q_stricmp(svalue, "GLASS_CAUSTIC");
-		uint32_t kind = (alpha_glass_kind || caustic_kind) ? MATERIAL_KIND_GLASS : getMaterialKind(svalue);
+		const bool stained_kind = !Q_stricmp(svalue, "STAINEDGLASS") || !Q_stricmp(svalue, "STAINED_GLASS");
+		uint32_t kind = (alpha_glass_kind || caustic_kind) ? MATERIAL_KIND_GLASS
+			: stained_kind ? MATERIAL_KIND_REGULAR : getMaterialKind(svalue);
 		if (alpha_glass_kind)
 		{
 			mat->alpha_glass = true;
-			mat->specified_fields |= 1u << MAT_ALPHA_GLASS;
+			mat->specified_fields |= 1ull << MAT_ALPHA_GLASS;
+		}
+		if (kind != MATERIAL_KIND_UNKNOWN_NAME && (stained_kind || kind != MATERIAL_KIND_REGULAR)
+			&& stained_kind != mat->stained_glass)
+		{
+			mat->stained_glass = stained_kind;
+			mat->specified_fields |= 1ull << MAT_STAINED_GLASS;
+		}
+		if (stained_kind)
+		{
+			mat->flags |= MATERIAL_FLAG_LIGHT;
+			mat->specified_fields |= 1ull << MAT_IS_LIGHT;
 		}
 		if (caustic_kind && !MAT_SPECIFIED(mat, MAT_CAUSTIC))
 		{
 			mat->glass_caustic = 1.f;
-			mat->specified_fields |= 1u << MAT_CAUSTIC;
+			mat->specified_fields |= 1ull << MAT_CAUSTIC;
 		}
 		if (kind != MATERIAL_KIND_UNKNOWN_NAME)
 			mat->flags = MAT_SetKind(mat->flags, kind);
@@ -814,7 +910,7 @@ static int set_material_attribute(pbr_material_t* mat, const char* attribute, co
 	}
 
 	// remember that this material says this itself - see specified_fields
-	mat->specified_fields |= 1u << t->index;
+	mat->specified_fields |= 1ull << t->index;
 
 	return Q_ERR_SUCCESS;
 }
@@ -1082,6 +1178,17 @@ static void save_materials(const char* file_name, bool save_all, bool force)
 		if (mat->caustic_ripple > 0.f)
 			FS_FPrintf(file, "\tcaustic_ripple %f\n", mat->caustic_ripple);
 
+		if (mat->stained_glass) {
+			FS_FPrintf(file, "\tstained_glass 1\n");
+			FS_FPrintf(file, "\tstained_light_height %f\n", mat->stained_light_height);
+			FS_FPrintf(file, "\tstained_light_distance %f\n", mat->stained_light_distance);
+			if (mat->stained_light_sun)
+				FS_FPrintf(file, "\tstained_light_sun 1\n");
+			FS_FPrintf(file, "\tstained_light_size %f\n", mat->stained_light_size);
+			FS_FPrintf(file, "\tstained_scatter %f\n", mat->stained_scatter);
+			FS_FPrintf(file, "\tstained_spread %f\n", mat->stained_spread);
+		}
+
 		if (mat->roughness_override > 0.f)
 			FS_FPrintf(file, "\troughness_override %f\n", mat->roughness_override);
 		
@@ -1197,6 +1304,43 @@ static int material_file_real_path(const char* file_name, char* out, size_t size
 	return where;
 }
 
+// (game_path), found at (real) with FS_RealPath's (where), comes out of Quake
+// III's own data - <basedir>/baseq3, its packs or its loose files: a "baseq3/"
+// read finds that same file first (files.c FS_SEARCH_QUAKE3)
+static bool found_in_quake3(const char* game_path, int where, const char* real)
+{
+	char q3[MAX_OSPATH];
+	return where != FS_REALPATH_NONE
+		&& FS_RealPath(va("baseq3/%s", game_path), 0, q3, sizeof(q3)) == where
+		&& !Q_stricmp(q3, real);
+}
+
+/* Whether (mat) is a Quake III Arena material: its .mat entry is in baseq3/
+   (quake3.mat, a Quake III map's own), or, with none, it is a Quake III shader
+   or its texture came out of Quake III's data. The mat author's new maps go
+   into baseq3/materialDev for these and into the game directory for the rest
+   (Matt, 2026-11-21: "rerelease should be for quake2 textures in the rerelease
+   game"). */
+bool MAT_IsQuake3(const pbr_material_t* mat)
+{
+	char real[MAX_OSPATH];
+	if (!mat)
+		return false;
+	if (mat->source_matfile[0])
+	{
+		const int where = material_file_real_path(mat->source_matfile, real, sizeof(real));
+		if (where != FS_REALPATH_NONE)
+			return found_in_quake3(mat->source_matfile, where, real);
+	}
+	if (MAT_Q3Shader(mat))
+		return true;
+	const image_t* base = mat->image_base;
+	if (!base)
+		return false;
+	const char* path = base->filepath[0] ? base->filepath : base->name;
+	return path[0] && found_in_quake3(path, FS_RealPath(path, 0, real, sizeof(real)), real);
+}
+
 // (path) from the install folder down - "baseq3/materials/quake3.mat" - for
 // messages; the full path when it is somewhere else (a home directory)
 static const char* material_short_path(const char* path)
@@ -1230,6 +1374,13 @@ static bool format_attribute_value(const pbr_material_t* mat, enum AttributeInde
 	case MAT_DISPLACE_OUT:       FLOAT_VALUE(mat->displace_out);
 	case MAT_CAUSTIC:            FLOAT_VALUE(mat->glass_caustic);
 	case MAT_CAUSTIC_RIPPLE:     FLOAT_VALUE(mat->caustic_ripple);
+	case MAT_STAINED_LIGHT_HEIGHT:   FLOAT_VALUE(mat->stained_light_height);
+	case MAT_STAINED_LIGHT_DISTANCE: FLOAT_VALUE(mat->stained_light_distance);
+	case MAT_STAINED_LIGHT_SIZE:     FLOAT_VALUE(mat->stained_light_size);
+	case MAT_STAINED_SCATTER:        FLOAT_VALUE(mat->stained_scatter);
+	case MAT_STAINED_SPREAD:         FLOAT_VALUE(mat->stained_spread);
+	case MAT_STAINED_GLASS:          INT_VALUE(mat->stained_glass ? 1 : 0);
+	case MAT_STAINED_LIGHT_SUN:      INT_VALUE(mat->stained_light_sun ? 1 : 0);
 	case MAT_VOLUMETRIC_SCALE:   FLOAT_VALUE(mat->volumetric_scale);
 	case MAT_ALBEDO_STRENGTH:    FLOAT_VALUE(mat->albedo_strength);
 	case MAT_EMISSIVE_THRESHOLD: INT_VALUE(mat->emissive_threshold);
@@ -1617,7 +1768,7 @@ static pbr_material_t* live_material_definition(const pbr_material_t* mat)
 	if (mat->image_type == IT_WALL)
 		matdef = find_material_sorted(mat->name, r_map_materials, num_map_materials);
 	if (!matdef)
-		matdef = find_material_sorted(mat->name, r_global_materials, num_global_materials);
+		matdef = find_global_definition(mat->name);
 	return matdef;
 }
 
@@ -1635,7 +1786,7 @@ static void material_console_field_names(const pbr_material_t* mat, char* out, s
 	out[0] = 0;
 	for (int i = 0; i < c_NumAttributes; i++)
 	{
-		if (mat->console_fields & (1u << c_Attributes[i].index))
+		if (mat->console_fields & (1ull << c_Attributes[i].index))
 		{
 			Q_strlcat(out, " ", size);
 			Q_strlcat(out, c_Attributes[i].name, size);
@@ -1705,7 +1856,7 @@ static int save_changes_to_file(const char* source_matfile, uint8_t* tried)
 		tried[i] = 1;
 
 		int header, first, end, group_size;
-		if (!mat_text_find_entry(&text, mat->name, mat->source_line, &header, &first, &end, &group_size))
+		if (!mat_text_find_entry(&text, definition_entry_name(mat->name), mat->source_line, &header, &first, &end, &group_size))
 		{
 			Com_WPrintf("  %s: not saved - its entry is not in the file any more. 'mat save <file>' "
 				"writes it to a file of its own.\n", mat->name);
@@ -1733,7 +1884,7 @@ static int save_changes_to_file(const char* source_matfile, uint8_t* tried)
 		for (int k = 0; k < c_NumAttributes; k++)
 		{
 			const struct MaterialAttribute* attr = c_Attributes + k;
-			if (!(mat->console_fields & (1u << attr->index)))
+			if (!(mat->console_fields & (1ull << attr->index)))
 				continue;
 
 			char value[MAX_IMAGE_PATH];
@@ -1788,7 +1939,7 @@ static int save_changes_to_file(const char* source_matfile, uint8_t* tried)
 			{
 				const struct MaterialAttribute* attr = c_Attributes + k;
 				char value[MAX_IMAGE_PATH];
-				if (!(mat->console_fields & (1u << attr->index)) || !format_attribute_value(mat, attr->index, value, sizeof(value)))
+				if (!(mat->console_fields & (1ull << attr->index)) || !format_attribute_value(mat, attr->index, value, sizeof(value)))
 					continue;
 				if (matdef && !strcmp(matdef->source_matfile, source_matfile))
 					set_material_attribute(matdef, attr->name, value, source_matfile, line, NULL);
@@ -2408,6 +2559,13 @@ static void material_inherit_instance(pbr_material_t* mat, const pbr_material_t*
 	INHERIT(MAT_ALPHA_GLASS, alpha_glass);
 	INHERIT(MAT_CAUSTIC, glass_caustic);
 	INHERIT(MAT_CAUSTIC_RIPPLE, caustic_ripple);
+	INHERIT(MAT_STAINED_GLASS, stained_glass);
+	INHERIT(MAT_STAINED_LIGHT_HEIGHT, stained_light_height);
+	INHERIT(MAT_STAINED_LIGHT_DISTANCE, stained_light_distance);
+	INHERIT(MAT_STAINED_LIGHT_SUN, stained_light_sun);
+	INHERIT(MAT_STAINED_LIGHT_SIZE, stained_light_size);
+	INHERIT(MAT_STAINED_SCATTER, stained_scatter);
+	INHERIT(MAT_STAINED_SPREAD, stained_spread);
 	INHERIT(MAT_LIGHT_FACTOR, light_factor);
 	INHERIT(MAT_ROUGHNESS_OVERRIDE, roughness_override);
 	INHERIT(MAT_METALNESS_FACTOR, metalness_factor);
@@ -3050,8 +3208,8 @@ pbr_material_t* MAT_Find(const char* name, imagetype_t type, imageflags_t flags)
 
 	mat = allocate_material();
 
-	pbr_material_t* matdef = find_material_sorted(mat_name_no_ext, r_global_materials, num_global_materials);
-	
+	pbr_material_t* matdef = find_global_definition(mat_name_no_ext);
+
 	if (type == IT_WALL)
 	{
 		pbr_material_t* map_mat = find_material_sorted(mat_name_no_ext, r_map_materials, num_map_materials);
@@ -3088,6 +3246,9 @@ pbr_material_t* MAT_Find(const char* name, imagetype_t type, imageflags_t flags)
 		uint32_t index = (uint32_t)(mat - r_materials);
 		mat->flags = (mat->flags & ~MATERIAL_INDEX_MASK) | index;
 		mat->next_frame = index;
+		// its own name, which is how it is found again: a Quake 1 skin's entry
+		// may be the bare name (find_global_definition)
+		Q_strlcpy(mat->name, mat_name_no_ext, sizeof(mat->name));
 
 		// A definition that does not name a base texture is a TUNING-ONLY
 		// entry: it exists to say specular_factor / emissive_factor / kind /
@@ -3372,6 +3533,107 @@ pbr_material_t* MAT_FindInstance(const pbr_material_t* base, uint32_t instance_h
 	return instance;
 }
 
+/* ENTITY INSTANCES (Matt, 2026-11-21: "create instances of the torch materials so I
+   can set different light factors and emissive brightnesses on these"). A model's
+   skin takes the same <name>#<hash> instances a world surface does, one per placed
+   copy of the model. The hash is the map's name and where the model stands, to the
+   nearest unit, so it suits a model that stays put - a torch, a lamp, a
+   decoration; a monster that walks off leaves its instance behind. `mat
+   create_instance` with the crosshair on the model writes the section, into
+   materials/<map>.mat as for a world surface, and the section must stay in a
+   materials/ file: a skin's definition is only looked for in those (MAT_Find). */
+static inline uint32_t entity_hash_mix(uint32_t h, uint32_t value)
+{
+	// FNV-1a, a byte at a time, as bsp_mesh.c's group hash
+	for (int b = 0; b < 4; b++)
+	{
+		h ^= (value >> (b * 8)) & 0xffu;
+		h *= 16777619u;
+	}
+	return h;
+}
+
+uint32_t MAT_EntityInstanceHash(const float origin[3])
+{
+	uint32_t h = 2166136261u;
+
+	const char* map = current_map_name;
+	const char* slash = strrchr(map, '/');
+	if (slash)
+		map = slash + 1;
+	for (const char* c = map; *c && *c != '.'; c++)
+		h = entity_hash_mix(h, (uint32_t)(unsigned char)Q_tolower(*c));
+
+	for (int i = 0; i < 3; i++)
+		h = entity_hash_mix(h, (uint32_t)(int32_t)floorf(origin[i] + 0.5f));
+
+	// 0 is "no instance" everywhere
+	return h ? h : 1u;
+}
+
+// Every instance section in (defs) whose base is a model skin registered for this
+// level: made now, between frames, so that drawing only ever looks one up. A new
+// material can load images, and one loaded mid-frame would be drawn before its
+// descriptor is written.
+static int register_entity_instances_from(const pbr_material_t* defs, uint32_t count)
+{
+	int made = 0;
+
+	for (uint32_t i = 0; i < count; i++)
+	{
+		const char* sep = instance_separator(defs[i].name);
+		if (!sep)
+			continue;
+
+		char base_name[MAX_QPATH];
+		Q_strlcpy(base_name, defs[i].name, min(sizeof(base_name), (size_t)(sep - defs[i].name) + 1));
+
+		pbr_material_t* base = find_material(base_name, Com_HashString(base_name, RMATERIALS_HASH),
+			r_materials, MAX_PBR_MATERIALS);
+
+		// a world surface's instance is bsp_mesh.c's business
+		if (!base || base->registration_sequence != registration_sequence || base->image_type == IT_WALL
+			|| instance_separator(base->name))
+			continue;
+
+		uint32_t hash = (uint32_t)strtoul(sep + 1, NULL, 16);
+		if (MAT_FindInstance(base, hash))
+		{
+			base->has_entity_instances = true;
+			made++;
+		}
+	}
+
+	return made;
+}
+
+void MAT_RegisterEntityInstances(void)
+{
+	for (uint32_t i = 0; i < MAX_PBR_MATERIALS; i++)
+		r_materials[i].has_entity_instances = false;
+
+	int made = register_entity_instances_from(r_global_materials, num_global_materials)
+	         + register_entity_instances_from(r_map_materials, num_map_materials);
+
+	if (made)
+		Com_DPrintf("%d model material instance%s for this level\n", made, made == 1 ? "" : "s");
+}
+
+const pbr_material_t* MAT_EntityInstance(const pbr_material_t* base, const float origin[3])
+{
+	if (!base || !base->has_entity_instances)
+		return NULL;
+
+	char name[MAX_QPATH];
+	MAT_InstanceName(base->name, MAT_EntityInstanceHash(origin), name, sizeof(name));
+
+	pbr_material_t* mat = find_material(name, Com_HashString(name, RMATERIALS_HASH), r_materials, MAX_PBR_MATERIALS);
+	if (!mat || !mat->registration_sequence || (uint32_t)(mat - r_materials) > MATERIAL_INDEX_MASK)
+		return NULL;
+
+	return mat;
+}
+
 void MAT_UpdateRegistration(pbr_material_t * mat)
 {
 	if (!mat)
@@ -3527,13 +3789,34 @@ void MAT_Print(pbr_material_t const * mat)
 		Com_Printf("    caustic_ripple %g%s\n", mat->caustic_ripple,
 			mat->caustic_ripple > 0.f && !MAT_IsKind(mat->flags, MATERIAL_KIND_GLASS) ? " (inactive: not GLASS)"
 			: mat->caustic_ripple > 0.f ? "   (the light through it thrown in moving water ripples)" : "");
+	if (mat->stained_glass)
+	{
+		Com_Printf("    stained_glass 1   (glows with a made-up light behind it, and casts it into the room)\n");
+		Com_Printf("    stained_light_height %g   (1 = the tile's top, 0 = its bottom)\n", mat->stained_light_height);
+		Com_Printf("    stained_light_distance %g   (tile heights behind the glass)\n", mat->stained_light_distance);
+		Com_Printf("    stained_light_sun %d   (%s)\n", mat->stained_light_sun ? 1 : 0,
+			mat->stained_light_sun ? "a sun: parallel light from where the lamp would be" : "a lamp");
+		Com_Printf("    stained_light_size %g   (degrees, its radius seen from the glass: the image's softness)\n", mat->stained_light_size);
+		Com_Printf("    stained_scatter %g   (0 = clear glass, 1 = all spread)\n", mat->stained_scatter);
+		Com_Printf("    stained_spread %g   (degrees: the bloom round the light)\n", mat->stained_spread);
+	}
 	Com_Printf("    roughness_override %f%s\n", mat->roughness_override,
 		mat->roughness_override < 0.f ? "" : MAT_RoughnessIsWhole(mat)
 			? "   (the roughness all over: no roughness map)" : "   (a floor under its maps)");
 	Com_Printf("    metalness_factor %f\n", mat->metalness_factor);
 	Com_Printf("    emissive_factor %f\n", mat->emissive_factor);
 	Com_Printf("    light_factor %f   (the light it casts only)\n", mat->light_factor);
-	Com_Printf("    specular_factor %f\n", mat->specular_factor);
+	/* The path tracer scales only the NON-metal shine by it (path_tracer_rgen.h:
+	   specular_factor = mix(specular_factor, 1, metallic)), as stock Q2RTX did.
+	   Matt, 11-21: "changing the specular factor of quake 1 textures doesn't
+	   seem to do anything" - the Remix materials carry a metalness, and on
+	   textures/q1/city4_7 (0.56 metal, roughness 1) 0 took off only a dim 4%
+	   reflection from the other 44%. Say so where the number is read. */
+	if (mat->filename_metallic[0] && mat->metalness_factor > 0.f)
+		Com_Printf("    specular_factor %f   (the non-metal part only: up to %.0f%% of it is metal, whose shine stays - "
+			"metalness_factor takes that down)\n", mat->specular_factor, 100.f * min(mat->metalness_factor, 1.f));
+	else
+		Com_Printf("    specular_factor %f\n", mat->specular_factor);
 	Com_Printf("    base_factor %f\n", mat->base_factor);
 	if (mat->flags & MATERIAL_FLAG_CURVED_WATER)
 		Com_Printf("    curved_water 1\n");
@@ -3545,12 +3828,14 @@ void MAT_Print(pbr_material_t const * mat)
 	const bool glass = MAT_IsKind(mat->flags, MATERIAL_KIND_GLASS);
 	const bool caustic = glass && mat->glass_caustic > 0.f;
 	const bool alpha = glass && mat->alpha_glass;
-	Com_Printf("    kind %s%s%s%s%s%s\n", kind ? kind : "",
+	const bool stained = MAT_IsKind(mat->flags, MATERIAL_KIND_REGULAR) && mat->stained_glass;
+	Com_Printf("    kind %s%s%s%s%s%s%s\n", kind ? kind : "",
 		(caustic || alpha) ? "   (" : "",
 		caustic ? "GLASSCAUSTIC = GLASS + caustic" : "",
 		(caustic && alpha) ? "; " : "",
 		alpha ? "ALPHA_GLASS = GLASS + alpha_glass" : "",
-		(caustic || alpha) ? ")" : "");
+		(caustic || alpha) ? ")" : "",
+		stained ? "   (STAINEDGLASS = REGULAR + stained_glass + is_light)" : "");
 	Com_Printf("    is_light %d\n", (mat->flags & MATERIAL_FLAG_LIGHT) != 0);
 	Com_Printf("    light_styles %d\n", mat->light_styles ? 1 : 0);
 	Com_Printf("    bsp_radiance %d\n", mat->bsp_radiance ? 1 : 0);
@@ -3695,6 +3980,13 @@ static void material_reapply_definition(pbr_material_t* mat, const pbr_material_
 	mat->alpha_glass        = matdef->alpha_glass;
 	mat->glass_caustic      = matdef->glass_caustic;
 	mat->caustic_ripple     = matdef->caustic_ripple;
+	mat->stained_glass          = matdef->stained_glass;
+	mat->stained_light_height   = matdef->stained_light_height;
+	mat->stained_light_distance = matdef->stained_light_distance;
+	mat->stained_light_sun      = matdef->stained_light_sun;
+	mat->stained_light_size     = matdef->stained_light_size;
+	mat->stained_scatter        = matdef->stained_scatter;
+	mat->stained_spread         = matdef->stained_spread;
 	mat->roughness_override = matdef->roughness_override;
 	mat->metalness_factor   = matdef->metalness_factor;
 	mat->emissive_factor    = matdef->emissive_factor;
@@ -4017,7 +4309,7 @@ static void material_command_reload(void)
 		if (mat->image_type == IT_WALL)
 			matdef = find_material_sorted(mat->name, r_map_materials, num_map_materials);
 		if (!matdef)
-			matdef = find_material_sorted(mat->name, r_global_materials, num_global_materials);
+			matdef = find_global_definition(mat->name);
 
 		if (!matdef) {
 			// nothing in any .mat names this one - it was generated from the
@@ -4116,6 +4408,15 @@ static void write_instance_stub_values(qhandle_t file, const pbr_material_t* mat
 		FS_FPrintf(file, "#\tcaustic %g\n", mat->glass_caustic);
 	if (mat->caustic_ripple > 0.f)
 		FS_FPrintf(file, "#\tcaustic_ripple %g\n", mat->caustic_ripple);
+	if (mat->stained_glass) {
+		FS_FPrintf(file, "#\tstained_glass 1\n");
+		FS_FPrintf(file, "#\tstained_light_height %g\n", mat->stained_light_height);
+		FS_FPrintf(file, "#\tstained_light_distance %g\n", mat->stained_light_distance);
+		FS_FPrintf(file, "#\tstained_light_sun %d\n", mat->stained_light_sun ? 1 : 0);
+		FS_FPrintf(file, "#\tstained_light_size %g\n", mat->stained_light_size);
+		FS_FPrintf(file, "#\tstained_scatter %g\n", mat->stained_scatter);
+		FS_FPrintf(file, "#\tstained_spread %g\n", mat->stained_spread);
+	}
 	// negative means "no override" here, and is not something to write back
 	if (mat->roughness_override >= 0.f)
 		FS_FPrintf(file, "#\troughness_override %g\n", mat->roughness_override);
@@ -4176,9 +4477,9 @@ static void material_create_instance(const pbr_material_t* mat)
 
 	if (!instance_hash)
 	{
-		Com_Printf("No static world surface under the crosshair.\n");
-		Com_Printf("Instances are keyed on BSP geometry, so they only apply to the level "
-		           "itself - not to models, brush entities such as doors and platforms, or the sky.\n");
+		Com_Printf("No static world surface or placed model under the crosshair.\n");
+		Com_Printf("Instances are keyed on BSP geometry, or on where a model stands - not on "
+		           "brush entities such as doors and platforms, the gun in hand, or the sky.\n");
 		return;
 	}
 
@@ -4235,6 +4536,10 @@ static void material_create_instance(const pbr_material_t* mat)
 	FS_FPrintf(file, "\n# instance of %s\n", mat->name);
 	FS_FPrintf(file, "# %s, created at (%.0f %.0f %.0f)\n", map_base,
 	           vkpt_refdef.fd->vieworg[0], vkpt_refdef.fd->vieworg[1], vkpt_refdef.fd->vieworg[2]);
+	if (vkpt_refdef.fd->feedback.view_on_model)
+		FS_FPrintf(file, "# the model standing at (%.0f %.0f %.0f) - keyed on that spot\n",
+		           vkpt_refdef.fd->feedback.view_model_origin[0], vkpt_refdef.fd->feedback.view_model_origin[1],
+		           vkpt_refdef.fd->feedback.view_model_origin[2]);
 	FS_FPrintf(file, "# Inherits everything from %s; the commented lines are what\n", mat->name);
 	FS_FPrintf(file, "# it inherits now. Uncomment one and change it, then 'mat reload'.\n");
 	FS_FPrintf(file, "%s:\n", instance_name);
@@ -4764,13 +5069,14 @@ static void material_command_help(void)
 	Com_Printf("        mouse button to look, WASD/QE to fly, left button paints. 'mat author save'\n");
 	Com_Printf("        writes the painted maps; 'mat author off' (or Escape) leaves.\n");
 	Com_Printf("        'mat author stage <N|mat>' paints a Quake III stage's own maps;\n");
-	Com_Printf("        'mat author rect <length> <width>' picks a rectangle brush (texels)\n");
+	Com_Printf("        'mat author free|line|rect [corner radius]' picks the stroke: a rectangle is\n");
+	Com_Printf("        dragged from corner to corner, its corners rounded (texels)\n");
 	Com_Printf("    which: tell where the current material is defined\n");
 	Com_Printf("    view_weapon [N] <command>: any of these for the gun in your hands instead of\n");
 	Com_Printf("        the crosshair's material ('mat view_weapon print', 'mat view_weapon\n");
 	Com_Printf("        roughness_override 1'); alone, it lists the gun's materials and their N\n");
-	Com_Printf("    create_instance: give the surface at the crosshair its own material,\n");
-	Com_Printf("        so it can be tuned without affecting other uses of the same texture.\n");
+	Com_Printf("    create_instance: give the surface or placed model (a torch) at the crosshair its\n");
+	Com_Printf("        own material, so it can be tuned without affecting other uses of the same texture.\n");
 	Com_Printf("        Writes an empty section to materials/<map>.mat and reloads.\n");
 	Com_Printf("    reload: re-read all .mat files, and any texture saved since it was loaded, from disk and rebuild\n");
 	Com_Printf("    save: write what 'mat <attribute> <value>' changed back into the .mat entries\n");
@@ -4956,10 +5262,15 @@ static void material_command(void)
 			char instance_name[MAX_QPATH];
 			MAT_InstanceName(mat->name, instance_hash, instance_name, sizeof(instance_name));
 
+			const ref_feedback_t* fb = &vkpt_refdef.fd->feedback;
+			const char* what = fb->view_on_model ? "model" : "surface";
 			if (instance_separator(mat->name))
-				Com_Printf("    surface: this IS an instance\n");
+				Com_Printf("    %s: this IS an instance\n", what);
 			else
-				Com_Printf("    surface: %s ('mat create_instance' to split it off)\n", instance_name);
+				Com_Printf("    %s: %s ('mat create_instance' to split it off)\n", what, instance_name);
+			if (fb->view_on_model)
+				Com_Printf("    (the model at %.0f %.0f %.0f - its instance stays at that spot)\n",
+				           fb->view_model_origin[0], fb->view_model_origin[1], fb->view_model_origin[2]);
 		}
 		return;
 	}
@@ -5016,14 +5327,14 @@ static void material_command(void)
 
 	unsigned int reload_flags = 0;
 	const struct MaterialAttribute* attr = find_attribute(key);
-	const uint32_t specified_before = mat->specified_fields;
+	const uint64_t specified_before = mat->specified_fields;
 	if (set_material_attribute(mat, key, Cmd_Argv(2), NULL, 0, &reload_flags) == Q_ERR_SUCCESS && attr)
 	{
 		// what 'mat save' writes back (save_to_source_files) - with whatever
 		// else it set: "kind ALPHA_GLASS" is also alpha_glass 1
-		mat->console_fields |= (1u << attr->index) | (mat->specified_fields & ~specified_before);
+		mat->console_fields |= (1ull << attr->index) | (mat->specified_fields & ~specified_before);
 		if (attr->index == MAT_KIND && !Q_stricmp(Cmd_Argv(2), "ALPHA_GLASS"))
-			mat->console_fields |= 1u << MAT_ALPHA_GLASS;
+			mat->console_fields |= 1ull << MAT_ALPHA_GLASS;
 
 		/* A QUAKE III PROGRAM DRAWS FROM THE IMAGES IT WAS BUILT WITH. Typed
 		   here, texture_emissive / texture_base changed the material's image
@@ -5163,6 +5474,8 @@ static void material_complete_from(genctx_t* ctx, int argnum, int first)
 			Prompt_AddMatch(ctx, "emissive");
 			Prompt_AddMatch(ctx, "height");
 			Prompt_AddMatch(ctx, "stage");
+			Prompt_AddMatch(ctx, "free");
+			Prompt_AddMatch(ctx, "line");
 			Prompt_AddMatch(ctx, "rect");
 		}
 		else if (strcmp(sub, "print") == 0 || strcmp(sub, "view") == 0)

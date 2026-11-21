@@ -449,6 +449,9 @@ int MOD_LoadIQM_Base(model_t* model, const void* rawdata, size_t length, const c
 
 	CHECK(iqmData = MOD_Malloc(sizeof(iqm_model_t)));
 	model->iqmData = iqmData;
+	iqmData->jointSnap = NULL;  // an IQM's joints all blend (model_md5.c md5_snap_joint)
+	iqmData->jointSnapRider = NULL;
+	iqmData->jointSnapOffset = NULL;
 
 	// fill header
 	iqmData->num_vertexes = (header->num_meshes > 0) ? header->num_vertexes : 0;
@@ -784,8 +787,30 @@ bool R_ComputeIQMTransforms(const iqm_model_t* model, const entity_t* entity, fl
 
 	iqm_transform_t* relativeJoint = relativeJoints;
 
-	const int frame = model->num_frames ? entity->frame % (int)model->num_frames : 0;
-	const int oldframe = model->num_frames ? entity->oldframe % (int)model->num_frames : 0;
+	// No animation - an .md5mesh with no .md5anim (the Quake rerelease's
+	// progs/health100, the megahealth), or one that failed to parse - has
+	// joints but no poses: the bind pose, where each joint's pose x inverse
+	// bind is the identity. Reading the poses crashed the frame the model came
+	// into view (CrashReport06, 11-21). Callers that ignore the return (vkpt,
+	// D3D12) must still get matrices.
+	if (!model->poses || !model->num_frames)
+	{
+		for (uint32_t pose_idx = 0; pose_idx < model->num_poses; pose_idx++)
+		{
+			float* m = pose_matrices + pose_idx * 12;
+			memset(m, 0, 12 * sizeof(float));
+			m[0] = m[5] = m[10] = 1.0f;
+		}
+		return true;
+	}
+
+	// a frame number below zero would index before the poses
+	int frame = entity->frame % (int)model->num_frames;
+	int oldframe = entity->oldframe % (int)model->num_frames;
+	if (frame < 0)
+		frame += (int)model->num_frames;
+	if (oldframe < 0)
+		oldframe += (int)model->num_frames;
 	const float backlerp = entity->backlerp;
 
 	// copy or lerp animation frame pose
@@ -806,6 +831,16 @@ bool R_ComputeIQMTransforms(const iqm_model_t* model, const entity_t* entity, fl
 		const iqm_transform_t* oldpose = &model->poses[oldframe * model->num_poses];
 		for (uint32_t pose_idx = 0; pose_idx < model->num_poses; pose_idx++, oldpose++, pose++, relativeJoint++)
 		{
+			// a muzzle flash joint jumps between frames: the nearer one's pose, whole
+			if (model->jointSnap && pose_idx < model->num_joints && model->jointSnap[pose_idx])
+			{
+				const iqm_transform_t* near_pose = backlerp >= 0.5f ? oldpose : pose;
+				VectorCopy(near_pose->translate, relativeJoint->translate);
+				QuatCopy(near_pose->rotate, relativeJoint->rotate);
+				VectorCopy(near_pose->scale, relativeJoint->scale);
+				continue;
+			}
+
 			relativeJoint->translate[0] = oldpose->translate[0] * backlerp + pose->translate[0] * lerp;
 			relativeJoint->translate[1] = oldpose->translate[1] * backlerp + pose->translate[1] * lerp;
 			relativeJoint->translate[2] = oldpose->translate[2] * backlerp + pose->translate[2] * lerp;
@@ -838,6 +873,30 @@ bool R_ComputeIQMTransforms(const iqm_model_t* model, const entity_t* entity, fl
 		else
 		{
 			Matrix34Multiply(mat1, invBindMat, poseMat);
+		}
+	}
+
+	/* A muzzle flash RIDES the joint it sits on in the nearer frame - its barrel,
+	   through the barrel's blended spin or recoil - at that frame's offset from it
+	   (model_md5.c MD5_SnapRiders). Snapped alone, v_nail2's flash held a frame's
+	   angle while the barrels turned between frames, and sat between two of them.
+	   pose x bind of the rider = its blended absolute transform. */
+	if (model->jointSnapRider && oldframe != frame)
+	{
+		const int near_frame = backlerp >= 0.5f ? oldframe : frame;
+		for (uint32_t j = 0; j < model->num_joints && j < model->num_poses; j++)
+		{
+			if (!model->jointSnap[j])
+				continue;
+			const size_t slot = (size_t)near_frame * model->num_joints + j;
+			const int r = model->jointSnapRider[slot];
+			if (r < 0 || (uint32_t)r >= model->num_poses)
+				continue;
+
+			float abs_rider[12], abs_flash[12];
+			Matrix34Multiply(&pose_matrices[r * 12], &model->bindJoints[r * 12], abs_rider);
+			Matrix34Multiply(abs_rider, &model->jointSnapOffset[slot * 12], abs_flash);
+			Matrix34Multiply(abs_flash, &model->invBindJoints[j * 12], &pose_matrices[j * 12]);
 		}
 	}
 

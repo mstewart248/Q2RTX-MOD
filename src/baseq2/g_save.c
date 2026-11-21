@@ -1196,6 +1196,9 @@ void ReadGame(const char *filename)
         read_fields(&ctx, clientfields, &game.clients[i]);
     }
 
+    // the bots' table went with TAG_GAME above
+    Bot_GameRead();
+
     read_level_entries(f);
 
     fclose(f);
@@ -1215,6 +1218,12 @@ void WriteLevel(const char *filename)
     int     i;
     edict_t *ent;
     FILE    *f;
+
+    // a Quake 1 level its progs run: their machine, not Quake II's entities
+    if (Q1VM_Active()) {
+        Q1VM_WriteLevel(filename);
+        return;
+    }
 
     f = fopen(filename, "wb");
     if (!f)
@@ -1266,6 +1275,13 @@ void ReadLevel(const char *filename)
     FILE    *f;
     int     i;
     edict_t *ent;
+
+    // a Quake 1 level its progs run (SpawnEntities just loaded them, TAG_LEVEL,
+    // so nothing here may free that): their machine laid over the fresh one
+    if (Q1VM_Active()) {
+        Q1VM_ReadLevel(filename);
+        return;
+    }
 
     // The navmesh that SpawnEntities just loaded is TAG_LEVEL and is about to
     // go away with the rest of it, so forget it BEFORE the FreeTags below.

@@ -94,6 +94,7 @@ in a config falls back to Quake II's weapons and movement.
 void Q3_LevelRules(void)
 {
     level.q3_weapons = 0;
+    level.q1_weapons = false;
     level.q3_physics = false;
 
     if (!deathmatch->value)
@@ -104,6 +105,11 @@ void Q3_LevelRules(void)
             level.q3_weapons = (g_q3_weapons->integer >= 0 && g_q3_weapons->integer <= 2) ? g_q3_weapons->integer : 0;
         level.q3_physics = g_q3_physics && g_q3_physics->integer;
     }
+
+    // 3: Quake's guns for everyone (g_q1weap.c), with Quake's data - and
+    // whether or not Quake III's is there
+    if (g_q3_weapons && g_q3_weapons->integer == 3 && Q1W_Available())
+        level.q1_weapons = true;
 
     // a campaign arena is Quake III's game whatever the bot match says (g_sp.c)
     SP_LevelRules();

@@ -71,6 +71,145 @@ add_caustic_photons(ivec2 ipos, inout vec3 high_freq)
 	high_freq = clamp_output((global_ubo.pt_caustics_debug != 0) ? light : high_freq + light);
 }
 
+/* pt_portal_light: DIRECT LIGHT THROUGH A QUAKE 1 TELEPORTER'S GATE. Bounce rays go
+   through gates (indirect_lighting.rgen), but a lamp seen through one is a small,
+   bright thing a diffuse bounce ray rarely meets, so that alone lit almost nothing
+   (Matt, 2026-11-21: "It still doesn't look like the lights are coming through
+   portals" - the hall round the start map's skill gates black). So the lights behind
+   a gate are sampled as the lights in front are, from the point across it:
+   - one gate, picked by how big it looks from here (portal_light_gate_weight);
+   - this point, its normals and the view turned across to the destination as
+     portal_carry_ray turns a ray, so the eye-side faces land on the destination's
+     plane and the point stands as far behind it as it stands before the gate;
+   - a light sampled from there, out of the destination cluster's list;
+   - the path tested in two legs: from here toward the gate, which must be the first
+     thing met and this gate's face, then from the matching point at the destination
+     on to the light. No waver (a wavering ray would miss what was sampled).
+   A light a bounce ray from here meets through one such gate then counts as sampled
+   (ray_origin_light_sampled), as one met in a straight line does. Run from main()
+   once the lighting is done, reading back the G-buffer, as add_caustic_photons does -
+   inside the lighting functions this would spill. Plain direct_specular_weight split
+   (no light or sky MIS: their pdfs are a straight line's). */
+#define RNG_PORTAL_LIGHT(k)     (4 + 12 * 6 + (k))  // past every bounce's draws
+void
+add_portal_light(ivec2 ipos, inout vec3 high_freq, inout vec3 o_specular)
+{
+	if (!Q3_SHADERS || global_ubo.pt_portal_light == 0 || global_ubo.pt_cameras == 0
+		|| (global_ubo.pt_direct_polygon_lights <= 0 && global_ubo.pt_direct_dyn_lights <= 0))
+		return;
+
+	vec4 position_material = texelFetch(TEX_PT_SHADING_POSITION, ipos, 0);
+	vec3 position = position_material.xyz;
+	uint material_id = floatBitsToUint(position_material.w);
+	if (material_id == 0)
+		return;
+	vec3 normal = decode_normal(texelFetch(TEX_PT_NORMAL_A, ipos, 0).x);
+
+	// one gate, by weighted reservoir sampling over the camera slots
+	float total = 0.0, picked_weight = 0.0;
+	int picked = -1;
+	float u = get_rng(RNG_PORTAL_LIGHT(0));
+	for (int i = 0; i < global_ubo.num_cameras; i++)
+	{
+		float w = portal_light_gate_weight(global_ubo.security_camera_data[i], position, normal);
+		if (w <= 0.0)
+			continue;
+		total += w;
+		float p = w / total;
+		if (u < p)
+		{
+			picked = i;
+			picked_weight = w;
+			u /= p;
+		}
+		else
+			u = (u - p) / (1.0 - p);
+	}
+	if (picked < 0)
+		return;
+	mat4 gate = global_ubo.security_camera_data[picked];
+
+	vec3 view_direction = texelFetch(TEX_PT_VIEW_DIRECTION, ipos, 0).xyz;
+	vec3 geo_normal = decode_normal(texelFetch(TEX_PT_GEO_NORMAL_A, ipos, 0).x);
+	vec4 base_color = texelFetch(TEX_PT_BASE_COLOR_A, ipos, 0);
+	vec2 metal_rough = texelFetch(TEX_PT_METALLIC_A, ipos, 0).xy;
+	float specular_factor = base_color.a;
+	float roughness = metal_rough.y;
+	vec3 albedo, base_reflectivity;
+	get_reflectivity(base_color.rgb, metal_rough.x, albedo, base_reflectivity);
+
+	// Across, as portal_carry_ray: "into the gate" from this side becomes the way the
+	// destination faces, and the eye-side faces (half its thickness before the middle)
+	// the destination's plane. R turns this side into the far one; v * R turns back.
+	vec2 into = (dot(position.xy - gate[0].xy, gate[3].xy) > 0.0 ? -1.0 : 1.0) * gate[3].xy;
+	float turn = gate[1].w - atan(into.y, into.x);
+	float c = cos(turn), s = sin(turn);
+	mat3 R = mat3(c, s, 0.0, -s, c, 0.0, 0.0, 0.0, 1.0);
+	vec3 far_position = gate[1].xyz + R * (position - gate[0].xyz + vec3(into * gate[3].w, 0.0));
+
+	float alpha = square(roughness);
+	float phong_exp = RoughnessSquareToSpecPower(alpha);
+	float phong_scale = min(100, 1 / (M_PI * square(alpha)));
+	float phong_weight = clamp(specular_factor * luminance(base_reflectivity) / (luminance(base_reflectivity) + luminance(albedo)), 0, 0.9);
+
+	vec3 pos_on_light, contrib;
+	int light_index;
+	float light_pdfw;
+	bool is_sky_light;
+	vec3 rng = vec3(get_rng(RNG_PORTAL_LIGHT(1)), get_rng(RNG_PORTAL_LIGHT(2)), get_rng(RNG_PORTAL_LIGHT(3)));
+	sample_lights(uint(gate[2].z), far_position, R * normal, R * geo_normal, R * view_direction,
+		phong_exp, phong_scale, phong_weight, get_is_gradient(ipos),
+		pos_on_light, contrib, light_index, light_pdfw, is_sky_light, rng, 2 * M_PI);
+	if (luminance(abs(contrib)) == 0.0)
+		return;
+
+	vec3 far_dir = pos_on_light - far_position;
+	float dist = length(far_dir);
+	far_dir /= dist;
+	vec3 dir = far_dir * R;
+	if (dot(dir.xy, into) <= 0.0)
+		return;     // away from the gate: a light beside the destination, not through it
+
+	int shadow_cull_mask = shadow_ray_cull_mask();
+	if (global_ubo.first_person_model != 0 && (material_id & MATERIAL_FLAG_WEAPON) == 0)
+		shadow_cull_mask |= AS_FLAG_VIEWER_MODELS;
+	else
+		shadow_cull_mask |= AS_FLAG_VIEWER_WEAPON;
+
+	// this side's leg: the gate must be the first thing met, before the light's distance
+	Ray ray;
+	ray.origin = position - view_direction * 0.01;
+	ray.direction = dir;
+	ray.t_min = 0;
+	ray.t_max = dist;
+	trace_geometry_ray(ray, false, shadow_cull_mask);
+	if (!found_intersection(ray_payload_geometry))
+		return;     // missed the gate, or the light is nearer than it - behind the destination's plane
+	uint hit_material = get_hit_triangle(ray_payload_geometry).material_id;
+	if (!is_camera(hit_material) || camera_id_of_material(hit_material) != uint(picked))
+		return;
+
+	// the far side's leg, from the matching point at the destination
+	vec3 far_hit = far_position + far_dir * ray_payload_geometry.hit_distance;
+	if (trace_shadow_ray(get_shadow_ray(far_hit, pos_on_light, 0), shadow_cull_mask) == 0.0)
+		return;
+
+	vec3 radiance = contrib * (total / picked_weight);
+	float direct_specular_weight = smoothstep(
+		global_ubo.pt_direct_roughness_threshold - 0.02,
+		global_ubo.pt_direct_roughness_threshold + 0.02,
+		roughness);
+
+	vec3 F = vec3(0);
+	if (direct_specular_weight > 0)
+	{
+		vec3 specular = radiance * direct_specular_weight
+			* GGX_times_NdotL(view_direction, dir, normal, roughness, base_reflectivity, 0.0, specular_factor, F);
+		o_specular = clamp_output(o_specular + demodulate_specular(base_reflectivity, specular));
+	}
+	high_freq = clamp_output(high_freq + radiance * (max(0.0, dot(normal, dir)) / M_PI) * (vec3(1.0) - F));
+}
+
 
 
 void
@@ -1266,6 +1405,7 @@ main()
 		direct_lighting(ipos, is_odd_checkerboard, high_freq, specular);
 
 	add_caustic_photons(ipos, high_freq);
+	add_portal_light(ipos, high_freq, specular);
 
 	high_freq *= STORAGE_SCALE_HF;
 	specular *= STORAGE_SCALE_SPEC;

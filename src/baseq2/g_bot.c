@@ -211,6 +211,16 @@ static bot_weapon_t bot_weapons[] = {
     { "weapon_q3_railgun",      15, 256, 8192,    0,  6,  1, AIM_CENTER },
     { "weapon_q3_plasmagun",    30,  64, 1024, 2000,  6,  1, AIM_CENTER },
     { "weapon_q3_bfg",          30, 128, 4096, 2000,  8,  1, AIM_CENTER, false, true },
+    // Quake's guns, in a bot match with them (g_q1weap.c). Its grenade leaves
+    // at 600 along the view and 200 up, as Quake II's does.
+    { "weapon_q1_axe",          30,   0,   64,    0,  1,  0, AIM_CENTER, false, false, true },
+    { "weapon_q1_shotgun",      15,   0,  768,    0,  2,  1, AIM_CENTER },
+    { "weapon_q1_supershotgun", 15,   0,  512,    0,  4,  2, AIM_CENTER },
+    { "weapon_q1_nailgun",      15,   0, 1024, 1000,  3,  1, AIM_CENTER },
+    { "weapon_q1_supernailgun", 15,   0, 1024, 1000,  5,  2, AIM_CENTER },
+    { "weapon_q1_grenadelauncher", 20, 192, 768,  600,  5,  1, AIM_HEAD, true, true },
+    { "weapon_q1_rocketlauncher", 15, 100, 1280, 1000,  7,  1, AIM_FEET, false, true },
+    { "weapon_q1_lightning",    15,   0,  600,    0,  8,  1, AIM_CENTER },
 };
 
 #define BOT_NUM_WEAPONS ((int)(sizeof(bot_weapons) / sizeof(bot_weapons[0])))
@@ -1219,6 +1229,29 @@ Bot_Init
 InitGame: a new game, so no bots yet. Also registers the cvars the menu sets.
 =================
 */
+/*
+=================
+Bot_GameRead
+
+No bots: the table (one per client slot) and the skin pool made afresh. For
+InitGame, and for ReadGame - whose gi.FreeTags(TAG_GAME) takes the ones
+InitGame made, which ClientConnect's Bot_ClientConnecting then read freed.
+=================
+*/
+void Bot_GameRead(void)
+{
+    bots = gi.TagMalloc(game.maxclients * sizeof(*bots), TAG_GAME);
+    memset(bots, 0, game.maxclients * sizeof(*bots));
+    bots_pending = false;
+    roster_built = false;
+    bot_human_since = -1;
+    skin_pool = NULL;
+    skin_pool_count = 0;
+    skin_pool_models = -1;
+    team_skin_cached = 0;
+    bot_player_plan = TEAM_NONE;
+}
+
 void Bot_Init(void)
 {
     int i;
@@ -1235,16 +1268,7 @@ void Bot_Init(void)
     // the menu's "friendly fire" for team bot matches (Team_NoFriendlyFire)
     bot_friendly_fire = gi.cvar("bot_friendly_fire", "0", CVAR_ARCHIVE);
 
-    bots = gi.TagMalloc(game.maxclients * sizeof(*bots), TAG_GAME);
-    memset(bots, 0, game.maxclients * sizeof(*bots));
-    bots_pending = false;
-    roster_built = false;
-    bot_human_since = -1;
-    skin_pool = NULL;
-    skin_pool_count = 0;
-    skin_pool_models = -1;
-    team_skin_cached = 0;
-    bot_player_plan = TEAM_NONE;
+    Bot_GameRead();
 
     for (i = 0; i < BOT_NUM_WEAPONS; i++) {
         gitem_t *item = FindItemByClassname((char *)bot_weapons[i].classname);
@@ -1787,6 +1811,9 @@ static void Bot_ChooseWeapon(edict_t *self, bot_t *b)
         if (!Bot_HasWeapon(self, w))
             continue;
         if (w->melee && !sk->melee)
+            continue;
+        // Quake's Thunderbolt under water lets every cell go into its holder
+        if (self->waterlevel > 1 && !strcmp(w->classname, "weapon_q1_lightning"))
             continue;
 
         score = w->priority * 10.0f;

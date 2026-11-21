@@ -26,8 +26,10 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "common/common.h"
 #include "common/cvar.h"
 #include "common/files.h"
+#include "common/bsp.h"
 #include "../client/client.h"
 #include "refresh/images.h"
+#include "refresh/models.h"
 #include "system/system.h"
 #include "format/pcx.h"
 #include "format/wal.h"
@@ -1269,6 +1271,487 @@ static int try_other_formats(imageformat_t orig, image_t *image, int try_src, by
 }
 
 // The size in the header of the .wal or .pcx at (name).
+/*
+=================================================================
+
+QUAKE 1 WALL TEXTURES
+
+A Quake 1 map carries its textures inside it, 8-bit in Quake's own palette,
+and bsp_q1.c names them textures/q1/<name> ('*' spelled '#'). A file of that
+name - an override, Matt's materialDev work - wins as for any wall; failing
+one, the pixels come from the map (BSP_Q1FindMiptex).
+
+<name>_light is made from the texture's fullbright colours, Quake's last 32,
+which Quake draws unlit: the light fixtures, the lava glints, the computer
+panels. Nothing else in a Quake 1 map tells the path tracer where its lights
+are - Quake's own light entities only ever went into its lightmaps.
+
+A '{' texture is a fence: palette index 255 is see-through there.
+
+<sky>_q1sky0 and <sky>_q1sky1 are the two cloud layers of a sky texture
+(256x128 in id's maps): the back one is its right half, solid; the front one
+its left half, where colour 0 is see-through - as GLQuake's R_InitSky split
+it. vkpt main.c's q1_sky_faces draws them.
+
+=================================================================
+*/
+
+#define Q1_TEXTURE_PREFIX       "textures/q1/"
+#define Q1_TEXTURE_PREFIX_LEN   12
+#define Q1_FIRST_FULLBRIGHT     224
+
+static uint32_t q1_palette[256];
+static bool     q1_palette_loaded;
+
+static bool q1_load_palette(void)
+{
+    byte *data;
+    int len;
+
+    if (q1_palette_loaded)
+        return true;
+
+    len = FS_LoadFile("id1/gfx/palette.lmp", (void **)&data);
+    if (!data)
+        return false;
+    if (len < 768) {
+        FS_FreeFile(data);
+        return false;
+    }
+    for (int i = 0; i < 256; i++)
+        q1_palette[i] = MakeColor(data[i * 3], data[i * 3 + 1], data[i * 3 + 2], 255);
+    FS_FreeFile(data);
+    q1_palette_loaded = true;
+    return true;
+}
+
+// The pixels for textures/q1/<texture>[_light] (baselen: the name without
+// its extension), from a loaded Quake 1 map. *light: the _light one was asked
+// for. *fence: a '{' texture. *sky_layer: 0 or 1 for <sky>_q1sky0/1, the
+// whole sky texture's pixels returned; -1 otherwise.
+static const byte *q1_find_texture(const char *name, size_t baselen, int *w, int *h, bool *light, bool *fence,
+                                   int *sky_layer)
+{
+    char base[MAX_QPATH];
+    const byte *pix;
+    size_t n;
+
+    *sky_layer = -1;
+    if (baselen <= Q1_TEXTURE_PREFIX_LEN || Q_strncasecmp(name, Q1_TEXTURE_PREFIX, Q1_TEXTURE_PREFIX_LEN))
+        return NULL;
+    n = baselen - Q1_TEXTURE_PREFIX_LEN;
+    if (n >= sizeof(base))
+        return NULL;
+    memcpy(base, name + Q1_TEXTURE_PREFIX_LEN, n);
+    base[n] = 0;
+    *fence = base[0] == '{';
+
+    *light = false;
+    if ((pix = BSP_Q1FindMiptex(base, w, h)) != NULL)
+        return pix;
+    // a health or ammo box's (model_q1.c): those are not in the map
+    if ((pix = MOD_Q1ItemMiptex(base, w, h)) != NULL)
+        return pix;
+
+    // a sky's cloud layer: half of the texture, as wide as it is high
+    if (n > 7 && !Q_strncasecmp(base + n - 7, "_q1sky", 6) && (base[n - 1] == '0' || base[n - 1] == '1')) {
+        const int layer = base[n - 1] - '0';
+        base[n - 7] = 0;
+        if ((pix = BSP_Q1FindMiptex(base, w, h)) == NULL || *w < 2)
+            return NULL;
+        *sky_layer = layer;
+        return pix;
+    }
+
+    if (n > 6 && !Q_stricmp(base + n - 6, "_light")) {
+        base[n - 6] = 0;
+        *light = true;
+        if ((pix = BSP_Q1FindMiptex(base, w, h)) != NULL)
+            return pix;
+        return MOD_Q1ItemMiptex(base, w, h);
+    }
+    return NULL;
+}
+
+static inline bool q1_is_fullbright(int p, bool fence)
+{
+    return p >= Q1_FIRST_FULLBRIGHT && !(fence && p == 255);
+}
+
+/*
+Palette indices (src) to colour: all of them, or with (light) only the
+fullbright ones, on black - NULL then when there are none, as nothing in it
+glows. (fence): index 255 is see-through, and takes a solid neighbour's
+colour so filtering leaves no dark fringe; (*alpha) says whether there was
+any.
+*/
+static uint32_t *q1_expand_pixels(const byte *src, int w, int h, bool light, bool fence, bool *alpha)
+{
+    const size_t size = (size_t)w * h;
+    uint32_t *out;
+
+    *alpha = false;
+    if (light) {
+        size_t i;
+        for (i = 0; i < size; i++)
+            if (q1_is_fullbright(src[i], fence))
+                break;
+        if (i == size)
+            return NULL;
+    }
+
+    out = (uint32_t *)IMG_AllocPixels(size * 4);
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            const int i = y * w + x;
+            const int p = src[i];
+
+            if (light) {
+                out[i] = q1_is_fullbright(p, fence) ? q1_palette[p] : MakeColor(0, 0, 0, 255);
+            } else if (fence && p == 255) {
+                int q = 0;
+                if (x > 0 && src[i - 1] != 255) q = src[i - 1];
+                else if (x < w - 1 && src[i + 1] != 255) q = src[i + 1];
+                else if (y > 0 && src[i - w] != 255) q = src[i - w];
+                else if (y < h - 1 && src[i + w] != 255) q = src[i + w];
+                out[i] = q1_palette[q] & U32_RGB;
+                *alpha = true;
+            } else {
+                out[i] = q1_palette[p];
+            }
+        }
+    }
+    return out;
+}
+
+// what every image made from Quake 1's 8-bit pixels has in common
+static void q1_finish_image(image_t *image, imagetype_t type, imageflags_t flags, int w, int h, bool alpha)
+{
+    image->type = type;
+    image->flags = flags | IF_PALETTED | (alpha ? IF_TRANSPARENT : IF_OPAQUE);
+    image->registration_sequence = registration_sequence;
+    image->upload_width = image->width = w;
+    image->upload_height = image->height = h;
+    // no such file: it names what the pixels stand for in 'mat print', and
+    // the texture reload finds nothing on disk to reload
+    Q_strlcpy(image->filepath, image->name, sizeof(image->filepath));
+    image->last_modified = 0;
+}
+
+// find_or_load_image's last resort for a Quake 1 wall, or a box's wall
+// texture on its model (model_q1.c): (image)'s name is set
+static int load_q1_texture(image_t *image, imagetype_t type, imageflags_t flags, byte **pic)
+{
+    const byte *src;
+    uint32_t *out;
+    bool light, fence, alpha = false;
+    int w, h, sky_layer;
+
+    if (type != IT_WALL && type != IT_SKIN)
+        return Q_ERR(ENOENT);
+    src = q1_find_texture(image->name, image->baselen, &w, &h, &light, &fence, &sky_layer);
+    if (!src || !q1_load_palette())
+        return Q_ERR(ENOENT);
+
+    if (sky_layer >= 0) {
+        // GLQuake's R_InitSky: the back layer is the right half; the front one
+        // the left, its colour 0 see-through - and there the back layer's
+        // average colour, so filtering leaves no dark fringe round the clouds
+        const int half = w / 2;
+        uint32_t sum[3] = { 0 };
+
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < half; x++) {
+                const byte *c = (const byte *)&q1_palette[src[y * w + half + x]];
+                sum[0] += c[0];
+                sum[1] += c[1];
+                sum[2] += c[2];
+            }
+        }
+        const uint32_t n = (uint32_t)half * h;
+        const uint32_t clear = MakeColor(sum[0] / n, sum[1] / n, sum[2] / n, 0);
+
+        out = (uint32_t *)IMG_AllocPixels((size_t)half * h * 4);
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < half; x++) {
+                if (sky_layer == 0) {
+                    out[y * half + x] = q1_palette[src[y * w + half + x]];
+                } else {
+                    const int p = src[y * w + x];
+                    out[y * half + x] = p ? q1_palette[p] : clear;
+                    alpha |= !p;
+                }
+            }
+        }
+        w = half;
+    } else {
+        out = q1_expand_pixels(src, w, h, light, fence, &alpha);
+        if (!out)
+            return Q_ERR(ENOENT);   // nothing in it glows
+    }
+
+    q1_finish_image(image, type, flags, w, h, alpha);
+    *pic = (byte *)out;
+    return Q_ERR_SUCCESS;
+}
+
+/*
+The start of the last (tag) in (s) when all that follows it is (count)
+numbers joined by '_' - "_mdl_" then "00_01", "_spr_" then "03" - with them
+in (numbers); NULL otherwise. Exactly that, so a sidecar's name
+(<model>_mdl_00_00_n) is not mistaken for the skin itself.
+*/
+static const char *q1_name_tag(const char *s, const char *tag, int count, int *numbers)
+{
+    const size_t taglen = strlen(tag);
+    const char *found = NULL, *p;
+
+    for (p = strstr(s, tag); p; p = strstr(p + 1, tag))
+        found = p;
+    if (!found)
+        return NULL;
+
+    p = found + taglen;
+    for (int i = 0; i < count; i++) {
+        if (i && *p++ != '_')
+            return NULL;
+        if (!Q_isdigit(*p))
+            return NULL;
+        numbers[i] = atoi(p);
+        while (Q_isdigit(*p))
+            p++;
+    }
+    return *p ? NULL : found;
+}
+
+/*
+=================
+load_q1_model_image
+
+find_or_load_image's last resort for a Quake 1 model's skin or a sprite's
+frame, with the names model_q1.c gives them - each keeping the "id1/<episode>/"
+of its model, so an add-on's own pixels are its own:
+
+  <path>.lmp              a rerelease md5 skin, read as a file: a width and a
+                          height, then that many palette indices
+  <model>_mdl_<S>_<F>     skin S (frame F of a skin group) cut out of <model>.mdl
+  <sprite>_spr_<N>        frame N of <sprite>.spr, index 255 see-through
+
+and any of them with _light after it: its fullbright colours alone, on black,
+which Quake drew unlit - eyes, flames, the glow of a Quad Damage - and none
+at all when it has none.
+=================
+*/
+static int load_q1_model_image(image_t *image, imagetype_t type, imageflags_t flags, byte **pic)
+{
+    char base[MAX_QPATH], path[MAX_QPATH];
+    byte *src = NULL;
+    bool light = false, fence = false, alpha;
+    int w = 0, h = 0, numbers[2], len;
+    size_t n = image->baselen;
+    const char *tag;
+    uint32_t *out;
+
+    if ((type != IT_SKIN && type != IT_SPRITE) || n >= sizeof(base))
+        return Q_ERR(ENOENT);
+    if (Q_strncasecmp(image->name, "id1/", 4) && Q_strncasecmp(image->name, "progs/", 6))
+        return Q_ERR(ENOENT);
+    if (!q1_load_palette())
+        return Q_ERR(ENOENT);
+
+    memcpy(base, image->name, n);
+    base[n] = 0;
+    if (n > 6 && !Q_stricmp(base + n - 6, "_light")) {
+        n -= 6;
+        base[n] = 0;
+        light = true;
+    }
+
+    // a rerelease skin, its own file
+    if (Q_concat(path, sizeof(path), base, ".lmp") < sizeof(path)) {
+        byte *data = NULL;
+
+        len = FS_LoadFile(path, (void **)&data);
+        if (data) {
+            if (len >= 8) {
+                int lw = (int)LittleLong(*(uint32_t *)data);
+                int lh = (int)LittleLong(*(uint32_t *)(data + 4));
+                if (lw > 0 && lh > 0 && lw <= 4096 && lh <= 4096 && (size_t)len >= 8 + (size_t)lw * lh) {
+                    src = Z_Malloc((size_t)lw * lh);
+                    memcpy(src, data + 8, (size_t)lw * lh);
+                    w = lw;
+                    h = lh;
+                }
+            }
+            FS_FreeFile(data);
+        }
+    }
+
+    // an .mdl's skin: <model>_mdl_<skin>_<frame>
+    if (!src && (tag = q1_name_tag(base, "_mdl_", 2, numbers)) != NULL) {
+        if (Q_snprintf(path, sizeof(path), "%.*s.mdl", (int)(tag - base), base) < sizeof(path))
+            src = MOD_Q1ModelSkin(path, numbers[0], numbers[1], &w, &h);
+    }
+
+    // a sprite's frame: <sprite>_spr_<frame>
+    if (!src && (tag = q1_name_tag(base, "_spr_", 1, numbers)) != NULL) {
+        if (Q_snprintf(path, sizeof(path), "%.*s.spr", (int)(tag - base), base) < sizeof(path)) {
+            src = MOD_Q1SpriteFrame(path, numbers[0], &w, &h);
+            fence = true;
+        }
+    }
+
+    if (!src)
+        return Q_ERR(ENOENT);
+
+    out = q1_expand_pixels(src, w, h, light, fence, &alpha);
+    Z_Free(src);
+    if (!out)
+        return Q_ERR(ENOENT);   // nothing in it glows
+
+    q1_finish_image(image, type, flags, w, h, alpha);
+    *pic = (byte *)out;
+    return Q_ERR_SUCCESS;
+}
+
+#define Q1_WAD_QPIC     0x42    // 'B': a qpic, its width and height first
+#define Q1_WAD_RAW      0x44    // 'D': conchars, 128x128 with no header
+
+// the gfx.wad the last picture came from: the status bar's are all in one
+static char     q1_wad_path[MAX_QPATH];
+static byte     *q1_wad_data;
+static int      q1_wad_len;
+
+static void q1_free_wad(void)
+{
+    if (q1_wad_data)
+        FS_FreeFile(q1_wad_data);
+    q1_wad_data = NULL;
+    q1_wad_len = 0;
+    q1_wad_path[0] = 0;
+}
+
+// lump (name) of the WAD2 at (path): its type and size, or NULL
+static const byte *q1_wad_lump(const char *path, const char *name, int *type, int *size)
+{
+    if (Q_stricmp(path, q1_wad_path)) {
+        q1_free_wad();
+        q1_wad_len = FS_LoadFile(path, (void **)&q1_wad_data);
+        Q_strlcpy(q1_wad_path, path, sizeof(q1_wad_path));     // a missing one too
+    }
+    if (!q1_wad_data || q1_wad_len < 12 || memcmp(q1_wad_data, "WAD2", 4))
+        return NULL;
+
+    const int numlumps = (int)LittleLong(*(uint32_t *)(q1_wad_data + 4));
+    const int infotable = (int)LittleLong(*(uint32_t *)(q1_wad_data + 8));
+    if (numlumps < 0 || infotable < 12 || (int64_t)infotable + (int64_t)numlumps * 32 > q1_wad_len)
+        return NULL;
+
+    for (int i = 0; i < numlumps; i++) {
+        // filepos, disksize, size, type, compression, 2 pad, name[16]
+        const byte *l = q1_wad_data + infotable + i * 32;
+        char lname[17];
+
+        memcpy(lname, l + 16, 16);
+        lname[16] = 0;
+        if (Q_stricmp(lname, name))
+            continue;
+
+        const int filepos = (int)LittleLong(*(uint32_t *)l);
+        const int disksize = (int)LittleLong(*(uint32_t *)(l + 4));
+        if (l[13] || filepos < 0 || disksize < 0 || (int64_t)filepos + disksize > q1_wad_len)
+            return NULL;    // compressed (never was), or cut short
+        *type = l[12];
+        *size = disksize;
+        return q1_wad_data + filepos;
+    }
+    return NULL;
+}
+
+/*
+=================
+load_q1_pic
+
+find_or_load_image's last resort for a Quake 1 picture, "id1/<episode>/gfx/
+<name>.lmp": the status bar's and the intermission's (screen.c's Quake 1
+status bar). That file when there is one - a qpic: a width and a height, then
+that many palette indices - and otherwise lump <name> of the episode's gfx.wad,
+which the file system takes from id1 when the episode has none of its own.
+Index 255 is see-through, as Quake drew them with Draw_TransPic; in "conchars",
+the 128x128 font with no header, index 0 is.
+=================
+*/
+static int load_q1_pic(image_t *image, imagetype_t type, imageflags_t flags, byte **pic)
+{
+    char base[MAX_QPATH], path[MAX_QPATH];
+    byte *src = NULL, *data = NULL;
+    const char *slash;
+    bool alpha;
+    int w = 0, h = 0, len;
+    const size_t n = image->baselen;
+
+    if ((type != IT_PIC && type != IT_FONT) || n >= sizeof(base))
+        return Q_ERR(ENOENT);
+    if (Q_strncasecmp(image->name, "id1/", 4) || Q_stricmp(image->name + n, ".lmp"))
+        return Q_ERR(ENOENT);
+    if (!q1_load_palette())
+        return Q_ERR(ENOENT);
+
+    memcpy(base, image->name, n);
+    base[n] = 0;
+    slash = strrchr(base, '/');
+    if (!slash || slash - base < 4 || Q_strncasecmp(slash - 4, "/gfx", 4))
+        return Q_ERR(ENOENT);
+
+    // its own file
+    len = FS_LoadFile(image->name, (void **)&data);
+    if (data) {
+        if (len >= 8) {
+            const int lw = (int)LittleLong(*(uint32_t *)data);
+            const int lh = (int)LittleLong(*(uint32_t *)(data + 4));
+            if (lw > 0 && lh > 0 && lw <= 4096 && lh <= 4096 && (size_t)len >= 8 + (size_t)lw * lh) {
+                src = Z_Malloc((size_t)lw * lh);
+                memcpy(src, data + 8, (size_t)lw * lh);
+                w = lw;
+                h = lh;
+            }
+        }
+        FS_FreeFile(data);
+    }
+
+    // a lump of the gfx.wad beside the gfx directory
+    if (!src && Q_snprintf(path, sizeof(path), "%.*sgfx.wad", (int)(slash - base - 3), base) < sizeof(path)) {
+        int lumptype = 0, size = 0;
+        const byte *lump = q1_wad_lump(path, slash + 1, &lumptype, &size);
+
+        if (lump && lumptype == Q1_WAD_QPIC && size >= 8) {
+            const int lw = (int)LittleLong(*(uint32_t *)lump);
+            const int lh = (int)LittleLong(*(uint32_t *)(lump + 4));
+            if (lw > 0 && lh > 0 && lw <= 4096 && lh <= 4096 && (size_t)size >= 8 + (size_t)lw * lh) {
+                src = Z_Malloc((size_t)lw * lh);
+                memcpy(src, lump + 8, (size_t)lw * lh);
+                w = lw;
+                h = lh;
+            }
+        } else if (lump && lumptype == Q1_WAD_RAW && size == 128 * 128) {
+            src = Z_Malloc(128 * 128);
+            for (int i = 0; i < 128 * 128; i++)
+                src[i] = lump[i] ? lump[i] : 255;   // Draw_Init: 0 is see-through
+            w = h = 128;
+        }
+    }
+
+    if (!src)
+        return Q_ERR(ENOENT);
+
+    uint32_t *out = q1_expand_pixels(src, w, h, false, true, &alpha);
+    Z_Free(src);
+
+    q1_finish_image(image, type, flags, w, h, alpha);
+    *pic = (byte *)out;
+    return Q_ERR_SUCCESS;
+}
+
 static int get_8bit_dimensions(const char* name, int* width, int* height)
 {
     assert(name);
@@ -1292,8 +1775,17 @@ static int get_8bit_dimensions(const char* name, int* width, int* height)
 
     qhandle_t f;
     FS_OpenFile(name, &f, FS_MODE_READ);
-    if (!f)
+    if (!f) {
+        // a Quake 1 map's own texture: its size is the one its faces are mapped in
+        bool light, fence;
+        int sky_layer;
+        if (format == IM_WAL && q1_find_texture(name, len - 4, width, height, &light, &fence, &sky_layer) && !light) {
+            if (sky_layer >= 0)
+                *width /= 2;
+            return Q_ERR_SUCCESS;
+        }
         return Q_ERR(ENOENT);
+    }
 
     if (format == IM_WAL)
     {
@@ -1757,6 +2249,17 @@ static int find_or_load_image(const char *name, size_t len,
 		override_textures = 0;
     if (flags & IF_EXACT)
         override_textures = 0;
+    /* NO QUAKE II OVERRIDE FOR A QUAKE 1 TEXTURE. overrides/ is matched by base
+       name alone, and Q2RTX's 2019 set carries 174 names Quake 1 maps use too -
+       Quake II reused id's names for its own art. So start's episode 3 hall
+       (q1/metal5_4) drew Quake II's e1u2 metal5_4 with its normal map,
+       and every q1 texture without a normal map of its own took the namesake's
+       _n / _light (Matt: "these quake2 textures don't fit at all", 2026-11-21).
+       A Quake 1 map that wants one names the file in a .mat - id1/maps/q1/
+       e1m1.mat keeps e1m1's computer panels on theirs. A loose textures/q1/
+       <name>.png still wins as before. */
+    if (!Q_strncasecmp(name, Q1_TEXTURE_PREFIX, Q1_TEXTURE_PREFIX_LEN))
+        override_textures = 0;
 
     if(override_textures)
     {
@@ -1832,6 +2335,31 @@ static int find_or_load_image(const char *name, size_t len,
             if (ret >= 0)
                 break;
         }
+    }
+
+    // a Quake 1 map's texture with no file of its own: from the map - or, on
+    // a health or ammo box's model, from the box (model_q1.c)
+    if (ret < 0 && (type == IT_WALL || type == IT_SKIN) && !(flags & IF_EXACT)) {
+        memcpy(image->name, name, len + 1);
+        image->baselen = len - 4;
+        pic = NULL;
+        ret = load_q1_texture(image, type, flags, &pic);
+    }
+
+    // a Quake 1 model's skin or sprite frame: from the model
+    if (ret < 0 && (type == IT_SKIN || type == IT_SPRITE) && !(flags & IF_EXACT)) {
+        memcpy(image->name, name, len + 1);
+        image->baselen = len - 4;
+        pic = NULL;
+        ret = load_q1_model_image(image, type, flags, &pic);
+    }
+
+    // a Quake 1 picture: its .lmp, or its lump of gfx.wad
+    if (ret < 0 && (type == IT_PIC || type == IT_FONT)) {
+        memcpy(image->name, name, len + 1);
+        image->baselen = len - 4;
+        pic = NULL;
+        ret = load_q1_pic(image, type, flags, &pic);
     }
 
     if (ret < 0) {
@@ -2208,6 +2736,8 @@ void IMG_FreeAll(void)
         List_Init(&r_imageHash[i]);
     }
 
+    q1_free_wad();
+
     // &r_images[0] == R_NOTEXTURE
     r_numImages = 1;
 }
@@ -2305,6 +2835,9 @@ byte *IMG_LoadGlowMap(const image_t *image, int *width, int *height, bool *from_
 
     for (i = 0; i < 3; i++) {
         if (i > 0 && image->type != IT_WALL)
+            break;
+        // a Quake 1 texture takes nothing from Quake II's overrides/ (IMG_Find)
+        if (i == 2 && !Q_strncasecmp(base, Q1_TEXTURE_PREFIX, Q1_TEXTURE_PREFIX_LEN))
             break;
 
         memset(&temp, 0, sizeof(temp));

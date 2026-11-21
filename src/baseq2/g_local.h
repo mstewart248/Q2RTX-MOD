@@ -385,6 +385,21 @@ typedef struct {
 #define IT_MELEE        64      // no ammo, never auto-switched away from on empty
 #define IT_CTF          128     // a flag or a tech: CTF's, never handed out by `give all`
 #define IT_Q3           256     // Quake III's weapons and the two ammo only they use (g_q3weap.c)
+#define IT_Q1           512     // Quake's weapons (g_q1weap.c)
+
+// gitem_t->tag of Quake's guns: its impulse numbers (weapons.qc)
+enum {
+    Q1W_NONE,
+    Q1W_AXE,
+    Q1W_SHOTGUN,
+    Q1W_SUPERSHOTGUN,
+    Q1W_NAILGUN,
+    Q1W_SUPERNAILGUN,
+    Q1W_GRENADE,
+    Q1W_ROCKET,
+    Q1W_LIGHTNING,
+    Q1W_NUM
+};
 
 // gitem_t->tag of Quake III's guns: its weapon numbers (bg_public.h weapon_t)
 enum {
@@ -565,7 +580,9 @@ typedef struct {
     float       gravity;            // sv_gravity for this level (worldspawn, target_gravity)
     bool        is_n64;             // rerelease: map lives under q64/ - several entities behave differently
     bool        q3map;              // a Quake III Arena map (sv_map_q3) - see g_q3.c
+    bool        q1map;              // a Quake 1 map (sv_map_q1) - see g_q1.c
     int         q3_weapons;         // bot match: 0 Quake II's guns, 1 Quake III's, 2 by player model (g_q3weap.c)
+    bool        q1_weapons;         // bot match: Quake's guns for everyone (g_q1weap.c, g_q3_weapons 3)
     bool        q3_physics;         // bot match: Quake III's movement and knockback (CS_Q3RULES)
     char        *goals;             // rerelease N64: worldspawn "goals", tab-separated objectives
     int         goal_num;           // index of the current one, advanced by target_goal
@@ -739,6 +756,10 @@ typedef struct {
     char        *music;             // worldspawn: "intro.wav [loop.wav]"
     int         nobots;             // info_player_deathmatch: not for bots
     int         nohumans;           // ... not for players
+
+    // Quake 1 (g_q1.c)
+    vec3_t      mangle;             // info_intermission's view angles
+    vec3_t      dest, dest2;        // MG1's func_bob: the offsets it swings through (g_q1.c)
 } spawn_temp_t;
 
 // a Quake III info_player_deathmatch's flags, kept in its spawnflags by
@@ -1165,6 +1186,18 @@ extern  int snd_fry;
 #define MOD_Q3_LIGHTNING    70
 #define MOD_Q3_BFG          71
 #define MOD_Q3_BFG_SPLASH   72
+// Quake's weapons (g_q1weap.c)
+#define MOD_Q1_AXE          73
+#define MOD_Q1_SHOTGUN      74
+#define MOD_Q1_SSHOTGUN     75
+#define MOD_Q1_NAIL         76
+#define MOD_Q1_SNAIL        77
+#define MOD_Q1_GRENADE      78
+#define MOD_Q1_G_SPLASH     79
+#define MOD_Q1_ROCKET       80
+#define MOD_Q1_R_SPLASH     81
+#define MOD_Q1_LIGHTNING    82
+#define MOD_Q1_DISCHARGE    83
 #define MOD_FRIENDLY_FIRE   0x8000000
 
 extern  int meansOfDeath;
@@ -1973,6 +2006,42 @@ void Q3_TeleportPlayer(edict_t *player, const vec3_t origin, const vec3_t angles
 bool Q3_JumpPadLanding(edict_t *pad, vec3_t out);
 void q3_teleport_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf);
 void q3_jumppad_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf);
+
+//
+// g_q1.c - Quake 1 maps (level.q1map)
+//
+void Q1_SpawnEntity(edict_t *ent);
+void Q1_LinkDoors(void);
+int  Q1_SoundIndex(const char *name);
+void q1_teleport_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf);
+void q1_teleport_use(edict_t *self, edict_t *other, edict_t *activator);
+
+//
+// g_q1vm*.c - Quake 1's own progs.dat, run on its maps out of deathmatch
+// (the rest is in g_q1vm.h)
+//
+bool Q1VM_Active(void);
+void Q1VM_GameInit(void);
+bool Q1VM_SpawnEntities(const char *mapname, const char *entities);
+void Q1VM_RunFrame(void);
+void Q1VM_ClientBegin(edict_t *ent);
+void Q1VM_ClientDisconnect(edict_t *ent);
+void Q1VM_ClientThink(edict_t *ent, usercmd_t *cmd);
+bool Q1VM_ClientCommand(edict_t *ent);
+void Q1VM_WriteLevel(const char *filename);
+void Q1VM_ReadLevel(const char *filename);
+void QC_FreeProgs(void);
+
+//
+// g_q1demo.c - a Quake 1 demo (.dem) played back on its map (the engine's
+// q1demo command, for the attract loop)
+//
+bool Q1Demo_Active(void);
+bool Q1Demo_SpawnEntities(const char *mapname);
+void Q1Demo_RunFrame(void);
+void Q1Demo_ClientBegin(edict_t *ent);
+void Q1Demo_ClientDisconnect(edict_t *ent);
+
 bool Pickup_Q3Powerup(edict_t *ent, edict_t *other);
 bool Pickup_Q3Holdable(edict_t *ent, edict_t *other);
 void Use_Q3Medkit(edict_t *ent, gitem_t *item);
@@ -2017,6 +2086,24 @@ void Weapon_Q3(edict_t *ent);
 void Q3W_Think(edict_t *ent, const usercmd_t *ucmd);
 bool Q3W_KeepsOnDeath(const gitem_t *item);
 const char *Q3W_Obituary(int mod, bool self_kill, const char **message2, edict_t *self);
+
+//
+// g_q1weap.c - Quake's weapons in the bot match (level.q1_weapons)
+//
+bool Q1W_Available(void);
+gitem_t *Q1W_FindItem(const char *name);
+const char *Q1W_SpawnClassname(const char *classname);
+void Q1W_ItemModel(edict_t *ent);
+bool Pickup_Q1Weapon(edict_t *ent, edict_t *other);
+bool Q1W_PickupAmmo(edict_t *ent, edict_t *other);
+void Q1W_GiveSpawnKit(gclient_t *client);
+void Q1W_Precache(void);
+void Q1W_WeaponChanged(edict_t *ent);
+void Weapon_Q1(edict_t *ent);
+bool Weapon_IsQuadfire(void);   // p_weapon.c: this think runs twice (dualfire, haste)
+bool Q1W_KeepsOnDeath(const gitem_t *item);
+const char *Q1W_AmmoIcon(const gitem_t *weapon);
+const char *Q1W_Obituary(int mod, bool self_kill, const char **message2, edict_t *self);
 bool IsFemale(edict_t *ent);
 bool IsNeutral(edict_t *ent);
 void Q3_ClientFrame(edict_t *ent);
@@ -2147,6 +2234,7 @@ void SP_AccuracyShot(edict_t *ent);
 void SP_AccuracyHit(edict_t *ent);
 void SP_RailHits(edict_t *ent, int hits);
 void SP_PlayerKilled(edict_t *self, edict_t *inflictor, edict_t *attacker);
+void SP_FragMessage(edict_t *attacker, edict_t *self);
 void SP_RunFrame(void);
 void SP_BeginIntermission(void);
 void SP_PodiumThink(void);
@@ -2154,6 +2242,7 @@ void SP_Intermission(void);
 
 void Bot_WrapImports(void);
 void Bot_Init(void);
+void Bot_GameRead(void);
 void Bot_LevelStart(void);
 void Bot_RunFrame(void);
 bool Bot_IsBot(const edict_t *ent);
@@ -2437,6 +2526,18 @@ struct gclient_s {
     int         q3_weapon_time;
     int         q3_shots;
     int         q3_lightning_framenum;  // the beam's one message a frame went out
+    // ms of this client's commands run since the last server frame: where in
+    // the 100 ms a missile was fired (Q3W_Missile, edict_t q3_late_ms)
+    int         q3_cmd_msec;
+
+    // Quake's weapons (g_q1weap.c), run on the weapon's 10 Hz think as
+    // player.qc's frames were: weapons.qc's attack_finished in thinks, the
+    // view weapon's last frame of the running animation (0 none), the axe's
+    // hit frame, and when the Thunderbolt's hit sound comes round again
+    int         q1_attack_ticks;
+    int         q1_anim_end;
+    int         q1_axe_frame;
+    int         q1_lightning_sound_framenum;
 
     bool        grenade_blew_up;
     int         grenade_framenum;
@@ -2692,5 +2793,9 @@ struct edict_s {
     // [rerelease] frame this entity died on; FL_ALIVE_KNOCKBACK_ONLY lets that
     // frame's hits still knock the body about
     int         dead_framenum;
+
+    // a Quake III missile fired this many ms into the server's frame: its
+    // first move (SV_Physics_Toss) takes only the rest of the frame
+    int         q3_late_ms;
 };
 

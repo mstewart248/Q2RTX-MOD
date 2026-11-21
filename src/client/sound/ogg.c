@@ -86,9 +86,30 @@ enum GameType {
 
 struct {
 	bool saved;
-	int curfile;
+	int curfile;        // OGG_Q1_MUSIC: q1_music.path, which a stop keeps
 	int numsamples;
 } ogg_saved_state;
+
+/*
+ * QUAKE 1 MUSIC
+ *
+ * A Quake 1 map's worldspawn "sounds" is a CD track number like Quake II's,
+ * but of its own soundtrack. The rerelease keeps each episode's tracks loose
+ * in <basedir>/id1/<episode>/music/trackNN.ogg - id1 2-11, hipnotic and rogue
+ * 2-9, mg3 2-13 - and an episode with none of its own (dopa, mg1, ctf) plays
+ * id1's, as the rerelease does; so does a track number an episode's folder
+ * lacks. Not ogg_tracks[]: that is Quake II's list for the current gamedir,
+ * and a q1/ map plays inside baseq2 or rerelease, whose track 6 is not Quake's.
+ * The client says which episode (precache.c, CL_PlayMapMusic, from the map's
+ * name - files.c puts hipnotic's maps under maps/q1/hipnotic/). The track
+ * loops, as Quake's CD music did; ogg_curfile is OGG_Q1_MUSIC.
+ */
+#define OGG_Q1_MUSIC    -3
+
+static struct {
+	char    path[MAX_OSPATH];
+	int     track;
+} q1_music;
 
 // --------
 
@@ -493,6 +514,96 @@ OGG_PlayMusicFiles(const char *intro, const char *loop)
 	ogg_status = ogg_enable->integer ? PLAY : PAUSE;
 }
 
+// <basedir>/id1/<dir>/music/trackNN.ogg (or TrackNN, for a case-sensitive disk)
+static bool Q1_TrackIn(const char *dir, int track, char *out, size_t size)
+{
+	if (Q_snprintf(out, size, "%s/id1/%s/music/track%02d.ogg", sys_basedir->string, dir, track) < size &&
+		Sys_IsFile(out))
+		return true;
+	if (Q_snprintf(out, size, "%s/id1/%s/music/Track%02d.ogg", sys_basedir->string, dir, track) < size &&
+		Sys_IsFile(out))
+		return true;
+	return false;
+}
+
+/*
+ * The episode's own track, else id1's; else <basedir>/id1/music/ (a
+ * rerelease id1 folder copied in whole). A number nobody has - none of the
+ * rerelease's maps asks for one - folds onto id1's 2-11.
+ */
+static bool Q1_FindTrack(const char *episode, int track, char *out, size_t size)
+{
+	if (Q1_TrackIn(episode, track, out, size))
+		return true;
+	if (Q_stricmp(episode, "id1") && Q1_TrackIn("id1", track, out, size))
+		return true;
+	if (Q_snprintf(out, size, "%s/id1/music/track%02d.ogg", sys_basedir->string, track) < size &&
+		Sys_IsFile(out))
+		return true;
+	if (track > 11)
+		return Q1_TrackIn("id1", 2 + (track - 2) % 10, out, size);
+	return false;
+}
+
+// (re)open q1_music.path from the start
+static bool Q1_OpenMusic(void)
+{
+	int res = 0;
+	FILE *f = fopen(q1_music.path, "rb");
+
+	if (!f)
+	{
+		Com_Printf("OGG: could not open %s: %s.\n", q1_music.path, strerror(errno));
+		return false;
+	}
+
+	// a file that will not open is closed by stb_vorbis itself (close_on_free)
+	ogg_file = stb_vorbis_open_file(f, true, &res, NULL);
+	if (!ogg_file)
+	{
+		Com_Printf("OGG: '%s' is not a valid Ogg Vorbis file (error %i).\n", q1_music.path, res);
+		return false;
+	}
+
+	ogg_curfile = OGG_Q1_MUSIC;
+	ogg_numsamples = 0;
+	ogg_status = ogg_enable->integer ? PLAY : PAUSE;
+	return true;
+}
+
+/*
+ * Play Quake 1 CD track (track) of (episode): "id1", "hipnotic", "rogue",
+ * "mg3"... Track 0 is no music, as in Quake. Leaves the same track playing
+ * alone - a reload, the next map of a run asking for the one already on.
+ */
+void
+OGG_PlayQuake1Track(const char *episode, int track)
+{
+	char path[MAX_OSPATH];
+
+	if (s_started == SS_NOT)
+		return;
+
+	if (track < 2 || !Q1_FindTrack(episode, track, path, sizeof(path)))
+	{
+		if (track >= 2)
+			Com_Printf("OGG: no Quake 1 track %d for %s.\n", track, episode);
+		OGG_Stop();
+		ogg_curfile = -1;
+		return;
+	}
+
+	if (ogg_curfile == OGG_Q1_MUSIC && ogg_status != STOP && !Q_stricmp(q1_music.path, path))
+		return;
+
+	OGG_Stop();
+	ogg_curfile = -1;
+
+	Q_strlcpy(q1_music.path, path, sizeof(q1_music.path));
+	q1_music.track = track;
+	Q1_OpenMusic();
+}
+
 /*
  * Play a portion of the currently opened file.
  */
@@ -534,7 +645,14 @@ static OGG_Read(void)
 		ogg_numbufs = 0;
 		ogg_numsamples = 0;
 
-		OGG_PlayTrack(ogg_curfile);
+		// a Quake 1 track round again; a Quake II one through OGG_PlayTrack
+		if (ogg_curfile == OGG_Q1_MUSIC)
+		{
+			if (!Q1_OpenMusic())
+				ogg_curfile = -1;
+		}
+		else
+			OGG_PlayTrack(ogg_curfile);
 	}
 }
 
@@ -671,8 +789,8 @@ OGG_PlayTrack(int trackNo)
 		}
 	}
 
-	/* a Quake III map's music gives way to the track */
-	if (ogg_curfile == OGG_WAV_MUSIC)
+	/* a Quake III or Quake 1 map's music gives way to the track */
+	if (ogg_curfile == OGG_WAV_MUSIC || ogg_curfile == OGG_Q1_MUSIC)
 	{
 		OGG_Stop();
 		ogg_curfile = -1;
@@ -764,6 +882,14 @@ OGG_Info(void)
 		return;
 	}
 
+	if (ogg_curfile == OGG_Q1_MUSIC && ogg_status != STOP)
+	{
+		Com_Printf("State: %s Quake 1 track %d (%s) at %i samples.\n",
+			ogg_status == PLAY ? "Playing" : "Paused", q1_music.track, q1_music.path,
+			ogg_file ? stb_vorbis_get_sample_offset(ogg_file) : 0);
+		return;
+	}
+
 	switch (ogg_status)
 	{
 		case PLAY:
@@ -815,7 +941,12 @@ OGG_Stop(void)
 		ogg_curfile = -1;
 	}
 	else
+	{
 		stb_vorbis_close(ogg_file);
+		// nor for a Quake 1 track (OGG_Info would index ogg_tracks[-3])
+		if (ogg_curfile == OGG_Q1_MUSIC)
+			ogg_curfile = -1;
+	}
 	ogg_file = NULL;
 	ogg_status = STOP;
 	ogg_numbufs = 0;
@@ -939,6 +1070,17 @@ OGG_RecoverState(void)
 {
 	if (!ogg_saved_state.saved)
 	{
+		return;
+	}
+
+	// a Quake 1 track: q1_music.path outlives the stop, so the same file
+	if (ogg_saved_state.curfile == OGG_Q1_MUSIC)
+	{
+		if (Q1_OpenMusic())
+		{
+			stb_vorbis_seek_frame(ogg_file, ogg_saved_state.numsamples);
+			ogg_numsamples = ogg_saved_state.numsamples;
+		}
 		return;
 	}
 

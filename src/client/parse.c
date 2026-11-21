@@ -1077,6 +1077,42 @@ static void CL_ParseTEntPacket(void)
         te.entity1 = MSG_ReadShort();
         break;
 
+    // Quake 1's, from its own game code (baseq2 g_q1vm_cmds.c): the kind,
+    // then Quake 1's payload for it
+    case TE_Q1:
+        te.q1kind = MSG_ReadByte();
+        switch (te.q1kind) {
+        case TE_Q1_LIGHTNING1:
+        case TE_Q1_LIGHTNING2:
+        case TE_Q1_LIGHTNING3:
+        case TE_Q1_BEAM:
+            te.entity1 = MSG_ReadShort();
+            te.entity2 = 0;
+            MSG_ReadPos(te.pos1);
+            MSG_ReadPos(te.pos2);
+            VectorClear(te.offset);
+            break;
+        case TE_Q1_EXPLOSION2:
+            MSG_ReadPos(te.pos1);
+            te.color = MSG_ReadByte();
+            te.count = MSG_ReadByte();
+            break;
+        case TE_Q1_PARTICLE:
+            MSG_ReadPos(te.pos1);
+            for (i = 0; i < 3; i++)
+                te.dir[i] = MSG_ReadChar() * (1.0f / 16);
+            te.count = MSG_ReadByte();
+            te.color = MSG_ReadByte();
+            break;
+        case TE_Q1_MUZZLEFLASH:
+            te.entity1 = MSG_ReadShort();
+            break;
+        default:
+            MSG_ReadPos(te.pos1);
+            break;
+        }
+        break;
+
     // the compass objective marker: where, which icon, and how long for
     case TE_POI:
         MSG_ReadPos(te.pos1);
@@ -1701,7 +1737,9 @@ badbyte:
 
         case svc_sound:
             CL_ParseStartSoundPacket();
-            S_ParseStartSound();
+            // our own Quake III gun's fire sound, already played as predicted
+            if (!(snd.flags & SND_ENT) || !CL_Q3W_SkipServerSound(snd.entity, snd.channel))
+                S_ParseStartSound();
             break;
 
         case svc_spawnbaseline:
@@ -1716,7 +1754,9 @@ badbyte:
 
         case svc_muzzleflash:
             CL_ParseMuzzleFlashPacket(MZ_SILENCED);
-            CL_MuzzleFlash();
+            // our own Quake III gun's shot, already shown as predicted
+            if (!CL_Q3W_SkipServerFlash(mz.entity, mz.weapon))
+                CL_MuzzleFlash();
             break;
 
         case svc_muzzleflash2:

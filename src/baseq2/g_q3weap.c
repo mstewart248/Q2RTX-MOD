@@ -277,6 +277,8 @@ gitem_t *Q3W_FindItem(edict_t *ent, const char *name)
     bool        q3 = Q3W_PlayerQ3(ent);
     int         i;
 
+    if (level.q1_weapons)
+        return Q1W_FindItem(name);     // Quake's guns (g_q1weap.c)
     if (!level.q3_weapons)
         return FindItem((char *)name);
 
@@ -989,7 +991,7 @@ The missile and its first 50 ms in one go (MISSILE_PRESTEP_TIME): Quake III
 starts its missiles that far along, which a point-blank shot hits through.
 =================
 */
-static void Q3W_Missile(edict_t *ent, int weapon, const vec3_t muzzle, const vec3_t dir)
+static void Q3W_Missile(edict_t *ent, int weapon, const vec3_t muzzle, const vec3_t dir, int late_ms)
 {
     edict_t *m;
     vec3_t  end;
@@ -1065,6 +1067,12 @@ static void Q3W_Missile(edict_t *ent, int weapon, const vec3_t muzzle, const vec
     VectorCopy(muzzle, m->s.old_origin);
     gi.linkentity(m);
 
+    // Where in the server's 100 ms it was fired: its first move takes only the
+    // rest of that frame (SV_Physics_Toss). Two plasma balls fired 0 and 50 ms
+    // into one frame went out together and flew as a pair, then a gap - the
+    // gun fired in spurts. A bot's one command a frame is at 0: unchanged.
+    m->q3_late_ms = late_ms < 0 ? 0 : late_ms > 100 ? 100 : late_ms;
+
     // the prestep
     VectorMA(muzzle, Q3_MISSILE_PRESTEP, m->velocity, end);
     tr = gi.trace((vec_t *)muzzle, NULL, NULL, end, ent, MASK_SHOT);
@@ -1082,7 +1090,7 @@ One shot of the gun in hand. Quake III fires from 14 units in front of the
 eye (CalcMuzzlePoint): no hand offset, so nothing to converge.
 =================
 */
-static void Q3W_Fire(edict_t *ent, int weapon)
+static void Q3W_Fire(edict_t *ent, int weapon, int late_ms)
 {
     gclient_t   *client = ent->client;
     vec3_t      forward, right, up, muzzle, dir;
@@ -1129,12 +1137,12 @@ static void Q3W_Fire(edict_t *ent, int weapon)
         VectorCopy(forward, dir);
         dir[2] += 0.2f;
         VectorNormalize(dir);
-        Q3W_Missile(ent, weapon, muzzle, dir);
+        Q3W_Missile(ent, weapon, muzzle, dir, late_ms);
         break;
     case Q3W_ROCKET:
     case Q3W_PLASMA:
     case Q3W_BFG:
-        Q3W_Missile(ent, weapon, muzzle, forward);
+        Q3W_Missile(ent, weapon, muzzle, forward, late_ms);
         break;
     case Q3W_RAILGUN:
         Q3W_Rail(ent, muzzle, forward, right, up);
@@ -1282,6 +1290,10 @@ void Q3W_Think(edict_t *ent, const usercmd_t *ucmd)
     gitem_t     *weapon = client->pers.weapon;
     int         tag, add;
     bool        attack;
+    // ms into the server's frame this command starts (G_RunFrame resets it)
+    int         frame_ms = client->q3_cmd_msec;
+
+    client->q3_cmd_msec += ucmd->msec;
 
     if (!weapon || !(weapon->flags & IT_Q3) || ent->health < 1 ||
         client->resp.spectator || level.intermission_framenum)
@@ -1369,7 +1381,7 @@ void Q3W_Think(edict_t *ent, const usercmd_t *ucmd)
     if (client->ammo_index && !((int)dmflags->value & DF_INFINITE_AMMO))
         client->pers.inventory[client->ammo_index]--;
 
-    Q3W_Fire(ent, tag);
+    Q3W_Fire(ent, tag, frame_ms);
     client->weaponstate = WEAPON_FIRING;
     client->q3_shots++;
 

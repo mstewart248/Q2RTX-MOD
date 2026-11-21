@@ -1157,6 +1157,11 @@ come AFTER the map command, which clears it, and the last demo points back at
 the first DEMO, so the logo plays once per launch. The rerelease adds the
 Ground Zero (rdemo*) and Reckoning (xdemo*) demos.
 
+QUAKE 1'S DEMOS join them when Quake 1's data is installed (fs_quake1_<episode>,
+files.c): each episode's own, as its quake.rc's startdemos listed them, played
+by the server on their maps ("q1demo", server/commands.c; baseq2 g_q1demo.c).
+Without the data none of them is listed, and the loop is Quake II's alone.
+
 Only demos that are actually installed join the loop, and with none at all
 the logo is skipped too and the player stays on the main menu. A player on
 the shareware demo data had no .dm2 files: there "demo demo1.dm2" failed, the
@@ -1174,7 +1179,7 @@ read every time a demo ends and flipping it takes effect on the next one.
 */
 #if USE_CLIENT
 static cvar_t      *cl_attract_random;
-static const char  *attract_demos[8];
+static const char  *attract_demos[32];  // a .dm2's name, or a Quake 1 demo's path ("id1/...")
 static int          attract_count;
 static int          attract_last = -1;  // demo playing now, -1 = still the logo
 static int          attract_bag[q_countof(attract_demos)];
@@ -1221,8 +1226,12 @@ static void Com_AttractNext_f(void)
     }
 
     attract_last = next;
-    Cbuf_InsertText(&cmd_buffer, va("demo %s.dm2; popmenu; set nextserver attract_next\n",
-                                    attract_demos[next]));
+    if (!Q_strncasecmp(attract_demos[next], "id1/", 4))
+        Cbuf_InsertText(&cmd_buffer, va("q1demo %s; popmenu; set nextserver attract_next\n",
+                                        attract_demos[next]));
+    else
+        Cbuf_InsertText(&cmd_buffer, va("demo %s.dm2; popmenu; set nextserver attract_next\n",
+                                        attract_demos[next]));
 }
 
 static void Com_StartAttractLoop(void)
@@ -1232,6 +1241,13 @@ static void Com_StartAttractLoop(void)
     };
     static const char *const rerelease_demos[] = {
         "demo1", "demo2", "rdemo1", "rdemo2", "xdemo1", "xdemo2", "xdemo3"
+    };
+    static const char *const quake1_demos[] = {
+        "id1/id1/demo1.dem", "id1/id1/demo2.dem", "id1/id1/demo3.dem",
+        "id1/hipnotic/hipdemo1.dem", "id1/hipnotic/hipdemo2.dem",
+        "id1/hipnotic/hipdemo3.dem", "id1/hipnotic/hipdemo4.dem",
+        "id1/rogue/demo1.dem", "id1/rogue/demo2.dem",
+        "id1/dopa/demo1.dem", "id1/dopa/demo2.dem", "id1/dopa/demo3.dem"
     };
     const char *const *demos = base_demos;
     int num_demos = q_countof(base_demos);
@@ -1250,6 +1266,18 @@ static void Com_StartAttractLoop(void)
         Q_snprintf(path, sizeof(path), "demos/%s.dm2", demos[i]);
         if (FS_FileExists(path))
             attract_demos[attract_count++] = demos[i];
+    }
+
+    // Quake 1's, an episode's only with that episode installed: "id1/rogue/"
+    // would find id1's own demo1.dem without it
+    for (i = 0; i < (int)q_countof(quake1_demos) && attract_count < (int)q_countof(attract_demos); i++) {
+        char episode[16];
+        const char *s = quake1_demos[i] + 4;
+        size_t n = strchr(s, '/') - s;
+        memcpy(episode, s, n);
+        episode[n] = 0;
+        if (Cvar_VariableInteger(va("fs_quake1_%s", episode)) && FS_FileExists(quake1_demos[i]))
+            attract_demos[attract_count++] = quake1_demos[i];
     }
 
     if (!attract_count) {

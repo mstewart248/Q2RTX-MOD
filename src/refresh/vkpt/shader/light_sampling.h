@@ -324,4 +324,10 @@ sample_projected_spotlight(vec3 p, mat3 positions, float emission_profile, vec2 
 	return position_light;
 }
 
+// DYNLIGHT_WINDOW, the light behind a tile of stained glass: its mass and its
+// sampler (window_light_mass, sample_window_light), and the glass's own look.
+// Needs vertex_buffer.h (get_material_info) and global_textures.h, which every
+// includer of this file has by now.
+#include "stained_glass.h"
+
 #endif /*_LIGHT_SAMPLING_*/

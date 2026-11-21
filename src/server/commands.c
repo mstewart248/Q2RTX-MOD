@@ -266,9 +266,21 @@ static bool SV_SinglePlayerMode(void)
     return !atoi(dm_s) && !atoi(co_s);
 }
 
+// the map SV_Q1Demo_f is starting is for a demo
+static bool sv_q1demo_next;
+
 static void SV_Map(bool restart)
 {
     mapcmd_t    cmd;
+    const bool  q1demo = sv_q1demo_next;
+
+    sv_q1demo_next = false;
+    if (!q1demo) {
+        // a demo that never got to its map is not this map's
+        cvar_t *demo = Cvar_FindVar("g_q1_demo");
+        if (demo && demo->string[0])
+            Cvar_Set("g_q1_demo", "");
+    }
 
     memset(&cmd, 0, sizeof(cmd));
 
@@ -298,6 +310,14 @@ static void SV_Map(bool restart)
     if ((sv.state != ss_game && sv.state != ss_pic && sv.state != ss_cinematic) || restart) {
         // the mode a Quake III arena was given last game, back to the player's
         Cmd_RestoreGameCvars();
+
+        // a Quake 1 demo plays as one player's single-player game, whatever
+        // the player last set up - for this game only (SV_Q1Demo_f)
+        if (q1demo) {
+            Cmd_SetGameCvar("deathmatch", "0");
+            Cmd_SetGameCvar("coop", "0");
+            Cmd_SetGameCvar("maxclients", "1");
+        }
 
         if (q3_arena && SV_SinglePlayerMode()) {
             Com_Printf("%s is a Quake III arena: playing it as deathmatch.\n", cmd.server);
@@ -447,6 +467,123 @@ static void SV_Map_f(void)
         return;
 
     SV_Map(res);
+}
+
+/*
+==================
+SV_Q1Demo_f
+
+q1demo id1/<episode>/<name>.dem
+
+One of Quake 1's demos, played on the map it was recorded on: the map is read
+out of the demo's first message (svc_serverinfo), started as a one-player
+game, and the game plays the demo back on it (baseq2 g_q1demo.c). The attract
+loop's Quake 1 entries (Com_StartAttractLoop). When it ends, nextserver runs,
+as after a .dm2.
+==================
+*/
+static void SV_Q1Demo_f(void)
+{
+    char        path[MAX_QPATH], episode[16], map[MAX_QPATH], q2map[MAX_QPATH];
+    byte        *buf;
+    int         len, i;
+
+    if (Cmd_Argc() != 2) {
+        Com_Printf("Usage: %s id1/<episode>/<demo>[.dem]\n", Cmd_Argv(0));
+        return;
+    }
+
+    Q_strlcpy(path, Cmd_Argv(1), sizeof(path));
+    if (!*COM_FileExtension(path))
+        Q_strlcat(path, ".dem", sizeof(path));
+
+    // the episode the demo plays in: its models, sounds and map
+    const char *s = path;
+    if (Q_strncasecmp(s, "id1/", 4) || !strchr(s + 4, '/')) {
+        Com_Printf("%s: give the demo as id1/<episode>/<name>.dem\n", Cmd_Argv(0));
+        return;
+    }
+    s += 4;
+    len = strchr(s, '/') - s;
+    if (len <= 0 || len >= (int)sizeof(episode)) {
+        Com_Printf("%s: bad episode in %s\n", Cmd_Argv(0), path);
+        return;
+    }
+    memcpy(episode, s, len);
+    episode[len] = 0;
+    if (!Cvar_VariableInteger(va("fs_quake1_%s", episode))) {
+        Com_Printf("%s: Quake 1's %s is not installed\n", Cmd_Argv(0), episode);
+        return;
+    }
+
+    len = FS_LoadFile(path, (void **)&buf);
+    if (len < 0 || !buf) {
+        Com_Printf("%s: couldn't load %s\n", Cmd_Argv(0), path);
+        return;
+    }
+
+    // the header's CD track line, then the first block: its length, the view
+    // angles, then the message - the server's version print, then serverinfo
+    map[0] = 0;
+    for (i = 0; i < len && i < 16 && buf[i] != '\n'; i++)
+        ;
+    if (i < len && buf[i] == '\n' && i + 1 + 16 <= len) {
+        const byte *b = buf + i + 1;
+        int msglen = b[0] | (b[1] << 8) | (b[2] << 16) | ((unsigned)b[3] << 24);
+        const byte *m = b + 16, *end = m + msglen;
+        if (msglen > 0 && end <= buf + len) {
+            while (m < end) {
+                int svc = *m++;
+                if (svc == 8 || svc == 9) {             // svc_print, svc_stufftext
+                    while (m < end && *m)
+                        m++;
+                    m++;
+                } else if (svc == 11) {                 // svc_serverinfo
+                    if (m + 6 > end || (m[0] | (m[1] << 8)) != 15)
+                        break;                          // protocol 15 only
+                    m += 6;                             // protocol, maxclients, gametype
+                    while (m < end && *m)               // the level's name
+                        m++;
+                    m++;
+                    // the first model is the map: "maps/e1m3.bsp"
+                    const byte *name = m;
+                    while (m < end && *m)
+                        m++;
+                    if (m < end && m - name < MAX_QPATH) {
+                        char bsp[MAX_QPATH];
+                        memcpy(bsp, name, m - name);
+                        bsp[m - name] = 0;
+                        COM_StripExtension(map, COM_SkipPath(bsp), sizeof(map));
+                    }
+                    break;
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+    FS_FreeFile(buf);
+
+    if (!map[0]) {
+        Com_Printf("%s: %s is not a Quake 1 demo this can play\n", Cmd_Argv(0), path);
+        return;
+    }
+
+    // the episode's maps are q1/<map>, and q1/<episode>/<map> for the add-ons
+    if (!Q_stricmp(episode, "id1"))
+        Q_snprintf(q2map, sizeof(q2map), "q1/%s", map);
+    else
+        Q_snprintf(q2map, sizeof(q2map), "q1/%s/%s", episode, map);
+    if (!FS_FileExistsEx(va("maps/%s.bsp", q2map), 0)) {
+        Com_Printf("%s: %s's map %s isn't there\n", Cmd_Argv(0), path, q2map);
+        return;
+    }
+
+    Com_Printf("Quake 1 demo %s on %s\n", path, q2map);
+    Cvar_Set("g_q1_demo", path);
+    sv_q1demo_next = true;
+    Cmd_TokenizeString(va("map %s force", q2map), false);
+    SV_Map(true);
 }
 
 static void SV_Map_c(genctx_t *ctx, int argnum)
@@ -1777,6 +1914,7 @@ static const cmdreg_t c_server[] = {
     { "stuffcvar", SV_StuffCvar_f, SV_SetPlayer_c },
     { "printall", SV_PrintAll_f },
     { "map", SV_Map_f, SV_Map_c },
+    { "q1demo", SV_Q1Demo_f },
     { "demomap", SV_DemoMap_f },
     { "gamemap", SV_GameMap_f, SV_Map_c },
     { "dumpents", SV_DumpEnts_f },

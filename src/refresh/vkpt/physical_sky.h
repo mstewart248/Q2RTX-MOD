@@ -71,6 +71,9 @@ bool vkpt_physical_sky_space_enabled(void);
 uint16_t *vkpt_physical_sky_read_envmap(int *width, int *height);
 void vkpt_next_sun_preset(void);
 void vkpt_physical_sky_begin_map(void);
+// A Quake 1 map's own sun (worldspawn _sun_mangle / _sunlight / _sunlight_color),
+// read at map load; NULL for any other map. See vkpt_q1_map_sun.
+void vkpt_q1_sun_load(const char *entitystring);
 
 // Classification of the skybox the current map asks for; see map_skybox_scope
 // in physical_sky.c. Passed to vkpt_physical_sky_set_map_skybox by R_SetSky_RTX.

@@ -1408,6 +1408,127 @@ vkpt_physical_sky_load_preset(int preset)
 	SkyLoadScatterParameters((SkyPreset)preset);
 }
 
+/*
+=================
+THE QUAKE 1 SUN
+
+A Quake 1 rerelease map lit with ericw-tools states its sun in worldspawn:
+"_sunlight" (its strength in light units; 0, the default, is no sun),
+"_sun_mangle" ("yaw pitch roll", the way the light TRAVELS, pitch -90 straight
+down, the default; "_sunlight_mangle" is the same key) and "_sunlight_color"
+(0..255 or 0..1). 44 of dopa's, mg1's and mg3's maps do. id1's, hipnotic's
+and ctf's say "_sunlight" "1.0 1.0 1.0", which ericw reads as 1: no sun.
+
+Their skyboxes were painted to match. The brightest spot of mg3's start1 sky
+is at azimuth 254, elevation 72 as Quake draws it, and start's mangle
+"75 -80 0" puts the sun at 255 / 80; sunset1 144 / 28 against boss's 135 / 25;
+map6 342 / 29 against 341 / 28; lush5_2 154 / 47 against map5's 154 / 43.
+(R_SetSky_RTX turns a Quake 1 skybox to Quake's orientation for this.)
+
+So, as a Quake III sky's q3map_sun does, it lights the map from here, under
+the map's own sky - skybox or Quake's scrolling clouds - in rerelease sky
+mode only: any other sky type is the player's pick, sun included. The world
+and the envmap share a frame on a Quake 1 map (no sky turns).
+=================
+*/
+static struct {
+	bool	valid;
+	float	intensity;		// _sunlight
+	vec3_t	color;			// _sunlight_color, unit length (as q3map_sun's)
+	float	degrees;		// where the sun is: azimuth from +x
+	float	elevation;		// and above the horizon
+} q1_sun;
+
+static cvar_t *cvar_pt_q1_sun;
+static cvar_t *cvar_pt_q1_sun_scale;
+
+static void q1_sun_cvars(void)
+{
+	if (cvar_pt_q1_sun)
+		return;
+
+	// 1 = a Quake 1 map's own sun lights it (rerelease sky mode); 0 = no sun,
+	// the sky's own light only. Live.
+	cvar_pt_q1_sun = Cvar_Get("pt_q1_sun", "1", CVAR_ARCHIVE);
+	/* The sun's light on surfaces per unit of _sunlight. Quake 1's run 60..1000,
+	   most 160..400; 0.02 puts 300 about where pt_q3_sun_scale 0.05 puts
+	   q3map_sun's usual 100 (6 against 5; the physical sky's noon sun is about
+	   10). Not tuned by eye yet. Live; per map: "mapcvar pt_q1_sun_scale" in
+	   id1/maps/q1/<map>.cfg. */
+	cvar_pt_q1_sun_scale = Cvar_Get("pt_q1_sun_scale", "0.02", CVAR_ARCHIVE);
+}
+
+void vkpt_q1_sun_load(const char *data)
+{
+	char	key[64], value[MAX_QPATH];
+	float	intensity = 0.f, yaw = 0.f, pitch = -90.f;   // ericw's default: straight down
+	vec3_t	color = { 1.f, 1.f, 1.f };
+
+	q1_sun_cvars();
+	memset(&q1_sun, 0, sizeof(q1_sun));
+
+	// worldspawn, the first entity
+	if (!data || strcmp(COM_Parse(&data), "{"))
+		return;
+
+	while (data) {
+		const char *tok = COM_Parse(&data);
+		if (!data || !strcmp(tok, "}"))
+			break;
+		Q_strlcpy(key, tok, sizeof(key));
+		// a key written with a trailing space ("_skyfog ") is the same key
+		for (size_t n = strlen(key); n > 0 && key[n - 1] == ' '; n--)
+			key[n - 1] = 0;
+		Q_strlcpy(value, COM_Parse(&data), sizeof(value));
+
+		if (!Q_stricmp(key, "_sunlight")) {
+			intensity = (float)atof(value);
+		} else if (!Q_stricmp(key, "_sun_mangle") || !Q_stricmp(key, "_sunlight_mangle")) {
+			float y, p;
+			if (sscanf(value, "%f %f", &y, &p) == 2) {
+				yaw = y;
+				pitch = p;
+			}
+		} else if (!Q_stricmp(key, "_sunlight_color")) {
+			vec3_t c;
+			if (sscanf(value, "%f %f %f", &c[0], &c[1], &c[2]) == 3)
+				VectorCopy(c, color);
+		}
+	}
+
+	if (intensity <= 1.f)
+		return;
+
+	for (int i = 0; i < 3; i++)
+		color[i] = max(0.f, color[i]);
+	if (VectorNormalize(color) <= 0.f)
+		VectorSet(color, 1.f, 1.f, 1.f), VectorNormalize(color);
+
+	q1_sun.valid = true;
+	q1_sun.intensity = intensity;
+	VectorCopy(color, q1_sun.color);
+	// the sun is where the light comes FROM: opposite the way it travels
+	q1_sun.degrees = fmodf(yaw + 180.f, 360.f);
+	q1_sun.elevation = -pitch;
+
+	Com_DPrintf("Quake 1 sun: %g at azimuth %.0f elevation %.0f, colour %.2f %.2f %.2f\n",
+		intensity, q1_sun.degrees, q1_sun.elevation, color[0], color[1], color[2]);
+}
+
+// the Quake 1 map's sun now, as vkpt_q3_sky_sun hands back a Quake III one
+static bool q1_map_sun(vec3_t color, float *degrees, float *elevation)
+{
+	q1_sun_cvars();
+
+	if (!q1_sun.valid || !cvar_pt_q1_sun->integer || !sky_mode_is_rerelease())
+		return false;
+
+	VectorScale(q1_sun.color, q1_sun.intensity * max(0.f, cvar_pt_q1_sun_scale->value), color);
+	*degrees = q1_sun.degrees;
+	*elevation = q1_sun.elevation;
+	return true;
+}
+
 // light->direction from light->direction_envmap
 static void sun_direction_to_world(sun_light_t *light, const vec3_t sky_matrix[3])
 {
@@ -1447,7 +1568,9 @@ vkpt_evaluate_sun_light(sun_light_t* light, const vec3_t sky_matrix[3], float ti
 		   (map_sun_active, SUN_COLOR_RESOLVED in vertex_buffer.h). */
 		vec3_t q3_light;
 		float q3_degrees, q3_elevation;
-		if (vkpt_q3_sky_sun(q3_light, &q3_degrees, &q3_elevation))
+		// (a Quake 1 map's sun - _sun_mangle - the same way; see THE QUAKE 1 SUN)
+		if (vkpt_q3_sky_sun(q3_light, &q3_degrees, &q3_elevation)
+			|| q1_map_sun(q3_light, &q3_degrees, &q3_elevation))
 		{
 			const float az = DEG2RAD(q3_degrees), el = DEG2RAD(q3_elevation);
 

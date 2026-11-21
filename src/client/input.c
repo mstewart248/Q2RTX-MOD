@@ -816,6 +816,9 @@ void CL_FinalizeCmd(void)
     cl.cmdNumber++;
     cl.cmds[cl.cmdNumber & CMD_MASK] = cl.cmd;
 
+    // a Quake III gun's shot shows now, not with the server's next frame
+    CL_Q3W_PredictCmd(cl.cmdNumber);
+
 clear:
     // clear pending cmd
     memset(&cl.cmd, 0, sizeof(cl.cmd));

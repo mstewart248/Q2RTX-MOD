@@ -158,6 +158,34 @@ typedef struct {
 // "baseq3/<path>" then goes there (open_file_write)
 static cvar_t *fs_quake3;
 
+// The same for Quake 1 (add_quake1_paths): a name starting "id1/" is looked up
+// in the Quake 1 paths only, and written under <basedir>/id1.
+#define FS_SEARCH_QUAKE1    0x00020000
+
+// Which Quake 1 episode a pak belongs to: its index in q1_episodes + 1, in
+// these searchpath_t mode bits. 0 is the loose <basedir>/id1 directory.
+//
+// "id1/<episode>/<path>" asks for that episode's copy of <path>, the way the
+// add-on itself sees it (quake -hipnotic): <basedir>/id1/<episode>/<path> as a
+// loose file, then the episode's own paks, then id1's paks and the loose
+// <basedir>/id1/<path>. Plain "id1/<path>" takes the first Quake 1 copy, which
+// is id1's. The QuakeC game (g_q1vm*.c) names every model, sound and progs.dat
+// this way, so Scourge of Armagon's progs.dat and its own sounds win over
+// id1's on its maps and nowhere else.
+#define FS_Q1_EPISODE_SHIFT 20
+#define FS_Q1_EPISODE_MASK  0x00f00000
+
+static const char *const q1_episodes[] = {
+    // lowest priority first
+    "ctf", "mg3", "mg1", "dopa", "rogue", "hipnotic", "id1"
+};
+
+#define FS_Q1_ID1_CODE      7   // "id1"'s index in q1_episodes + 1
+
+// how many Quake 1 episodes <basedir>/id1 had, and their directory names
+static cvar_t *fs_quake1;
+static cvar_t *fs_quake1_games;
+
 typedef struct searchpath_s {
     struct searchpath_s *next;
     pack_t      *pack;        // only one of filename / pack will be used
@@ -908,6 +936,9 @@ static int64_t open_file_write(file_t *file, const char *name)
         // open_file_read): the light editor and the material tools save a
         // Quake III map's files beside its data, not in the game directory
         len = Q_concat(fullpath, sizeof(fullpath), sys_basedir->string, "/", normalized);
+    } else if (!Q_strncasecmp(normalized, "id1/", 4) && fs_quake1 && fs_quake1->integer) {
+        // Quake 1's directory likewise ("id1/maps/lights/q1/e1m1.cfg")
+        len = Q_concat(fullpath, sizeof(fullpath), sys_basedir->string, "/", normalized);
     } else if ((file->mode & FS_PATH_MASK) == FS_PATH_BASE) {
         if (sys_homedir->string[0]) {
             len = Q_concat(fullpath, sizeof(fullpath),
@@ -1434,6 +1465,7 @@ int FS_RealPath(const char *path, unsigned flags, char *out, size_t size)
     size_t          namelen;
     unsigned        hash;
     bool            quake3_only = false;
+    bool            quake1_only = false;
     int             valid = PATH_NOT_CHECKED;
 
     if (out && size)
@@ -1447,6 +1479,10 @@ int FS_RealPath(const char *path, unsigned flags, char *out, size_t size)
         name += 7;
         namelen -= 7;
         quake3_only = true;
+    } else if (namelen > 4 && !Q_strncasecmp(name, "id1/", 4)) {
+        name += 4;
+        namelen -= 4;
+        quake1_only = true;
     }
 
     hash = FS_HashPath(name, 0);
@@ -1455,6 +1491,8 @@ int FS_RealPath(const char *path, unsigned flags, char *out, size_t size)
         if ((flags & FS_PATH_MASK) && !(flags & search->mode & FS_PATH_MASK))
             continue;
         if (quake3_only && !(search->mode & FS_SEARCH_QUAKE3))
+            continue;
+        if (quake1_only && !(search->mode & FS_SEARCH_QUAKE1))
             continue;
 
         if (search->pack) {
@@ -1492,10 +1530,30 @@ int FS_RealPath(const char *path, unsigned flags, char *out, size_t size)
     return FS_REALPATH_NONE;
 }
 
+// "id1/<episode>/...": the episode's code (FS_Q1_EPISODE_SHIFT) and in (*skip)
+// the length of that prefix, or 0
+static int q1_episode_prefix(const char *name, size_t namelen, size_t *skip)
+{
+    if (namelen <= 4 || Q_strncasecmp(name, "id1/", 4))
+        return 0;
+
+    for (int i = 0; i < q_countof(q1_episodes); i++) {
+        size_t len = strlen(q1_episodes[i]);
+        if (namelen > 4 + len + 1 && !Q_strncasecmp(name + 4, q1_episodes[i], len) && name[4 + len] == '/') {
+            *skip = 4 + len + 1;
+            return i + 1;
+        }
+    }
+    return 0;
+}
+
 // Finds the file in the search path.
 // Fills file_t and returns file length.
 // Used for streaming data out of either a pak file or a seperate file.
-static int64_t open_file_read(file_t *file, const char *normalized, size_t namelen)
+//
+// (q1_codes) non-zero: (normalized) has no prefix, and only Quake 1 paths whose
+// episode code (FS_Q1_EPISODE_SHIFT) has its bit set are searched.
+static int64_t open_file_read_in(file_t *file, const char *normalized, size_t namelen, unsigned q1_codes)
 {
     char            fullpath[MAX_OSPATH];
     searchpath_t    *search;
@@ -1505,14 +1563,22 @@ static int64_t open_file_read(file_t *file, const char *normalized, size_t namel
     int64_t         ret;
     int             valid;
     bool            quake3_only = false;
+    bool            quake1_only = q1_codes != 0;
 
     FS_COUNT_READ;
 
+    if (q1_codes) {
+        // the caller took the prefix off
     // "baseq3/<path>": Quake III's own copy of <path> (FS_SEARCH_QUAKE3)
-    if (namelen > 7 && !Q_strncasecmp(normalized, "baseq3/", 7)) {
+    } else if (namelen > 7 && !Q_strncasecmp(normalized, "baseq3/", 7)) {
         normalized += 7;
         namelen -= 7;
         quake3_only = true;
+    // "id1/<path>": Quake 1's (FS_SEARCH_QUAKE1)
+    } else if (namelen > 4 && !Q_strncasecmp(normalized, "id1/", 4)) {
+        normalized += 4;
+        namelen -= 4;
+        quake1_only = true;
     }
 
     hash = FS_HashPath(normalized, 0);
@@ -1527,6 +1593,12 @@ static int64_t open_file_read(file_t *file, const char *normalized, size_t namel
             }
         }
         if (quake3_only && !(search->mode & FS_SEARCH_QUAKE3)) {
+            continue;
+        }
+        if (quake1_only && !(search->mode & FS_SEARCH_QUAKE1)) {
+            continue;
+        }
+        if (q1_codes && !(q1_codes & (1u << ((search->mode & FS_Q1_EPISODE_MASK) >> FS_Q1_EPISODE_SHIFT)))) {
             continue;
         }
 
@@ -1594,6 +1666,61 @@ static int64_t open_file_read(file_t *file, const char *normalized, size_t namel
 
 fail:
     FS_DPrintf("%s: %s: %s\n", __func__, normalized, Q_ErrorString(ret));
+    return ret;
+}
+
+static int64_t open_file_read(file_t *file, const char *normalized, size_t namelen)
+{
+    size_t  skip;
+    int     code = q1_episode_prefix(normalized, namelen, &skip);
+    int64_t ret;
+
+    if (!code)
+        return open_file_read_in(file, normalized, namelen, 0);
+
+    // "id1/<episode>/<path>" (FS_Q1_EPISODE_SHIFT): the loose
+    // <basedir>/id1/<episode>/<path> first, as it always was...
+    ret = open_file_read_in(file, normalized, namelen, 0);
+    if (ret != Q_ERR(ENOENT) && ret != Q_ERR_INVALID_PATH)
+        return ret;
+
+    // ...then the episode's own paks...
+    ret = open_file_read_in(file, normalized + skip, namelen - skip, 1u << code);
+    if (ret != Q_ERR(ENOENT) && ret != Q_ERR_INVALID_PATH)
+        return ret;
+
+    // ...then the game it is an add-on to: id1's paks and <basedir>/id1/<path>
+    ret = open_file_read_in(file, normalized + skip, namelen - skip,
+                            (code == FS_Q1_ID1_CODE ? 0 : 1u << FS_Q1_ID1_CODE) | 1u);
+    if (ret != Q_ERR(ENOENT) && ret != Q_ERR_INVALID_PATH)
+        return ret;
+
+    /* ...and a pak's maps/ under the name it was given as the pak loaded
+       (rename_quake1_maps): maps/q1/<x> for id1's, maps/q1/<episode>/<x> for an
+       add-on's. Quake keeps models there too - the boxes and the explosive
+       barrels are .bsp files (maps/b_explob.bsp) - and the progs precache them
+       by the old name, so "id1/id1/maps/b_explob.bsp" was not found and the
+       barrels were missing (Matt, 2026-11-21: "Couldn't load
+       id1/id1/maps/b_explob.bsp"). The health and ammo boxes hid it: they draw
+       the rerelease's md5s and never read their .bsp. The episode's own first,
+       then id1's. */
+    if (namelen - skip > 5 && !Q_strncasecmp(normalized + skip, "maps/", 5)) {
+        const char *rest = normalized + skip + 5;
+        char renamed[MAX_OSPATH];
+        size_t len;
+
+        if (code != FS_Q1_ID1_CODE) {
+            len = Q_concat(renamed, sizeof(renamed), "maps/q1/", q1_episodes[code - 1], "/", rest);
+            if (len < sizeof(renamed)) {
+                ret = open_file_read_in(file, renamed, len, 1u << code);
+                if (ret != Q_ERR(ENOENT) && ret != Q_ERR_INVALID_PATH)
+                    return ret;
+            }
+        }
+        len = Q_concat(renamed, sizeof(renamed), "maps/q1/", rest);
+        if (len < sizeof(renamed))
+            ret = open_file_read_in(file, renamed, len, 1u << FS_Q1_ID1_CODE);
+    }
     return ret;
 }
 
@@ -3932,8 +4059,144 @@ static void add_quake3_paths(void)
     Cvar_SetByVar(fs_quake3, count ? "1" : "0", FROM_CODE);
 }
 
+/*
+QUAKE 1 DATA, FOR ITS MAPS.
+
+<basedir>/id1 holds the Quake 1 rerelease's episodes, a folder each with a
+pak0.pak: id1 (Quake), hipnotic (Scourge of Armagon), rogue (Dissolution of
+Eternity), dopa (Dimension of the Past), mg1 (Dimension of the Machine), mg3
+(Dimension of the Fallen), ctf (Capture the Flag). Every episode goes on the
+path at once, below Quake III and baseq2, so as with Quake III only names
+nothing above has come from Quake 1: progs/, gfx/, sound/ it alone has.
+
+Their maps are renamed as they load, because every episode has a start.bsp
+(and an end, a hub, a dm1...): id1's go under maps/q1/ and the others' under
+maps/q1/<episode>/, so "map q1/e1m1", "map q1/mg1/hub", and the map's own
+files follow the name like any other (maps/lights/q1/e1m1.cfg, levelshots/
+q1/e1m1). Everything else keeps its name, id1's copy winning over an
+add-on's.
+
+Then <basedir>/id1 itself as a loose directory: materials/, materialDev/,
+maps/lights/, overrides of anything. Its episode folders are reachable
+through it too ("id1/hipnotic/music/track02.ogg"), which is how a Quake 1 map
+gets its own music rather than Quake II's of the same name.
+
+Each pak is tagged with its episode (FS_Q1_EPISODE_SHIFT): "id1/<episode>/
+<path>" reads that episode's copy first, then id1's (open_file_read).
+q1_episodes is defined further up, where the lookup needs it.
+*/
+
+// maps/<x> -> maps/q1/<x> (id1) or maps/q1/<episode>/<x>
+static void rename_quake1_maps(pack_t *pack, const char *episode)
+{
+    char prefix[MAX_QPATH];
+    size_t total = 0, plen;
+    char *names, *cursor;
+
+    if (!strcmp(episode, "id1"))
+        plen = Q_strlcpy(prefix, "maps/q1/", sizeof(prefix));
+    else
+        plen = Q_concat(prefix, sizeof(prefix), "maps/q1/", episode, "/");
+
+    for (unsigned i = 0; i < pack->num_files; i++) {
+        const packfile_t *file = &pack->files[i];
+        const char *name = pack->names + file->nameofs;
+        total += file->namelen + 1;
+        if (!Q_strncasecmp(name, "maps/", 5))
+            total += plen - 5;
+    }
+
+    names = cursor = FS_Malloc(total);
+    for (unsigned i = 0; i < pack->num_files; i++) {
+        packfile_t *file = &pack->files[i];
+        const char *name = pack->names + file->nameofs;
+        size_t len;
+
+        if (!Q_strncasecmp(name, "maps/", 5) && plen + file->namelen - 5 < 256) {
+            memcpy(cursor, prefix, plen);
+            memcpy(cursor + plen, name + 5, file->namelen - 5 + 1);
+            len = plen + file->namelen - 5;
+        } else {
+            memcpy(cursor, name, file->namelen + 1);
+            len = file->namelen;
+        }
+        file->nameofs = cursor - names;
+        file->namelen = (uint8_t)len;
+        cursor += len + 1;
+    }
+
+    Z_Free(pack->names);
+    pack->names = names;
+    Z_Free(pack->file_hash);
+    pack_calc_hashes(pack);
+}
+
+static void add_quake1_paths(void)
+{
+    char        root[MAX_OSPATH], path[MAX_OSPATH], games[MAX_QPATH * 2];
+    int         count = 0;
+
+    games[0] = 0;
+    // fs_quake1_<episode>: 1 when that episode's paks are there (the menu's
+    // Quake page lists those campaigns)
+    for (int i = 0; i < q_countof(q1_episodes); i++)
+        Cvar_FullSet(va("fs_quake1_%s", q1_episodes[i]), "0", CVAR_ROM, FROM_CODE);
+
+    if (Q_concat(root, sizeof(root), sys_basedir->string, "/id1") >= sizeof(root) || !Sys_IsDir(root)) {
+        Cvar_SetByVar(fs_quake1, "0", FROM_CODE);
+        Cvar_SetByVar(fs_quake1_games, "", FROM_CODE);
+        return;
+    }
+
+    for (int i = 0; i < q_countof(q1_episodes); i++) {
+        bool found = false;
+
+        for (int n = 0; n < 10; n++) {
+            char pakname[16];
+            Q_snprintf(pakname, sizeof(pakname), "pak%d.pak", n);
+            if (Q_concat(path, sizeof(path), root, "/", q1_episodes[i], "/", pakname) >= sizeof(path))
+                break;
+            if (!Sys_IsFile(path))
+                break;
+
+            pack_t *pack = load_pak_file(path);
+            if (!pack) {
+                Com_EPrintf("Couldn't load %s: %s\n", path, Com_GetLastError());
+                break;
+            }
+            rename_quake1_maps(pack, q1_episodes[i]);
+
+            searchpath_t *search = FS_Malloc(sizeof(searchpath_t));
+            search->mode = FS_PATH_BASE | FS_PATH_GAME | FS_SEARCH_QUAKE1
+                         | ((unsigned)(i + 1) << FS_Q1_EPISODE_SHIFT);
+            search->filename[0] = 0;
+            search->pack = pack_get(pack);
+            search->next = fs_searchpaths;
+            fs_searchpaths = search;
+            found = true;
+        }
+
+        if (found) {
+            count++;
+            Cvar_FullSet(va("fs_quake1_%s", q1_episodes[i]), "1", CVAR_ROM, FROM_CODE);
+            // listed highest priority first
+            char tmp[sizeof(games)];
+            Q_concat(tmp, sizeof(tmp), q1_episodes[i], games[0] ? " " : "", games);
+            Q_strlcpy(games, tmp, sizeof(games));
+        }
+    }
+
+    add_dir_path(FS_PATH_BASE | FS_PATH_GAME | FS_SEARCH_QUAKE1, root);
+
+    if (count)
+        Com_Printf("Quake 1 data: %d episode(s) in %s (%s)\n", count, root, games);
+    Cvar_SetByVar(fs_quake1, va("%d", count), FROM_CODE);
+    Cvar_SetByVar(fs_quake1_games, games, FROM_CODE);
+}
+
 static void setup_base_paths(void)
 {
+    add_quake1_paths();
     add_quake3_paths();
     add_rerelease_players();
 
@@ -4205,6 +4468,8 @@ void FS_Init(void)
 	fs_shareware = Cvar_Get("fs_shareware", "0", CVAR_ROM);
 	fs_rerelease = Cvar_Get("fs_rerelease", "0", CVAR_ROM);
     fs_quake3 = Cvar_Get("fs_quake3", "0", CVAR_ROM);
+    fs_quake1 = Cvar_Get("fs_quake1", "0", CVAR_ROM);
+    fs_quake1_games = Cvar_Get("fs_quake1_games", "", CVAR_ROM);
 
     // get the game cvar and start the filesystem
     fs_game = Cvar_Get("game", DEFGAME, CVAR_LATCH | CVAR_SERVERINFO);

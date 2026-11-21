@@ -735,7 +735,11 @@ static void Parse_If(menuFrameWork_t *menu, menuCondOp_t op)
    sky type or the time of day inside the menu could not show the controls -
    Menu_PendingValue only helps a condition that names the edited cvar itself.
    Both halves here do, so both see the pending edit. Closed by one endif. */
-static void Parse_IfEqOr(menuFrameWork_t *menu)
+/* ifneqor <cvar> <value> <cvar2> <value2>: passes unless BOTH cvars hold their
+   values - "not (a and b)". The bot match's map sets needed it: a deathmatch
+   row shows for every map set but Quake II's co-op, `ifneqor bot_mapset 0
+   _ui_server_coop 1`, once there was more than one other set. */
+static void Parse_IfEqOr(menuFrameWork_t *menu, menuCondOp_t op)
 {
 	if (Cmd_Argc() != 5) {
 		Com_Printf("Usage: %s <cvar> <value> <cvar2> <value2>\n", Cmd_Argv(0));
@@ -757,7 +761,7 @@ static void Parse_IfEqOr(menuFrameWork_t *menu)
 	cond->value = atoi(Cmd_Argv(2));
 	cond->cvar2 = Cvar_WeakGet(Cmd_Argv(3));
 	cond->value2 = atoi(Cmd_Argv(4));
-	cond->op = MENU_COND_EQ_OR;
+	cond->op = op;
 }
 
 // endif closes the INNERMOST open condition, not all of them.
@@ -857,7 +861,9 @@ static bool Parse_File(const char *path, int depth)
 				} else if (!strcmp(cmd, "ifle")) {
 					Parse_If(menu, MENU_COND_LE);
 				} else if (!strcmp(cmd, "ifeqor")) {
-					Parse_IfEqOr(menu);
+					Parse_IfEqOr(menu, MENU_COND_EQ_OR);
+				} else if (!strcmp(cmd, "ifneqor")) {
+					Parse_IfEqOr(menu, MENU_COND_NEQ_OR);
 				} else if (!strcmp(cmd, "endif")) {
 					Parse_Endif(menu);
                 } else {

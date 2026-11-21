@@ -377,6 +377,11 @@ typedef struct client_state_s {
     int         maxclients;
     pmoveParams_t pmp;
     int         q3_weapons;     // CS_Q3RULES: 0 Quake II, 1 Quake III, 2 by player model
+    bool        q1_weapons;     // CS_Q3RULES '3': Quake's guns (q3_weapons is then 0)
+    // CS_Q1VM: the Quake 1 episode ("id1", "hipnotic"...) whose own progs run
+    // the level, "" otherwise. Its entities then mean Quake 1 things: model
+    // 255 is a model, modelindex4 is Quake 1's lights, TE_Q1 temp entities.
+    char        q1vm[16];
 
     // Server frame interval in milliseconds and its reciprocal. Always
     // BASE_FRAMETIME / BASE_1_FRAMETIME except while playing back a rerelease
@@ -756,6 +761,7 @@ extern cvar_t    *cl_explosion_frametime;
 extern cvar_t    *cl_dlight_hacks;
 extern cvar_t    *cl_blaster_color;
 extern cvar_t    *cl_ludicrous_gibs;
+extern cvar_t    *cl_q1_gib_drops;
 extern cvar_t    *cl_spheretrans_alpha;
 extern cvar_t    *cl_tracker_bubble;
 extern cvar_t    *cl_tracker_bubble_scale;
@@ -952,6 +958,7 @@ typedef struct {
     int entity2;
     int time;
     byte di_bits[MAX_DAMAGE_INDICATORS];  // TE_DAMAGE_INDICATOR; directions in path
+    int q1kind;     // TE_Q1: which of Quake 1's (TE_Q1_*)
 } tent_params_t;
 
 typedef struct {
@@ -1114,6 +1121,14 @@ typedef struct {
     int     switch_index;   // bit in CS_DYNAMICLIGHTS, or -1 for always-on
     bool    is_spot;
     float   vol_scale;      // LIGHT_VOLUMETRIC_SCALE_UNSET = class default
+
+    // A Quake 1 map's light entity (light, light_fluoro, light_candle...): its
+    // brightness on the light editor's own scale (light^2 x 4.0426e-5, as the
+    // lights a Quake 1 light file holds), not intensity x cl_dynamic_light_scale;
+    // 0 for every other kind. q1_light is the map's "light" value it came from.
+    float   q1_brightness;
+    float   q1_light;
+    float   emitter_radius; // the emitter's size a replacement inherits; 0 = the default
 
     // [light editor] a replacement light stands in for this entity. Owned by
     // lightedit.c, which is also what clears it.
@@ -1475,6 +1490,8 @@ typedef struct cdlight_s {
 void CL_BigTeleportParticles(const vec3_t org);
 void CL_RocketTrail(const vec3_t start, const vec3_t end, centity_t *old);
 void CL_GrenadeTrail(const vec3_t start, const vec3_t end, centity_t *old);
+bool CL_IsLavaBall(int modelindex);
+void CL_LavaBallTrail(const vec3_t start, const vec3_t end, centity_t *old);
 bool CL_RocketUnderwater(const vec3_t origin);
 void CL_RocketWaterLight(const vec3_t origin);
 void CL_DiminishingTrail(const vec3_t start, const vec3_t end, centity_t *old, int flags);
@@ -1510,6 +1527,11 @@ void CL_RunParticles(void);
 void CL_AddParticles(void);
 cdlight_t *CL_AllocDlight(int key);
 void CL_Q3W_MuzzleFlash(int entnum, int mz, cdlight_t *dl);     // q3weapons.c
+// q3weapons.c PREDICTED SHOTS: our own Quake III gun fired per command
+void CL_Q3W_PredictCmd(int number);
+void CL_Q3W_FrameParsed(void);
+bool CL_Q3W_SkipServerFlash(int entity, int weapon);
+bool CL_Q3W_SkipServerSound(int entity, int channel);
 void CL_AddDLights(void);
 void CL_SetLightStyle(int index, const char *s);
 void CL_AddLightStyles(void);
@@ -1648,6 +1670,12 @@ void    SCR_BeginLoadingPlaque(void);
 void    SCR_EndLoadingPlaque(void);
 void    SCR_TouchPics(void);
 void    SCR_RegisterMedia(void);
+
+// sbar_q1.c: Quake 1's status bar, under its own game code (cl.q1vm)
+void    SCR_Q1RegisterMedia(void);
+void    SCR_Q1ClearMedia(void);
+void    SCR_Q1DrawStatusBar(int width, int height);
+
 void    SCR_ModeChanged(void);
 void    SCR_LagSample(void);
 void    SCR_LagClear(void);

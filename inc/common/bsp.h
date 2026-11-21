@@ -263,6 +263,59 @@ typedef struct mmodel_s {
 #endif
 } mmodel_t;
 
+/*
+QUAKE 1 MAPS (bsp_q1.c). Quake collides through precomputed clipping hulls:
+the draw tree for points (hull 0), and two clipnode trees the compiler made
+with every brush - "clip" brushes included, which the draw tree never sees -
+already grown by a player-sized box (hull 1) and a shambler-sized one (hull
+2). A box trace picks a hull by the box's width, as Quake does, and runs the
+point through it (BSP_Q1BoxTrace, called from cmodel.c for a Quake 1
+model's headnode).
+*/
+#define Q1_MAX_HULLS        4
+
+// Quake 1's contents numbers, as its leaves and clipnodes store them
+#define Q1_CONTENTS_EMPTY   -1
+#define Q1_CONTENTS_SOLID   -2
+#define Q1_CONTENTS_WATER   -3
+#define Q1_CONTENTS_SLIME   -4
+#define Q1_CONTENTS_LAVA    -5
+#define Q1_CONTENTS_SKY     -6
+
+typedef struct {
+    int         planenum;
+    int         children[2];    // >= 0 a clipnode, < 0 Quake 1 contents
+} mclipnode_t;
+
+typedef struct {
+    mclipnode_t *clipnodes;
+    int         firstclipnode;
+    int         lastclipnode;
+    vec3_t      clip_mins, clip_maxs;
+} mhull_t;
+
+typedef struct {
+    char        name[32];       // the texinfo spelling: lower case, '*' -> '#'
+    int         width, height;
+    int         offset;         // of the first mip's pixels in q1bsp_t.texdata
+} mq1miptex_t;
+
+typedef struct q1bsp_s {
+    int             version;        // 29, or the BSP2 / 2PSB ident
+    int             numclipnodes;   // the map's, then hull 0's made from the nodes
+    mclipnode_t     *clipnodes;
+    int             hull0;          // where hull 0's begin in clipnodes
+    mhull_t         (*hulls)[Q1_MAX_HULLS];     // per model
+    int             *node_model;    // per node: the model it heads, else -1
+    signed char     *leafcontents;  // per mleaf_t: Quake 1 contents
+    int             numvisleafs;    // leafs 1..numvisleafs have clusters
+    int             leafspercluster;    // leaf i is in cluster (i - 1) / this
+    int             nummiptex;
+    mq1miptex_t     *miptex;
+    byte            *texdata;
+    int             texdatalen;
+} q1bsp_t;
+
 typedef struct bsp_s {
     list_t      entry;
     int         refcount;
@@ -345,6 +398,8 @@ typedef struct bsp_s {
 
     bool            extended;
     bool            q3;             // transcoded from a Quake III IBSP 46 (bsp_q3.c)
+    bool            q1;             // transcoded from a Quake 1 BSP 29 / BSP2 (bsp_q1.c)
+    q1bsp_t         *q1d;           // its clip hulls and textures
 
 	// WARNING: the 'name' string is actually longer than this, and the bsp_t structure is allocated larger than sizeof(bsp_t) in BSP_Load
     char            name[1];
@@ -358,6 +413,28 @@ void BSP_Free(bsp_t *bsp);
 // does the validation and PVS work that follows for either format.
 int BSP_LoadQ3(bsp_t *bsp, const byte *buf, size_t filelen);
 void BSP_Q3_Init(void);
+
+// bsp_q1.c: the same for a Quake 1 map. BSP_IsQ1Header says whether the
+// file's first four bytes name one (version 29, "BSP2" or "2PSB").
+bool BSP_IsQ1Header(const byte *buf, size_t filelen);
+int BSP_LoadQ1(bsp_t *bsp, const byte *buf, size_t filelen);
+
+// The Quake 1 map whose model `headnode` heads, and which model - so the
+// trace functions can use its clip hulls. NULL for everything else, which is
+// every Quake II and Quake III map and the box headnode (bsp.c).
+bsp_t *BSP_Q1ForHeadnode(const mnode_t *headnode, int *model);
+void BSP_Q1BoxTrace(trace_t *trace, bsp_t *bsp, int model,
+                    const vec3_t start, const vec3_t end,
+                    const vec3_t mins, const vec3_t maxs, int brushmask);
+// Quake 1 contents at `p` in the world (point hull), for Quake's own game code
+int BSP_Q1PointContents(bsp_t *bsp, const vec3_t p);
+// A Quake 1 map's wall texture, as 8-bit palette indices: the first mip of
+// the miptex `name` ("q1/..." texinfo spelling without the prefix), from the
+// most recently loaded Quake 1 map that has it. NULL when none does.
+const byte *BSP_Q1FindMiptex(const char *name, int *width, int *height);
+// the same from one map (bsp_q1.c); BSP_Q1FindMiptex searches the loaded ones
+const byte *BSP_Q1MiptexFrom(const bsp_t *bsp, const char *name, int *width, int *height);
+int BSP_Q1ContentsToQ2(int q1);
 const char *BSP_GetError(void);
 
 #if USE_REF

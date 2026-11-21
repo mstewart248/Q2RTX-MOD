@@ -179,8 +179,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #include "client.h"
 
-// The renderer's whole frame budget is MAX_DLIGHTS (256), shared with the
-// map's own dynamic_lights, so there is no point in a larger array here.
+// Half the renderer's frame budget, MAX_DLIGHTS (512): the other half is for
+// the map's own dynamic_lights and the game's flashes, added before these.
 #define MAX_EDIT_LIGHTS     256
 
 // Which attributes this light states for itself. Anything not flagged is
@@ -397,6 +397,18 @@ static bool LE_Active(void)
 // The 0..255 brightness -> engine light units mapping. The map's own lights come
 // out around 128..2048 after cl_dynamic_light_scale, so full brightness here is
 // comparable to a bright one of those.
+// Where a map's light file lives: a Quake III map's in baseq3/, a Quake 1
+// map's in <basedir>/id1/ (files.c reads and writes "id1/" there), anything
+// else in the gamedir.
+static const char *LE_GamePrefix(void)
+{
+    if (cl.bsp && cl.bsp->q3)
+        return "baseq3/";
+    if (cl.bsp && cl.bsp->q1)
+        return "id1/";
+    return "";
+}
+
 static float LE_LightScale(void)
 {
     return light_scale ? light_scale->value : 2000.0f;
@@ -516,10 +528,15 @@ typedef struct {
 // Whether this lump entry is a light the game can switch. SP_light only hooks
 // light_use for a targetnamed light on style 32 or above - below that the style
 // is a shared animation (flicker, pulse) that firing the name cannot change.
+// A Quake 1 map's light_fluoro, light_globe... too: g_q1.c spawns a switched
+// one as Quake II's light
 static bool LE_IsSwitchLight(const leent_t *e)
 {
-    return e->targetname[0] && e->style >= 32 && e->style < MAX_LIGHTSTYLES &&
-           !strcmp(e->classname, "light");
+    if (!e->targetname[0] || e->style < 32 || e->style >= MAX_LIGHTSTYLES)
+        return false;
+    if (!strcmp(e->classname, "light"))
+        return true;
+    return cl.bsp && cl.bsp->q1 && !strncmp(e->classname, "light_", 6);
 }
 
 static bool LE_FindSwitch(const char *name, leswitch_t *out)
@@ -641,6 +658,11 @@ static float LE_EntityBrightness(const cdynamiclight_t *c)
     float scale = LE_LightScale();
     float bright = 0.0f;
 
+    // a Quake 1 light is on this scale already (dynamiclights.c), and a bright
+    // one is past 255 (light 2500 = 253)
+    if (c->q1_brightness > 0.0f)
+        return max(c->q1_brightness, 0.01f);
+
     if (scale > 0.0f)
         bright = c->intensity * Cvar_VariableValue("cl_dynamic_light_scale")
                  / scale * 255.0f;
@@ -692,7 +714,10 @@ static void LE_Resolve(const editlight_t *l, leresolved_t *out)
     // emitter size. The entity has no emitter size of its own - its
     // shadowlightradius is reach, and that is already folded into its intensity
     // - so this falls straight through to the default for a replacement too.
-    out->radius = (l->have & LE_HAVE_RADIUS) ? l->radius : LIGHT_DEFAULT_RADIUS;
+    // A Quake 1 light is the exception: its replacement keeps the 4 its old
+    // import had (cdynamiclight_t.emitter_radius).
+    out->radius = (l->have & LE_HAVE_RADIUS) ? l->radius
+                : (c && c->emitter_radius > 0.0f) ? c->emitter_radius : LIGHT_DEFAULT_RADIUS;
 
     // volumetric scale. The entity may carry one; if it does not, the class
     // default is the answer, which is the sentinel either way.
@@ -828,6 +853,160 @@ static int LE_ApplyKeyedToken(editlight_t *l, int argc, int i)
 
 /*
 =================
+LE_Q1EntityLights
+
+A QUAKE 1 MAP WITH NO LIGHT FILE (light_q1_entities 1): its own light
+entities, as the lights a file would have held. Quake put them only into its
+lightmaps, which the path tracer does not use, so a map Matt has not lit in
+Remix was black but for its fullbright textures and its sky (q1/dm3,
+2026-11-20). They come in exactly as tools/q1matdev.py writes the ones he left
+alone on his Remix maps - "on there at QuakeSpasm's strength": white unless
+_color says otherwise, radius 4, and brightness = QuakeSpasm-RTX's sphere light
+(5.073e-4 x light^2) x K (1/40) over lightedit's 2000 / (255 x 25) - light^2 x
+4.0426e-5, so the usual "light 300" is 3.64. A light with a targetname follows
+it (trigger_on if it starts off, trigger_off if not); styles 1-31 animate.
+Over MAX_EDIT_LIGHTS the dimmest go. "light save" writes them to the map's
+file, after which that file is what loads.
+=================
+*/
+#define LE_Q1_BRIGHT_PER_LIGHT2     4.0426e-5f
+
+static int LE_Q1CompareBrightness(const void *a, const void *b)
+{
+    const float ba = ((const editlight_t *)a)->brightness, bb = ((const editlight_t *)b)->brightness;
+    return ba < bb ? 1 : ba > bb ? -1 : 0;
+}
+
+static void LE_Q1EntityLights(void)
+{
+    static cvar_t   *light_q1_entities;
+    editlight_t     *all = NULL;
+    int             num = 0, total = 0;
+    const char      *data;
+
+    // 0 since 2026-11-21: a Quake 1 map's lights are dormant map lights now,
+    // black markers to "light replace" as Quake II's are (dynamiclights.c) -
+    // Matt: "a bunch of map lights came over as light editor lights ... They
+    // shouldn't cast any light and they should show up as black spheres". 1
+    // is the copy into the editor as below, on a map with no light file.
+    if (!light_q1_entities)
+        light_q1_entities = Cvar_Get("light_q1_entities", "0", 0);
+    if (!light_q1_entities->integer || !cl.bsp || !cl.bsp->q1 || !cl.bsp->entitystring)
+        return;
+
+    // every light entity, then the brightest MAX_EDIT_LIGHTS of them
+    for (int pass = 0; pass < 2; pass++) {
+        data = cl.bsp->entitystring;
+        while (1) {
+            char        classname[LE_NAME_LEN] = "", targetname[LE_NAME_LEN] = "";
+            vec3_t      origin = { 0, 0, 0 }, color = { 1, 1, 1 };
+            float       light = 300;
+            int         style = 0, spawnflags = 0;
+            bool        has_origin = false;
+            const char  *tok = COM_Parse(&data);
+
+            if (!data || tok[0] != '{')
+                break;
+            while (1) {
+                char key[LE_NAME_LEN];
+
+                tok = COM_Parse(&data);
+                if (!data || !tok[0] || tok[0] == '}')
+                    break;
+                Q_strlcpy(key, tok, sizeof(key));
+                tok = COM_Parse(&data);
+                if (!data)
+                    break;
+                if (!strcmp(key, "classname"))
+                    Q_strlcpy(classname, tok, sizeof(classname));
+                else if (!strcmp(key, "targetname"))
+                    Q_strlcpy(targetname, tok, sizeof(targetname));
+                else if (!strcmp(key, "origin"))
+                    has_origin = sscanf(tok, "%f %f %f", &origin[0], &origin[1], &origin[2]) == 3;
+                else if (!strcmp(key, "light") || !strcmp(key, "_light"))
+                    light = atof(tok);
+                else if (!strcmp(key, "_color") || !strcmp(key, "color"))
+                    sscanf(tok, "%f %f %f", &color[0], &color[1], &color[2]);
+                else if (!strcmp(key, "style"))
+                    style = atoi(tok);
+                else if (!strcmp(key, "spawnflags"))
+                    spawnflags = atoi(tok);
+            }
+            if (!data)
+                break;
+
+            // light, light_fluoro, light_torch_small_walltorch, light_globe...
+            if (Q_strncasecmp(classname, "light", 5) || (classname[5] && classname[5] != '_') ||
+                !has_origin || light <= 0)
+                continue;
+
+            if (pass == 0) {
+                total++;
+                continue;
+            }
+            if (num >= total)
+                break;
+
+            editlight_t *l = &all[num++];
+            memset(l, 0, sizeof(*l));
+            VectorCopy(origin, l->origin);
+
+            // q1matdev.py's brightness_rgb: the colour at its peak, the peak in
+            // the brightness; 0..255 or 0..1 alike
+            if (color[0] > 1.5f || color[1] > 1.5f || color[2] > 1.5f)
+                VectorScale(color, 1.0f / 255.0f, color);
+            float peak = max(color[0], max(color[1], color[2]));
+            if (peak <= 0) {
+                VectorSet(color, 1, 1, 1);
+                peak = 1;
+            }
+            for (int i = 0; i < 3; i++) {
+                float c = color[i] / peak;
+                l->rgb[i] = (byte)Q_rint((c < 0 ? 0 : c > 1 ? 1 : c) * 255);
+            }
+            l->brightness = light * light * LE_Q1_BRIGHT_PER_LIGHT2 * peak;
+            l->radius = 4.0f;
+            l->vol_scale = LIGHT_VOLUMETRIC_SCALE_UNSET;
+            l->ent_index = -1;
+            l->trigger_style = -1;
+            l->have = LE_HAVE_RGB | LE_HAVE_BRIGHT | LE_HAVE_RADIUS;
+            if (style > 0 && style < 32) {
+                l->style = style;
+                l->have |= LE_HAVE_STYLE;
+            }
+            if (targetname[0]) {
+                Q_strlcpy(l->trigger, targetname, sizeof(l->trigger));
+                l->trigger_on = spawnflags & 1;
+                l->have |= LE_HAVE_TRIGGER;
+            }
+        }
+
+        if (pass == 0) {
+            if (!total)
+                return;
+            all = Z_Mallocz(sizeof(editlight_t) * total);
+        }
+    }
+
+    qsort(all, num, sizeof(*all), LE_Q1CompareBrightness);
+    if (num > MAX_EDIT_LIGHTS) {
+        Com_DPrintf("%s: %d light entities, keeping the brightest %d\n", cl.mapname, num, MAX_EDIT_LIGHTS);
+        num = MAX_EDIT_LIGHTS;
+    }
+
+    le_lights = Z_Mallocz(sizeof(editlight_t) * MAX_EDIT_LIGHTS);
+    memcpy(le_lights, all, sizeof(editlight_t) * num);
+    le_num_lights = num;
+    Z_Free(all);
+
+    for (int i = 0; i < le_num_lights; i++)
+        LE_BindTrigger(&le_lights[i]);
+
+    Com_Printf("%d lights from %s's own light entities (no light file)\n", le_num_lights, cl.mapname);
+}
+
+/*
+=================
 LE_LoadLights
 
 Called once per map load. A missing file is the normal case and is silent.
@@ -853,13 +1032,16 @@ void LE_LoadLights(void)
     if (!cl.mapname[0])
         return;
 
-    // a Quake III map's from baseq3/, where LE_WriteLights puts them
-    Q_concat(path, sizeof(path), cl.bsp && cl.bsp->q3 ? "baseq3/" : "", "maps/lights/", cl.mapname, ".cfg");
+    // a Quake III map's from baseq3/, where LE_WriteLights puts them, and a
+    // Quake 1 map's from id1/ (maps/lights/q1/e1m1.cfg there)
+    Q_concat(path, sizeof(path), LE_GamePrefix(), "maps/lights/", cl.mapname, ".cfg");
 
     ret = FS_LoadFile(path, (void **)&buffer);
     if (!buffer) {
         if (ret != Q_ERR(ENOENT))
             Com_EPrintf("Couldn't load %s: %s\n", path, Q_ErrorString(ret));
+        else
+            LE_Q1EntityLights();
         return;
     }
 
@@ -1107,10 +1289,13 @@ static void LE_WriteLights(void)
     int         placed = 0, replacing = 0;
 
     // a Quake III map's lights live with its data, in baseq3/ (files.c), where
-    // LE_LoadLights finds them again through the baseq3 search path
+    // LE_LoadLights finds them again through the baseq3 search path; a Quake 1
+    // map's in <basedir>/id1/
+    char        dir[MAX_QPATH];
+
+    Q_concat(dir, sizeof(dir), LE_GamePrefix(), "maps/lights/");
     f = FS_EasyOpenFile(buffer, sizeof(buffer), FS_MODE_WRITE | FS_FLAG_TEXT,
-                        cl.bsp && cl.bsp->q3 ? "baseq3/maps/lights/" : "maps/lights/",
-                        cl.mapname, ".cfg");
+                        dir, cl.mapname, ".cfg");
     if (!f)
         return;
 
@@ -1428,11 +1613,18 @@ static void LE_PrintEntity(const cdynamiclight_t *c)
                c->replaced ? "REPLACED - a light stands in for it"
                            : "DORMANT - \"light replace\" to light it");
 
-    Com_Printf("    rgb %d %d %d   brightness %g (converted from intensity %.0f)\n",
-               (int)(c->color[0] * 255.0f + 0.5f),
-               (int)(c->color[1] * 255.0f + 0.5f),
-               (int)(c->color[2] * 255.0f + 0.5f),
-               LE_EntityBrightness(c), c->intensity);
+    if (c->q1_brightness > 0.0f)
+        Com_Printf("    rgb %d %d %d   brightness %g (from Quake's light %.0f)\n",
+                   (int)(c->color[0] * 255.0f + 0.5f),
+                   (int)(c->color[1] * 255.0f + 0.5f),
+                   (int)(c->color[2] * 255.0f + 0.5f),
+                   LE_EntityBrightness(c), c->q1_light);
+    else
+        Com_Printf("    rgb %d %d %d   brightness %g (converted from intensity %.0f)\n",
+                   (int)(c->color[0] * 255.0f + 0.5f),
+                   (int)(c->color[1] * 255.0f + 0.5f),
+                   (int)(c->color[2] * 255.0f + 0.5f),
+                   LE_EntityBrightness(c), c->intensity);
 
     if (c->is_spot)
         Com_Printf("    spot, cone %.0f%s   aim %.3f %.3f %.3f\n",
@@ -1448,6 +1640,8 @@ static void LE_PrintEntity(const cdynamiclight_t *c)
     if (c->switch_index >= 0)
         Com_Printf("    switchable by the game (bit %d, currently %s)\n",
                    c->switch_index, CL_DynamicLightSwitchedOn(c) ? "ON" : "OFF");
+    else if (cl.bsp && cl.bsp->q1 && c->style >= 32)
+        Com_Printf("    switchable by the game through its style\n");
     else
         Com_Printf("    always on\n");
 

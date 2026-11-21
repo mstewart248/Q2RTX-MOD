@@ -95,6 +95,7 @@ typedef struct {
 	char    classname[32];
 	char    target[64];
 	char    targetname[64];
+	char    model[16];          // a brush entity's "*N" (Quake 1's teleporters)
 	vec3_t  origin;
 	vec3_t  angles;
 	float   roll;
@@ -163,8 +164,10 @@ static bool q3_parse_entity(const char **data, q3ent_t *e)
 			Q_strlcpy(e->targetname, tok, sizeof(e->targetname));
 		else if (!strcmp(key, "origin"))
 			sscanf(tok, "%f %f %f", &e->origin[0], &e->origin[1], &e->origin[2]);
-		else if (!strcmp(key, "angles"))
+		else if (!strcmp(key, "angles") || !strcmp(key, "mangle"))
 			sscanf(tok, "%f %f %f", &e->angles[0], &e->angles[1], &e->angles[2]);
+		else if (!strcmp(key, "model"))
+			Q_strlcpy(e->model, tok, sizeof(e->model));
 		else if (!strcmp(key, "angle"))
 			e->angles[1] = (float)atof(tok);
 		else if (!strcmp(key, "roll"))
@@ -354,6 +357,239 @@ void vkpt_cameras_q3_transform(const bsp_mesh_t* wm, int index, float time, floa
 	}
 }
 
+/*
+==============================================================================
+
+QUAKE 1 TELEPORTERS
+
+A Quake 1 teleporter is a trigger_teleport brush, targeting an
+info_teleport_destination, with a gate of *teleport faces in or at its box -
+world faces, not the trigger's own (it has none drawn). Walk in and the game
+puts you at the destination facing its "angle" (g_q1.c). So the gate is drawn
+as a window onto there: a portal, as Quake III's are, with no texture of its
+own and no glow, and a waver over it like Quake's water.
+
+The turn is the shader's, from the face the ray meets (reflect_refract.rgen):
+"into the gate" becomes the way the destination faces, whichever side of the
+gate the eye is on - the game turns you that way from either side too. The
+gate's floor (its trigger box's bottom) is the destination's: Quake puts the
+player's origin 27 above the marker and the feet 24 below the origin, so the
+floor there is the marker's height plus 3. A point on the gate is the same
+point across the destination's view.
+
+pt_q1_teleport_portals 0 (map load) keeps the textures; pt_q1_teleport_warp is
+the waver, 0 none, 1 Quake's.
+
+==============================================================================
+*/
+
+static cvar_t *cvar_pt_q1_teleport_portals;
+static cvar_t *cvar_pt_q1_teleport_warp;
+
+static bool face_in_a_model(const bsp_t* bsp, const mface_t* surf)
+{
+	for (int i = 0; i < bsp->nummodels; i++)
+		if (surf >= bsp->models[i].firstface && surf < bsp->models[i].firstface + bsp->models[i].numfaces)
+			return true;
+	return false;
+}
+
+/* THE SHAPE OF EACH GATE, for the light through it (pt_portal_light): direct
+   light is sampled through a gate from the point mirrored to its far side
+   (direct_lighting.rgen, add_portal_light), which needs to know how big each
+   gate looks from a surface, to pick one, and which cluster's lights to sample.
+   The world faces bsp_mesh.c draws as this gate (vkpt_cameras_q1_face): the way
+   they stand is the area-weighted main axis of their normals - so a gate's
+   narrow side faces do not tip it, and either way round counts the same - their
+   reach along that axis from the trigger box's middle is the gate's half
+   thickness (where the faces the eye meets stand, portal_carry_ray), across it
+   the half width, and their top over the box's floor the height. */
+static void q1_gate_shapes(bsp_mesh_t* wm, const bsp_t* bsp)
+{
+	for (int g = 0; g < wm->num_cameras; g++) {
+		float sxx = 0, sxy = 0, syy = 0;
+		float cx, cy, nx, ny;
+
+		if (!wm->cameras[g].q1_gate)
+			continue;
+		wm->cameras[g].gate_height = 0;
+
+		for (int i = 0; i < bsp->numfaces; i++) {
+			const mface_t *surf = bsp->faces + i;
+			vec3_t area = { 0, 0, 0 };
+
+			if (vkpt_cameras_q1_face(wm, surf) != g || face_in_a_model(bsp, surf))
+				continue;
+			const float *v0 = surf->firstsurfedge[0].edge->v[surf->firstsurfedge[0].vert]->point;
+			for (int k = 1; k + 1 < surf->numsurfedges; k++) {
+				const float *v1 = surf->firstsurfedge[k].edge->v[surf->firstsurfedge[k].vert]->point;
+				const float *v2 = surf->firstsurfedge[k + 1].edge->v[surf->firstsurfedge[k + 1].vert]->point;
+				vec3_t e1, e2, c;
+				VectorSubtract(v1, v0, e1);
+				VectorSubtract(v2, v0, e2);
+				CrossProduct(e1, e2, c);
+				VectorAdd(area, c, area);
+			}
+			float a = 0.5f * VectorLength(area);
+			const float *pn = surf->plane->normal;
+			sxx += a * pn[0] * pn[0];
+			sxy += a * pn[0] * pn[1];
+			syy += a * pn[1] * pn[1];
+		}
+		if (sxx + syy <= 0)
+			continue;     // no face: the shader sends no light through it
+
+		float angle = 0.5f * atan2f(2.0f * sxy, sxx - syy);
+		nx = cosf(angle);
+		ny = sinf(angle);
+		cx = 0.5f * (wm->cameras[g].gate_mins[0] + wm->cameras[g].gate_maxs[0]);
+		cy = 0.5f * (wm->cameras[g].gate_mins[1] + wm->cameras[g].gate_maxs[1]);
+
+		float thick = 0, width = 0, height = 0;
+		for (int i = 0; i < bsp->numfaces; i++) {
+			const mface_t *surf = bsp->faces + i;
+
+			if (vkpt_cameras_q1_face(wm, surf) != g || face_in_a_model(bsp, surf))
+				continue;
+			for (int k = 0; k < surf->numsurfedges; k++) {
+				const float *v = surf->firstsurfedge[k].edge->v[surf->firstsurfedge[k].vert]->point;
+				float dx = v[0] - cx, dy = v[1] - cy;
+				thick = max(thick, fabsf(dx * nx + dy * ny));
+				width = max(width, fabsf(dy * nx - dx * ny));
+				height = max(height, v[2] - wm->cameras[g].gate_mins[2]);
+			}
+		}
+
+		// the cluster at the player's origin there (dest is the floor, which a
+		// point could sit on and so test as solid): Quake's marker + 27
+		vec3_t player_origin;
+		VectorCopy(wm->cameras[g].dest, player_origin);
+		player_origin[2] += 24.0f;
+		mleaf_t *leaf = BSP_PointLeaf(bsp->nodes, player_origin);
+		wm->cameras[g].dest_cluster = leaf ? leaf->cluster : -1;
+		if (wm->cameras[g].dest_cluster < 0)
+			continue;     // a destination in the solid: nothing to light it with
+
+		wm->cameras[g].gate_normal[0] = nx;
+		wm->cameras[g].gate_normal[1] = ny;
+		wm->cameras[g].gate_half_thick = thick;
+		wm->cameras[g].gate_half_width = width;
+		wm->cameras[g].gate_height = height;
+	}
+}
+
+void vkpt_cameras_load_q1(bsp_mesh_t* wm, const bsp_t* bsp)
+{
+	const char  *data;
+	q3ent_t     e, *ents;
+	int         count = 0, max = 0;
+
+	if (!bsp->q1 || !bsp->entitystring || !cvar_pt_q1_teleport_portals || !cvar_pt_q1_teleport_portals->integer)
+		return;
+
+	for (data = bsp->entitystring; *data; data++)
+		if (*data == '{')
+			max++;
+	if (!max)
+		return;
+
+	ents = Z_Malloc(sizeof(q3ent_t) * max);
+	data = bsp->entitystring;
+	while (count < max && q3_parse_entity(&data, &e))
+		ents[count++] = e;
+
+	for (int i = 0; i < count; i++) {
+		const q3ent_t *tele = &ents[i], *dest;
+		int model;
+
+		if (strcmp(tele->classname, "trigger_teleport") || tele->model[0] != '*')
+			continue;
+		model = atoi(tele->model + 1);
+		if (model <= 0 || model >= bsp->nummodels)
+			continue;
+		dest = q3_find(ents, count, tele->target, "info_teleport_destination");
+		if (!dest)
+			continue;     // targets nothing (or is fired, mg1's): keep the texture
+		if (wm->num_cameras >= MAX_CAMERAS) {
+			Com_WPrintf("Map has too many teleporters to see through (max: %i); the rest keep their texture\n", MAX_CAMERAS);
+			break;
+		}
+
+		int n = wm->num_cameras++;
+		memset(&wm->cameras[n], 0, sizeof(wm->cameras[n]));
+		wm->cameras[n].portal = true;       // so the portal code is in (main.c)
+		wm->cameras[n].placed = true;
+		wm->cameras[n].q1_gate = true;
+		VectorCopy(bsp->models[model].mins, wm->cameras[n].gate_mins);
+		VectorCopy(bsp->models[model].maxs, wm->cameras[n].gate_maxs);
+		VectorCopy(dest->origin, wm->cameras[n].dest);
+		wm->cameras[n].dest[2] += 3.0f;
+		wm->cameras[n].dest_yaw = dest->angles[1];
+		VectorCopy(dest->origin, wm->cameras[n].pos);
+	}
+
+	Z_Free(ents);
+
+	q1_gate_shapes(wm, bsp);
+}
+
+int vkpt_cameras_q1_face(const bsp_mesh_t* wm, const mface_t* surf)
+{
+	const float grow = 16.0f;    // gates stand at the trigger's edge, or just past it
+	vec3_t center = { 0, 0, 0 };
+
+	if (!surf->texinfo || !surf->plane || surf->numsurfedges < 3)
+		return -1;
+	if (!Q_strHas(surf->texinfo->name, "teleport"))
+		return -1;
+	if (fabsf(surf->plane->normal[2]) > 0.7f)
+		return -1;    // a floor or ceiling of it: no way through to show
+
+	for (int i = 0; i < surf->numsurfedges; i++)
+		VectorAdd(center, surf->firstsurfedge[i].edge->v[surf->firstsurfedge[i].vert]->point, center);
+	VectorScale(center, 1.0f / surf->numsurfedges, center);
+
+	for (int i = 0; i < wm->num_cameras; i++) {
+		if (!wm->cameras[i].q1_gate)
+			continue;
+		int k;
+		for (k = 0; k < 3; k++)
+			if (center[k] < wm->cameras[i].gate_mins[k] - grow || center[k] > wm->cameras[i].gate_maxs[k] + grow)
+				break;
+		if (k == 3)
+			return i;
+	}
+	return -1;
+}
+
+void vkpt_cameras_q1_gate(const bsp_mesh_t* wm, int index, float data[16])
+{
+	const vec3_t *mins = &wm->cameras[index].gate_mins, *maxs = &wm->cameras[index].gate_maxs;
+
+	// reflect_refract.rgen: column 0 the gate's floor, -2 in its .w to say
+	// "Quake 1" (less than 0: a portal, path_tracer_rgen.h); column 1 the
+	// destination's floor and its yaw; column 2's .xy the waver
+	memset(data, 0, sizeof(float) * 16);
+	data[0] = 0.5f * ((*mins)[0] + (*maxs)[0]);
+	data[1] = 0.5f * ((*mins)[1] + (*maxs)[1]);
+	data[2] = (*mins)[2];
+	data[3] = -2.0f;
+	VectorCopy(wm->cameras[index].dest, data + 4);
+	data[7] = DEG2RAD(wm->cameras[index].dest_yaw);
+	data[8] = cvar_pt_q1_teleport_warp ? 0.03f * max(0.f, cvar_pt_q1_teleport_warp->value) : 0.03f;    // radians
+	data[9] = 2.0f;                                                 // radians a second
+
+	// direct_lighting.rgen, add_portal_light (q1_gate_shapes): column 2's .z the
+	// destination's cluster, .w the gate's height (0: no light through it);
+	// column 3 the way its faces stand, its half width and half thickness
+	data[10] = (float)wm->cameras[index].dest_cluster;
+	data[11] = wm->cameras[index].gate_height;
+	data[12] = wm->cameras[index].gate_normal[0];
+	data[13] = wm->cameras[index].gate_normal[1];
+	data[14] = wm->cameras[index].gate_half_width;
+	data[15] = wm->cameras[index].gate_half_thick;
+}
+
 static void Camera_Cmd_f(void)
 {
 	vec3_t forward;
@@ -370,6 +606,8 @@ static const cmdreg_t cmds[] = {
 void vkpt_cameras_init(void)
 {
 	Cmd_Register(cmds);
+	cvar_pt_q1_teleport_portals = Cvar_Get("pt_q1_teleport_portals", "1", CVAR_ARCHIVE);
+	cvar_pt_q1_teleport_warp = Cvar_Get("pt_q1_teleport_warp", "1", CVAR_ARCHIVE);
 }
 
 void vkpt_cameras_shutdown(void)

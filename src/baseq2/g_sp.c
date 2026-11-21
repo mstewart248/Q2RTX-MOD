@@ -235,6 +235,7 @@ void SP_LevelRules(void)
     }
 
     level.q3_weapons = 1;
+    level.q1_weapons = false;   // not Quake's, whatever the bot match says
     level.q3_physics = true;
 
     gi.dprintf("Campaign: %s \"%s\", %d bot%s, fraglimit %d, timelimit %d, skill %d\n",
@@ -562,6 +563,42 @@ static int SP_Rank(const edict_t *ent, bool *tied)
             *tied = true;
     }
     return ahead;
+}
+
+/*
+=================
+SP_FragMessage
+
+Quake III's word to the killer (cg_event.c CG_Obituary): "You fragged Crash",
+and outside team games where that leaves you - "Tied for 2nd place with 5". At
+once, in the middle of the screen, not typed out as Quake II's prints are: the
+client's q3_frag (screen.c). Anyone playing with Quake III's guns gets it, in
+the campaign or a bot match. ClientObituary, after the score has changed.
+=================
+*/
+void SP_FragMessage(edict_t *attacker, edict_t *self)
+{
+    const char  *name;
+    bool        tied;
+    int         rank;
+
+    if (!deathmatch->value || attacker == self || !self || !self->client)
+        return;
+    if (!SP_IsHuman(attacker) || !Q3W_PlayerQ3(attacker))
+        return;
+
+    name = SP_SafeName(self->client->pers.netname);
+
+    gi.WriteByte(svc_stufftext);
+    if (G_TeamPlay() || ((int)dmflags->value & (DF_MODELTEAMS | DF_SKINTEAMS))) {
+        // Quake III's team games: the name alone (gametype >= GT_TEAM)
+        gi.WriteString(va("q3_frag \"%s\"\n", name));
+    } else {
+        rank = SP_Rank(attacker, &tied);
+        gi.WriteString(va("q3_frag \"%s\" %d %d %d\n", name, rank + 1, tied ? 1 : 0,
+                          attacker->client->resp.score));
+    }
+    gi.unicast(attacker, true);
 }
 
 static int SP_HighScore(void)

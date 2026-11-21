@@ -40,11 +40,17 @@ layout(location = 2) out vec2 tex_coord;
 // For a glyph this is its cell in the character atlas; the pixel shader keeps
 // the bilinear footprint inside it. See stretch_pic.frag.
 layout(location = 3) out flat vec4 tex_rect;
-// Per-quad flags carried in the top four bits of tex_handle (STRETCH_PIC_FLAG_*
-// in draw.c - keep in sync). Bit 0 here: the image is a video frame. Bit 1:
+// Per-quad flags carried in the top five bits of tex_handle (STRETCH_PIC_FLAG_*
+// in draw.c - keep in sync); bit 27, the map view's layer, is bit 4 here. Bit 0 here: the image is a video frame. Bit 1:
 // draw it opaque, its alpha ignored. Bit 2: nearest texel, no filtering. Bit 3:
 // its red channel as grey (a roughness/metallic map as the shader reads it).
 layout(location = 4) out flat uint pic_flags;
+// Bit 4 of pic_flags ('mat author's map view, the map as a layer over the base
+// texture - vkpt_draw_stretch_subpic_layer): the base's handle; ~0 otherwise.
+// The quad's colour carried it, and the layer's opacity, which is color.a then.
+// Bits 5-6 with it: the emissive map's glow view (DRAW_GLOW_*, the colour's
+// bits 24-25) - 0 the plain layer.
+layout(location = 5) out flat uint base_id;
 
 struct StretchPic {
 	float x, y, w,   h;
@@ -79,11 +85,18 @@ main()
 	tex_coord     = vec2(sp.s, sp.t) + positions[gl_VertexIndex] * vec2(sp.w_s, sp.h_t);
 	tex_id        = sp.tex_handle;
 	pic_flags     = 0u;
+	base_id       = ~0u;
 	// ~0 is TEXNUM_WHITE, "no texture", and has every bit set - not flags
 	if (sp.tex_handle != ~0u) {
-		tex_id    = sp.tex_handle & 0x0fffffffu;
-		// bits 30-31 -> 1, 2; bits 28-29 ('mat author's map view) -> 4, 8
-		pic_flags = (sp.tex_handle >> 30) | (((sp.tex_handle >> 28) & 3u) << 2);
+		tex_id    = sp.tex_handle & 0x07ffffffu;
+		// bits 30-31 -> 1, 2; bits 28-29 ('mat author's map view) -> 4, 8; bit 27 (its layer) -> 16
+		pic_flags = (sp.tex_handle >> 30) | (((sp.tex_handle >> 28) & 3u) << 2) | (((sp.tex_handle >> 27) & 1u) << 4);
+		if ((pic_flags & 16u) != 0u) {
+			// no tint: the base's handle, and the opacity as given (not raised to 2.4)
+			base_id = sp.color & 0xffffu;
+			color   = vec4(1.0, 1.0, 1.0, float((sp.color >> 16) & 0xffu) / 255.0);
+			pic_flags |= ((sp.color >> 24) & 3u) << 5;
+		}
 	}
 
 	vec2 uv0      = vec2(sp.s, sp.t);

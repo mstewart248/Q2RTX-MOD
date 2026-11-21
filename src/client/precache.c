@@ -394,14 +394,101 @@ static bool CL_Q3SkyShader(char *out, size_t size)
 
 /*
 =================
+CL_Q1Sky
+
+A Quake 1 map's sky, for R_SetSky. A rerelease map can name a skybox in its
+worldspawn ("_sky" "map1/map1_", or FitzQuake's "sky"): six .tga faces under
+the episode's gfx/env/, written "id1/gfx/env/map1/map1_" so the renderer finds
+them among Quake 1's files. Any other map shows its sky texture - Quake's two
+scrolling layers of cloud: "%<texture>" (vkpt main.c, q1_sky_faces). The
+server's CS_SKY is not asked: Quake 1 has no target_sky, and the game sends
+Quake II's default.
+=================
+*/
+static bool CL_Q1Sky(char *out, size_t size)
+{
+    char        key[MAX_QPATH], value[MAX_QPATH];
+    const char  *data, *tok;
+    int         i;
+
+    if (!cl.bsp || !cl.bsp->q1)
+        return false;
+
+    // worldspawn, the first entity
+    data = cl.bsp->entitystring;
+    if (data && *(tok = COM_Parse(&data)) == '{') {
+        while (data) {
+            tok = COM_Parse(&data);
+            if (!*tok || *tok == '}')
+                break;
+            Q_strlcpy(key, tok, sizeof(key));
+            Q_strlcpy(value, COM_Parse(&data), sizeof(value));
+            // a key the mapper wrote with a trailing space ("_skyfog ") is the same key
+            for (size_t n = strlen(key); n > 0 && key[n - 1] == ' '; n--)
+                key[n - 1] = 0;
+            if (Q_stricmp(key, "_sky") && Q_stricmp(key, "sky"))
+                continue;
+            if (!value[0] || strstr(value, ".."))
+                continue;
+            char face[MAX_QPATH];
+            if (Q_concat(face, sizeof(face), "id1/gfx/env/", value, "rt.tga") >= sizeof(face) ||
+                !FS_FileExists(face)) {
+                Com_DPrintf("Quake 1 skybox %s not found, using the sky texture\n", value);
+                continue;
+            }
+            Q_concat(out, size, "id1/gfx/env/", value);
+            return true;
+        }
+    }
+
+    // the sky texture: bsp_q1.c names a texinfo "q1/<texture>"
+    for (i = 0; i < cl.bsp->numtexinfo; i++) {
+        const mtexinfo_t *ti = &cl.bsp->texinfo[i];
+
+        if (!(ti->c.flags & SURF_SKY) || Q_strncasecmp(ti->name, "q1/", 3) || !ti->name[3])
+            continue;
+        Q_concat(out, size, "%", ti->name + 3);
+        return true;
+    }
+    return false;
+}
+
+/*
+=================
 CL_PlayMapMusic
 
 CS_CDTRACK: a track number, or on a Quake III map its worldspawn "music" -
 one .wav, or an intro and a loop (g_spawn.c passes the key on as it is). Its
 paths name Quake III's own files, so they are looked up there ("baseq3/",
-files.c), and Quake III's maps write some of them with backslashes.
+files.c), and Quake III's maps write some of them with backslashes. On a
+Quake 1 map the number is a track of Quake's own soundtrack, its episode's.
 =================
 */
+/*
+A Quake 1 map's episode, for its music: files.c loads id1's maps as q1/<map>
+and an add-on's as q1/<episode>/<map>, so "q1/hipnotic/hip1m1" is hipnotic's
+and "q1/e1m1" id1's. id1's test/ and vault/ maps come out as "test" and
+"vault", which have no music of their own, and get id1's like dopa and mg1.
+*/
+static void CL_Quake1Episode(char *out, size_t size)
+{
+    const char *name = cl.mapname, *slash;
+
+    Q_strlcpy(out, "id1", size);
+    if (Q_strncasecmp(name, "q1/", 3))
+        return;
+    name += 3;
+    slash = strchr(name, '/');
+    if (!slash || slash == name || (size_t)(slash - name) >= size)
+        return;
+    for (const char *c = name; c < slash; c++)
+        if (!Q_isalnum(*c) && *c != '_')
+            return;     // a server's name, not one files.c made
+    memcpy(out, name, slash - name);
+    out[slash - name] = 0;
+    Q_strlwr(out);
+}
+
 static void CL_PlayMapMusic(const char *s)
 {
     char    intro[MAX_QPATH], loop[MAX_QPATH];
@@ -411,6 +498,14 @@ static void CL_PlayMapMusic(const char *s)
     while (*p == ' ')
         p++;
     if (!*p || Q_isdigit(*p) || *p == '-') {
+        // a Quake 1 map's "sounds" is a track of Quake's soundtrack, its
+        // episode's own (ogg.c, OGG_PlayQuake1Track)
+        if (cl.bsp && cl.bsp->q1) {
+            char episode[MAX_QPATH];
+            CL_Quake1Episode(episode, sizeof(episode));
+            OGG_PlayQuake1Track(episode, atoi(s));
+            return;
+        }
         OGG_PlayTrack(atoi(s));
         return;
     }
@@ -488,6 +583,13 @@ void CL_SetSky(void)
     if (!sky[0] && CL_Q3SkyShader(q3sky, sizeof(q3sky)))
         sky = q3sky;
 
+    // a Quake 1 map's own sky, whatever the server named
+    if (CL_Q1Sky(q3sky, sizeof(q3sky))) {
+        sky = q3sky;
+        rotate = 0;
+        VectorSet(axis, 0, 0, 1);
+    }
+
     // a map cfg's sky in place of all of that (SKY OVERRIDE)
     if (sky_override && sky_override->string[0]) {
         sky = sky_override->string;
@@ -564,6 +666,8 @@ void CL_PrepRefresh(void)
         }
         cl.image_precache[i] = R_RegisterPic2(name);
     }
+    // Quake 1's status bar (sbar_q1.c), when its own game runs the level
+    SCR_Q1RegisterMedia();
     Com_LoadMark("pics");
 
     CL_LoadState(LOAD_CLIENTS);
@@ -622,7 +726,14 @@ void CL_UpdateConfigstring(int index)
     // same with the physics for the server's pmove)
     if (index == CS_Q3RULES) {
         cl.q3_weapons = Q3RULES_WEAPONS(s);
+        cl.q1_weapons = Q3RULES_Q1WEAPONS(s);
         cl.pmp.q3move = Q3RULES_PHYSICS(s);
+        return;
+    }
+
+    // a Quake 1 level run by its own progs (baseq2 g_q1vm*.c)
+    if (index == CS_Q1VM) {
+        Q_strlcpy(cl.q1vm, s, sizeof(cl.q1vm));
         return;
     }
 

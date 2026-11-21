@@ -867,6 +867,16 @@ void CM_BoxTrace(trace_t *trace,
         return;
     }
 
+    // a Quake 1 map's model has no brushes: it collides through its clip hulls
+    {
+        int q1model;
+        bsp_t *q1 = BSP_Q1ForHeadnode(headnode, &q1model);
+        if (q1) {
+            BSP_Q1BoxTrace(trace, q1, q1model, start, end, mins, maxs, brushmask);
+            return;
+        }
+    }
+
     trace_contents = brushmask;
     VectorCopy(start, trace_start);
     VectorCopy(end, trace_end);

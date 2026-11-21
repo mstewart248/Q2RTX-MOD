@@ -642,10 +642,27 @@ typedef struct bsp_mesh_s {
 		float roll;                 // degrees
 		float rotate_speed;         // degrees per second, 0 none
 		bool swing;                 // rotates (speed) or swings round its roll
+
+		// Or a Quake 1 teleporter (portal too): its *teleport faces inside
+		// the trigger_teleport's box show where it sends you. See
+		// vkpt_cameras_load_q1 (cameras.c).
+		bool q1_gate;
+		vec3_t gate_mins, gate_maxs;    // the trigger's box
+		vec3_t dest;                // the info_teleport_destination
+		float dest_yaw;             // degrees, the way it faces you
+		// its *teleport faces, for the light through it (pt_portal_light,
+		// direct_lighting.rgen add_portal_light): the way they stand (either
+		// way round), their reach across and along that from the box's middle,
+		// their top above its floor - 0 when no face was found - and the
+		// cluster the destination is in
+		float gate_normal[2];
+		float gate_half_width, gate_half_thick, gate_height;
+		int dest_cluster;
 	} cameras[MAX_CAMERAS];
 	int num_cameras;
 
 	bool q3;	// a Quake III Arena map: the material tools save into baseq3/
+	bool q1;	// a Quake 1 map: textures animate at 5 frames a second, files go in id1/
 
 	byte sky_visibility[VIS_MAX_BYTES];
 	// clusters that actually CONTAIN sky geometry, as opposed to sky_visibility
@@ -1566,6 +1583,7 @@ VkResult vkpt_flow_destroy_pipelines(void);
 void vkpt_flow_set_world(const struct bsp_mesh_s *wm);
 // the lights the fire and plasma cast (pt_flow_lighting); how many
 int vkpt_flow_lights(dlight_t *lights, int max_lights);
+void vkpt_flow_describe_lights(char *buf, size_t size);
 // the plasma beams' cylinder lights along their gas (pt_flow_heatbeam_light)
 void vkpt_flow_beam_lights(light_poly_t *lights, int *num_lights, int max_lights, bsp_t *bsp, int *light_entity_ids);
 // the world's light on the smoke (pt_flow_env): this frame's BSP and which of
@@ -1666,6 +1684,7 @@ void vkpt_god_rays_prepare_ubo(
 
 void vkpt_freecam_reset(void);
 void vkpt_freecam_update(float frame_time);
+void vkpt_freecam_home(void);
 bool vkpt_freecam_detached(void);
 void vkpt_reset_accumulation(void);
 void vkpt_dlss_request_history_reset(void);
@@ -1764,6 +1783,17 @@ void vkpt_draw_stretch_pic_opaque(int x, int y, int w, int h, qhandle_t pic);
 // part of an image, optionally nearest-texel, red as grey, alpha ignored ('mat author')
 void vkpt_draw_stretch_subpic_flags(float x, float y, float w, float h,
 	float s1, float t1, float s2, float t2, qhandle_t pic, bool nearest, bool red_grey, bool opaque);
+// ... the map (pic) as a layer over the base texture at (alpha), mixed as an image editor does;
+// or (glow) the emissive map's view: the base as bright as (pic) glows, a purple veil (alpha) over the rest
+enum {
+	DRAW_GLOW_OFF,          // the plain layer
+	DRAW_GLOW_ALPHA,        // a painted emissive map: its alpha is the brightness, 1 = 200%
+	DRAW_GLOW_LUMINANCE,    // any other glow: its luminance over the base's, 1 = 100%
+	DRAW_GLOW_NONE          // nothing glows: all of it veiled
+};
+void vkpt_draw_stretch_subpic_layer(float x, float y, float w, float h,
+	float s1, float t1, float s2, float t2, qhandle_t pic, qhandle_t base, float alpha, bool nearest, bool red_grey,
+	int glow);
 
 // cpu_trace.c - `cpu_bench`, the frame path traced on the CPU
 void vkpt_cpu_trace_init(void);
@@ -1791,6 +1821,7 @@ void IMG_PixelsEdited(image_t *image);
 
 // 'mat author' (mat_author.c): painting a material's maps in photo mode
 bool MAT_AuthorActive(void);
+float MAT_AuthorSparseRate(void);                          // photo mode's fraction of pixels lit a frame, 0 = all
 bool MAT_AuthorKey(unsigned key, bool down);              // R_InterceptKey_RTX first
 void MAT_AuthorCursorMove(float dx, float dy);             // the mouse, when it isn't looking
 bool MAT_AuthorMouseOverPanel(void);                       // the right button is panning the map view

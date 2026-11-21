@@ -22,7 +22,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 Matt, 2026-11-19: crosshair on a texture, `mat author`, the game pauses (and
 accumulates if that is on), a small panel picks the roughness, metallic, normal
 or emissive map, a value (normal: a direction and an intensity; emissive: a
-colour), a round or square brush sized in TEXELS of the map, and the map is
+brightness over the texture - see CHANGED 11-20 NIGHT), a round or square brush
+sized in TEXELS of the map, and the map is
 painted straight onto the surfaces with a mouse cursor while the free camera
 flies; or onto a flat view of the map, like 'mat print's. A change restarts the
 accumulation, as a camera move does. His answers to the four design questions:
@@ -31,7 +32,9 @@ texels and the texels it is about to change are outlined; the normal's direction
 is SCREEN-RELATIVE (relative to the image in the map view); painting stays in
 memory, with undo, until Save - which overwrites a loose PNG/TGA in place, keeping
 a .bak, and writes anything else (a pak's, a JPG, a map that did not exist) as a
-new PNG under materialDev/, pointing the material's .mat entry at it.
+new PNG under materialDev/, pointing the material's .mat entry at it. That
+materialDev/ is the game directory's (rerelease/ for the rerelease's Quake II
+textures), or baseq3/'s for a Quake III material (MAT_IsQuake3; Matt, 11-21).
 
 HOW THE PIECES FIT
 - `mat author [map]` (material.c hands it here with the crosshair's material):
@@ -50,7 +53,8 @@ HOW THE PIECES FIT
   would: MAT_AuthorReadback queues 'mat author _tick' every frame. A dab writes
   image->pix_data (the CPU copy both renderers keep) and IMG_PixelsEdited remakes
   the GPU texture from it, at most every AUTHOR_UPLOAD_MS while painting.
-- Undo: one entry per stroke - the rectangle it changed, before and after.
+- Undo: one entry per stroke - the rectangle it changed, before and after - kept
+  per map: undo and redo only ever touch the map being painted.
 - The brush test is the shader's exactly (author_mask_bits): doubled texel
   coordinates, so an even size is centred on a texel corner.
 
@@ -87,15 +91,13 @@ rectangles (on the rectangles we should be able to specify length texels and
 width texels)", and "for the Quake3 textures with multiple stages can we have a
 way to select which stage to edit")
 - THE RECTANGLE: a third brush shape beside round and square, its LENGTH
-  along the map's u (across the map view) and its WIDTH along v (down it), each
-  in texels, set apart - slider, -/+ a texel, the wheel over either a texel at
-  a time, or 'mat author rect <length> <width>'. R turns it (swaps the two).
-  B goes round -> square -> rectangle.
+  along the map's u and its WIDTH along v, each in texels. (Replaced 11-21 by
+  the rectangle stroke, dragged corner to corner - see CHANGED 2026-11-21.)
 - THE LINE (L, or the panel's "line"): the button goes down where the line
   starts and comes up where it ends; until then the brush is shown swept along
   it, and on release it paints that, once, as one stroke with every tool but
   fill. The swept brush is exact - sweep_row is the texels of a row it covers,
-  primary_rays.rgen's author_swept the same test texel by texel.
+  primary_rays.rgen's author_mask_bits the same test texel by texel.
 - STAGES: a Quake III shader drawn stage by stage (q3stages.c) gives each stage
   a surface of its own where it shows - stage<N>_texture_roughness, _metallic,
   _normals. The panel's "maps" row picks the material's own maps or one
@@ -117,6 +119,98 @@ authoring tool too please")
   console too), so every upload rebuilds the max-filtered mips pt_pom 1 walks.
   The brush reads back the flat surface's UV, before POM moves it, so painting
   does not chase the relief it makes. No Quake III stage has one of its own.
+
+CHANGED 2026-11-20 NIGHT (Matt: "it looks like it's selecting everything", and
+"The emissive editor should just be the albedo texture and you set brightness
+values ... paint on 0 - 200. 100 being as bright as the albedo. We should have
+sliders for the rgb channels on the albedo map")
+- STAND-INS ARE NOT PAINTED (map_is_placeholder). id1/materials/quake1.mat gives
+  259 Quake 1 materials one metallic map, materialDev/remix/solid*M1.wal (made in
+  memory), and a few share 1x1 solid-colour emissive PNGs. Painting such a map
+  marked every material using it, a 1x1 map is inside any brush - the whole
+  screen orange - and Save would have pointed all of them at the painted file.
+  A map made in memory ('*' in its name), one under 8 texels across under a
+  bigger base, or the base texture itself now counts as no map: the first stroke
+  makes the material its own, the base's size, starting from the stand-in's
+  values. A real shared map is still painted as one: colour variants share PBR
+  maps on purpose.
+- EMISSIVE IS THE TEXTURE, LIT. The emissive map paints one value, a
+  BRIGHTNESS 0..200% (100% = the texture's own colours, as bright as it is),
+  kept in the map's alpha; its colours are the albedo's (linear) times the
+  brightness times a TINT - the panel's red, green and blue, how much of each
+  of the texture's channels glows, one for the whole map - stored at HALF so 200%
+  of white fits a byte (emit_bake). The shader and the light measurement read
+  only the colours, so nothing else changed; the material's emissive_factor is
+  doubled once, when the map is made, to make up the half. Such a map is named
+  <base>_emit.png (emit_painted). Any other glow - none, a _light, one made from
+  the base's bright texels, a shared solid colour - is converted by the first
+  stroke: brightness = its luminance over the albedo's, texel by texel (none:
+  0%), so what glowed still glows as bright, in the texture's colours. The tint
+  is read back from a painted map's colours, and changing it makes them again.
+  Fill floods by the texture's colour on this map by default (a 0% map is all
+  alike by value): click the bulb.
+
+CHANGED 2026-11-21 (Matt: "undo redo on the selected texture and not go back to
+previous selected textures", "instead of the square and rectangle brushes can I
+just drag a rectangle like a line", "a border radius on the rectangles", "can I
+directly key in the numbers ... or make the sliders less sensitive")
+- UNDO IS PER MAP. Each step remembers the map it changed and whether it is
+  applied; Ctrl+Z takes back the last applied step of the map being painted
+  (author_image), Ctrl+Y puts back its first undone one, and a new stroke drops
+  only that map's undone steps. Other maps' history waits for them.
+- THE BRUSH IS ROUND. The square and rectangle brush shapes are gone; a
+  rectangle is a STROKE now, beside free and line (R, or the panel): press at
+  one corner, let go at the other, and the texels between are painted once,
+  every tool but fill, its corners rounded by a radius in texels (the panel, the
+  wheel while in that stroke, 'mat author rect [radius]'). The falloff softens
+  the outer part of its half-width. primary_rays.rgen's author_rect is the same
+  integer test as rect_inside.
+- NUMBERS. Every slider has a box with its number: click it, type, Enter (Esc
+  leaves it as it was; a click elsewhere takes it). Values are whole units
+  (percent, texels, degrees); a slider snaps to them, and while one is dragged
+  the cursor moves at mat_author_slider_speed (0.25) of its speed - Shift a
+  quarter of that again. The wheel or the arrow keys over a slider step it by
+  one (Shift: ten).
+- THE EMISSIVE MAP VIEW (Matt: "I can't see what has been marked as emissive")
+  is the texture as bright as it glows - 50% half as bright, 200% twice - with
+  a purple veil over what glows less, the panel's slider strong at 0% (with
+  "base under"; O shows the map alone). Before the first stroke it shows the
+  glow the material already has, read as that stroke will convert it. The
+  caption gives the brightness under the cursor (glow_view, DRAW_GLOW_*).
+
+ADDED 2026-11-21 EVENING (Matt: "can we add selections, for example rectangle
+select, ellipse select and lasso select. For the selection I should be able to
+type in a bottom and top range of values and have it set the roughness and metal
+map for that range of values based on the pixel brightness of the albedo ...
+select an area on a texture and say this selection should be 30 to 50%
+metallic"; and "the default roughness should be 1 and the default metalness 0")
+- SELECTIONS (M cycles rect, ellipse, lasso, painting; or the panel's 'select'
+  row): the left button drags one out on the surface or the map view instead
+  of painting - Shift + drag adds to it, Ctrl + drag takes away, a click that
+  drags nothing drops it. Ctrl+A all, Ctrl+D none, Ctrl+Shift+D the last one
+  dropped back, Ctrl+I invert. A selection is the steps that made it (sl), in
+  the map's own coordinates, so one lies on every map of the material whatever
+  its size - each map's texels are made from it as it is painted
+  (sel_rasterize): a rectangle the texels corner to corner inclusive (as the
+  rectangle stroke), an ellipse those whose centres are inside the one
+  inscribed in that box, a lasso those it encloses. Another material or stage
+  drops it.
+- THE REGION. Painting, every tool, is held inside the lock AND the selection,
+  of those that are on (region_allows), and they are one texture for the shader
+  and the map view (rg - what was the lock's alone): the shader is unchanged, so
+  a selection shows as the lock did, darkened outside with a cyan edge, and a
+  shape being dragged out grows on the surface a few times a second. The map
+  view adds marching ants along the shapes. Fill fills the whole region.
+- THE BRIGHTNESS RANGE (the panel's dark / bright and apply, or 'mat author
+  range <dark%> <bright%>'): the map being painted set over the region (with
+  none, the whole map) from the base texture's brightness - its luminance,
+  sRGB-encoded, box-filtered under a map texel - stretched over the region's own
+  spread, its 1st to 99th percentile: the darkest gets 'dark', the brightest
+  'bright', a straight line between. 30 / 50 on the metallic map is "30 to 50%
+  metallic"; bright below dark gives brighter texels less. Roughness, metallic,
+  height, or emissive's brightness (0..200%); not normals. One undo step.
+- DEFAULTS: the value painted starts at roughness 100%, metallic 0% - a
+  texture with no maps - not 50% and 100%.
 */
 
 #include "vkpt.h"
@@ -127,6 +221,7 @@ authoring tool too please")
 
 #include <stdio.h>
 #include <limits.h>
+#include <float.h>
 
 // stb_image_write's own deflate (stb.c builds it): for the 16-bit PNG writer below
 extern unsigned char *stbi_zlib_compress(unsigned char *data, int data_len, int *out_len, int quality);
@@ -147,7 +242,7 @@ enum { SLOT_ROUGH, SLOT_METAL, SLOT_NORMAL, SLOT_EMISSIVE, SLOT_HEIGHT, NUM_SLOT
 static const char *const slot_label[NUM_SLOTS] = { "rough", "metal", "normal", "emissive", "height" };
 static const char *const slot_word[NUM_SLOTS] = { "roughness", "metallic", "normals", "emissive", "height" };
 static const char *const slot_attribute[NUM_SLOTS] = { "texture_roughness", "texture_metallic", "texture_normals", "texture_emissive", "texture_height" };
-static const char *const slot_suffix[NUM_SLOTS] = { "_rough", "_metal", "_n", "_light", "_height" };
+static const char *const slot_suffix[NUM_SLOTS] = { "_rough", "_metal", "_n", "_emit", "_height" };
 
 // one grey value per texel: roughness, metallic, height
 static inline bool slot_is_grey(int slot)
@@ -155,13 +250,32 @@ static inline bool slot_is_grey(int slot)
 	return slot == SLOT_ROUGH || slot == SLOT_METAL || slot == SLOT_HEIGHT;
 }
 
+// one value painted per texel: the grey maps, and emissive's brightness (its alpha)
+static inline bool slot_is_scalar(int slot)
+{
+	return slot_is_grey(slot) || slot == SLOT_EMISSIVE;
+}
+
 enum { TOOL_BRUSH, TOOL_SPRAY, TOOL_HATCH, TOOL_NOISE, TOOL_BLUR, TOOL_FILL, NUM_TOOLS };
 
 static const char *const tool_label[NUM_TOOLS] = { "brush", "spray", "hatch", "noise", "blur", "fill" };
 
-enum { SHAPE_ROUND, SHAPE_SQUARE, SHAPE_RECT, NUM_SHAPES };
+// a stroke: wherever the cursor goes; a line from press to release; a rectangle with that line its diagonal
+enum { STROKE_FREE, STROKE_LINE, STROKE_RECT, NUM_STROKES };
 
-static const char *const shape_label[NUM_SHAPES] = { "round", "square", "rect" };
+static const char *const stroke_label[NUM_STROKES] = { "free", "line", "rect" };
+
+// a selection's shape (M, the panel's 'select' row): what the left button drags out instead of painting
+enum { SEL_OFF, SEL_RECT, SEL_ELLIPSE, SEL_LASSO, NUM_SEL };
+
+static const char *const sel_label[NUM_SEL] = { "off", "rect", "ellipse", "lasso" };
+
+// a selection is the steps that made it, replayed onto each map's texels (sel_rasterize)
+enum { SELSTEP_ADD, SELSTEP_SUB, SELSTEP_ALL, SELSTEP_INVERT };
+
+#define SEL_MAX_POINTS      32768       // a lasso's
+#define SEL_MAX_TILES       8           // a shape on a tiled surface: no wider than this many maps (as a line)
+#define SEL_PREVIEW_MS      50          // a shape being dragged out is shown this often
 
 #define AUTHOR_MAX_STAGES   8           // Q3P_MAX_STAGES: the panel's stage buttons
 
@@ -170,6 +284,7 @@ static const char *const shape_label[NUM_SHAPES] = { "round", "square", "rect" }
 #define LOCK_BLEED          2           // texels a lock reaches past a seam, into texels no triangle uses
 
 #define AUTHOR_MAX_BRUSH     512
+#define AUTHOR_MAX_RADIUS    256        // a rectangle's corners, texels (doubled, its square fits an int)
 #define AUTHOR_UPLOAD_MS     33
 #define AUTHOR_MAX_TILT_DEG  70.f
 #define AUTHOR_UNDO_MAX      128
@@ -186,8 +301,7 @@ enum {
 	W_VALUE,
 	W_DIAL,
 	W_INTENSITY,
-	W_RED, W_GREEN, W_BLUE, W_STRENGTH,
-	W_ROUND, W_SQUARE,
+	W_RED, W_GREEN, W_BLUE,     // emissive's tint: consecutive (drag_update, MAT_AuthorKey)
 	W_SIZE,
 	W_SHOW2D,
 	W_UNDO, W_REDO, W_SAVE, W_EXIT,
@@ -200,14 +314,18 @@ enum {
 	W_UNLOCK,
 	W_SHOWBASE,
 	W_LAYER,
-	W_RECT,
-	W_RECT_W, W_RECT_H,             // the rectangle's length and width sliders
-	W_RECT_W_DEC, W_RECT_W_INC,
-	W_RECT_H_DEC, W_RECT_H_INC,
-	W_STROKE_FREE, W_STROKE_LINE,
-	W_STAGE_MAT,                    // the material's own maps
+	W_RADIUS,                       // the rectangle's corner radius
+	W_RANGE_LO, W_RANGE_HI,         // the brightness range: the darkest albedo's value, the brightest's (consecutive)
+	W_RANGE_APPLY,
+	W_SEL_ALL, W_SEL_INVERT, W_SEL_NONE,
+	W_CAM_HOME,                     // the camera back where it started (H)
+	W_SEL0,                         // ... W_SEL0 + SEL_*: the selection's shapes
+	W_STROKE0 = W_SEL0 + 4,         // ... W_STROKE0 + STROKE_*
+	W_STAGE_MAT = W_STROKE0 + NUM_STROKES,  // the material's own maps
 	W_STAGE0,                       // ... W_STAGE0 + N: stage N's
-	W_LAST = W_STAGE0 + AUTHOR_MAX_STAGES
+	W_LAST = W_STAGE0 + AUTHOR_MAX_STAGES,
+	W_NUM0 = W_LAST,                // ... W_NUM0 + a slider's id: the box with its number (field_*)
+	W_NUM_END = W_NUM0 + W_LAST
 };
 
 typedef struct {
@@ -236,6 +354,7 @@ typedef struct {
 	byte *before;
 	byte *after;
 	size_t bytes;       // of before and after together
+	bool applied;       // the map holds (after); undone, it holds (before) - per map, a run of applied then undone
 } author_undo_t;
 
 /* What a dab paints, in the map's own terms (texel_get / texel_put): roughness or
@@ -252,6 +371,7 @@ typedef struct {
 	bool wrap;          // on a surface: the map tiles
 	author_paint_t paint;
 	float spray_p;      // the chance a texel gets sprayed by this dab
+	int blur_r;         // the blur's reach, texels; 0 = from the brush's size
 	bool changed;
 } dab_ctx_t;
 
@@ -265,21 +385,25 @@ static struct {
 	char mat_name[MAX_QPATH];
 	int slot;
 
-	float value[NUM_SLOTS];     // roughness, metallic, height: 0..1 (the others' entries unused)
+	float value[NUM_SLOTS];     // roughness, metallic, height: 0..1; emissive: brightness 0..1 = 0..200%
 	float normal_angle;         // the tilt's direction on screen, radians, y down (-pi/2 = up)
 	float normal_intensity;     // 0..1 of AUTHOR_MAX_TILT_DEG
-	float emissive_rgb[3];      // 0..1, as stored
-	float emissive_strength;    // 0..1
-	int brush_size;             // texels
-	int brush_shape;            // SHAPE_*
-	int rect_w, rect_h;         // SHAPE_RECT: texels along the map's u (its length) and v (its width)
-	bool line_mode;             // L: a stroke is a straight line, from where the button goes down to where it comes up
-	bool line_active;           // ... the button is down on one
+	float emit_tint[3];         // emissive: the albedo's red, green, blue as it glows, 0..1 - the whole map's
+	float emit_baked[3];        // ... what the map's colours were last made with (a change re-makes them)
+	int emit_mat, emit_image;   // ... whose painted map emit_tint was read back from (-1: none)
+	int brush_size;             // texels across (round)
+	int stroke;                 // STROKE_*: L a line, R a rectangle - from where the button goes down to where it comes up
+	int rect_radius;            // STROKE_RECT: its corners' radius, texels
+	bool line_active;           // a line or rectangle: the button is down on one
 	bool line_have;             // ... and its start is set
 	bool line_commit;           // ... released: painted at the next tick
 	author_hit_t line_hit;      // ... what was under its start (a normal's tilt is turned by its tangent frame)
-	float line_tu0, line_tv0;   // ... its start, texels (unwrapped on a surface)
+	float line_tu0, line_tv0;   // ... its start (a rectangle's first corner), texels (unwrapped on a surface)
 	float line_tu1, line_tv1;   // ... its end so far
+
+	int edit_id;                // the number box being typed into (a slider's id), W_NONE none
+	char edit_buf[16];          // ... what has been typed
+	bool edit_fresh;            // ... still the value it opened with: a key replaces it
 
 	int stage;                  // -1: the material's own maps; else Quake III stage N's own (stage<N>_texture_*)
 	float stage_tc[6];          // ... its tcMods as the last frame drew them (vkpt_q3_stage_paint_info)
@@ -288,11 +412,16 @@ static struct {
 	int prev_tool;              // G goes back to it
 	float falloff;              // 0 hard .. 1 soft from the centre out
 	float tool_opt[NUM_TOOLS];  // spray density, hatch spacing (0..1), noise amount, blur strength, fill tolerance
-	bool fill_by_colour;        // fill floods by the base texture's colour, not the map's values
+	bool fill_by_colour[NUM_SLOTS]; // fill floods by the base texture's colour, not the map's values (per map)
+
+	int select;                 // SEL_*: the shape the left button drags out instead of painting, SEL_OFF paints
+	float range[NUM_SLOTS][2];  // the brightness range: the value the darkest albedo gets, the brightest's (value[]'s units)
+	bool range_request;         // the panel's 'apply': done at the next tick
 
 	bool show_2d;
 	bool show_base;             // the map view: the base texture under the map
 	float layer_alpha;          // ... and the map over it this opaque
+	float glow_veil;            // ... the emissive map's instead (glow_view): the purple over what doesn't glow
 	float cx, cy;               // the cursor, real screen pixels
 
 	// the map view: virtual px per texel, the texel at its centre, what it was fitted to
@@ -340,9 +469,9 @@ static struct {
 	unsigned status_ms;
 } au;
 
+// every map's steps, oldest first; undo and redo pick the map being painted's own (undo_match)
 static author_undo_t undo_stack[AUTHOR_UNDO_MAX];
 static int undo_count;          // entries held
-static int undo_pos;            // entries applied: undo takes undo_pos - 1, redo undo_pos
 static size_t undo_bytes;
 
 // painted and not saved: the slot it was painted as, + 1; and the Quake III
@@ -350,10 +479,11 @@ static size_t undo_bytes;
 static uint8_t image_dirty[MAX_RIMAGES];
 static uint8_t image_stage[MAX_RIMAGES];
 
-static widget_t widgets[96];
+static widget_t widgets[128];
 static int num_widgets;
 
 static cvar_t *mat_author_cursor_speed;
+static cvar_t *mat_author_slider_speed;
 
 // a locked triangle, by its UVs (normalised; the map's tiling wraps them)
 typedef struct {
@@ -378,12 +508,82 @@ static struct {
 
 	const void *cover_meshes[64]; // the model meshes in cover
 	int num_cover_meshes;
+} lk;
 
-	qhandle_t image;            // the mask as a texture (global_ubo.author_lock_image)
+/* THE SELECTION (M; Matt, 11-21): rectangles, ellipses and lassos dragged out on
+   the surface or the map view, added (Shift) or taken away (Ctrl), kept as the
+   steps that made it in the map's own coordinates - repeats of it, unwrapped on
+   a tiled surface - so the same selection lies on a map of any size: each one's
+   texels are made from it when it is painted (sel_rasterize). */
+typedef struct {
+	int step;                   // SELSTEP_*
+	int shape;                  // ... SEL_RECT, _ELLIPSE, _LASSO for ADD and SUB
+	int first, count;           // ... its points in sl.pts (a rectangle or ellipse: two opposite corners)
+	bool clip;                  // drawn in the map view: clipped to the map, never wrapped round it
+} sel_step_t;
+
+static struct {
+	sel_step_t *steps;
+	int num_steps, cap_steps;
+	float *pts;                 // u, v pairs: 1 = the map across, unwrapped
+	int num_pts, cap_pts;
+	int material;               // the material index it was made on
+	int stage;                  // ... and its stage: another stage's map lies differently
+
+	// the last one dropped (Ctrl+D, a click, a new one), for Ctrl+Shift+D
+	sel_step_t *prev_steps;
+	int prev_num_steps;
+	float *prev_pts;
+	int prev_num_pts;
+	int prev_material, prev_stage;
+
+	// the shape being dragged out
+	bool dragging;
+	bool drag_2d;               // ... on the map view
+	bool drag_commit;           // ... let go of: made at the next tick
+	bool drag_replace;          // ... neither Shift nor Ctrl: it replaces the selection
+	bool drag_sub;              // ... Ctrl: taken away
+	int drag_shape;             // ... SEL_*
+	float *dpts;                // ... its points, as pts
+	int num_dpts, cap_dpts;
+
+	bool dirty;                 // the steps changed: rasterise again
+	byte *mask;                 // 1 = selected, mask_w x mask_h
+	int mask_w, mask_h;
+	int texels;
+	unsigned raster_ms;         // the last time a shape being dragged out was rasterised
+
+	// the panel's brightness spread under it (range_stats), and what that was measured for
+	bool stats_have;
+	float stats_lo, stats_hi;
+	int stats_n;                // texels read; -1 the region isn't ready, -2 no base colours in memory
+	int stats_version, stats_w, stats_h, stats_base;
+} sl;
+
+/* THE REGION painting is held to: inside the lock and inside the selection, of
+   those that are on. One texture the map's size, for the shader (dark outside
+   it, a cyan edge) and the map view: inside = red 1 and clear, outside = black
+   at 150 alpha. */
+static struct {
+	qhandle_t image;            // global_ubo.author_lock_image
 	char image_name[32];
 	int image_seq;
 	bool upload_failed;
-} lk;
+	int w, h;                   // the size it was made for
+	int texels;
+	bool dirty;                 // a lock or a selection came or went: upload it again
+	int version;                // counts its uploads: what was measured from it is stale when this moves
+} rg;
+
+static bool sel_on(void)
+{
+	return sl.num_steps > 0 || sl.dragging;
+}
+
+static bool region_on(void)
+{
+	return lk.on || sel_on();
+}
 
 /* ------------------------------------------------------------------------- */
 /* SMALL THINGS                                                              */
@@ -442,6 +642,52 @@ static bool stage_info(const image_t **picture, const char **why)
 	return vkpt_q3_stage_paint_info(au.mat, au.stage, picture, &au.stage_clamp, au.stage_tc, why);
 }
 
+/* An emissive map this tool painted: <base>_emit[_N].png, its alpha the
+   brightness, its colours the albedo's times it (texel_put). Any other emissive
+   map - none, a _light, one made from the base's bright texels, a solid colour
+   several materials share - is not painted on: the first stroke makes the
+   material its own, the brightness read from the old one (create_emit_map). */
+static bool emit_painted(const image_t *img)
+{
+	if (!img)
+		return false;
+	char stem[MAX_QPATH];
+	COM_StripExtension(stem, COM_SkipPath(img->filepath[0] ? img->filepath : img->name), sizeof(stem));
+	for (const char *p = strstr(stem, "_emit"); p; p = strstr(p + 1, "_emit"))
+	{
+		const char *rest = p + 5;
+		if (!*rest)
+			return true;
+		if (*rest == '_' && rest[1])
+		{
+			const char *d = rest + 1;
+			while (*d >= '0' && *d <= '9')
+				d++;
+			if (!*d)
+				return true;
+		}
+	}
+	return false;
+}
+
+/* A map that stands in for one rather than being one: made in memory (a '*' name -
+   a solid like materialDev/remix/solid*M1.wal, which 259 Quake 1 materials share),
+   a few texels across under a bigger base (a 1x1 solid-colour PNG), or the base
+   texture itself. Painted, it would mark - and on Save repoint - every material
+   using it, and a 1x1 one is all inside any brush: "it's selecting everything"
+   (Matt, 11-20). So it counts as no map: the first stroke makes the material its
+   own, the base's size, starting from the stand-in's values (create_map). */
+static bool map_is_placeholder(const pbr_material_t *mat, const image_t *img)
+{
+	if (!img || !mat)
+		return false;
+	if (img == mat->image_base || strchr(img->name, '*'))
+		return true;
+	const image_t *base = mat->image_base;
+	return (img->upload_width < 8 || img->upload_height < 8)
+		&& base && base->upload_width >= 8 && base->upload_height >= 8;
+}
+
 static image_t *author_image(void)
 {
 	if (!material_ok())
@@ -453,7 +699,10 @@ static image_t *author_image(void)
 			return NULL;
 		return (image_t *)vkpt_q3_stage_image(au.mat, au.stage, au.slot + 1, &file);
 	}
-	return slot_image(au.mat, au.slot);
+	image_t *img = slot_image(au.mat, au.slot);
+	if (au.slot == SLOT_EMISSIVE)
+		return emit_painted(img) ? img : NULL;
+	return map_is_placeholder(au.mat, img) ? NULL : img;
 }
 
 // the picture the map lies over: a stage's own, or the material's base texture
@@ -468,6 +717,16 @@ static const image_t *author_base(void)
 			return pic;
 	}
 	return au.mat->image_base;
+}
+
+/* The emissive map's view with the base under it (draw_view2d): the texture as
+   bright as it glows - 50% half as bright, 200% twice - and a purple veil over
+   what glows less, au.glow_veil strong at 0% (Matt, 11-21: "I can't see what has
+   been marked as emissive"; the map itself is the albedo times the brightness at
+   half, near black for most of a Quake texture). */
+static bool glow_view(void)
+{
+	return au.slot == SLOT_EMISSIVE && au.stage < 0 && au.show_base;
 }
 
 // the map tiles over the surface: not a clampMap stage's
@@ -635,35 +894,18 @@ static int hatch_spacing(void)
 	return 2 + (int)(au.tool_opt[TOOL_HATCH] * 30.f + 0.5f);
 }
 
-// the brush as it paints: the fill tool works from the one texel clicked
-static int cur_shape(void)
-{
-	return au.tool == TOOL_FILL ? SHAPE_SQUARE : au.brush_shape;
-}
-
-// its texels across (along the map's u) and down (v)
-static int cur_w(void)
-{
-	if (au.tool == TOOL_FILL)
-		return 1;
-	return au.brush_shape == SHAPE_RECT ? au.rect_w : au.brush_size;
-}
-
-static int cur_h(void)
-{
-	if (au.tool == TOOL_FILL)
-		return 1;
-	return au.brush_shape == SHAPE_RECT ? au.rect_h : au.brush_size;
-}
-
-// the larger of the two
+/* The brush, texels across: round. The fill tool works from the one texel
+   clicked, a rectangle from the one its corner goes down on, and a selection
+   from the one under the cursor. */
 static int cur_size(void)
 {
-	return max(cur_w(), cur_h());
+	if (au.tool == TOOL_FILL || au.stroke == STROKE_RECT || au.select != SEL_OFF)
+		return 1;
+	return au.brush_size;
 }
 
-// a line is being drawn and has its start: the brush is swept along it
-static bool line_preview(void)
+// a line or rectangle is being drawn and has its start: it is shown as it would paint
+static bool drag_preview(void)
 {
 	return au.line_active && au.line_have && au.tool != TOOL_FILL;
 }
@@ -691,30 +933,19 @@ static int centre2(float t, int size)
 
 /* Row (ty)'s texels inside the brush centred at (c2x, c2y): [x0, x1], or false.
    primary_rays.rgen's author_mask_bits asks the same thing texel by texel:
-   square |2t+1-c2| <= size on both axes (a rectangle: its width across, its
-   height down), round dx^2 + dy^2 <= size^2. */
+   dx^2 + dy^2 <= size^2. */
 static bool brush_row(int c2x, int c2y, int ty, int *x0, int *x1)
 {
-	const int s = cur_w();
+	const int s = cur_size();
 	const int dy = 2 * ty + 1 - c2y;
-	int k;
-	if (cur_shape() != SHAPE_ROUND)
-	{
-		if (abs(dy) > cur_h())
-			return false;
-		k = s;
-	}
-	else
-	{
-		const int r2 = s * s - dy * dy;
-		if (r2 < 0)
-			return false;
-		k = (int)sqrtf((float)r2);
-		while ((k + 1) * (k + 1) <= r2)
-			k++;
-		while (k > 0 && k * k > r2)
-			k--;
-	}
+	const int r2 = s * s - dy * dy;
+	if (r2 < 0)
+		return false;
+	int k = (int)sqrtf((float)r2);
+	while ((k + 1) * (k + 1) <= r2)
+		k++;
+	while (k > 0 && k * k > r2)
+		k--;
 	*x0 = ceil_div2(c2x - k - 1);
 	*x1 = floor_div2(c2x + k - 1);
 	return *x0 <= *x1;
@@ -722,59 +953,39 @@ static bool brush_row(int c2x, int c2y, int ty, int *x0, int *x1)
 
 static void brush_rows(int c2y, int *ty0, int *ty1)
 {
-	*ty0 = ceil_div2(c2y - cur_h() - 1);
-	*ty1 = floor_div2(c2y + cur_h() - 1);
+	*ty0 = ceil_div2(c2y - cur_size() - 1);
+	*ty1 = floor_div2(c2y + cur_size() - 1);
 }
 
 /* THE BRUSH SWEPT ALONG A LINE, from a centre (c2x, c2y) on by (dx, dy), all in
    doubled texels - what the line tool paints. q is a texel's offset from the
-   first centre (2t + 1 - c2). A box (square, rectangle) covers q when some
-   centre t (dx, dy), 0 <= t <= 1, is within its half-sizes of q on both axes;
-   round when q is within the radius of the segment. primary_rays.rgen's
-   author_swept is this arithmetic, for the outline. */
+   first centre (2t + 1 - c2), covered when it is within the radius of the
+   segment. primary_rays.rgen's author_mask_bits (author_line 1) is this
+   arithmetic, for the outline - times the inverse of the length squared, as it. */
 static bool sweep_inside(float qx, float qy, float dx, float dy)
 {
-	const float hx = (float)cur_w(), hy = (float)cur_h();
-	if (cur_shape() == SHAPE_ROUND)
-	{
-		const float dd = dx * dx + dy * dy;
-		const float t = dd > 0.f ? Q_clipf((qx * dx + qy * dy) / dd, 0.f, 1.f) : 0.f;
-		const float ex = qx - dx * t, ey = qy - dy * t;
-		return ex * ex + ey * ey <= hx * hx;
-	}
-	float t0 = 0.f, t1 = 1.f;
-	if (dy == 0.f)
-	{
-		if (fabsf(qy) > hy)
-			return false;
-	}
-	else
-	{
-		const float ta = (qy - hy) / dy, tb = (qy + hy) / dy;
-		t0 = max(t0, min(ta, tb));
-		t1 = min(t1, max(ta, tb));
-		if (t0 > t1)
-			return false;
-	}
-	const float lo = min(t0 * dx, t1 * dx) - hx, hi = max(t0 * dx, t1 * dx) + hx;
-	return qx >= lo && qx <= hi;
+	const float h = (float)cur_size();
+	const float dd = dx * dx + dy * dy;
+	const float inv_dd = dd > 0.f ? 1.f / dd : 0.f;
+	const float t = Q_clipf((qx * dx + qy * dy) * inv_dd, 0.f, 1.f);
+	const float ex = qx - dx * t, ey = qy - dy * t;
+	return ex * ex + ey * ey <= h * h;
 }
 
 // the rows the swept brush covers
 static void sweep_rows(int c2y, int dy, int *ty0, int *ty1)
 {
-	*ty0 = ceil_div2(c2y + min(0, dy) - cur_h() - 1);
-	*ty1 = floor_div2(c2y + max(0, dy) + cur_h() - 1);
+	*ty0 = ceil_div2(c2y + min(0, dy) - cur_size() - 1);
+	*ty1 = floor_div2(c2y + max(0, dy) + cur_size() - 1);
 }
 
-/* Row (ty)'s texels the swept brush covers: [x0, x1], or false. For a box it
-   is worked out (the centres within reach of the row, then their reach
-   across); round it is that, narrowed from both ends to the texels
-   sweep_inside takes - the shape is convex, so what is left is one run. */
+/* Row (ty)'s texels the swept brush covers: [x0, x1], or false. The box round
+   the centres within reach of the row, then narrowed from both ends to the
+   texels sweep_inside takes - the shape is convex, so what is left is one run. */
 static bool sweep_row(int c2x, int c2y, int dx, int dy, int ty, int *x0, int *x1)
 {
 	const float qy = (float)(2 * ty + 1 - c2y);
-	const float hx = (float)cur_w(), hy = (float)cur_h();
+	const float hx = (float)cur_size(), hy = hx;
 	float t0 = 0.f, t1 = 1.f;
 	if (dy == 0)
 	{
@@ -793,7 +1004,7 @@ static bool sweep_row(int c2x, int c2y, int dx, int dy, int ty, int *x0, int *x1
 	// 2 tx + 1 - c2x within [lo, hi]
 	*x0 = (int)ceilf(((float)c2x + lo - 1.f) * 0.5f);
 	*x1 = (int)floorf(((float)c2x + hi - 1.f) * 0.5f);
-	// round: narrowed to the capsule; a box: to its own test, to the last float - the shader's
+	// narrowed to the capsule, to the last float - the shader's
 	while (*x0 <= *x1 && !sweep_inside((float)(2 * *x0 + 1 - c2x), qy, (float)dx, (float)dy))
 		(*x0)++;
 	while (*x1 >= *x0 && !sweep_inside((float)(2 * *x1 + 1 - c2x), qy, (float)dx, (float)dy))
@@ -802,66 +1013,126 @@ static bool sweep_row(int c2x, int c2y, int dx, int dy, int ty, int *x0, int *x1
 }
 
 /* How far into the swept brush q is, 0 on the line to 1 at the brush's edge
-   plus a texel - as dab's r, for the falloff. Round: the distance to the
-   segment. A box: the least over t of max(|qx - t dx| / (hx + 1), |qy - t dy| /
-   (hy + 1)), which is convex and piecewise linear in t, so it is least at an
-   end or where a term turns or the two cross. */
+   plus a texel - as dab's r, for the falloff: the distance to the segment. */
 static float sweep_r(float qx, float qy, float dx, float dy)
 {
-	const float ax = (float)cur_w() + 1.f, ay = (float)cur_h() + 1.f;
-	if (cur_shape() == SHAPE_ROUND)
+	const float a = (float)cur_size() + 1.f;
+	const float dd = dx * dx + dy * dy;
+	const float t = dd > 0.f ? Q_clipf((qx * dx + qy * dy) / dd, 0.f, 1.f) : 0.f;
+	const float ex = qx - dx * t, ey = qy - dy * t;
+	return sqrtf(ex * ex + ey * ey) / a;
+}
+
+/* THE RECTANGLE STROKE, in doubled texels: centred at (c2x, c2y) - the sum of its
+   first and last texel, plus one - with half sides (bx, by), which are its
+   texels across and down, its corners rounded by r2 (at most the shorter half
+   side). (qx, qy) is a texel's offset from the centre, 2t + 1 - c2. All integer,
+   so primary_rays.rgen's author_rect agrees texel for texel. (depth): how far
+   inside it the texel's centre is, for the falloff. */
+static bool rect_inside(int qx, int qy, int bx, int by, int r2, float *depth)
+{
+	qx = abs(qx);
+	qy = abs(qy);
+	if (qx > bx || qy > by)
+		return false;
+	const int ex = qx - bx + r2, ey = qy - by + r2;
+	if (ex > 0 && ey > 0)
 	{
-		const float dd = dx * dx + dy * dy;
-		const float t = dd > 0.f ? Q_clipf((qx * dx + qy * dy) / dd, 0.f, 1.f) : 0.f;
-		const float ex = qx - dx * t, ey = qy - dy * t;
-		return sqrtf(ex * ex + ey * ey) / ax;
+		const int e2 = ex * ex + ey * ey;
+		if (e2 > r2 * r2)
+			return false;
+		if (depth)
+			*depth = (float)r2 - sqrtf((float)e2);
 	}
-	float cand[8];
-	int n = 0;
-	cand[n++] = 0.f;
-	cand[n++] = 1.f;
-	if (dx != 0.f)
-		cand[n++] = qx / dx;
-	if (dy != 0.f)
-		cand[n++] = qy / dy;
-	// (qx - t dx) / ax = +-(qy - t dy) / ay
-	const float p = dx / ax - dy / ay, m = dx / ax + dy / ay;
-	if (p != 0.f)
-		cand[n++] = (qx / ax - qy / ay) / p;
-	if (m != 0.f)
-		cand[n++] = (qx / ax + qy / ay) / m;
-	float best = 1e30f;
-	for (int i = 0; i < n; i++)
+	else if (depth)
+		*depth = (float)min(bx - qx, by - qy);
+	return true;
+}
+
+// a rectangle's texels on one axis: [t0, t1]
+static void rect_span(int c2, int b, int *t0, int *t1)
+{
+	*t0 = ceil_div2(c2 - b - 1);
+	*t1 = floor_div2(c2 + b - 1);
+}
+
+/* Row (ty)'s texels inside the rectangle: [x0, x1], or false. Away from the
+   corners, its whole width; across them, |qx| <= bx - r2 + the largest m with
+   m^2 + ey^2 <= r2^2. */
+static bool rect_row(int c2x, int c2y, int bx, int by, int r2, int ty, int *x0, int *x1)
+{
+	const int qy = abs(2 * ty + 1 - c2y);
+	if (qy > by)
+		return false;
+	int k = bx;
+	const int ey = qy - by + r2;
+	if (ey > 0)
 	{
-		const float t = Q_clipf(cand[i], 0.f, 1.f);
-		const float r = max(fabsf(qx - t * dx) / ax, fabsf(qy - t * dy) / ay);
-		best = min(best, r);
+		const int m2 = r2 * r2 - ey * ey;
+		int m = (int)sqrtf((float)max(m2, 0));
+		while ((m + 1) * (m + 1) <= m2)
+			m++;
+		while (m > 0 && m * m > m2)
+			m--;
+		k = bx - r2 + m;
 	}
-	return best;
+	*x0 = ceil_div2(c2x - k - 1);
+	*x1 = floor_div2(c2x + k - 1);
+	return *x0 <= *x1;
+}
+
+// an offset on a tiled axis of n texels: the copy nearest the centre, in [-n, n) - the shader's wrap
+static int rect_q(int q, int n, bool wrap)
+{
+	if (!wrap)
+		return q;
+	const int p = 2 * n, s = q + n;
+	const int k = s >= 0 ? s / p : -((-s + p - 1) / p);
+	return q - k * p;
 }
 
 /* ------------------------------------------------------------------------- */
 /* THE LOCK, AS PAINTING SEES IT                                             */
 /* ------------------------------------------------------------------------- */
 
-// (x, y) of a W x H map may be painted: no lock, or inside it
-static bool lock_allows(int x, int y, int W, int H)
+/* (x, y) of a W x H map may be painted: inside the lock and inside the
+   selection, those that are on. One not rasterised for this map yet
+   (region_sync, each tick) holds everything back. */
+static bool region_allows(int x, int y, int W, int H)
 {
-	if (!lk.on)
-		return true;
-	// not rasterised for this map yet (lock_sync, each tick): paint nothing
-	if (!lk.mask || lk.mask_w != W || lk.mask_h != H)
+	const size_t at = (size_t)y * W + x;
+	if (lk.on && (!lk.mask || lk.mask_w != W || lk.mask_h != H || !lk.mask[at]))
 		return false;
-	return lk.mask[(size_t)y * W + x] != 0;
+	if (sel_on() && (!sl.mask || sl.mask_w != W || sl.mask_h != H || !sl.mask[at]))
+		return false;
+	return true;
 }
 
-static bool lock_image_ok(void)
+// the lock and the selection, those that are on, are rasterised for a W x H map
+static bool region_ready(int W, int H)
 {
-	if (!lk.image || lk.image >= MAX_RIMAGES)
+	if (lk.on && (!lk.mask || lk.mask_w != W || lk.mask_h != H))
 		return false;
-	const image_t *img = r_images + lk.image;
-	return img->registration_sequence && img->pix_data && !strcmp(img->name, lk.image_name)
-		&& img->upload_width == lk.mask_w && img->upload_height == lk.mask_h;
+	if (sel_on() && (!sl.mask || sl.mask_w != W || sl.mask_h != H))
+		return false;
+	return true;
+}
+
+// what painting is held to, for the status line and the panel
+static const char *region_name(void)
+{
+	if (lk.on && sel_on())
+		return "lock inside the selection";
+	return lk.on ? "lock" : "selection";
+}
+
+static bool region_image_ok(void)
+{
+	if (!rg.image || rg.image >= MAX_RIMAGES)
+		return false;
+	const image_t *img = r_images + rg.image;
+	return img->registration_sequence && img->pix_data && !strcmp(img->name, rg.image_name)
+		&& img->upload_width == rg.w && img->upload_height == rg.h;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -877,6 +1148,7 @@ static void make_paint(const author_hit_t *hit, author_paint_t *p)
 	case SLOT_ROUGH:
 	case SLOT_METAL:
 	case SLOT_HEIGHT:
+	case SLOT_EMISSIVE:     // the brightness, 0..1 = 0..200% of the albedo
 		p->v[0] = p->v[1] = p->v[2] = Q_clipf(au.value[au.slot], 0.f, 1.f);
 		break;
 	case SLOT_NORMAL:
@@ -930,11 +1202,36 @@ static void make_paint(const author_hit_t *hit, author_paint_t *p)
 		p->v[2] = cosf(theta);
 		break;
 	}
-	case SLOT_EMISSIVE:
-		for (int c = 0; c < 3; c++)
-			p->v[c] = Q_clipf(au.emissive_rgb[c] * au.emissive_strength, 0.f, 1.f);
-		break;
 	}
+}
+
+static bool base_rgb(int x, int y, int W, int H, byte rgb[3]);
+
+static float luminance(const float c[3])
+{
+	return 0.2126f * c[0] + 0.7152f * c[1] + 0.0722f * c[2];
+}
+
+/* A painted emissive texel's colour (emit_painted): the albedo there, linear, times
+   the map's tint, times its brightness (alpha / 255 = 0..200%) - stored at HALF,
+   so 200% of a white texel still fits a byte, and the material's emissive_factor
+   doubled once to make up for it (create_emit_map): 100% glows as bright as the
+   texture, times the factor it had. */
+static void emit_colour(const byte albedo[3], byte alpha, bool srgb, byte out[3])
+{
+	const float b = (float)alpha / 255.f;
+	for (int c = 0; c < 3; c++)
+	{
+		const float lin = srgb_to_linear((float)albedo[c] / 255.f) * Q_clipf(au.emit_tint[c], 0.f, 1.f) * b;
+		out[c] = to_byte(srgb ? linear_to_srgb(lin) : lin);
+	}
+}
+
+static void emit_bake(const image_t *img, int x, int y, byte alpha, byte out[3])
+{
+	byte albedo[3] = { 255, 255, 255 };     // no albedo in memory: white
+	base_rgb(x, y, img->upload_width, img->upload_height, albedo);
+	emit_colour(albedo, alpha, img->is_srgb, out);
 }
 
 // texel (at) of (pix) - pixels in (img)'s format - painted as (slot), in paint terms
@@ -961,6 +1258,10 @@ static void texel_get(const image_t *img, const byte *pix, size_t at, int slot, 
 		v[1] = (float)px[1] / 255.f * 2.f - 1.f;
 		v[2] = (float)px[2] / 255.f;
 		break;
+	case SLOT_EMISSIVE:
+		// a painted map's brightness is its alpha (emit_bake)
+		v[0] = v[1] = v[2] = (float)px[3] / 255.f;
+		break;
 	default:
 		for (int c = 0; c < 3; c++)
 			v[c] = (float)px[c] / 255.f;
@@ -982,7 +1283,11 @@ static bool texel_put(image_t *img, int x, int y, int slot, const float v[3])
 	}
 	else
 	{
+		byte *px = img->pix_data + at * 4;
 		byte rgb[3];
+		// the alpha is kept: a legacy map hides metallic or roughness in it - but a
+		// painted emissive map's alpha is its brightness, the colours made from it
+		byte alpha = px[3];
 		switch (slot)
 		{
 		case SLOT_ROUGH:
@@ -995,18 +1300,21 @@ static bool texel_put(image_t *img, int x, int y, int slot, const float v[3])
 			rgb[1] = to_byte(v[1] * 0.5f + 0.5f);
 			rgb[2] = to_byte(v[2]);
 			break;
+		case SLOT_EMISSIVE:
+			alpha = to_byte(v[0]);
+			emit_bake(img, x, y, alpha, rgb);
+			break;
 		default:
 			for (int c = 0; c < 3; c++)
 				rgb[c] = to_byte(v[c]);
 			break;
 		}
-		byte *px = img->pix_data + at * 4;
-		if (px[0] == rgb[0] && px[1] == rgb[1] && px[2] == rgb[2])
+		if (px[0] == rgb[0] && px[1] == rgb[1] && px[2] == rgb[2] && px[3] == alpha)
 			return false;
-		// the alpha is kept: a legacy map hides metallic or roughness in it
 		px[0] = rgb[0];
 		px[1] = rgb[1];
 		px[2] = rgb[2];
+		px[3] = alpha;
 	}
 	au.bb_x0 = min(au.bb_x0, x);
 	au.bb_y0 = min(au.bb_y0, y);
@@ -1060,6 +1368,7 @@ static void noise_target(const dab_ctx_t *c, int x, int y, float out[3])
 	case SLOT_ROUGH:
 	case SLOT_METAL:
 	case SLOT_HEIGHT:
+	case SLOT_EMISSIVE:
 		out[0] = out[1] = out[2] = Q_clipf(out[0] + h * a, 0.f, 1.f);
 		break;
 	case SLOT_NORMAL:
@@ -1092,7 +1401,7 @@ static void blur_target(const dab_ctx_t *c, int x, int y, float out[3])
 {
 	const image_t *img = c->img;
 	const int W = img->upload_width, H = img->upload_height;
-	const int r = Q_clip(min(cur_w(), cur_h()) / 6, 1, 6);
+	const int r = c->blur_r > 0 ? c->blur_r : Q_clip(cur_size() / 6, 1, 6);
 	float sum[3] = { 0.f, 0.f, 0.f };
 	int n = 0;
 	for (int dy = -r; dy <= r; dy++)
@@ -1149,7 +1458,7 @@ static void paint_texel(dab_ctx_t *c, int x, int y, float w)
 static void dab_texel(dab_ctx_t *c, int x, int y, float r)
 {
 	const image_t *img = c->img;
-	if (!lock_allows(x, y, img->upload_width, img->upload_height))
+	if (!region_allows(x, y, img->upload_width, img->upload_height))
 		return;
 	float w = falloff_weight(r);
 	switch (au.tool)
@@ -1189,8 +1498,7 @@ static void dab(dab_ctx_t *c, int c2x, int c2y)
 {
 	image_t *img = c->img;
 	const int W = img->upload_width, H = img->upload_height;
-	const bool round_brush = cur_shape() == SHAPE_ROUND;
-	const float rx = 1.f / (float)(cur_w() + 1), ry = 1.f / (float)(cur_h() + 1);
+	const float rs = 1.f / (float)(cur_size() + 1);
 	int ty0, ty1;
 	brush_rows(c2y, &ty0, &ty1);
 	for (int ty = ty0; ty <= ty1; ty++)
@@ -1212,9 +1520,7 @@ static void dab(dab_ctx_t *c, int c2x, int c2y)
 			else if (x < 0 || x >= W)
 				continue;
 			const int dx = 2 * tx + 1 - c2x;
-			const float r = round_brush ? sqrtf((float)(dx * dx + dy * dy)) * rx
-				: max((float)abs(dx) * rx, (float)abs(dy) * ry);
-			dab_texel(c, x, y, r);
+			dab_texel(c, x, y, sqrtf((float)(dx * dx + dy * dy)) * rs);
 		}
 	}
 	dab_done(c);
@@ -1223,19 +1529,19 @@ static void dab(dab_ctx_t *c, int c2x, int c2y)
 // the brush's centre, doubled (centre2), for a point (tu, tv) in texels
 static int centre2_x(float tu)
 {
-	return centre2(tu, cur_w());
+	return centre2(tu, cur_size());
 }
 
 static int centre2_y(float tv)
 {
-	return centre2(tv, cur_h());
+	return centre2(tv, cur_size());
 }
 
 static void dab_line(dab_ctx_t *c, float tu0, float tv0, float tu1, float tv1)
 {
 	const float dx = tu1 - tu0, dy = tv1 - tv0;
 	const float dist = sqrtf(dx * dx + dy * dy);
-	const float step = max(1.f, (float)min(cur_w(), cur_h()) * 0.25f);
+	const float step = max(1.f, (float)cur_size() * 0.25f);
 	int n = (int)ceilf(dist / step);
 	n = Q_clip(n, 1, 8192);
 	// the spray's chance this tick, shared out over the dabs
@@ -1281,11 +1587,57 @@ static void dab_sweep(dab_ctx_t *c, int c2x, int c2y, int dx, int dy)
 	dab_done(c);
 }
 
+/* The rectangle stroke (rect_inside), painted once: its falloff over the outer
+   part of its half-width. On a tiled map each map texel is taken once, at the
+   copy of it nearest the centre - an axis longer than the map is gone over a
+   map's width, not the rectangle's - as the shader tests it. */
+static void dab_rect(dab_ctx_t *c, int c2x, int c2y, int bx, int by, int r2)
+{
+	image_t *img = c->img;
+	const int W = img->upload_width, H = img->upload_height;
+	const float m = (float)max(1, min(bx, by));
+	int tx0, tx1, ty0, ty1;
+	rect_span(c2x, bx, &tx0, &tx1);
+	rect_span(c2y, by, &ty0, &ty1);
+	if (c->wrap && tx1 - tx0 + 1 > W)
+	{
+		tx0 = 0;
+		tx1 = W - 1;
+	}
+	if (c->wrap && ty1 - ty0 + 1 > H)
+	{
+		ty0 = 0;
+		ty1 = H - 1;
+	}
+	for (int ty = ty0; ty <= ty1; ty++)
+	{
+		int y = ty;
+		if (c->wrap)
+			y = ((y % H) + H) % H;
+		else if (y < 0 || y >= H)
+			continue;
+		const int qy = rect_q(2 * ty + 1 - c2y, H, c->wrap);
+		for (int tx = tx0; tx <= tx1; tx++)
+		{
+			int x = tx;
+			if (c->wrap)
+				x = ((x % W) + W) % W;
+			else if (x < 0 || x >= W)
+				continue;
+			float depth;
+			if (!rect_inside(rect_q(2 * tx + 1 - c2x, W, c->wrap), qy, bx, by, r2, &depth))
+				continue;
+			dab_texel(c, x, y, Q_clipf(1.f - depth / m, 0.f, 1.f));
+		}
+	}
+	dab_done(c);
+}
+
 // how far apart two texels' values are, 0..1, for the fill's tolerance
 static float value_distance(int slot, const float a[3], const float b[3])
 {
 	float d = 0.f;
-	const int n = slot_is_grey(slot) ? 1 : 3;
+	const int n = slot_is_scalar(slot) ? 1 : 3;
 	for (int i = 0; i < n; i++)
 		d = max(d, fabsf(a[i] - b[i]) * (slot == SLOT_NORMAL && i < 2 ? 0.5f : 1.f));
 	return d;
@@ -1305,27 +1657,28 @@ static bool base_rgb(int x, int y, int W, int H, byte rgb[3])
 	return true;
 }
 
-/* The fill tool, clicked on texel (sx, sy): the whole lock if one is on; else
-   the texels reached from it through neighbours (4-way, the map's edges stop
-   it) whose value - or base texture colour - is within the tolerance of its. */
+/* The fill tool, clicked on texel (sx, sy): the whole lock and/or selection if
+   one is on; else the texels reached from it through neighbours (4-way, the
+   map's edges stop it) whose value - or base texture colour - is within the
+   tolerance of its. */
 static void fill_at(dab_ctx_t *c, int sx, int sy)
 {
 	image_t *img = c->img;
 	const int W = img->upload_width, H = img->upload_height;
 	int filled = 0;
 
-	if (lk.on)
+	if (region_on())
 	{
-		if (!lk.mask || lk.mask_w != W || lk.mask_h != H)
+		if (!region_ready(W, H))
 		{
-			author_status("the lock isn't ready for this map yet - click again");
+			author_status("the %s isn't ready for this map yet - click again", region_name());
 			return;
 		}
 		for (int y = 0; y < H; y++)
 		{
 			for (int x = 0; x < W; x++)
 			{
-				if (lk.mask[(size_t)y * W + x])
+				if (region_allows(x, y, W, H))
 				{
 					paint_texel(c, x, y, 1.f);
 					filled++;
@@ -1333,14 +1686,14 @@ static void fill_at(dab_ctx_t *c, int sx, int sy)
 			}
 		}
 		dab_done(c);
-		author_status("filled the lock: %d texels", filled);
+		author_status("filled the %s: %d texels", region_name(), filled);
 		return;
 	}
 
 	if (sx < 0 || sy < 0 || sx >= W || sy >= H)
 		return;
 
-	bool by_colour = au.fill_by_colour;
+	bool by_colour = au.fill_by_colour[c->slot];
 	byte ref_rgb[3];
 	if (by_colour && !base_rgb(sx, sy, W, H, ref_rgb))
 	{
@@ -1445,8 +1798,39 @@ static void undo_drop_oldest(void)
 	memmove(undo_stack, undo_stack + 1, sizeof(undo_stack[0]) * (undo_count - 1));
 	memset(&undo_stack[undo_count - 1], 0, sizeof(undo_stack[0]));
 	undo_count--;
-	if (undo_pos > 0)
-		undo_pos--;
+}
+
+// step (e) was painted on (img): the map undo and redo work on
+static bool undo_match(const author_undo_t *e, const image_t *img)
+{
+	return img && e->image == image_index(img) && !strcmp(e->name, img->name);
+}
+
+// a new stroke on (img): its undone steps can't be redone any more - other maps' still can
+static void undo_drop_redo(const image_t *img)
+{
+	int n = 0;
+	for (int i = 0; i < undo_count; i++)
+	{
+		if (!undo_stack[i].applied && undo_match(&undo_stack[i], img))
+			undo_free(&undo_stack[i]);
+		else
+			undo_stack[n++] = undo_stack[i];
+	}
+	for (int i = n; i < undo_count; i++)
+		memset(&undo_stack[i], 0, sizeof(undo_stack[i]));
+	undo_count = n;
+}
+
+// (img)'s steps that can be undone and redone
+static void undo_counts(const image_t *img, int *undo, int *redo)
+{
+	*undo = *redo = 0;
+	for (int i = 0; i < undo_count; i++)
+	{
+		if (undo_match(&undo_stack[i], img))
+			(*(undo_stack[i].applied ? undo : redo))++;
+	}
 }
 
 static void copy_rect(byte *dst, int dst_stride, const byte *src, int src_stride, int row_bytes, int rows)
@@ -1492,9 +1876,8 @@ static void stroke_end(void)
 
 	if (same && au.bb_x0 <= au.bb_x1 && au.bb_y0 <= au.bb_y1)
 	{
-		// a new stroke drops what could have been redone
-		while (undo_count > undo_pos)
-			undo_free(&undo_stack[--undo_count]);
+		// a new stroke drops what could have been redone on this map
+		undo_drop_redo(img);
 
 		author_undo_t e;
 		memset(&e, 0, sizeof(e));
@@ -1517,12 +1900,12 @@ static void stroke_end(void)
 		e.bytes = rect * 2;
 		copy_rect(e.before, row, au.stroke_before + first, stride, row, e.h);
 		copy_rect(e.after, row, img->pix_data + first, stride, row, e.h);
+		e.applied = true;
 
 		while (undo_count && (undo_count == AUTHOR_UNDO_MAX || undo_bytes + e.bytes > AUTHOR_UNDO_BYTES))
 			undo_drop_oldest();
 		undo_stack[undo_count++] = e;
 		undo_bytes += e.bytes;
-		undo_pos = undo_count;
 
 		if (e.slot == SLOT_EMISSIVE)
 			after_emissive_change(img);
@@ -1536,16 +1919,42 @@ static void stroke_end(void)
 	upload_now();
 }
 
+/* Undo: the last step still applied on the map being painted; redo: its first
+   undone one. Per map, the steps are a run applied then a run undone, so these
+   two stay at the boundary between them - the steps of other maps between
+   them are left alone, for when those maps are painted again. */
 static void undo_apply(bool redo)
 {
 	stroke_end();
-	if (redo ? undo_pos >= undo_count : undo_pos <= 0)
+	const image_t *cur = author_image();
+	int pick = -1, others = 0;
+	for (int i = 0; i < undo_count; i++)
 	{
-		author_status(redo ? "nothing to redo" : "nothing to undo");
+		const author_undo_t *e = &undo_stack[i];
+		if (!undo_match(e, cur))
+		{
+			others += e->applied != redo;
+			continue;
+		}
+		if (redo && !e->applied && pick < 0)
+			pick = i;
+		else if (!redo && e->applied)
+			pick = i;
+	}
+	if (pick < 0)
+	{
+		const char *what = redo ? "redo" : "undo";
+		if (!cur)
+			author_status("nothing to %s: this %s map isn't made yet", what, slot_word[au.slot]);
+		else if (others)
+			author_status("nothing to %s on this %s map (%d step%s on other maps: paint those to %s them)",
+				what, slot_word[au.slot], others, others == 1 ? "" : "s", what);
+		else
+			author_status("nothing to %s on this %s map", what, slot_word[au.slot]);
 		return;
 	}
 
-	author_undo_t *e = &undo_stack[redo ? undo_pos : undo_pos - 1];
+	author_undo_t *e = &undo_stack[pick];
 	image_t *img = r_images + e->image;
 	if (!img->registration_sequence || !img->pix_data || strcmp(img->name, e->name)
 		|| img->upload_width != e->width || img->upload_height != e->height || image_bpp(img) != e->bpp)
@@ -1557,7 +1966,7 @@ static void undo_apply(bool redo)
 	const int row = e->w * e->bpp, stride = e->width * e->bpp;
 	copy_rect(img->pix_data + ((size_t)e->y * e->width + e->x) * e->bpp, stride,
 		redo ? e->after : e->before, row, row, e->h);
-	undo_pos += redo ? 1 : -1;
+	e->applied = redo;
 
 	if (!image_dirty[e->image])
 	{
@@ -1568,7 +1977,9 @@ static void undo_apply(bool redo)
 		after_emissive_change(img);
 	IMG_PixelsEdited(img);
 	vkpt_reset_accumulation();
-	author_status("%s (%d of %d)", redo ? "redone" : "undone", undo_pos, undo_count);
+	int n_undo, n_redo;
+	undo_counts(img, &n_undo, &n_redo);
+	author_status("%s on the %s map (%d of %d)", redo ? "redone" : "undone", slot_word[e->slot], n_undo, n_undo + n_redo);
 }
 
 // a saved map was loaded again under its new name: the history follows it
@@ -1790,9 +2201,17 @@ static void dev_png_path(const char *from, const char *suffix, char *out, size_t
 	Q_snprintf(out, size, "materialDev/%s%s.png", stem, suffix);
 }
 
-static bool game_path_to_os(const char *game_path, char *out, size_t size)
+/* The OS path a new file at (game_path) is written to: the game directory -
+   rerelease/ for the rerelease's Quake II textures - or, for a Quake III
+   material's, Quake III's own baseq3/, beside quake3.mat and the rest of its
+   materialDev (Matt, 2026-11-21). baseq3 is searched after every Quake II
+   directory (files.c add_quake3_paths), so a game-path name still finds it. */
+static bool game_path_to_os(const char *game_path, bool quake3, char *out, size_t size)
 {
-	if (Q_snprintf(out, size, "%s/%s", fs_gamedir, game_path) >= size)
+	const size_t n = quake3
+		? Q_snprintf(out, size, "%s/baseq3/%s", Cvar_VariableString("basedir"), game_path)
+		: Q_snprintf(out, size, "%s/%s", fs_gamedir, game_path);
+	if (n >= size)
 		return false;
 	char dirs[MAX_OSPATH];
 	Q_strlcpy(dirs, out, sizeof(dirs));
@@ -1877,12 +2296,162 @@ static float height_surface_level(const pbr_material_t *mat)
 	return in + out > 0.f ? in / (in + out) : 1.f;
 }
 
-static image_t *create_map(void)
+/* (rgba), W x H, as a new PNG under materialDev/ named after (from) + (suffix) -
+   never over an older file of that name: it may be work the material forgot. Its
+   game path in (path). Always the material being authored's (au.mat): a Quake
+   III one's goes into baseq3/. */
+static bool write_new_map(const byte *rgba, int W, int H, const char *from, const char *suffix, char *path, size_t size)
+{
+	const bool quake3 = MAT_IsQuake3(au.mat);
+	dev_png_path(from, suffix, path, size);
+	for (int n = 2; n < 100; n++)
+	{
+		char found[MAX_OSPATH];
+		if (FS_RealPath(path, 0, found, sizeof(found)) == FS_REALPATH_NONE)
+			break;
+		char numbered[32];
+		Q_snprintf(numbered, sizeof(numbered), "%s_%d", suffix, n);
+		dev_png_path(from, numbered, path, size);
+	}
+
+	char ospath[MAX_OSPATH];
+	membuf_t m = { 0 };
+	bool backed_up;
+	const bool ok = encode_rgba(rgba, W, H, false, &m) && game_path_to_os(path, quake3, ospath, sizeof(ospath))
+		&& write_with_backup(ospath, &m, &backed_up);
+	Z_Free(m.data);
+	return ok;
+}
+
+/* The emissive slot's first stroke: the material's own painted map (emit_painted),
+   the base texture's size. Its brightness starts from the glow the material had -
+   none: 0%, the texture shown dark; a _light, a glow made from the base's bright
+   texels, a shared solid colour: that glow's luminance over the albedo's, texel by
+   texel, up to 200% - and its colours are the albedo's times that and the tint. The
+   map holds the brightness at half (emit_bake), so emissive_factor doubles, once:
+   what glowed before glows as bright, in the texture's own colours. */
+static image_t *create_emit_map(void)
 {
 	pbr_material_t *mat = au.mat;
 	const image_t *base = author_base();
+	if (!base || !base->pix_data || base->pixel_format != PF_R8G8B8A8_UNORM
+		|| base->upload_width <= 0 || base->upload_height <= 0)
+	{
+		author_status("%s's texture isn't in memory: the emissive map is painted over it", mat->name);
+		return NULL;
+	}
 	int W, H;
 	map_size(&W, &H);
+
+	const float factor = mat->emissive_factor;
+	const image_t *old = mat->image_emissive;
+	const bool from_old = old && old->pix_data && old->pixel_format == PF_R8G8B8A8_UNORM
+		&& old->upload_width > 0 && old->upload_height > 0 && factor > 0.f;
+	char was[MAX_QPATH];
+	Q_strlcpy(was, old ? (old->filepath[0] ? old->filepath : old->name) : "", sizeof(was));
+
+	byte *rgba = Z_Malloc((size_t)W * H * 4);
+	int lit = 0;
+	for (int y = 0; y < H; y++)
+	{
+		for (int x = 0; x < W; x++)
+		{
+			byte *p = rgba + ((size_t)y * W + x) * 4;
+			byte albedo[3] = { 255, 255, 255 };
+			base_rgb(x, y, W, H, albedo);
+			float b = 0.f;
+			if (from_old)
+			{
+				const int ox = (int)((int64_t)x * old->upload_width / W), oy = (int)((int64_t)y * old->upload_height / H);
+				const byte *q = old->pix_data + ((size_t)oy * old->upload_width + ox) * 4;
+				float e[3], a[3];
+				for (int c = 0; c < 3; c++)
+				{
+					e[c] = old->is_srgb ? srgb_to_linear((float)q[c] / 255.f) : (float)q[c] / 255.f;
+					a[c] = srgb_to_linear((float)albedo[c] / 255.f);
+				}
+				const float la = luminance(a);
+				b = la > 1e-4f ? luminance(e) / la : 0.f;
+			}
+			p[3] = to_byte(Q_clipf(b * 0.5f, 0.f, 1.f));
+			emit_colour(albedo, p[3], true, p);     // loaded as sRGB, as every emissive map is
+			lit += p[3] != 0;
+		}
+	}
+
+	char path[MAX_OSPATH];
+	const bool ok = write_new_map(rgba, W, H, base->name, slot_suffix[SLOT_EMISSIVE], path, sizeof(path));
+	Z_Free(rgba);
+	if (!ok)
+	{
+		author_status("could not write %s", path);
+		return NULL;
+	}
+
+	const float new_factor = 2.f * (factor > 0.f ? factor : 1.f);
+	MAT_CommandFor(mat, va("%s \"%s\"", slot_attribute[SLOT_EMISSIVE], path));
+	MAT_CommandFor(mat, va("emissive_factor %g", new_factor));
+	image_t *img = author_image();
+	if (!img || !img->pix_data)
+	{
+		author_status("wrote %s, but %s did not load it as a painted emissive map", path, mat->name);
+		return NULL;
+	}
+	au.attr_changed = true;
+	au.emit_mat = MAT_IndexOf(mat);
+	au.emit_image = image_index(img);
+	memcpy(au.emit_baked, au.emit_tint, sizeof(au.emit_baked));
+	if (from_old)
+		author_status("made %s (%dx%d), brightness read from %s (%d texels glow); emissive_factor %g -> %g "
+			"(the map holds half) - Save writes both into the .mat", path, W, H, was, lit, factor, new_factor);
+	else
+		author_status("made %s (%dx%d), the texture at 0%%; emissive_factor %g -> %g (the map holds half) - "
+			"Save writes both into the .mat", path, W, H, factor, new_factor);
+	return img;
+}
+
+// a stand-in map's texel (map_is_placeholder) as the new map's, W x H: its values, nearest
+static void placeholder_texel(const image_t *was, int slot, int x, int y, int W, int H, byte p[4])
+{
+	const int sx = (int)((int64_t)x * was->upload_width / W), sy = (int)((int64_t)y * was->upload_height / H);
+	const size_t at = (size_t)sy * was->upload_width + sx;
+	if (was->pixel_format == PF_R16_UNORM)
+	{
+		p[0] = p[1] = p[2] = to_byte((float)((const uint16_t *)was->pix_data)[at] / 65535.f);
+		p[3] = 255;
+		return;
+	}
+	const byte *q = was->pix_data + at * 4;
+	if (slot_is_grey(slot))
+	{
+		// the new map loads linear, as every grey one does
+		float v = (float)q[0] / 255.f;
+		if (was->is_srgb)
+			v = srgb_to_linear(v);
+		p[0] = p[1] = p[2] = to_byte(v);
+		p[3] = 255;
+		return;
+	}
+	memcpy(p, q, 4);
+}
+
+static image_t *create_map(void)
+{
+	pbr_material_t *mat = au.mat;
+	if (au.slot == SLOT_EMISSIVE && au.stage < 0)
+		return create_emit_map();
+
+	const image_t *base = author_base();
+	int W, H;
+	map_size(&W, &H);
+
+	// a stand-in the material had: this map starts from its values, the material's own
+	const image_t *was = au.stage < 0 ? slot_image(mat, au.slot) : NULL;
+	if (was && (!was->pix_data || was->upload_width <= 0 || was->upload_height <= 0
+		|| (was->pixel_format != PF_R8G8B8A8_UNORM && was->pixel_format != PF_R16_UNORM)))
+		was = NULL;
+	char was_name[MAX_QPATH];
+	Q_strlcpy(was_name, was ? (was->filepath[0] ? was->filepath : was->name) : "", sizeof(was_name));
 
 	byte *rgba = Z_Malloc((size_t)W * H * 4);
 	const bool whole = MAT_RoughnessIsWhole(mat);
@@ -1896,6 +2465,11 @@ static image_t *create_map(void)
 		for (int x = 0; x < W; x++)
 		{
 			byte *p = rgba + ((size_t)y * W + x) * 4;
+			if (was)
+			{
+				placeholder_texel(was, au.slot, x, y, W, H, p);
+				continue;
+			}
 			switch (au.slot)
 			{
 			case SLOT_ROUGH:
@@ -1932,25 +2506,8 @@ static image_t *create_map(void)
 		}
 	}
 
-	char path[MAX_OSPATH], ospath[MAX_OSPATH];
-	const char *from = base ? base->name : mat->name;
-	dev_png_path(from, slot_suffix[au.slot], path, sizeof(path));
-	// never over an older file of that name: it may be work the material forgot
-	for (int n = 2; n < 100; n++)
-	{
-		char found[MAX_OSPATH];
-		if (FS_RealPath(path, 0, found, sizeof(found)) == FS_REALPATH_NONE)
-			break;
-		char suffix[32];
-		Q_snprintf(suffix, sizeof(suffix), "%s_%d", slot_suffix[au.slot], n);
-		dev_png_path(from, suffix, path, sizeof(path));
-	}
-
-	membuf_t m = { 0 };
-	bool backed_up;
-	const bool ok = encode_rgba(rgba, W, H, false, &m) && game_path_to_os(path, ospath, sizeof(ospath))
-		&& write_with_backup(ospath, &m, &backed_up);
-	Z_Free(m.data);
+	char path[MAX_OSPATH];
+	const bool ok = write_new_map(rgba, W, H, base ? base->name : mat->name, slot_suffix[au.slot], path, sizeof(path));
 	Z_Free(rgba);
 	if (!ok)
 	{
@@ -1973,6 +2530,9 @@ static image_t *create_map(void)
 		author_status("%s stage%d had no %s map: made %s (%dx%d) - Save writes stage%d_%s into the .mat",
 			mat->name, au.stage, slot_word[au.slot], path, img->upload_width, img->upload_height, au.stage,
 			slot_attribute[au.slot]);
+	else if (was_name[0])
+		author_status("%s's %s map was a stand-in (%s): made its own, %s (%dx%d), from it - Save writes it into "
+			"the .mat", mat->name, slot_word[au.slot], was_name, path, img->upload_width, img->upload_height);
 	else
 		author_status("%s had no %s map: made %s (%dx%d) - Save writes it into the .mat", mat->name,
 			slot_word[au.slot], path, img->upload_width, img->upload_height);
@@ -1982,6 +2542,29 @@ static image_t *create_map(void)
 /* ------------------------------------------------------------------------- */
 /* SAVE                                                                      */
 /* ------------------------------------------------------------------------- */
+
+// (mat) draws (img) as its (slot) map - in its Quake III stage (stage) when that is >= 0
+static bool material_draws(const pbr_material_t *mat, const image_t *img, int slot, int stage)
+{
+	if (stage >= 0)
+	{
+		const char *file;
+		return slot <= SLOT_NORMAL && vkpt_q3_stage_image(mat, stage, slot + 1, &file) == img;
+	}
+	return slot_image(mat, slot) == img;
+}
+
+// A material that draws (img) is a Quake III one: its new PNG goes into baseq3/
+static bool image_for_quake3(const image_t *img, int slot, int stage)
+{
+	for (int k = 0; k < MAX_PBR_MATERIALS; k++)
+	{
+		const pbr_material_t *m2 = MAT_ForIndex(k);
+		if (m2 && m2->registration_sequence && material_draws(m2, img, slot, stage) && MAT_IsQuake3(m2))
+			return true;
+	}
+	return false;
+}
 
 static void author_save(void)
 {
@@ -2029,9 +2612,11 @@ static void author_save(void)
 		}
 
 		// a pak's, a JPG, a picture made in memory: a new PNG, and the materials pointed at it
+		const int stage = image_stage[i] - 1;
 		char new_path[MAX_OSPATH];
 		dev_png_path(game_path, "", new_path, sizeof(new_path));
-		const bool ok = encode_image(img, false, &m) && game_path_to_os(new_path, ospath, sizeof(ospath))
+		const bool ok = encode_image(img, false, &m)
+			&& game_path_to_os(new_path, image_for_quake3(img, slot, stage), ospath, sizeof(ospath))
 			&& write_with_backup(ospath, &m, &backed_up);
 		Z_Free(m.data);
 		if (!ok)
@@ -2042,9 +2627,15 @@ static void author_save(void)
 		}
 		Com_Printf("mat author: %s is %s - saved as %s\n", game_path,
 			loose ? "not a PNG or TGA" : "in a pack", ospath);
+		{
+			// baseq3 is searched last: an older copy of that name higher up (one
+			// saved into rerelease/ before 11-21) is what the material would load
+			char found[MAX_OSPATH];
+			if (FS_RealPath(new_path, 0, found, sizeof(found)) == FS_REALPATH_DISK && Q_stricmp(found, ospath))
+				Com_WPrintf("mat author: %s is hidden by %s - move or delete that one\n", ospath, found);
+		}
 
 		const image_t *loaded = NULL;
-		const int stage = image_stage[i] - 1;
 		for (int k = 0; k < MAX_PBR_MATERIALS; k++)
 		{
 			pbr_material_t *m2 = MAT_ForIndex(k);
@@ -2054,7 +2645,7 @@ static void author_save(void)
 			{
 				// a Quake III stage's own map: every material whose stage N draws it
 				const char *file;
-				if (slot > SLOT_NORMAL || vkpt_q3_stage_image(m2, stage, slot + 1, &file) != img)
+				if (!material_draws(m2, img, slot, stage))
 					continue;
 				MAT_CommandFor(m2, va("stage%d %s \"%s\"", stage, slot_attribute[slot], new_path));
 				const image_t *now = vkpt_q3_stage_image(m2, stage, slot + 1, &file);
@@ -2498,6 +3089,7 @@ static void lock_clear(const char *why)
 	lk.mask_w = lk.mask_h = lk.texels = 0;
 	lk.on = false;
 	lk.dirty = false;
+	rg.dirty = true;    // the selection, if one is on, alone now
 	if (was && why)
 		author_status("%s", why);
 }
@@ -2614,60 +3206,98 @@ static void lock_rasterize(int W, int H)
 	lk.texels = texels;
 }
 
-/* The mask as a texture, for the shader (dark outside the lock, a cyan edge) and
-   the map view: inside = red 1 and clear, outside = black at 150 alpha. Remade in
-   place while its size holds; a new size is a new image. */
-static void lock_upload(void)
+/* The region (the lock and the selection) as a texture, for the shader and the
+   map view (see rg). Remade in place while its size holds; a new size is a new
+   image. */
+static void region_upload(int W, int H)
 {
-	const int W = lk.mask_w, H = lk.mask_h;
-	if (!lk.mask || W <= 0 || H <= 0)
+	if (W <= 0 || H <= 0)
 		return;
-	image_t *img = lock_image_ok() ? r_images + lk.image : NULL;
+	rg.version++;
+	image_t *img = region_image_ok() && rg.w == W && rg.h == H ? r_images + rg.image : NULL;
 	byte *px = img ? img->pix_data : IMG_AllocPixels((size_t)W * H * 4);
-	for (size_t i = 0; i < (size_t)W * H; i++)
+	int texels = 0;
+	for (int y = 0; y < H; y++)
 	{
-		byte *p = px + i * 4;
-		const bool in = lk.mask[i] != 0;
-		p[0] = in ? 255 : 0;
-		p[1] = p[2] = 0;
-		p[3] = in ? 0 : 150;
+		for (int x = 0; x < W; x++)
+		{
+			byte *p = px + ((size_t)y * W + x) * 4;
+			const bool in = region_allows(x, y, W, H);
+			p[0] = in ? 255 : 0;
+			p[1] = p[2] = 0;
+			p[3] = in ? 0 : 150;
+			texels += in;
+		}
 	}
+	rg.texels = texels;
 	if (img)
 	{
 		IMG_PixelsEdited(img);
 		return;
 	}
 
-	if (lk.image > 0 && lk.image < MAX_RIMAGES && r_images[lk.image].registration_sequence
-		&& !strcmp(r_images[lk.image].name, lk.image_name))
-		R_UnregisterImage(lk.image);
-	Q_snprintf(lk.image_name, sizeof(lk.image_name), "**mat_author_lock_%d**", ++lk.image_seq);
-	lk.image = R_RegisterRawImage(lk.image_name, W, H, px, IT_SPRITE, IF_NEAREST | IF_NO_MIPMAPS);
-	if (!lk.image)
+	if (rg.image > 0 && rg.image < MAX_RIMAGES && r_images[rg.image].registration_sequence
+		&& !strcmp(r_images[rg.image].name, rg.image_name))
+		R_UnregisterImage(rg.image);
+	Q_snprintf(rg.image_name, sizeof(rg.image_name), "**mat_author_lock_%d**", ++rg.image_seq);
+	rg.image = R_RegisterRawImage(rg.image_name, W, H, px, IT_SPRITE, IF_NEAREST | IF_NO_MIPMAPS);
+	rg.w = W;
+	rg.h = H;
+	if (!rg.image)
 	{
 		IMG_FreePixels(px);
-		lk.image_name[0] = 0;
-		lk.upload_failed = true;
-		author_status("couldn't make the lock's texture: it won't show, but it still holds");
+		rg.image_name[0] = 0;
+		rg.upload_failed = true;
+		author_status("couldn't make the %s's texture: it won't show, but it still holds", region_name());
 	}
 }
 
-// the lock, for the map being painted now: each tick, before any painting
-static void lock_sync(void)
+static void sel_rasterize(int W, int H);
+
+/* The lock and the selection, for the map being painted now: each tick, before
+   any painting. A selection being dragged out is rasterised a few times a
+   second (SEL_PREVIEW_MS), so the surface shows it as it grows. */
+static void region_sync(void)
 {
-	if (!lk.on)
+	if (!region_on())
+	{
+		if (rg.dirty)
+		{
+			rg.dirty = false;
+			rg.version++;
+		}
 		return;
+	}
 	int W, H;
 	map_size(&W, &H);
-	if (lk.dirty || !lk.mask || lk.mask_w != W || lk.mask_h != H)
+	bool remade = rg.dirty;
+	if (lk.on && (lk.dirty || !lk.mask || lk.mask_w != W || lk.mask_h != H))
 	{
 		lock_rasterize(W, H);
 		lk.dirty = false;
-		lk.upload_failed = false;
-		lock_upload();
+		remade = true;
 	}
-	else if (!lock_image_ok() && !lk.upload_failed)
-		lock_upload();   // its texture went (a vid_restart)
+	if (sel_on() && (sl.dirty || !sl.mask || sl.mask_w != W || sl.mask_h != H))
+	{
+		const unsigned now = Sys_Milliseconds();
+		const bool wait = sl.dragging && !sl.drag_commit && sl.mask && sl.mask_w == W && sl.mask_h == H
+			&& now - sl.raster_ms < SEL_PREVIEW_MS;
+		if (!wait)
+		{
+			sel_rasterize(W, H);
+			sl.dirty = false;
+			sl.raster_ms = now;
+			remade = true;
+		}
+	}
+	if (remade)
+	{
+		rg.dirty = false;
+		rg.upload_failed = false;
+		region_upload(W, H);
+	}
+	else if (!region_image_ok() && !rg.upload_failed)
+		region_upload(W, H);   // its texture went (a vid_restart)
 }
 
 /* F or P (kind), Shift (toggle): lock to the face or piece under the cursor; F/P
@@ -2780,7 +3410,7 @@ static void lock_command(int kind, bool toggle)
 		author_status("unlocked: that was all of the lock");
 		return;
 	}
-	lock_sync();
+	region_sync();
 	if (removing)
 		author_status("took a %s out of the lock: %d triangles, %d texels left", what, lk.num_tris, lk.texels);
 	else if (toggle && already < picked && lk.num_tris > picked - already)
@@ -2789,6 +3419,606 @@ static void lock_command(int kind, bool toggle)
 	else
 		author_status("locked to a %s: %d triangle%s, %d texels - %c on it again unlocks", what, picked,
 			picked == 1 ? "" : "s", lk.texels, kind == 'f' ? 'F' : 'P');
+}
+
+/* ------------------------------------------------------------------------- */
+/* THE SELECTION                                                             */
+/* ------------------------------------------------------------------------- */
+
+static void sel_free_prev(void)
+{
+	Z_Free(sl.prev_steps);
+	Z_Free(sl.prev_pts);
+	sl.prev_steps = NULL;
+	sl.prev_pts = NULL;
+	sl.prev_num_steps = sl.prev_num_pts = 0;
+}
+
+/* The selection is dropped - (why) on the status line, if there was one. Its
+   steps are kept for Ctrl+Shift+D (sel_reselect) until the next one goes. */
+static void sel_clear(const char *why)
+{
+	const bool was = sl.num_steps > 0;
+	if (was)
+	{
+		sel_free_prev();
+		sl.prev_steps = sl.steps;
+		sl.prev_num_steps = sl.num_steps;
+		sl.prev_pts = sl.pts;
+		sl.prev_num_pts = sl.num_pts;
+		sl.prev_material = sl.material;
+		sl.prev_stage = sl.stage;
+	}
+	else
+	{
+		Z_Free(sl.steps);
+		Z_Free(sl.pts);
+	}
+	sl.steps = NULL;
+	sl.pts = NULL;
+	sl.num_steps = sl.cap_steps = sl.num_pts = sl.cap_pts = 0;
+	sl.dragging = sl.drag_commit = false;
+	Z_Free(sl.mask);
+	sl.mask = NULL;
+	sl.mask_w = sl.mask_h = sl.texels = 0;
+	sl.dirty = false;
+	sl.stats_have = false;
+	rg.dirty = true;
+	if (was && why)
+		author_status("%s", why);
+}
+
+// a step onto the selection: a shape added or taken away (its points, map repeats), all, or invert
+static void sel_push(int step, int shape, const float *pts, int count)
+{
+	if (!sl.num_steps)
+	{
+		sl.material = MAT_IndexOf(au.mat);
+		sl.stage = au.stage;
+	}
+	if (sl.num_steps == sl.cap_steps)
+	{
+		sl.cap_steps = max(16, sl.cap_steps * 2);
+		sl.steps = Z_Realloc(sl.steps, sizeof(sel_step_t) * sl.cap_steps);
+	}
+	if (count > 0 && sl.num_pts + count > sl.cap_pts)
+	{
+		sl.cap_pts = max(sl.num_pts + count, max(256, sl.cap_pts * 2));
+		sl.pts = Z_Realloc(sl.pts, sizeof(float) * 2 * sl.cap_pts);
+	}
+	sel_step_t *s = &sl.steps[sl.num_steps++];
+	s->step = step;
+	s->shape = shape;
+	s->first = sl.num_pts;
+	s->count = max(count, 0);
+	s->clip = false;
+	if (count > 0)
+	{
+		memcpy(sl.pts + 2 * sl.num_pts, pts, sizeof(float) * 2 * count);
+		sl.num_pts += count;
+	}
+	sl.dirty = true;
+	sl.stats_have = false;
+	queue_tick();
+}
+
+// row (ty) of a W x H mask, texels [x0, x1], set to (v): wrapped on a tiled map, else clipped to it
+static void sel_span(byte *mask, int W, int H, bool wrap, int ty, int x0, int x1, byte v)
+{
+	if (x0 > x1)
+		return;
+	if (wrap)
+		ty = wrap_i(ty, H);
+	else
+	{
+		if (ty < 0 || ty >= H)
+			return;
+		x0 = max(x0, 0);
+		x1 = min(x1, W - 1);
+		if (x0 > x1)
+			return;
+	}
+	byte *row = mask + (size_t)ty * W;
+	if (x1 - x0 + 1 >= W)
+	{
+		memset(row, v, W);
+		return;
+	}
+	const int a = wrap ? wrap_i(x0, W) : x0, n = x1 - x0 + 1;
+	const int run = min(n, W - a);
+	memset(row + a, v, run);
+	if (n > run)
+		memset(row, v, n - run);
+}
+
+static int sel_float_cmp(const void *a, const void *b)
+{
+	const float x = *(const float *)a, y = *(const float *)b;
+	return (x > y) - (x < y);
+}
+
+/* A lasso's texels: those whose centres it encloses (even-odd), row by row. Each
+   edge's crossings with the rows it spans go in first - a row's centre on
+   [low, high) of the edge, so a corner counts once - then each row's are sorted
+   and filled between in pairs. The last point joins the first. */
+static void sel_lasso(byte *mask, int W, int H, bool wrap, const float *p, int count, byte v)
+{
+	if (count < 3)
+		return;
+	float ymin = FLT_MAX, ymax = -FLT_MAX;
+	for (int i = 0; i < count; i++)
+	{
+		const float y = p[i * 2 + 1] * (float)H;
+		ymin = min(ymin, y);
+		ymax = max(ymax, y);
+	}
+	const int ty0 = (int)floorf(ymin), ty1 = (int)ceilf(ymax);
+	const int rows = ty1 - ty0 + 1;
+	if (rows <= 0 || rows > SEL_MAX_TILES * H + 2)
+		return;
+
+	int *start = Z_Mallocz(sizeof(int) * (rows + 1));
+	int *fill = NULL;
+	float *xs = NULL;
+	for (int pass = 0; pass < 2; pass++)
+	{
+		for (int i = 0; i < count; i++)
+		{
+			const int j = i + 1 < count ? i + 1 : 0;
+			const float ax = p[i * 2] * (float)W, ay = p[i * 2 + 1] * (float)H;
+			const float bx = p[j * 2] * (float)W, by = p[j * 2 + 1] * (float)H;
+			if (ay == by)
+				continue;
+			const float lo = min(ay, by), hi = max(ay, by);
+			const int r0 = (int)ceilf(lo - 0.5f), r1 = (int)ceilf(hi - 0.5f) - 1;
+			for (int ty = r0; ty <= r1; ty++)
+			{
+				const int r = ty - ty0;
+				if (r < 0 || r >= rows)
+					continue;
+				if (pass == 0)
+					start[r + 1]++;
+				else
+					xs[fill[r]++] = ax + ((float)ty + 0.5f - ay) * (bx - ax) / (by - ay);
+			}
+		}
+		if (pass == 0)
+		{
+			for (int r = 0; r < rows; r++)
+				start[r + 1] += start[r];
+			if (!start[rows])
+				break;
+			xs = Z_Malloc(sizeof(float) * start[rows]);
+			fill = Z_Malloc(sizeof(int) * rows);
+			memcpy(fill, start, sizeof(int) * rows);
+		}
+	}
+	if (xs)
+	{
+		for (int r = 0; r < rows; r++)
+		{
+			float *row = xs + start[r];
+			const int n = start[r + 1] - start[r];
+			if (n < 2)
+				continue;
+			qsort(row, n, sizeof(float), sel_float_cmp);
+			// texel centres tx + 0.5 on [row[k], row[k + 1])
+			for (int k = 0; k + 1 < n; k += 2)
+				sel_span(mask, W, H, wrap, ty0 + r, (int)ceilf(row[k] - 0.5f), (int)ceilf(row[k + 1] - 0.5f) - 1, v);
+		}
+	}
+	Z_Free(xs);
+	Z_Free(fill);
+	Z_Free(start);
+}
+
+/* One shape's texels into a W x H mask, set to (v). A rectangle: the texels from
+   the one its first corner is in to the one its second is in, inclusive (as the
+   rectangle stroke). An ellipse: those whose centres lie inside the ellipse
+   inscribed in that same box. A lasso: sel_lasso. */
+static void sel_shape(byte *mask, int W, int H, bool wrap, int shape, const float *p, int count, byte v)
+{
+	if (shape == SEL_LASSO)
+	{
+		sel_lasso(mask, W, H, wrap, p, count, v);
+		return;
+	}
+	if (count < 2)
+		return;
+	const int x0 = (int)floorf(min(p[0], p[2]) * (float)W), x1 = (int)floorf(max(p[0], p[2]) * (float)W);
+	const int y0 = (int)floorf(min(p[1], p[3]) * (float)H), y1 = (int)floorf(max(p[1], p[3]) * (float)H);
+	if (x1 - x0 > SEL_MAX_TILES * W || y1 - y0 > SEL_MAX_TILES * H)
+		return;
+	const float cx = (float)(x0 + x1 + 1) * 0.5f, cy = (float)(y0 + y1 + 1) * 0.5f;
+	const float rx = (float)(x1 - x0 + 1) * 0.5f, ry = (float)(y1 - y0 + 1) * 0.5f;
+	for (int ty = y0; ty <= y1; ty++)
+	{
+		int a = x0, b = x1;
+		if (shape == SEL_ELLIPSE)
+		{
+			const float dy = ((float)ty + 0.5f - cy) / ry, k = 1.f - dy * dy;
+			if (k < 0.f)
+				continue;
+			const float half = rx * sqrtf(k);
+			a = (int)ceilf(cx - half - 0.5f);
+			b = (int)floorf(cx + half - 0.5f);
+		}
+		sel_span(mask, W, H, wrap, ty, a, b, v);
+	}
+}
+
+static void sel_replay(const sel_step_t *s, byte *mask, int W, int H, bool wrap)
+{
+	switch (s->step)
+	{
+	case SELSTEP_ADD:
+	case SELSTEP_SUB:
+		sel_shape(mask, W, H, wrap && !s->clip, s->shape, sl.pts + 2 * s->first, s->count, s->step == SELSTEP_ADD ? 1 : 0);
+		break;
+	case SELSTEP_ALL:
+		memset(mask, 1, (size_t)W * H);
+		break;
+	case SELSTEP_INVERT:
+		for (size_t i = 0; i < (size_t)W * H; i++)
+			mask[i] ^= 1;
+		break;
+	}
+}
+
+/* The selection's texels on a W x H map: its steps replayed in order, then the
+   shape being dragged out - alone, while it is to replace the selection. */
+static void sel_rasterize(int W, int H)
+{
+	const size_t n = (size_t)W * H;
+	byte *mask = Z_Mallocz(n);
+	if (au.stage >= 0)
+		stage_info(NULL, NULL);     // a clampMap stage's map doesn't tile
+	const bool wrap = map_wraps();
+	if (!(sl.dragging && sl.drag_replace))
+		for (int i = 0; i < sl.num_steps; i++)
+			sel_replay(&sl.steps[i], mask, W, H, wrap);
+	if (sl.dragging && sl.num_dpts)
+		sel_shape(mask, W, H, wrap && !sl.drag_2d, sl.drag_shape, sl.dpts, sl.num_dpts, sl.drag_sub ? 0 : 1);
+	int texels = 0;
+	for (size_t i = 0; i < n; i++)
+		texels += mask[i];
+	Z_Free(sl.mask);
+	sl.mask = mask;
+	sl.mask_w = W;
+	sl.mask_h = H;
+	sl.texels = texels;
+}
+
+// Ctrl+A: all of the map
+static void sel_all(void)
+{
+	sel_clear(NULL);
+	sel_push(SELSTEP_ALL, SEL_OFF, NULL, 0);
+	author_status("selected all of the map - Ctrl+D drops it");
+}
+
+// Ctrl+I: what is selected becomes what isn't
+static void sel_invert(void)
+{
+	if (!sl.num_steps)
+	{
+		author_status("nothing selected to invert - Ctrl+A selects all");
+		return;
+	}
+	sel_push(SELSTEP_INVERT, SEL_OFF, NULL, 0);
+	author_status("selection inverted");
+}
+
+// Ctrl+Shift+D: the selection last dropped comes back, and swaps places with the one held, if any
+static void sel_reselect(void)
+{
+	if (!sl.prev_num_steps)
+	{
+		author_status("no dropped selection to bring back");
+		return;
+	}
+	if (sl.prev_material != MAT_IndexOf(au.mat) || sl.prev_stage != au.stage)
+	{
+		author_status("the last selection dropped was on another material or stage");
+		return;
+	}
+	sel_step_t *steps = sl.steps;
+	float *pts = sl.pts;
+	const int num_steps = sl.num_steps, num_pts = sl.num_pts, material = sl.material, stage = sl.stage;
+	sl.steps = sl.prev_steps;
+	sl.pts = sl.prev_pts;
+	sl.num_steps = sl.cap_steps = sl.prev_num_steps;
+	sl.num_pts = sl.cap_pts = sl.prev_num_pts;
+	sl.material = sl.prev_material;
+	sl.stage = sl.prev_stage;
+	sl.prev_steps = steps;
+	sl.prev_pts = pts;
+	sl.prev_num_steps = num_steps;
+	sl.prev_num_pts = num_pts;
+	sl.prev_material = material;
+	sl.prev_stage = stage;
+	sl.dragging = sl.drag_commit = false;
+	sl.dirty = true;
+	sl.stats_have = false;
+	rg.dirty = true;
+	queue_tick();
+	author_status("the dropped selection is back");
+}
+
+/* What the left button does: drag out a selection of this shape, or (SEL_OFF)
+   paint - the selection still holding painting to it. */
+static void set_select(int mode)
+{
+	if (mode < SEL_OFF || mode >= NUM_SEL)
+		return;
+	if (sl.dragging)
+	{
+		sl.dragging = sl.drag_commit = false;
+		sl.dirty = true;
+		rg.dirty = true;
+	}
+	au.select = mode;
+	au.line_active = au.line_have = au.line_commit = false;
+	if (mode != SEL_OFF)
+		author_status("%s select: drag on the surface or the map view - Shift adds, Ctrl takes away, a click drops it",
+			sel_label[mode]);
+	else if (sel_on())
+		author_status("painting - only inside the selection (Ctrl+D drops it)");
+	else
+		author_status("painting");
+}
+
+/* ------------------------------------------------------------------------- */
+/* THE BRIGHTNESS RANGE                                                      */
+/* ------------------------------------------------------------------------- */
+
+static float lum_lut[256];      // an sRGB byte, linear
+static bool lum_lut_ready;
+
+/* The base texture's brightness over texel (x, y) of a W x H map, 0..1: its
+   luminance, sRGB-encoded - as bright as it looks. Where the base has more
+   texels than the map and (box), the mean over those under this one (at most
+   8 x 8 of them read); else the nearest. False if its colours aren't in memory. */
+static bool base_brightness(int x, int y, int W, int H, bool box, float *out)
+{
+	const image_t *b = author_base();
+	if (!b || !b->pix_data || b->pixel_format != PF_R8G8B8A8_UNORM || b->upload_width <= 0 || b->upload_height <= 0)
+		return false;
+	if (!lum_lut_ready)
+	{
+		for (int i = 0; i < 256; i++)
+			lum_lut[i] = srgb_to_linear((float)i / 255.f);
+		lum_lut_ready = true;
+	}
+	const int bw = b->upload_width, bh = b->upload_height;
+	const int sx0 = (int)((int64_t)x * bw / W), sy0 = (int)((int64_t)y * bh / H);
+	int sx1 = sx0, sy1 = sy0;
+	if (box)
+	{
+		sx1 = max(sx0, (int)((int64_t)(x + 1) * bw / W) - 1);
+		sy1 = max(sy0, (int)((int64_t)(y + 1) * bh / H) - 1);
+	}
+	const int stx = max(1, (sx1 - sx0 + 8) / 8), sty = max(1, (sy1 - sy0 + 8) / 8);
+	float sum = 0.f;
+	int n = 0;
+	for (int sy = sy0; sy <= sy1; sy += sty)
+	{
+		const byte *row = b->pix_data + (size_t)sy * bw * 4;
+		for (int sx = sx0; sx <= sx1; sx += stx)
+		{
+			const byte *p = row + (size_t)sx * 4;
+			if (b->is_srgb)
+				sum += 0.2126f * lum_lut[p[0]] + 0.7152f * lum_lut[p[1]] + 0.0722f * lum_lut[p[2]];
+			else
+				sum += (0.2126f * p[0] + 0.7152f * p[1] + 0.0722f * p[2]) / 255.f;
+			n++;
+		}
+	}
+	*out = linear_to_srgb(n ? sum / (float)n : 0.f);
+	return true;
+}
+
+/* The base texture's brightness over what the range sets on a W x H map - the
+   region (the lock and the selection), or all of it with neither: its spread
+   (lo, hi), the 1st and 99th percentiles so a few odd texels don't decide it
+   (the very least and most under 100 texels), and the texels read (n). Exact
+   reads every texel, box-filtered; else a grid of at most 256 x 256, nearest -
+   the panel's. False when the base's colours aren't in memory. The caller
+   checks region_ready. */
+static bool range_stats(int W, int H, bool exact, float *lo, float *hi, int *n)
+{
+	*lo = 0.f;
+	*hi = 1.f;
+	*n = 0;
+	float probe;
+	if (W <= 0 || H <= 0 || !base_brightness(0, 0, W, H, false, &probe))
+		return false;
+	const bool held = region_on();
+	const int sx = exact ? 1 : max(1, W / 256), sy = exact ? 1 : max(1, H / 256);
+	static int hist[1024];
+	memset(hist, 0, sizeof(hist));
+	float mn = 1.f, mx = 0.f;
+	int count = 0;
+	for (int y = 0; y < H; y += sy)
+	{
+		for (int x = 0; x < W; x += sx)
+		{
+			if (held && !region_allows(x, y, W, H))
+				continue;
+			float l = 0.f;
+			base_brightness(x, y, W, H, exact, &l);
+			hist[Q_clip((int)(l * 1023.f + 0.5f), 0, 1023)]++;
+			mn = min(mn, l);
+			mx = max(mx, l);
+			count++;
+		}
+	}
+	*n = count;
+	if (!count)
+		return true;
+	if (count < 100)
+	{
+		*lo = mn;
+		*hi = mx;
+		return true;
+	}
+	const int cut = count / 100;
+	int acc = 0, b = 0;
+	while (b < 1023 && acc + hist[b] <= cut)
+		acc += hist[b++];
+	*lo = (float)b / 1023.f;
+	acc = 0;
+	b = 1023;
+	while (b > 0 && acc + hist[b] <= cut)
+		acc += hist[b--];
+	*hi = max((float)b / 1023.f, *lo);
+	return true;
+}
+
+/* THE RANGE APPLIED (Matt, 11-21: "select an area on a texture and say this
+   selection should be 30 to 50% metallic"): every texel of the region - the
+   selection, the lock, both; the whole map with neither - set on the map being
+   painted from the base texture's brightness there: the darkest (the spread's
+   1st percentile) gets 'dark', the brightest (99th) 'bright', in a straight
+   line between. Roughness, metallic, height or emissive's brightness; a stroke
+   of its own, one undo step. A region all one brightness gets the middle of the
+   range; dark = bright is a plain fill and needs no base texture. Between
+   frames: it can make the map. */
+static void range_apply(void)
+{
+	if (!slot_is_scalar(au.slot))
+	{
+		author_status("the brightness range sets a roughness, metallic, height or emissive map - not normals");
+		return;
+	}
+	if (au.stage >= 0)
+	{
+		const char *why;
+		if (!stage_info(NULL, &why))
+		{
+			author_status("can't set stage%d's map: %s", au.stage, why);
+			return;
+		}
+	}
+	stroke_end();
+	image_t *img = author_image();
+	if (!img && !(img = create_map()))
+		return;
+	const char *why;
+	if (!image_paintable(img, &why))
+	{
+		author_status("can't set %s: %s", img->name, why);
+		return;
+	}
+
+	region_sync();
+	const int W = img->upload_width, H = img->upload_height;
+	const bool held = region_on();
+	if (held && !region_ready(W, H))
+	{
+		author_status("the %s isn't ready for this map yet - apply again", region_name());
+		return;
+	}
+	const int slot = au.slot;
+	const float dark = Q_clipf(au.range[slot][0], 0.f, 1.f), bright = Q_clipf(au.range[slot][1], 0.f, 1.f);
+	const bool flat = fabsf(bright - dark) < 0.5f / 255.f;
+	float lo = 0.f, hi = 1.f;
+	int n = 0;
+	if (!flat && !range_stats(W, H, true, &lo, &hi, &n))
+	{
+		author_status("the base texture's colours aren't in memory: only a plain fill (dark = bright) works");
+		return;
+	}
+	const float span = hi - lo;
+	const bool even = !flat && span < 1.f / 255.f;
+
+	stroke_touch(img);
+	dab_ctx_t c;
+	memset(&c, 0, sizeof(c));
+	c.img = img;
+	c.slot = slot;
+	int set = 0;
+	for (int y = 0; y < H; y++)
+	{
+		for (int x = 0; x < W; x++)
+		{
+			if (held && !region_allows(x, y, W, H))
+				continue;
+			float t = 0.5f;
+			if (!flat && !even)
+			{
+				float l = lo;
+				base_brightness(x, y, W, H, true, &l);
+				t = Q_clipf((l - lo) / span, 0.f, 1.f);
+			}
+			const float v = dark + (bright - dark) * t;
+			const float vv[3] = { v, v, v };
+			if (texel_put(img, x, y, slot, vv))
+				c.changed = true;
+			set++;
+		}
+	}
+	dab_done(&c);
+	stroke_end();
+
+	const float scale = slot == SLOT_EMISSIVE ? 200.f : 100.f;
+	const char *what = slot == SLOT_EMISSIVE ? "glow" : slot_word[slot];
+	const char *where = held ? region_name() : "whole map (nothing selected)";
+	const int pd = (int)(dark * scale + 0.5f), pb = (int)(bright * scale + 0.5f);
+	if (!set)
+		author_status("nothing to set: the %s has no texels on this map", where);
+	else if (flat)
+		author_status("%s %d%% over the %s: %d texels", what, pd, where, set);
+	else if (even)
+		author_status("the %s is all one brightness (%d%%): %d texels set to %s %d%%, the middle", where,
+			(int)(lo * 100.f + 0.5f), set, what, (int)((dark + bright) * 0.5f * scale + 0.5f));
+	else
+		author_status("%s %d%% (darkest) to %d%% (brightest) by the base's brightness %d-%d%%, over the %s: %d texels",
+			what, pd, pb, (int)(lo * 100.f + 0.5f), (int)(hi * 100.f + 0.5f), where, set);
+}
+
+/* The panel's line under the range: the base's brightness spread over what it
+   would set, measured on a grid when that changes (rg.version, the map's size,
+   the base). */
+static void range_spread_text(char *buf, size_t size)
+{
+	if (sl.dragging)
+	{
+		Q_strlcpy(buf, "base ...", size);
+		return;
+	}
+	int W, H;
+	map_size(&W, &H);
+	const int base = image_index(author_base());
+	if (!sl.stats_have || sl.stats_version != rg.version || sl.stats_w != W || sl.stats_h != H || sl.stats_base != base)
+	{
+		sl.stats_have = true;
+		sl.stats_version = rg.version;
+		sl.stats_w = W;
+		sl.stats_h = H;
+		sl.stats_base = base;
+		float lo, hi;
+		int n;
+		if (region_on() && !region_ready(W, H))
+			sl.stats_n = -1;
+		else if (!range_stats(W, H, false, &lo, &hi, &n))
+			sl.stats_n = -2;
+		else
+		{
+			sl.stats_lo = lo;
+			sl.stats_hi = hi;
+			sl.stats_n = n;
+		}
+	}
+	if (sl.stats_n == -1)
+		Q_strlcpy(buf, "base ...", size);
+	else if (sl.stats_n == -2)
+		Q_strlcpy(buf, "base not in memory", size);
+	else if (sl.stats_n == 0)
+		Q_strlcpy(buf, "nothing selected here", size);
+	else
+		Q_snprintf(buf, size, "base %d-%d%%%s", (int)(sl.stats_lo * 100.f + 0.5f), (int)(sl.stats_hi * 100.f + 0.5f),
+			region_on() ? "" : " (all)");
 }
 
 /* ------------------------------------------------------------------------- */
@@ -2802,8 +4032,17 @@ static void author_stop(const char *why)
 	au.active = false;
 	au.painting = false;
 	au.drag = W_NONE;
+	au.edit_id = W_NONE;
 	au.right_pan = false;
 	au.hit.valid = false;
+	au.range_request = false;
+	if (sl.dragging)
+	{
+		// a shape half dragged out is let go of; the selection stays
+		sl.dragging = sl.drag_commit = false;
+		sl.dirty = true;
+		rg.dirty = true;
+	}
 
 	if (au.paused_by_us && cl_paused->integer == 2)
 	{
@@ -2836,21 +4075,36 @@ static void author_start(pbr_material_t *mat, int slot)
 
 	if (!mat_author_cursor_speed)
 		mat_author_cursor_speed = Cvar_Get("mat_author_cursor_speed", "1", CVAR_ARCHIVE);
+	if (!mat_author_slider_speed)
+		mat_author_slider_speed = Cvar_Get("mat_author_slider_speed", "0.25", CVAR_ARCHIVE);
 
 	if (!au.defaults_set)
 	{
 		au.defaults_set = true;
-		au.value[SLOT_ROUGH] = 0.5f;
-		au.value[SLOT_METAL] = 1.f;
+		// fully rough, not metal: what a texture is with no maps (Matt, 11-21)
+		au.value[SLOT_ROUGH] = 1.f;
+		au.value[SLOT_METAL] = 0.f;
 		au.value[SLOT_HEIGHT] = 0.5f;
+		au.value[SLOT_EMISSIVE] = 0.5f;     // 100%: as bright as the texture
 		au.normal_angle = -(float)M_PI / 2.f;
 		au.normal_intensity = 0.5f;
-		au.emissive_rgb[0] = au.emissive_rgb[1] = au.emissive_rgb[2] = 1.f;
-		au.emissive_strength = 1.f;
+		au.emit_tint[0] = au.emit_tint[1] = au.emit_tint[2] = 1.f;
+		memcpy(au.emit_baked, au.emit_tint, sizeof(au.emit_baked));
+		au.emit_mat = au.emit_image = -1;
+		// an emissive map starts all 0%: a flood by value would take all of it, so
+		// the bulb is picked by its colour in the texture
+		au.fill_by_colour[SLOT_EMISSIVE] = true;
+		// the brightness range: the darkest of the base to 0%, the brightest to 100% (emissive: 100% = as bright as the texture)
+		for (int s = 0; s < NUM_SLOTS; s++)
+		{
+			au.range[s][0] = 0.f;
+			au.range[s][1] = s == SLOT_EMISSIVE ? 0.5f : 1.f;
+		}
+		au.select = SEL_OFF;
 		au.brush_size = 8;
-		au.brush_shape = SHAPE_ROUND;
-		au.rect_w = 32;
-		au.rect_h = 4;
+		au.stroke = STROKE_FREE;
+		au.rect_radius = 0;
+		au.edit_id = W_NONE;
 		au.stage = -1;
 		au.tool = au.prev_tool = TOOL_BRUSH;
 		au.falloff = 0.f;
@@ -2861,6 +4115,7 @@ static void author_start(pbr_material_t *mat, int slot)
 		au.tool_opt[TOOL_FILL] = 0.1f;
 		au.show_base = true;
 		au.layer_alpha = 0.6f;
+		au.glow_veil = 0.6f;
 		au.stroke_image = -1;
 		au.upload_image = -1;
 		au.rng = Sys_Milliseconds() | 1u;
@@ -2870,6 +4125,7 @@ static void author_start(pbr_material_t *mat, int slot)
 	{
 		stroke_end();
 		lock_clear(NULL);
+		sel_clear(NULL);
 		au.stage = -1;
 	}
 	au.mat = mat;
@@ -2899,12 +4155,19 @@ static void author_start(pbr_material_t *mat, int slot)
 		Com_Printf("mat author: hold the RIGHT mouse button to look (WASD/QE fly, Shift fast, Ctrl slow,\n"
 			"  Ctrl + right button zooms); LEFT paints; Alt + left picks the material under the brush;\n"
 			"  wheel or [ ] = brush size (on the map view the wheel zooms, right-drag pans);\n"
-			"  Shift + wheel = value; Ctrl + wheel = falloff; 1-5 = map; B = round/square/rectangle;\n"
-			"  R = turn the rectangle; L = line (press where it starts, let go where it ends);\n"
+			"  Shift + wheel = value; Ctrl + wheel = falloff; 1-5 = map;\n"
+			"  L = line (press where it starts, let go where it ends); R = rectangle (press at one\n"
+			"  corner, let go at the other; the wheel sets its corner radius);\n"
 			"  T = next tool (brush spray hatch noise blur fill), G = fill; Tab = map view, O = base under it;\n"
 			"  F = lock to the face under the brush, P = to the piece, Shift adds/removes, U unlocks;\n"
+			"  M = select (rect, ellipse, lasso): drag it out, Shift + drag adds, Ctrl + drag takes away,\n"
+			"  a click drops it; Ctrl+A all, Ctrl+D none (Ctrl+Shift+D back), Ctrl+I invert; painting\n"
+			"  stays inside it, and the panel's dark/bright + apply set the map over it by how bright\n"
+			"  the base texture is (also 'mat author range <dark%%> <bright%%>');\n"
 			"  a Quake III shader drawn in stages: the panel's 'maps' row paints one stage's own maps;\n"
-			"  Ctrl+Z / Ctrl+Y = undo / redo; Ctrl+S = save; Esc = leave\n");
+			"  a slider: click its number to type one (Enter), the wheel or arrows step it by 1,\n"
+			"  Shift while dragging is finer (mat_author_slider_speed);\n"
+			"  Ctrl+Z / Ctrl+Y = undo / redo on the map being painted; Ctrl+S = save; Esc = leave\n");
 	}
 
 	image_t *img = author_image();
@@ -2975,6 +4238,8 @@ static void set_stage(int stage)
 	au.v2_fit_image = -2;
 	if (lk.on)
 		lk.dirty = true;    // the same triangles, laid on another map
+	// a selection is in its map's coordinates: another stage's map lies differently
+	sel_clear("the selection was on the other map: dropped");
 	if (stage < 0)
 	{
 		author_status("painting %s's own maps", au.mat->name);
@@ -2991,33 +4256,41 @@ static void set_stage(int stage)
 			pic ? COM_SkipPath(pic->name) : "$whiteimage", slot_word[au.slot]);
 }
 
-static void set_shape(int shape)
+static void set_stroke(int stroke)
 {
-	if (shape < 0 || shape >= NUM_SHAPES)
+	if (stroke < 0 || stroke >= NUM_STROKES)
 		return;
-	au.brush_shape = shape;
-	if (shape == SHAPE_RECT)
-		author_status("rectangle %d x %d texels: R turns it", au.rect_w, au.rect_h);
-}
-
-static void set_line_mode(bool on)
-{
-	au.line_mode = on;
+	// a painting stroke picked: the left button paints again (the selection still holds)
+	au.select = SEL_OFF;
+	au.stroke = stroke;
 	au.line_active = au.line_have = au.line_commit = false;
-	author_status(on ? "line: press where it starts, let go where it ends" : "free strokes");
-}
-
-static void rect_turn(void)
-{
-	const int t = au.rect_w;
-	au.rect_w = au.rect_h;
-	au.rect_h = t;
-	author_status("rectangle %d x %d texels", au.rect_w, au.rect_h);
+	switch (stroke)
+	{
+	case STROKE_LINE:
+		author_status("line: press where it starts, let go where it ends");
+		break;
+	case STROKE_RECT:
+		author_status("rectangle: press at one corner, let go at the other - corner radius %d (the wheel)",
+			au.rect_radius);
+		break;
+	default:
+		author_status("free strokes");
+		break;
+	}
 }
 
 static void set_tool(int tool)
 {
-	if (tool < 0 || tool >= NUM_TOOLS || tool == au.tool)
+	if (tool < 0 || tool >= NUM_TOOLS)
+		return;
+	// a painting tool picked: the left button paints again (the selection still holds)
+	if (au.select != SEL_OFF)
+	{
+		set_select(SEL_OFF);
+		if (tool == au.tool)
+			return;
+	}
+	if (tool == au.tool)
 		return;
 	stroke_end();
 	if (tool == TOOL_FILL)
@@ -3048,6 +4321,7 @@ static void pick_material(void)
 	if (mat != au.mat)
 	{
 		lock_clear(NULL);
+		sel_clear(NULL);
 		au.stage = -1;
 	}
 	au.mat = mat;
@@ -3183,70 +4457,299 @@ bool MAT_AuthorMouseOverPanel(void)
 	return au.active && au.right_pan;
 }
 
-static float size_to_t(int size)
+/* THE PANEL'S NUMBERS. Every slider - and the normal's direction dial - is a
+   number in whole units: percent, texels, degrees. Beside each is a box with
+   it, to click and type into (edit_*); the slider snaps to it, and the wheel
+   or the arrow keys over either step it by one. field_get reads one as shown,
+   field_set takes one (rounded, kept in range) back into au. */
+typedef struct {
+	float v, lo, hi;        // shown, and its range
+	const char *name;       // for the status line
+	const char *unit;
+	bool squared;           // the slider is the square root of the range: small values get room (sizes)
+	bool wraps;             // degrees: round the circle, not stopped at its ends
+} field_t;
+
+static bool field_get(int id, field_t *f)
 {
-	return sqrtf((float)(size - 1) / (float)(AUTHOR_MAX_BRUSH - 1));
+	static const char *const tint_names[3] = { "red", "green", "blue" };
+	memset(f, 0, sizeof(*f));
+	f->unit = "%";
+	f->hi = 100.f;
+	switch (id)
+	{
+	case W_VALUE:
+		if (!slot_is_scalar(au.slot))
+			return false;
+		// emissive's brightness: 0..1 = 0..200%
+		f->name = au.slot == SLOT_EMISSIVE ? "brightness" : slot_word[au.slot];
+		f->hi = au.slot == SLOT_EMISSIVE ? 200.f : 100.f;
+		f->v = au.value[au.slot] * f->hi;
+		return true;
+	case W_INTENSITY:
+		f->name = "intensity";
+		f->v = au.normal_intensity * 100.f;
+		return true;
+	case W_RED: case W_GREEN: case W_BLUE:
+		f->name = tint_names[id - W_RED];
+		f->v = au.emit_tint[id - W_RED] * 100.f;
+		return true;
+	case W_SIZE:
+		f->name = "brush";
+		f->unit = " texels";
+		f->lo = 1.f;
+		f->hi = AUTHOR_MAX_BRUSH;
+		f->v = (float)au.brush_size;
+		f->squared = true;
+		return true;
+	case W_RADIUS:
+		f->name = "corner radius";
+		f->unit = " texels";
+		f->hi = AUTHOR_MAX_RADIUS;
+		f->v = (float)au.rect_radius;
+		f->squared = true;
+		return true;
+	case W_FALLOFF:
+		f->name = "falloff";
+		f->v = au.falloff * 100.f;
+		return true;
+	case W_RANGE_LO:
+	case W_RANGE_HI:
+		// the brightness range, in the value's own units (emissive: 0..200% of the texture)
+		if (!slot_is_scalar(au.slot))
+			return false;
+		f->name = id == W_RANGE_LO ? "darkest gets" : "brightest gets";
+		f->hi = au.slot == SLOT_EMISSIVE ? 200.f : 100.f;
+		f->v = au.range[au.slot][id - W_RANGE_LO] * f->hi;
+		return true;
+	case W_TOOLOPT:
+		switch (au.tool)
+		{
+		case TOOL_SPRAY: f->name = "density"; break;
+		case TOOL_NOISE: f->name = "noise"; break;
+		case TOOL_BLUR:  f->name = "blur strength"; break;
+		case TOOL_FILL:  f->name = "tolerance"; break;
+		case TOOL_HATCH:
+			// lines every 2..32 texels (hatch_spacing)
+			f->name = "hatch spacing";
+			f->unit = " texels";
+			f->lo = 2.f;
+			f->hi = 32.f;
+			f->v = (float)hatch_spacing();
+			return true;
+		default:
+			return false;
+		}
+		f->v = au.tool_opt[au.tool] * 100.f;
+		return true;
+	case W_LAYER:
+		f->name = glow_view() ? "purple over what doesn't glow" : "map over the base";
+		f->v = (glow_view() ? au.glow_veil : au.layer_alpha) * 100.f;
+		return true;
+	case W_DIAL:
+		// on screen, y down: 0 right, 90 down, 270 up
+		f->name = "leans";
+		f->unit = " deg";
+		f->hi = 360.f;
+		f->wraps = true;
+		f->v = (float)((((int)floorf(au.normal_angle * 180.f / (float)M_PI + 0.5f)) % 360 + 360) % 360);
+		return true;
+	default:
+		return false;
+	}
 }
 
-static int t_to_size(float t)
+static int field_shown(const field_t *f)
+{
+	return (int)floorf(f->v + 0.5f);
+}
+
+static void field_set(int id, float v)
+{
+	field_t f;
+	if (!field_get(id, &f))
+		return;
+	v = floorf(v + 0.5f);
+	if (f.wraps)
+		v = fmodf(fmodf(v, f.hi) + f.hi, f.hi);
+	else
+		v = Q_clipf(v, f.lo, f.hi);
+	switch (id)
+	{
+	case W_VALUE:     au.value[au.slot] = v / f.hi; break;
+	case W_INTENSITY: au.normal_intensity = v / 100.f; break;
+	case W_RED: case W_GREEN: case W_BLUE:
+		// the albedo's channel the glow keeps: the map's colours are made again (emit_retint)
+		au.emit_tint[id - W_RED] = v / 100.f;
+		queue_tick();
+		break;
+	case W_SIZE:      au.brush_size = (int)v; break;
+	case W_RADIUS:    au.rect_radius = (int)v; break;
+	case W_FALLOFF:   au.falloff = v / 100.f; break;
+	case W_RANGE_LO: case W_RANGE_HI: au.range[au.slot][id - W_RANGE_LO] = v / f.hi; break;
+	case W_TOOLOPT:   au.tool_opt[au.tool] = au.tool == TOOL_HATCH ? (v - 2.f) / 30.f : v / 100.f; break;
+	case W_LAYER:     *(glow_view() ? &au.glow_veil : &au.layer_alpha) = v / 100.f; break;
+	case W_DIAL:      au.normal_angle = v * (float)M_PI / 180.f; break;
+	default:          break;
+	}
+}
+
+// one up or down (by): the wheel or the arrow keys over a slider, Shift ten
+static bool field_step(int id, int by)
+{
+	field_t f;
+	if (!field_get(id, &f))
+		return false;
+	field_set(id, (float)(field_shown(&f) + by));
+	return true;
+}
+
+// the slider's position, 0..1, and the number at one
+static float field_to_t(const field_t *f)
+{
+	const float t = Q_clipf((f->v - f->lo) / max(f->hi - f->lo, 1e-6f), 0.f, 1.f);
+	return f->squared ? sqrtf(t) : t;
+}
+
+static float field_at_t(const field_t *f, float t)
 {
 	t = Q_clipf(t, 0.f, 1.f);
-	return Q_clip((int)(1.f + t * t * (AUTHOR_MAX_BRUSH - 1) + 0.5f), 1, AUTHOR_MAX_BRUSH);
+	if (f->squared)
+		t *= t;
+	return f->lo + t * (f->hi - f->lo);
 }
 
-static int size_step(int s, int dir)
+// the number the cursor is over: a slider, the dial or a number box; W_NONE none
+static int field_under(float mx, float my)
+{
+	int id = widget_at(mx, my);
+	if (id >= W_NUM0 && id < W_NUM_END)
+		id -= W_NUM0;
+	field_t f;
+	return field_get(id, &f) ? id : W_NONE;
+}
+
+// a number box clicked: typing replaces what it shows, Enter takes it
+static void edit_begin(int id)
+{
+	field_t f;
+	if (!field_get(id, &f))
+		return;
+	au.edit_id = id;
+	Q_snprintf(au.edit_buf, sizeof(au.edit_buf), "%d", field_shown(&f));
+	au.edit_fresh = true;
+}
+
+static void edit_end(bool apply)
+{
+	const int id = au.edit_id;
+	au.edit_id = W_NONE;
+	if (!apply || id == W_NONE || !au.edit_buf[0])
+		return;
+	char *end;
+	const float v = strtof(au.edit_buf, &end);
+	if (end == au.edit_buf)
+	{
+		author_status("'%s' isn't a number", au.edit_buf);
+		return;
+	}
+	field_set(id, v);
+	field_t f;
+	if (field_get(id, &f))
+		author_status("%s %d%s", f.name, field_shown(&f), f.unit);
+}
+
+/* A key while a number box is being typed into: digits, '.', '-', Backspace;
+   Enter (or Tab) takes it, Escape leaves it as it was. Every other key is kept
+   from the shortcuts and the camera while typing - but keys let go of pass, so
+   a fly key held from before is not stuck. The mouse takes the number first. */
+static bool edit_key(unsigned key, bool down)
+{
+	if (au.edit_id == W_NONE)
+		return false;
+	if (key >= K_MOUSEFIRST && key <= K_MOUSELAST)
+	{
+		if (down)
+			edit_end(true);
+		return false;
+	}
+	if (!down || key == K_SHIFT || key == K_CTRL || key == K_ALT)
+		return false;
+
+	static const struct { unsigned key; char ch; } keypad[] = {
+		{ K_KP_INS, '0' }, { K_KP_END, '1' }, { K_KP_DOWNARROW, '2' }, { K_KP_PGDN, '3' },
+		{ K_KP_LEFTARROW, '4' }, { K_KP_5, '5' }, { K_KP_RIGHTARROW, '6' }, { K_KP_HOME, '7' },
+		{ K_KP_UPARROW, '8' }, { K_KP_PGUP, '9' }, { K_KP_DEL, '.' }, { K_KP_MINUS, '-' },
+	};
+	char ch = 0;
+	if ((key >= '0' && key <= '9') || key == '.' || key == '-')
+		ch = (char)key;
+	for (int i = 0; i < (int)q_countof(keypad) && !ch; i++)
+		if (keypad[i].key == key)
+			ch = keypad[i].ch;
+
+	size_t len = strlen(au.edit_buf);
+	switch (key)
+	{
+	case K_ESCAPE:
+		edit_end(false);
+		break;
+	case K_ENTER:
+	case K_KP_ENTER:
+	case K_TAB:
+		edit_end(true);
+		break;
+	case K_BACKSPACE:
+		if (au.edit_fresh)
+			au.edit_buf[0] = 0;
+		else if (len)
+			au.edit_buf[len - 1] = 0;
+		au.edit_fresh = false;
+		break;
+	default:
+		if (!ch)
+			break;
+		if (au.edit_fresh)
+		{
+			au.edit_buf[0] = 0;
+			au.edit_fresh = false;
+			len = 0;
+		}
+		if (len < 6)
+		{
+			au.edit_buf[len] = ch;
+			au.edit_buf[len + 1] = 0;
+		}
+		break;
+	}
+	return true;
+}
+
+static int size_step(int s, int dir, int lo, int hi)
 {
 	if (dir > 0)
 		s = s < 10 ? s + 1 : (int)(s * 1.15f + 0.5f);
 	else
 		s = s <= 10 ? s - 1 : (int)(s / 1.15f + 0.5f);
-	return Q_clip(s, 1, AUTHOR_MAX_BRUSH);
+	return Q_clip(s, lo, hi);
 }
 
-// the wheel: the brush's size - a rectangle's two sides together
+// the wheel off the panel: the brush's size - or, drawing rectangles, their corners' radius
 static void brush_size_step(int dir)
 {
-	if (au.brush_shape == SHAPE_RECT)
+	if (au.stroke == STROKE_RECT)
 	{
-		// stop both at once at either end, so the shape keeps its proportions
-		const int w = size_step(au.rect_w, dir), h = size_step(au.rect_h, dir);
-		if (w != au.rect_w && h != au.rect_h)
-		{
-			au.rect_w = w;
-			au.rect_h = h;
-		}
+		au.rect_radius = size_step(au.rect_radius, dir, 0, AUTHOR_MAX_RADIUS);
+		author_status("corner radius %d texel%s", au.rect_radius, au.rect_radius == 1 ? "" : "s");
 		return;
 	}
-	au.brush_size = size_step(au.brush_size, dir);
+	au.brush_size = size_step(au.brush_size, dir, 1, AUTHOR_MAX_BRUSH);
 }
 
-// one of the size sliders a texel (or ten) at a time: the wheel over it, or its - / + buttons
-static bool size_slider_step(int id, int by)
-{
-	int *v;
-	switch (id)
-	{
-	case W_SIZE:   v = &au.brush_size; break;
-	case W_RECT_W: v = &au.rect_w; break;
-	case W_RECT_H: v = &au.rect_h; break;
-	default:       return false;
-	}
-	*v = Q_clip(*v + by, 1, AUTHOR_MAX_BRUSH);
-	return true;
-}
-
-// the main value of the map being painted, by Shift + wheel
+// the main value of the map being painted, by Shift + wheel: 5 at a time
 static void value_step(int dir)
 {
-	const float d = dir * 0.05f;
-	switch (au.slot)
-	{
-	case SLOT_ROUGH:
-	case SLOT_METAL:
-	case SLOT_HEIGHT:   au.value[au.slot] = Q_clipf(au.value[au.slot] + d, 0.f, 1.f); break;
-	case SLOT_NORMAL:   au.normal_intensity = Q_clipf(au.normal_intensity + d, 0.f, 1.f); break;
-	case SLOT_EMISSIVE: au.emissive_strength = Q_clipf(au.emissive_strength + d, 0.f, 1.f); break;
-	}
+	field_step(au.slot == SLOT_NORMAL ? W_INTENSITY : W_VALUE, dir * 5);
 }
 
 // the left button holding control (id) at the cursor
@@ -3257,38 +4760,22 @@ static void drag_update(int id)
 		return;
 	float mx, my;
 	cursor_virtual(&mx, &my);
-	const float t = Q_clipf((mx - w->x) / max(w->w, 1.f), 0.f, 1.f);
-	switch (id)
-	{
-	case W_VALUE:     if (slot_is_grey(au.slot)) au.value[au.slot] = t; break;
-	case W_INTENSITY: au.normal_intensity = t; break;
-	case W_RED:       au.emissive_rgb[0] = t; break;
-	case W_GREEN:     au.emissive_rgb[1] = t; break;
-	case W_BLUE:      au.emissive_rgb[2] = t; break;
-	case W_STRENGTH:  au.emissive_strength = t; break;
-	case W_SIZE:      au.brush_size = t_to_size(t); break;
-	case W_RECT_W:    au.rect_w = t_to_size(t); break;
-	case W_RECT_H:    au.rect_h = t_to_size(t); break;
-	case W_FALLOFF:   au.falloff = t; break;
-	case W_TOOLOPT:   au.tool_opt[au.tool] = t; break;
-	case W_LAYER:     au.layer_alpha = t; break;
-	case W_DIAL:
+	if (id == W_DIAL)
 	{
 		const float dx = mx - (w->x + w->w * 0.5f), dy = my - (w->y + w->h * 0.5f);
 		if (dx * dx + dy * dy < 1.f)
-			break;
+			return;
 		float a = atan2f(dy, dx);
-		if (Key_IsDown(K_SHIFT))
-		{
-			const float step = (float)M_PI / 4.f;
-			a = floorf(a / step + 0.5f) * step;
-		}
-		au.normal_angle = a;
-		break;
+		// whole degrees; Shift, the nearest 45
+		const float step = Key_IsDown(K_SHIFT) ? (float)M_PI / 4.f : (float)M_PI / 180.f;
+		au.normal_angle = floorf(a / step + 0.5f) * step;
+		return;
 	}
-	default:
-		break;
-	}
+	field_t f;
+	if (!field_get(id, &f))
+		return;
+	// the track, inside the widget's 3 px margins (ui_slider)
+	field_set(id, field_at_t(&f, (mx - (w->x + 3.f)) / max(w->w - 6.f, 1.f)));
 }
 
 // what the warning line's Fix button does, and the warning; NULL = none
@@ -3331,7 +4818,8 @@ static const char *panel_warning(const char **fix)
 	case SLOT_EMISSIVE:
 		if (m->emissive_factor <= 0.f)
 		{
-			*fix = "emissive_factor 1";
+			// a painted map holds its brightness at half (emit_bake)
+			*fix = emit_painted(m->image_emissive) ? "emissive_factor 2" : "emissive_factor 1";
 			return "emissive_factor 0: no glow";
 		}
 		break;
@@ -3357,6 +4845,15 @@ static const char *panel_warning(const char **fix)
 	return NULL;
 }
 
+/* The free camera back where it was when the tool started - the player's eye,
+   unzoomed (Matt, 11-21: "an option or button to return the free camera in
+   material mode back to the original position"). The panel's "home" and H. */
+static void camera_home(void)
+{
+	vkpt_freecam_home();
+	author_status("camera back where it started");
+}
+
 static void panel_press(int id)
 {
 	switch (id)
@@ -3364,29 +4861,34 @@ static void panel_press(int id)
 	case W_SLOT0: case W_SLOT1: case W_SLOT2: case W_SLOT3: case W_SLOT4:
 		set_slot(id - W_SLOT0);
 		break;
-	case W_VALUE: case W_DIAL: case W_INTENSITY: case W_RED: case W_GREEN: case W_BLUE: case W_STRENGTH: case W_SIZE:
-	case W_FALLOFF: case W_TOOLOPT: case W_LAYER: case W_RECT_W: case W_RECT_H:
+	case W_VALUE: case W_DIAL: case W_INTENSITY: case W_RED: case W_GREEN: case W_BLUE: case W_SIZE:
+	case W_FALLOFF: case W_TOOLOPT: case W_LAYER: case W_RADIUS: case W_RANGE_LO: case W_RANGE_HI:
 		au.drag = id;
 		drag_update(id);
 		break;
-	case W_RECT_W_DEC: size_slider_step(W_RECT_W, Key_IsDown(K_SHIFT) ? -10 : -1); break;
-	case W_RECT_W_INC: size_slider_step(W_RECT_W, Key_IsDown(K_SHIFT) ? 10 : 1); break;
-	case W_RECT_H_DEC: size_slider_step(W_RECT_H, Key_IsDown(K_SHIFT) ? -10 : -1); break;
-	case W_RECT_H_INC: size_slider_step(W_RECT_H, Key_IsDown(K_SHIFT) ? 10 : 1); break;
-	case W_RECT:        set_shape(SHAPE_RECT); break;
-	case W_STROKE_FREE: if (au.line_mode) set_line_mode(false); break;
-	case W_STROKE_LINE: if (!au.line_mode) set_line_mode(true); break;
+	case W_RANGE_APPLY:
+		// it can make the map: between frames
+		au.range_request = true;
+		queue_tick();
+		break;
+	case W_SEL_ALL:     sel_all(); break;
+	case W_SEL_INVERT:  sel_invert(); break;
+	case W_SEL_NONE:
+		if (sl.num_steps)
+			sel_clear("selection dropped - Ctrl+Shift+D brings it back");
+		else
+			author_status("nothing is selected");
+		break;
 	case W_STAGE_MAT:   set_stage(-1); break;
 	case W_TOOL0: case W_TOOL1: case W_TOOL2: case W_TOOL3: case W_TOOL4: case W_TOOL5:
 		set_tool(id - W_TOOL0);
 		break;
-	case W_FILL_MAP:    au.fill_by_colour = false; break;
-	case W_FILL_COLOUR: au.fill_by_colour = true; break;
+	case W_FILL_MAP:    au.fill_by_colour[au.slot] = false; break;
+	case W_FILL_COLOUR: au.fill_by_colour[au.slot] = true; break;
 	case W_UNLOCK:      lock_clear("unlocked"); break;
 	case W_SHOWBASE:    au.show_base = !au.show_base; break;
-	case W_ROUND:  set_shape(SHAPE_ROUND); break;
-	case W_SQUARE: set_shape(SHAPE_SQUARE); break;
 	case W_SHOW2D: au.show_2d = !au.show_2d; au.v2_fit_image = -2; break;
+	case W_CAM_HOME: camera_home(); break;
 	case W_UNDO:   undo_apply(false); break;
 	case W_REDO:   undo_apply(true); break;
 	case W_SAVE:   author_save(); break;
@@ -3411,6 +4913,15 @@ static void panel_press(int id)
 	default:
 		if (id >= W_STAGE0 && id < W_STAGE0 + AUTHOR_MAX_STAGES)
 			set_stage(id - W_STAGE0);
+		else if (id >= W_STROKE0 && id < W_STROKE0 + NUM_STROKES)
+		{
+			if (au.stroke != id - W_STROKE0 || au.select != SEL_OFF)
+				set_stroke(id - W_STROKE0);
+		}
+		else if (id > W_SEL0 && id < W_SEL0 + NUM_SEL)
+			set_select(au.select == id - W_SEL0 ? SEL_OFF : id - W_SEL0);   // the one on again: back to painting
+		else if (id >= W_NUM0 && id < W_NUM_END)
+			edit_begin(id - W_NUM0);
 		break;
 	}
 }
@@ -3485,6 +4996,44 @@ static void ui_slider(int id, float x, float y, float w, float t)
 	ui_fill(x, y + 4, w * t, 3, MakeColor(190, 110, 30, 255));
 	ui_fill((float)((int)(x + w * t) - 1), y, 3, 11, MakeColor(255, 255, 255, 255));
 	add_widget(id, x - 3.f, y - 1.f, w + 6.f, 13.f);
+}
+
+#define NUMBOX_W    (6 * CHAR_WIDTH + 4)
+
+/* Field (id)'s number in a box: click it to type one (edit_*). Being typed
+   into, it shows what is typed and a caret - lit while a key still replaces
+   the whole number. */
+static void ui_numbox(int id, float x, float y, qhandle_t font)
+{
+	field_t f;
+	if (!field_get(id, &f))
+		return;
+	const bool editing = au.edit_id == id;
+	char text[24];
+	if (editing)
+		Q_snprintf(text, sizeof(text), "%s_", au.edit_buf);
+	else
+		Q_snprintf(text, sizeof(text), "%d", field_shown(&f));
+	const float h = 11.f;
+	const uint32_t edge = editing ? MakeColor(255, 170, 60, 255) : MakeColor(110, 110, 110, 255);
+	ui_fill(x, y, NUMBOX_W, h, editing && au.edit_fresh ? MakeColor(120, 70, 20, 255) : MakeColor(16, 16, 16, 255));
+	ui_fill(x, y, NUMBOX_W, 1, edge);
+	ui_fill(x, y + h - 1.f, NUMBOX_W, 1, edge);
+	ui_fill(x, y, 1, h, edge);
+	ui_fill(x + NUMBOX_W - 1.f, y, 1, h, edge);
+	const int n = min((int)strlen(text), 6);
+	ui_text(x + NUMBOX_W - 2.f - n * CHAR_WIDTH, y + 2.f, 0, text + strlen(text) - n, n, font);
+	add_widget(W_NUM0 + id, x, y, NUMBOX_W, h);
+}
+
+// a slider (w wide, its number box included) for field (id)
+static void ui_slider_num(int id, float x, float y, float w, qhandle_t font)
+{
+	field_t f;
+	if (!field_get(id, &f))
+		return;
+	ui_slider(id, x, y, w - NUMBOX_W - 8.f, field_to_t(&f));
+	ui_numbox(id, x + w - NUMBOX_W, y, font);
 }
 
 static void ui_dot(float x, float y, int size, uint32_t color)
@@ -3584,7 +5133,7 @@ static void brush_under(under_t *u)
 				x = wrap_i(x, W);
 			else if (x < 0 || x >= W)
 				continue;
-			if (!lock_allows(x, y, W, H))
+			if (!region_allows(x, y, W, H))
 				continue;
 			float v[3];
 			texel_get(img, img->pix_data, (size_t)y * W + x, au.slot, v);
@@ -3614,6 +5163,9 @@ static void under_text(const under_t *u, char *buf, size_t size)
 	case SLOT_METAL:
 	case SLOT_HEIGHT:
 		Q_snprintf(buf, size, "under %d%%", (int)(u->v[0] * 100.f + 0.5f));
+		break;
+	case SLOT_EMISSIVE:
+		Q_snprintf(buf, size, "under %d%%", (int)(u->v[0] * 200.f + 0.5f));
 		break;
 	case SLOT_NORMAL:
 	{
@@ -3661,7 +5213,16 @@ static float panel_rows(float x0, float y0, const under_t *under, qhandle_t font
 		ui_tail(x + n * CHAR_WIDTH, y, 0, img->filepath[0] ? img->filepath : img->name, max_chars - n, font);
 	}
 	else
-		ui_text(x, y, 0, va("no %s map: painting makes one (%dx%d)", slot_word[au.slot], W, H), max_chars, font);
+	{
+		// a stand-in, or a glow not painted here, is copied on the first stroke (create_map)
+		const image_t *was = au.stage < 0 ? slot_image(au.mat, au.slot) : NULL;
+		if (au.slot == SLOT_EMISSIVE && au.stage < 0 && was)
+			ui_text(x, y, 0, va("old glow: paint converts, %dx%d", W, H), max_chars, font);
+		else if (was)
+			ui_text(x, y, 0, va("stand-in: paint copies, %dx%d", W, H), max_chars, font);
+		else
+			ui_text(x, y, 0, va("no %s map: painting makes one (%dx%d)", slot_word[au.slot], W, H), max_chars, font);
+	}
 	y += line + 2.f;
 
 	// a Quake III shader drawn in stages: whose maps - the material's, or one stage's own
@@ -3735,7 +5296,7 @@ static float panel_rows(float x0, float y0, const under_t *under, qhandle_t font
 		ui_text(x, y, 0, va("%s %d%%", slot_word[au.slot], (int)(au.value[au.slot] * 100.f + 0.5f)), max_chars - under_n - 1, font);
 		ui_text(x + iw - under_n * CHAR_WIDTH, y, UI_ALTCOLOR, under_s, under_n, font);
 		y += line;
-		ui_slider(W_VALUE, x + 3.f, y, iw - 6.f, au.value[au.slot]);
+		ui_slider_num(W_VALUE, x + 3.f, y, iw - 3.f, font);
 		y += line + 4.f;
 		if (au.slot == SLOT_HEIGHT)
 		{
@@ -3755,11 +5316,13 @@ static float panel_rows(float x0, float y0, const under_t *under, qhandle_t font
 		ui_dial(x + r, y + r, r);
 		const float tx = x + 2 * r + 10.f;
 		const int tchars = (int)((x + iw - tx) / CHAR_WIDTH);
-		ui_text(tx, y, 0, va("leans %s (%d deg)", direction_name(au.normal_angle),
-			((int)floorf(au.normal_angle * 180.f / (float)M_PI + 0.5f) + 360) % 360), tchars, font);
+		// the direction in degrees, in its own box: 0 right, 90 down, 270 up
+		ui_text(tx, y, 0, va("leans %s, deg", direction_name(au.normal_angle)),
+			tchars - (int)(NUMBOX_W / CHAR_WIDTH) - 1, font);
+		ui_numbox(W_DIAL, x + iw - NUMBOX_W, y - 2.f, font);
 		ui_text(tx, y + line, 0, va("intensity %d%% (tilt %d deg)", (int)(au.normal_intensity * 100.f + 0.5f),
 			(int)(au.normal_intensity * AUTHOR_MAX_TILT_DEG + 0.5f)), tchars, font);
-		ui_slider(W_INTENSITY, tx + 3.f, y + 2 * line, x + iw - tx - 6.f, au.normal_intensity);
+		ui_slider_num(W_INTENSITY, tx + 3.f, y + 2 * line, x + iw - tx - 3.f, font);
 		y += 2 * r + 6.f;
 		ui_text(x, y, 0, "screen-relative (map view: image)", max_chars, font);
 		y += line;
@@ -3769,24 +5332,29 @@ static float panel_rows(float x0, float y0, const under_t *under, qhandle_t font
 	}
 	case SLOT_EMISSIVE:
 	{
+		// the brightness painted, 0..200% of the texture; the texture's channels the glow keeps
+		ui_text(x, y, 0, va("brightness %d%%", (int)(au.value[SLOT_EMISSIVE] * 200.f + 0.5f)), max_chars - under_n - 1, font);
+		ui_text(x + iw - under_n * CHAR_WIDTH, y, UI_ALTCOLOR, under_s, under_n, font);
+		y += line;
+		ui_slider_num(W_VALUE, x + 3.f, y, iw - 3.f, font);
+		y += line + 2.f;
+		ui_text(x, y, 0, "100% = as bright as the texture", max_chars, font);
+		y += line + 4.f;
+
 		static const char *const names[3] = { "red", "green", "blue" };
 		const float sw = 30.f;
-		ui_fill(x, y, sw, 4 * line - 2, MakeColor(
-			to_byte(au.emissive_rgb[0] * au.emissive_strength), to_byte(au.emissive_rgb[1] * au.emissive_strength),
-			to_byte(au.emissive_rgb[2] * au.emissive_strength), 255));
-		const float sx = x + sw + 8.f, sl = 10.f * CHAR_WIDTH;
+		ui_fill(x, y, sw, 3 * line - 2, MakeColor(to_byte(au.emit_tint[0]), to_byte(au.emit_tint[1]),
+			to_byte(au.emit_tint[2]), 255));
+		// each channel's percent is in its box
+		const float sx = x + sw + 8.f, sl = 6.f * CHAR_WIDTH;
 		for (int c = 0; c < 3; c++)
 		{
-			ui_text(sx, y + c * line + 1.f, 0, va("%s %d%%", names[c], (int)(au.emissive_rgb[c] * 100.f + 0.5f)), 10, font);
-			ui_slider(W_RED + c, sx + sl + 4.f, y + c * line, x + iw - sx - sl - 8.f, au.emissive_rgb[c]);
+			ui_text(sx, y + c * line + 1.f, 0, names[c], 5, font);
+			ui_slider_num(W_RED + c, sx + sl + 4.f, y + c * line, x + iw - (sx + sl + 4.f), font);
 		}
-		ui_text(sx, y + 3 * line + 1.f, 0, va("glow %d%%", (int)(au.emissive_strength * 100.f + 0.5f)), 10, font);
-		ui_slider(W_STRENGTH, sx + sl + 4.f, y + 3 * line, x + iw - sx - sl - 8.f, au.emissive_strength);
-		y += 4 * line + 6.f;
-		ui_text(x, y, 0, "black paints the glow away", max_chars, font);
-		y += line;
-		ui_text(x, y, UI_ALTCOLOR, under_s, max_chars, font);
-		y += line;
+		y += 3 * line + 2.f;
+		ui_text(x, y, 0, "texture channels (whole map)", max_chars, font);
+		y += line + 2.f;
 		break;
 	}
 	}
@@ -3802,12 +5370,13 @@ static float panel_rows(float x0, float y0, const under_t *under, qhandle_t font
 		const float fbw = 6 * CHAR_WIDTH + 6.f;
 		ui_text(x, y + 2.f, 0, va("tolerance %d%%", (int)(au.tool_opt[TOOL_FILL] * 100.f + 0.5f)),
 			(int)((iw - 2 * fbw - 8.f) / CHAR_WIDTH), font);
-		ui_button(W_FILL_MAP, x + iw - 2 * fbw - 4.f, y, fbw, "value", !au.fill_by_colour, font);
-		ui_button(W_FILL_COLOUR, x + iw - fbw, y, fbw, "colour", au.fill_by_colour, font);
+		ui_button(W_FILL_MAP, x + iw - 2 * fbw - 4.f, y, fbw, "value", !au.fill_by_colour[au.slot], font);
+		ui_button(W_FILL_COLOUR, x + iw - fbw, y, fbw, "colour", au.fill_by_colour[au.slot], font);
 		y += line + 1.f;
-		ui_slider(W_TOOLOPT, x + 3.f, y, iw - 6.f, au.tool_opt[TOOL_FILL]);
+		ui_slider_num(W_TOOLOPT, x + 3.f, y, iw - 3.f, font);
 		y += line + 4.f;
-		ui_text(x, y, UI_ALTCOLOR, lk.on ? "click: fills the whole lock" : "click: floods the texels alike", max_chars, font);
+		ui_text(x, y, UI_ALTCOLOR, region_on() ? va("click: fills the whole %s", region_name())
+			: "click: floods the texels alike", max_chars, font);
 		y += line + 2.f;
 	}
 	else
@@ -3815,7 +5384,7 @@ static float panel_rows(float x0, float y0, const under_t *under, qhandle_t font
 		ui_text(x, y, 0, au.falloff > 0.f ? va("falloff %d%% (soft edge)", (int)(au.falloff * 100.f + 0.5f))
 			: "falloff 0% (hard edge)", max_chars, font);
 		y += line;
-		ui_slider(W_FALLOFF, x + 3.f, y, iw - 6.f, au.falloff);
+		ui_slider_num(W_FALLOFF, x + 3.f, y, iw - 3.f, font);
 		y += line + 4.f;
 
 		const char *opt = NULL;
@@ -3831,53 +5400,33 @@ static float panel_rows(float x0, float y0, const under_t *under, qhandle_t font
 		{
 			ui_text(x, y, 0, opt, max_chars, font);
 			y += line;
-			ui_slider(W_TOOLOPT, x + 3.f, y, iw - 6.f, au.tool_opt[au.tool]);
+			ui_slider_num(W_TOOLOPT, x + 3.f, y, iw - 3.f, font);
 			y += line + 4.f;
 		}
 
-		// the shape: round, square or a rectangle of its own length and width
-		const float sbw = 46.f;
-		const float shx = x + iw - 3 * sbw - 2 * 3.f;
-		if (au.brush_shape == SHAPE_RECT)
-			ui_text(x, y, 0, va("rect %dx%d", au.rect_w, au.rect_h), (int)((shx - x) / CHAR_WIDTH), font);
-		else
-			ui_text(x, y, 0, va("brush %d texel%s", au.brush_size, au.brush_size == 1 ? "" : "s"),
-				(int)((shx - x) / CHAR_WIDTH), font);
-		ui_button(W_ROUND, shx, y - 1.f, sbw, shape_label[SHAPE_ROUND], au.brush_shape == SHAPE_ROUND, font);
-		ui_button(W_SQUARE, shx + sbw + 3.f, y - 1.f, sbw, shape_label[SHAPE_SQUARE], au.brush_shape == SHAPE_SQUARE, font);
-		ui_button(W_RECT, shx + 2 * (sbw + 3.f), y - 1.f, sbw, shape_label[SHAPE_RECT], au.brush_shape == SHAPE_RECT, font);
-		y += line + 1.f;
-		if (au.brush_shape == SHAPE_RECT)
-		{
-			// length across the map (u), width down it (v): a label, - and +, the slider
-			static const char *const side[2] = { "length", "width" };
-			const int ids[2][3] = { { W_RECT_W, W_RECT_W_DEC, W_RECT_W_INC }, { W_RECT_H, W_RECT_H_DEC, W_RECT_H_INC } };
-			const int vals[2] = { au.rect_w, au.rect_h };
-			const float lw = 10 * CHAR_WIDTH, pm = 14.f;
-			for (int k = 0; k < 2; k++)
-			{
-				ui_text(x, y + 1.f, 0, va("%s %d", side[k], vals[k]), 10, font);
-				ui_button(ids[k][1], x + lw, y, pm, "-", false, font);
-				ui_button(ids[k][2], x + lw + pm + 2.f, y, pm, "+", false, font);
-				const float slx = x + lw + 2 * pm + 10.f;
-				ui_slider(ids[k][0], slx, y, x + iw - slx - 3.f, size_to_t(vals[k]));
-				y += line + 1.f;
-			}
-			ui_text(x, y, UI_ALTCOLOR, "length across, width down; R turns", max_chars, font);
-			y += line + 3.f;
-		}
-		else
-		{
-			ui_slider(W_SIZE, x + 3.f, y, iw - 6.f, size_to_t(au.brush_size));
-			y += line + 4.f;
-		}
-
-		// the stroke: free, or a straight line from where the button goes down to where it comes up
+		/* the stroke: free; a straight line from where the button goes down to
+		   where it comes up; or the rectangle with that line its diagonal */
 		const float lbw = 40.f;
-		ui_text(x, y + 2.f, 0, au.line_mode ? (line_preview() ? "stroke: let go to paint" : "stroke: line")
-			: "stroke: free", (int)((iw - 2 * lbw - 4.f) / CHAR_WIDTH), font);
-		ui_button(W_STROKE_FREE, x + iw - 2 * lbw - 3.f, y, lbw, "free", !au.line_mode, font);
-		ui_button(W_STROKE_LINE, x + iw - lbw, y, lbw, "line", au.line_mode, font);
+		const float sx0 = x + iw - NUM_STROKES * lbw - (NUM_STROKES - 1) * 3.f;
+		ui_text(x, y + 2.f, 0, drag_preview() ? "let go to paint" : "stroke", (int)((sx0 - x - 4.f) / CHAR_WIDTH), font);
+		for (int i = 0; i < NUM_STROKES; i++)
+			ui_button(W_STROKE0 + i, sx0 + i * (lbw + 3.f), y, lbw, stroke_label[i], au.stroke == i, font);
+		y += line + 4.f;
+
+		// the round brush's size; a rectangle's corners instead (it is drawn, not a brush)
+		if (au.stroke == STROKE_RECT)
+		{
+			ui_text(x, y, 0, va("corner radius %d texel%s (wheel)", au.rect_radius, au.rect_radius == 1 ? "" : "s"),
+				max_chars, font);
+			y += line;
+			ui_slider_num(W_RADIUS, x + 3.f, y, iw - 3.f, font);
+		}
+		else
+		{
+			ui_text(x, y, 0, va("brush %d texel%s across", au.brush_size, au.brush_size == 1 ? "" : "s"), max_chars, font);
+			y += line;
+			ui_slider_num(W_SIZE, x + 3.f, y, iw - 3.f, font);
+		}
 		y += line + 4.f;
 	}
 
@@ -3893,22 +5442,77 @@ static float panel_rows(float x0, float y0, const under_t *under, qhandle_t font
 		ui_text(x, y + 2.f, 0, "no lock: F face, P piece", max_chars, font);
 	y += line + 4.f;
 
+	/* the selection (M): the shape the left button drags out instead of painting -
+	   the one lit on again goes back to painting, which stays inside it */
+	{
+		const float lw = 7 * CHAR_WIDTH;
+		const float bw = (iw - lw - 2 * 3.f) / (float)(NUM_SEL - 1);
+		ui_text(x, y + 2.f, sl.dragging ? UI_ALTCOLOR : 0, sl.dragging ? "let go" : "select", 6, font);
+		for (int i = SEL_RECT; i < NUM_SEL; i++)
+			ui_button(W_SEL0 + i, x + lw + (i - SEL_RECT) * (bw + 3.f), y, bw, sel_label[i], au.select == i, font);
+		y += line + 4.f;
+	}
+	if (au.select != SEL_OFF || sl.num_steps)
+	{
+		const float sbw = 6 * CHAR_WIDTH + 6.f;
+		const int tchars = (int)((iw - 3 * sbw - 12.f) / CHAR_WIDTH);
+		if (sl.num_steps)
+			ui_text(x, y + 2.f, UI_ALTCOLOR, va("%d tx", sl.texels), tchars, font);
+		else
+			ui_text(x, y + 2.f, 0, "Shift+ Ctrl-", tchars, font);
+		ui_button(W_SEL_ALL, x + iw - 3 * sbw - 8.f, y, sbw, "all", false, font);
+		ui_button(W_SEL_INVERT, x + iw - 2 * sbw - 4.f, y, sbw, "invert", false, font);
+		ui_button(W_SEL_NONE, x + iw - sbw, y, sbw, "none", false, font);
+		y += line + 4.f;
+
+		// the brightness range: the darkest of the base under the selection gets 'dark', the brightest 'bright'
+		if (slot_is_scalar(au.slot))
+		{
+			const float lw = 7 * CHAR_WIDTH;
+			ui_text(x, y + 1.f, 0, "dark", 6, font);
+			ui_slider_num(W_RANGE_LO, x + lw + 3.f, y, iw - lw - 3.f, font);
+			y += line + 2.f;
+			ui_text(x, y + 1.f, 0, "bright", 6, font);
+			ui_slider_num(W_RANGE_HI, x + lw + 3.f, y, iw - lw - 3.f, font);
+			y += line + 4.f;
+			const float abw = 6 * CHAR_WIDTH + 6.f;
+			char spread[48];
+			range_spread_text(spread, sizeof(spread));
+			ui_text(x, y + 2.f, UI_ALTCOLOR, spread, (int)((iw - abw - 4.f) / CHAR_WIDTH), font);
+			ui_button(W_RANGE_APPLY, x + iw - abw, y, abw, "apply", false, font);
+			y += line + 4.f;
+		}
+		else
+		{
+			ui_text(x, y, UI_ALTCOLOR, "brightness range: not on normals", max_chars, font);
+			y += line + 2.f;
+		}
+	}
+
 	// the map view
 	const float vbw = 14 * CHAR_WIDTH + 8.f;
 	ui_button(W_SHOW2D, x, y, vbw, au.show_2d ? "[x] map view" : "[ ] map view", au.show_2d, font);
 	ui_button(W_SHOWBASE, x + vbw + 4.f, y, vbw, au.show_base ? "[x] base under" : "[ ] base under", au.show_base, font);
+	// the rest of the row (5 characters): the camera back where it started
+	ui_button(W_CAM_HOME, x + 2.f * (vbw + 4.f), y, iw - 2.f * (vbw + 4.f), "home", false, font);
 	y += line + 4.f;
 	if (au.show_2d && au.show_base)
 	{
-		ui_text(x, y, 0, va("map over the base: %d%%", (int)(au.layer_alpha * 100.f + 0.5f)), max_chars, font);
+		if (glow_view())
+			ui_text(x, y, 0, va("purple over what doesn't glow: %d%%", (int)(au.glow_veil * 100.f + 0.5f)), max_chars, font);
+		else
+			ui_text(x, y, 0, va("map over the base: %d%%", (int)(au.layer_alpha * 100.f + 0.5f)), max_chars, font);
 		y += line;
-		ui_slider(W_LAYER, x + 3.f, y, iw - 6.f, au.layer_alpha);
+		ui_slider_num(W_LAYER, x + 3.f, y, iw - 3.f, font);
 		y += line + 4.f;
 	}
 
+	// undo and redo: this map's own steps
 	const float b4 = (iw - 3 * 4.f) / 4.f;
-	ui_button(W_UNDO, x, y, b4, "undo", false, font);
-	ui_button(W_REDO, x + (b4 + 4.f), y, b4, "redo", false, font);
+	int n_undo, n_redo;
+	undo_counts(img, &n_undo, &n_redo);
+	ui_button(W_UNDO, x, y, b4, n_undo ? va("undo %d", n_undo) : "undo", false, font);
+	ui_button(W_REDO, x + (b4 + 4.f), y, b4, n_redo ? va("redo %d", n_redo) : "redo", false, font);
 	const int dirty = count_dirty();
 	char save_label[16];
 	Q_snprintf(save_label, sizeof(save_label), dirty ? "save %d" : "save", dirty);
@@ -3939,19 +5543,27 @@ static float panel_rows(float x0, float y0, const under_t *under, qhandle_t font
 		y += line;
 
 	// 36 characters a line at most
-	ui_text(x, y, UI_ALTCOLOR, "RMB look  WASD/QE fly  LMB paint", max_chars, font);
+	ui_text(x, y, UI_ALTCOLOR, "RMB look  WASD/QE fly  H home", max_chars, font);
 	y += line - 2.f;
-	ui_text(x, y, UI_ALTCOLOR, "Alt+click pick  wheel size  B shape", max_chars, font);
+	ui_text(x, y, UI_ALTCOLOR, "Alt+click pick  wheel size/radius", max_chars, font);
 	y += line - 2.f;
 	ui_text(x, y, UI_ALTCOLOR, "Shift+wheel value  Ctrl+wheel soft", max_chars, font);
 	y += line - 2.f;
 	ui_text(x, y, UI_ALTCOLOR, "1-5 map  T tool  G fill  Tab 2D  O", max_chars, font);
 	y += line - 2.f;
-	ui_text(x, y, UI_ALTCOLOR, "L line  R turn rect  F face  P piece", max_chars, font);
+	ui_text(x, y, UI_ALTCOLOR, "L line  R rectangle  F face  P piece", max_chars, font);
 	y += line - 2.f;
 	ui_text(x, y, UI_ALTCOLOR, "Shift+F/P add  U unlock  Ctrl+S save", max_chars, font);
 	y += line - 2.f;
-	ui_text(x, y, UI_ALTCOLOR, "Ctrl+Z/Y undo/redo  Esc leave", max_chars, font);
+	ui_text(x, y, UI_ALTCOLOR, "M select: Shift+drag add, Ctrl cut", max_chars, font);
+	y += line - 2.f;
+	ui_text(x, y, UI_ALTCOLOR, "Ctrl+A all  Ctrl+D none  Ctrl+I inv", max_chars, font);
+	y += line - 2.f;
+	ui_text(x, y, UI_ALTCOLOR, "LMB paint  click a number, Enter", max_chars, font);
+	y += line - 2.f;
+	ui_text(x, y, UI_ALTCOLOR, "slider: Shift finer, wheel/arrows 1", max_chars, font);
+	y += line - 2.f;
+	ui_text(x, y, UI_ALTCOLOR, "Ctrl+Z/Y undo/redo (this map)  Esc", max_chars, font);
 	y += line;
 	return y;
 }
@@ -3972,29 +5584,67 @@ static void draw_panel(qhandle_t font)
 	panel_rows(x0, y0, &under, font);
 }
 
-// what an outline is of: the brush at a centre, or swept from it by (dx, dy) - all doubled texels
+/* What an outline is of, all in doubled texels: the brush at a centre; the
+   brush swept from it by (dx, dy); or a rectangle centred there, (dx, dy) its
+   half sides and r2 its corners (rect_inside). */
+enum { OUT_BRUSH, OUT_LINE, OUT_RECT };
+
 typedef struct {
+	int kind;
 	int c2x, c2y;
 	int dx, dy;
-	bool sweep;
+	int r2;
 } outline_t;
 
 static bool outline_row(const outline_t *o, int ty, int *x0, int *x1)
 {
-	return o->sweep ? sweep_row(o->c2x, o->c2y, o->dx, o->dy, ty, x0, x1) : brush_row(o->c2x, o->c2y, ty, x0, x1);
+	switch (o->kind)
+	{
+	case OUT_LINE: return sweep_row(o->c2x, o->c2y, o->dx, o->dy, ty, x0, x1);
+	case OUT_RECT: return rect_row(o->c2x, o->c2y, o->dx, o->dy, o->r2, ty, x0, x1);
+	default:       return brush_row(o->c2x, o->c2y, ty, x0, x1);
+	}
 }
 
-/* The line being drawn, in doubled texels of a W x H map: its first centre and
-   how far the last is from it. On a tiled surface the first is moved into the
-   map's one copy - the shader wraps what it tests, and the map view shows that
-   copy - the line keeping its length. */
-static void line_centres(int W, int H, outline_t *o)
+static void outline_rows(const outline_t *o, int *ty0, int *ty1)
 {
-	o->sweep = true;
-	o->c2x = centre2_x(au.line_tu0);
-	o->c2y = centre2_y(au.line_tv0);
-	o->dx = centre2_x(au.line_tu1) - o->c2x;
-	o->dy = centre2_y(au.line_tv1) - o->c2y;
+	switch (o->kind)
+	{
+	case OUT_LINE: sweep_rows(o->c2y, o->dy, ty0, ty1); break;
+	case OUT_RECT: rect_span(o->c2y, o->dy, ty0, ty1); break;
+	default:       brush_rows(o->c2y, ty0, ty1); break;
+	}
+}
+
+/* The line or rectangle being drawn, in doubled texels of a W x H map. A line:
+   its first centre and how far the last is from it. A rectangle: the texels
+   from the one its first corner went down on to the one under the cursor,
+   inclusive - its centre, half sides, and corners (no rounder than its shorter
+   half side allows). On a tiled surface the centre is moved into the map's
+   one copy - the shader wraps what it tests, and the map view shows that copy -
+   the shape keeping its size. */
+static void drag_outline(int W, int H, outline_t *o)
+{
+	memset(o, 0, sizeof(*o));
+	if (au.stroke == STROKE_RECT)
+	{
+		const int x0 = (int)floorf(min(au.line_tu0, au.line_tu1)), x1 = (int)floorf(max(au.line_tu0, au.line_tu1));
+		const int y0 = (int)floorf(min(au.line_tv0, au.line_tv1)), y1 = (int)floorf(max(au.line_tv0, au.line_tv1));
+		o->kind = OUT_RECT;
+		o->c2x = x0 + x1 + 1;
+		o->c2y = y0 + y1 + 1;
+		o->dx = x1 - x0 + 1;
+		o->dy = y1 - y0 + 1;
+		o->r2 = min(2 * Q_clip(au.rect_radius, 0, AUTHOR_MAX_RADIUS), min(o->dx, o->dy));
+	}
+	else
+	{
+		o->kind = OUT_LINE;
+		o->c2x = centre2_x(au.line_tu0);
+		o->c2y = centre2_y(au.line_tv0);
+		o->dx = centre2_x(au.line_tu1) - o->c2x;
+		o->dy = centre2_y(au.line_tv1) - o->c2y;
+	}
 	if (!au.paint_2d && map_wraps())
 	{
 		o->c2x -= 2 * W * (int)floorf((float)o->c2x / (float)(2 * W));
@@ -4010,16 +5660,13 @@ static void outline_2d(float vx, float vy, float vs, const outline_t *o, uint32_
 	#define SY(t) (cy + ((float)(t) - au.v2_cv) * ppt)
 
 	int ty0, ty1;
-	if (o->sweep)
-		sweep_rows(o->c2y, o->dy, &ty0, &ty1);
-	else
-		brush_rows(o->c2y, &ty0, &ty1);
+	outline_rows(o, &ty0, &ty1);
 
-	if ((!o->sweep && cur_size() * ppt < 3.f) || ty1 - ty0 > 8192)
+	if ((o->kind == OUT_BRUSH && cur_size() * ppt < 3.f) || ty1 - ty0 > 8192)
 	{
-		// smaller than a few pixels on screen (or a line beyond reason): a marker at each end
+		// smaller than a few pixels on screen (or a shape beyond reason): a marker at each end
 		ui_dot(SX(o->c2x * 0.5f), SY(o->c2y * 0.5f), 3, color);
-		if (o->sweep)
+		if (o->kind == OUT_LINE)
 			ui_dot(SX((o->c2x + o->dx) * 0.5f), SY((o->c2y + o->dy) * 0.5f), 3, color);
 		return;
 	}
@@ -4057,6 +5704,124 @@ static void outline_2d(float vx, float vy, float vs, const outline_t *o, uint32_
 	#undef SY
 }
 
+/* A selection's shapes on the map view: marching ants - white and black dashes
+   that crawl - along each one's outline, clipped to the view. A shape made on a
+   tiled surface is moved into the map's one copy by its first point. */
+typedef struct {
+	float clip[4];          // the view: x0, y0, x1, y1
+	float cx, cy;           // its centre on screen
+	float ox, oy;           // the shape's shift into the map's copy, texels
+	float s;                // the length gone along the outline, for the dashes
+	float step;             // virtual px between dots
+	int phase;
+} ants_t;
+
+static void ants_point(const ants_t *a, float tu, float tv, float *x, float *y)
+{
+	*x = a->cx + (tu + a->ox - au.v2_cu) * au.v2_ppt;
+	*y = a->cy + (tv + a->oy - au.v2_cv) * au.v2_ppt;
+}
+
+static void ants_line(ants_t *a, float x0, float y0, float x1, float y1)
+{
+	const float dx = x1 - x0, dy = y1 - y0;
+	const float len = sqrtf(dx * dx + dy * dy);
+	const int n = max(1, (int)ceilf(len / a->step));
+	for (int i = 0; i < n; i++)
+	{
+		const float t = (float)i / (float)n;
+		const float px = x0 + dx * t, py = y0 + dy * t;
+		if (px < a->clip[0] || py < a->clip[1] || px >= a->clip[2] || py >= a->clip[3])
+			continue;
+		const bool white = (((int)(a->s + len * t) + a->phase) / 4 & 1) == 0;
+		R_DrawFill32_RTX((int)px, (int)py, 1, 1, white ? MakeColor(255, 255, 255, 255) : MakeColor(0, 0, 0, 255));
+	}
+	a->s += len;
+}
+
+// one shape's outline (its points in map repeats) on a W x H map
+static void ants_shape(ants_t *a, int shape, const float *p, int count, int W, int H)
+{
+	if (count < 2)
+		return;
+	a->ox = -(float)W * floorf(p[0]);
+	a->oy = -(float)H * floorf(p[1]);
+	float pts[2 * 64];
+	float *poly = pts;
+	int n = 0;
+	if (shape == SEL_LASSO)
+	{
+		poly = Z_Malloc(sizeof(float) * 2 * count);
+		for (int i = 0; i < count; i++)
+			ants_point(a, p[i * 2] * W, p[i * 2 + 1] * H, &poly[i * 2], &poly[i * 2 + 1]);
+		n = count;
+	}
+	else
+	{
+		// the texels' box: from the first one's corner to past the last one
+		const float x0 = floorf(min(p[0], p[2]) * W), x1 = floorf(max(p[0], p[2]) * W) + 1.f;
+		const float y0 = floorf(min(p[1], p[3]) * H), y1 = floorf(max(p[1], p[3]) * H) + 1.f;
+		if (shape == SEL_RECT)
+		{
+			const float c[8] = { x0, y0, x1, y0, x1, y1, x0, y1 };
+			for (int i = 0; i < 4; i++)
+				ants_point(a, c[i * 2], c[i * 2 + 1], &pts[i * 2], &pts[i * 2 + 1]);
+			n = 4;
+		}
+		else
+		{
+			for (int i = 0; i < 64; i++)
+			{
+				const float t = (float)i * 2.f * (float)M_PI / 64.f;
+				ants_point(a, (x0 + x1) * 0.5f + cosf(t) * (x1 - x0) * 0.5f, (y0 + y1) * 0.5f + sinf(t) * (y1 - y0) * 0.5f,
+					&pts[i * 2], &pts[i * 2 + 1]);
+			}
+			n = 64;
+		}
+	}
+	// a long outline is dotted more sparsely: at most a few thousand dots
+	float len = 0.f;
+	for (int i = 0; i < n; i++)
+	{
+		const int j = (i + 1) % n;
+		len += sqrtf((poly[j * 2] - poly[i * 2]) * (poly[j * 2] - poly[i * 2]) + (poly[j * 2 + 1] - poly[i * 2 + 1]) * (poly[j * 2 + 1] - poly[i * 2 + 1]));
+	}
+	a->step = max(1.f, len / 4000.f);
+	for (int i = 0; i < n; i++)
+	{
+		const int j = (i + 1) % n;
+		ants_line(a, poly[i * 2], poly[i * 2 + 1], poly[j * 2], poly[j * 2 + 1]);
+	}
+	if (poly != pts)
+		Z_Free(poly);
+}
+
+static void sel_outline_2d(float vx, float vy, float vs, int W, int H)
+{
+	if (!sl.num_steps && !sl.dragging)
+		return;
+	ants_t a;
+	memset(&a, 0, sizeof(a));
+	a.clip[0] = vx;
+	a.clip[1] = vy;
+	a.clip[2] = vx + vs;
+	a.clip[3] = vy + vs;
+	a.cx = vx + vs * 0.5f;
+	a.cy = vy + vs * 0.5f;
+	a.phase = (int)(Sys_Milliseconds() / 80u % 8u);
+	if (!(sl.dragging && sl.drag_replace))
+	{
+		for (int i = 0; i < sl.num_steps; i++)
+		{
+			const sel_step_t *s = &sl.steps[i];
+			if (s->step == SELSTEP_ADD || s->step == SELSTEP_SUB)
+				ants_shape(&a, s->shape, sl.pts + 2 * s->first, s->count, W, H);
+		}
+	}
+	if (sl.dragging)
+		ants_shape(&a, sl.drag_shape, sl.dpts, sl.num_dpts, W, H);
+}
+
 static bool hit_on_map(const author_hit_t *hit, const image_t *img);
 
 static void draw_view2d(qhandle_t font)
@@ -4085,26 +5850,50 @@ static void draw_view2d(qhandle_t font)
 		const bool nearest = au.v2_ppt / ui_scale() >= 2.f;
 		const bool red_grey = img && slot_is_grey(au.slot);
 		const image_t *base = author_base();
-		if (img && au.show_base && base && base != img)
+		const image_t *glow = NULL;
+		int glow_kind = DRAW_GLOW_OFF;
+		if (glow_view() && base)
 		{
-			// the base texture, and the map over it as a layer (O, or the panel's slider)
-			vkpt_draw_stretch_subpic_flags(sx0, sy0, sx1 - sx0, sy1 - sy0, u0 / W, v0 / H, u1 / W, v1 / H,
-				(qhandle_t)image_index(base), nearest, false, true);
-			R_SetColor_RTX(MakeColor(255, 255, 255, to_byte(au.layer_alpha)));
-			vkpt_draw_stretch_subpic_flags(sx0, sy0, sx1 - sx0, sy1 - sy0, u0 / W, v0 / H, u1 / W, v1 / H,
-				(qhandle_t)image_index(img), nearest, red_grey, true);
-			R_SetColor_RTX(MakeColor(255, 255, 255, 255));
+			// the painted map's brightness; before the first stroke, the glow the material
+			// has, read the way that stroke will convert it (create_emit_map)
+			const image_t *old = au.mat->image_emissive;
+			if (img)
+				glow = img, glow_kind = DRAW_GLOW_ALPHA;
+			else if (old && au.mat->emissive_factor > 0.f)
+				glow = old, glow_kind = DRAW_GLOW_LUMINANCE;
+			else
+				glow = base, glow_kind = DRAW_GLOW_NONE;
+		}
+		if (glow)
+			vkpt_draw_stretch_subpic_layer(sx0, sy0, sx1 - sx0, sy1 - sy0, u0 / W, v0 / H, u1 / W, v1 / H,
+				(qhandle_t)image_index(glow), (qhandle_t)image_index(base), au.glow_veil, nearest, false, glow_kind);
+		else if (img && au.show_base && base && base != img)
+		{
+			// the base texture, and the map over it as a layer (O, or the panel's slider) - mixed
+			// by the shader as an image editor does, not blended as light (see the function)
+			vkpt_draw_stretch_subpic_layer(sx0, sy0, sx1 - sx0, sy1 - sy0, u0 / W, v0 / H, u1 / W, v1 / H,
+				(qhandle_t)image_index(img), (qhandle_t)image_index(base), au.layer_alpha, nearest, red_grey,
+				DRAW_GLOW_OFF);
 		}
 		else
 			vkpt_draw_stretch_subpic_flags(sx0, sy0, sx1 - sx0, sy1 - sy0, u0 / W, v0 / H, u1 / W, v1 / H,
 				(qhandle_t)image_index(shown), nearest, red_grey, true);
 
-		// the lock: what is outside it, darker (its texture's alpha)
-		if (lk.on && lk.mask_w == W && lk.mask_h == H && lock_image_ok())
+		// the lock and the selection: what is outside them, darker (their texture's alpha)
+		if (region_on() && rg.w == W && rg.h == H && region_image_ok())
 			vkpt_draw_stretch_subpic_flags(sx0, sy0, sx1 - sx0, sy1 - sy0, u0 / W, v0 / H, u1 / W, v1 / H,
-				lk.image, true, false, false);
+				rg.image, true, false, false);
 
-		if (!img)
+		if (!img && glow)
+		{
+			// the texture shows what glows already: the note on a band of its own
+			const char *note = glow_kind == DRAW_GLOW_LUMINANCE
+				? "not painted yet: its glow as it is now - painting makes a map"
+				: "nothing glows yet - painting makes an emissive map";
+			R_DrawFill32_RTX((int)vx, (int)vy, (int)vs, 20, MakeColor(0, 0, 0, 170));
+			ui_text(vx + 6.f, vy + 6.f, UI_ALTCOLOR, note, (int)((vs - 12.f) / CHAR_WIDTH), font);
+		}
+		else if (!img)
 		{
 			R_DrawFill32_RTX((int)sx0, (int)sy0, (int)(sx1 - sx0), (int)(sy1 - sy0), MakeColor(0, 0, 0, 150));
 			ui_text(vx + 6.f, vy + 6.f, UI_ALTCOLOR, va("no %s map yet - painting makes one", slot_word[au.slot]),
@@ -4117,9 +5906,9 @@ static void draw_view2d(qhandle_t font)
 	float tu, tv;
 	outline_t o;
 	memset(&o, 0, sizeof(o));
-	if (line_preview())
+	if (drag_preview())
 	{
-		line_centres(W, H, &o);
+		drag_outline(W, H, &o);
 		outline_2d(vx, vy, vs, &o, au.paint_2d ? MakeColor(255, 255, 255, 255) : MakeColor(255, 170, 60, 255));
 	}
 	else if (view2d_texel(&tu, &tv))
@@ -4136,14 +5925,28 @@ static void draw_view2d(qhandle_t font)
 		outline_2d(vx, vy, vs, &o, MakeColor(255, 170, 60, 255));
 	}
 
+	// the selection's shapes, and one being dragged out (here or on a surface)
+	sel_outline_2d(vx, vy, vs, W, H);
+
 	char caption[160], what[48];
 	if (au.stage >= 0)
 		Q_snprintf(what, sizeof(what), "stage%d %s", au.stage, slot_word[au.slot]);
 	else
 		Q_strlcpy(what, slot_word[au.slot], sizeof(what));
 	if (view2d_texel(&tu, &tv))
-		Q_snprintf(caption, sizeof(caption), "%s %dx%d  zoom %d%%  texel %d,%d", what, W, H,
-			(int)(au.v2_ppt / ui_scale() * 100.f + 0.5f), (int)tu, (int)tv);
+	{
+		// a painted emissive map: the brightness under the cursor too
+		char glow_at[24] = "";
+		if (au.slot == SLOT_EMISSIVE && img && img->pix_data && img->pixel_format == PF_R8G8B8A8_UNORM
+			&& img->upload_width > 0 && img->upload_height > 0)
+		{
+			const int gx = Q_clip((int)tu, 0, img->upload_width - 1), gy = Q_clip((int)tv, 0, img->upload_height - 1);
+			const byte a = img->pix_data[((size_t)gy * img->upload_width + gx) * 4 + 3];
+			Q_snprintf(glow_at, sizeof(glow_at), "  glows %d%%", (int)(a * 200.f / 255.f + 0.5f));
+		}
+		Q_snprintf(caption, sizeof(caption), "%s %dx%d  zoom %d%%  texel %d,%d%s", what, W, H,
+			(int)(au.v2_ppt / ui_scale() * 100.f + 0.5f), (int)tu, (int)tv, glow_at);
+	}
 	else
 		Q_snprintf(caption, sizeof(caption), "%s %dx%d  zoom %d%%  wheel zooms, right-drag pans, O base", what,
 			W, H, (int)(au.v2_ppt / ui_scale() * 100.f + 0.5f));
@@ -4159,6 +5962,30 @@ static void draw_cursor(void)
 	R_DrawFill32_RTX((int)mx - 1, (int)my - 5, 3, 11, black);
 	R_DrawFill32_RTX((int)mx - 4, (int)my, 9, 1, white);
 	R_DrawFill32_RTX((int)mx, (int)my - 4, 1, 9, white);
+
+	// selecting: the shape's mark beside the cross
+	const int sx = (int)mx + 6, sy = (int)my + 6;
+	switch (au.select)
+	{
+	case SEL_RECT:
+		R_DrawFill32_RTX(sx, sy, 7, 1, white);
+		R_DrawFill32_RTX(sx, sy + 5, 7, 1, white);
+		R_DrawFill32_RTX(sx, sy, 1, 6, white);
+		R_DrawFill32_RTX(sx + 6, sy, 1, 6, white);
+		break;
+	case SEL_ELLIPSE:
+	case SEL_LASSO:
+		for (int i = 0; i < 16; i++)
+		{
+			const float t = (float)i * 2.f * (float)M_PI / 16.f;
+			R_DrawFill32_RTX(sx + 3 + (int)floorf(cosf(t) * 3.5f + 0.5f), sy + 3 + (int)floorf(sinf(t) * 2.5f + 0.5f), 1, 1, white);
+		}
+		if (au.select == SEL_LASSO)
+			R_DrawFill32_RTX(sx + 1, sy + 6, 1, 3, white);    // the rope's tail
+		break;
+	default:
+		break;
+	}
 }
 
 void MAT_AuthorDraw(void)
@@ -4194,15 +6021,28 @@ static bool hit_on_map(const author_hit_t *hit, const image_t *img)
 	return m == au.mat;
 }
 
-/* The line tool, each tick while the button is down: where it starts (the first
-   place the cursor is on the map) and where it ends so far; once the button
-   has come up, the brush swept along it, painted once as a stroke of its own. */
+/* The line and rectangle strokes, each tick while the button is down: where it
+   starts (the first place the cursor is on the map) and where it ends so far;
+   once the button has come up, the brush swept along it - or the rectangle -
+   painted once as a stroke of its own. */
 static void line_step(image_t *img, dab_ctx_t *c)
 {
 	const int W = img->upload_width, H = img->upload_height;
 	float tu, tv;
 	bool have;
-	if (au.paint_2d)
+	if (au.paint_2d && au.line_have)
+	{
+		/* Once started, the end follows the cursor wherever it goes - off the
+		   map, past the view's edge - held to the map's edge (Matt, 2026-11-21:
+		   it stopped dead as soon as the cursor left the texture). */
+		float x, y, size, mx, my;
+		view2d_rect(&x, &y, &size);
+		cursor_virtual(&mx, &my);
+		tu = Q_clipf(au.v2_cu + (mx - (x + size * 0.5f)) / au.v2_ppt, 0.f, (float)W - 0.001f);
+		tv = Q_clipf(au.v2_cv + (my - (y + size * 0.5f)) / au.v2_ppt, 0.f, (float)H - 0.001f);
+		have = true;
+	}
+	else if (au.paint_2d)
 		have = view2d_texel(&tu, &tv);
 	else
 	{
@@ -4232,24 +6072,198 @@ static void line_step(image_t *img, dab_ctx_t *c)
 	au.line_have = false;
 
 	// ends on two parts of a model whose UVs lie far apart make no line on it
+	const bool rect = au.stroke == STROKE_RECT;
 	if (!au.paint_2d && (fabsf(au.line_tu1 - au.line_tu0) > 8.f * W || fabsf(au.line_tv1 - au.line_tv0) > 8.f * H))
 	{
-		author_status("the line's ends are too far apart on the map (two parts of it far apart?): not painted");
+		author_status("the %s's ends are too far apart on the map (two parts of it far apart?): not painted",
+			rect ? "rectangle" : "line");
 		return;
 	}
 
 	outline_t o;
-	line_centres(W, H, &o);
+	drag_outline(W, H, &o);
 	make_paint(au.paint_2d ? NULL : &au.line_hit, &c->paint);
 	c->wrap = !au.paint_2d && map_wraps();
 	// the spray, once: density is the share of the texels it dots
 	c->spray_p = au.tool_opt[TOOL_SPRAY];
 	stroke_touch(img);
-	dab_sweep(c, o.c2x, o.c2y, o.dx, o.dy);
+	if (rect)
+	{
+		// the blur reaches as a brush the rectangle's shorter side across would
+		c->blur_r = Q_clip(min(o.dx, o.dy) / 6, 1, 6);
+		dab_rect(c, o.c2x, o.c2y, o.dx, o.dy, o.r2);
+	}
+	else
+		dab_sweep(c, o.c2x, o.c2y, o.dx, o.dy);
 	stroke_end();
-	const float len = sqrtf((au.line_tu1 - au.line_tu0) * (au.line_tu1 - au.line_tu0)
-		+ (au.line_tv1 - au.line_tv0) * (au.line_tv1 - au.line_tv0));
-	author_status("line, %d texels long", (int)(len + 0.5f));
+	if (rect)
+		author_status("rectangle %d x %d texels, corners %d", o.dx, o.dy, o.r2 / 2);
+	else
+	{
+		const float len = sqrtf((au.line_tu1 - au.line_tu0) * (au.line_tu1 - au.line_tu0)
+			+ (au.line_tv1 - au.line_tv0) * (au.line_tv1 - au.line_tv0));
+		author_status("line, %d texels long", (int)(len + 0.5f));
+	}
+}
+
+/* THE SELECTION BEING DRAGGED OUT (M). The button goes down (select_begin); each
+   tick while it is down, a rectangle or ellipse runs from where the cursor
+   first was on the map to where it is, a lasso along where it has been - the
+   surface showing it as it grows (region_sync); let go, it joins the
+   selection: replacing it, added (Shift) or taken away (Ctrl). A click that
+   drags nothing out drops the selection, as an image editor's does. */
+static void select_begin(bool in_2d, bool add, bool sub)
+{
+	sl.dragging = true;
+	sl.drag_2d = in_2d;
+	sl.drag_commit = false;
+	sl.drag_shape = au.select;
+	sl.drag_replace = !add && !sub;
+	sl.drag_sub = sub && !add;
+	sl.num_dpts = 0;
+	sl.dirty = true;
+	sl.raster_ms = 0;
+	queue_tick();
+}
+
+static void sel_drag_point(float u, float v)
+{
+	if (sl.num_dpts == sl.cap_dpts)
+	{
+		sl.cap_dpts = max(256, sl.cap_dpts * 2);
+		sl.dpts = Z_Realloc(sl.dpts, sizeof(float) * 2 * sl.cap_dpts);
+	}
+	sl.dpts[sl.num_dpts * 2] = u;
+	sl.dpts[sl.num_dpts * 2 + 1] = v;
+	sl.num_dpts++;
+	sl.dirty = true;
+}
+
+static void select_commit(int W, int H)
+{
+	const bool replace = sl.drag_replace, sub = sl.drag_sub, in_2d = sl.drag_2d;
+	const int shape = sl.drag_shape, count = sl.num_dpts;
+	sl.dragging = sl.drag_commit = false;
+	sl.dirty = true;
+	rg.dirty = true;
+
+	float x0 = FLT_MAX, y0 = FLT_MAX, x1 = -FLT_MAX, y1 = -FLT_MAX;
+	for (int i = 0; i < count; i++)
+	{
+		x0 = min(x0, sl.dpts[i * 2] * W);
+		x1 = max(x1, sl.dpts[i * 2] * W);
+		y0 = min(y0, sl.dpts[i * 2 + 1] * H);
+		y1 = max(y1, sl.dpts[i * 2 + 1] * H);
+	}
+	bool click;
+	if (shape == SEL_LASSO)
+		click = count < 3 || (x1 - x0 < 1.f && y1 - y0 < 1.f);
+	else
+		click = count < 2 || ((int)floorf(sl.dpts[0] * W) == (int)floorf(sl.dpts[2] * W)
+			&& (int)floorf(sl.dpts[1] * H) == (int)floorf(sl.dpts[3] * H));
+	if (click)
+	{
+		sl.num_dpts = 0;
+		if (replace && sl.num_steps)
+			sel_clear("selection dropped - Ctrl+Shift+D brings it back");
+		return;
+	}
+	// ends on two parts of a model whose UVs lie far apart make no shape on it
+	if (!in_2d && (x1 - x0 > SEL_MAX_TILES * W || y1 - y0 > SEL_MAX_TILES * H))
+	{
+		sl.num_dpts = 0;
+		author_status("the %s spans too much of the map (two parts of it far apart?): not selected", sel_label[shape]);
+		return;
+	}
+
+	if (replace)
+		sel_clear(NULL);    // kept for Ctrl+Shift+D
+	sel_push(sub ? SELSTEP_SUB : SELSTEP_ADD, shape, sl.dpts, count);
+	sl.steps[sl.num_steps - 1].clip = in_2d;
+	sl.num_dpts = 0;
+	region_sync();
+	if (!sl.texels)
+	{
+		sel_clear(NULL);
+		author_status("nothing is selected now");
+		return;
+	}
+	char size[40] = "";
+	if (in_2d)
+	{
+		// what of it lies on the map
+		x0 = Q_clipf(x0, 0.f, (float)W - 0.001f);
+		x1 = Q_clipf(x1, 0.f, (float)W - 0.001f);
+		y0 = Q_clipf(y0, 0.f, (float)H - 0.001f);
+		y1 = Q_clipf(y1, 0.f, (float)H - 0.001f);
+	}
+	if (shape != SEL_LASSO)
+		Q_snprintf(size, sizeof(size), " %d x %d", (int)floorf(x1) - (int)floorf(x0) + 1, (int)floorf(y1) - (int)floorf(y0) + 1);
+	author_status("%s%s %s: %d texels selected - painting stays inside, Ctrl+D drops it", sel_label[shape], size,
+		sub ? "taken away" : replace ? "selected" : "added", sl.texels);
+}
+
+static void select_step(void)
+{
+	int W, H;
+	map_size(&W, &H);
+	float tu = 0.f, tv = 0.f;
+	bool have = false;
+	if (sl.drag_2d)
+	{
+		/* BEGUN OFF THE MAP. A shape in the map view starts anywhere in the view and
+		   follows the cursor anywhere, off the map as well - so one begun or carried
+		   past an edge takes every texel along it (Matt, 2026-11-21: "let me start
+		   selecting outside of the image so I can get all pixels on the edges").
+		   It used to wait for the cursor to reach the map, its first corner landing
+		   a texel or more inside. Its points are kept where they are, up to a map's
+		   width past each side; the shape is CLIPPED to the map (sel_step_t.clip),
+		   never wrapped round to the far side as a shape on a tiled surface is, and
+		   an ellipse keeps its true outline rather than one squeezed onto the map. */
+		float x, y, size, mx, my;
+		view2d_rect(&x, &y, &size);
+		cursor_virtual(&mx, &my);
+		if (sl.num_dpts || cursor_in_view2d())
+		{
+			tu = Q_clipf(au.v2_cu + (mx - (x + size * 0.5f)) / au.v2_ppt, -(float)W, 2.f * (float)W);
+			tv = Q_clipf(au.v2_cv + (my - (y + size * 0.5f)) / au.v2_ppt, -(float)H, 2.f * (float)H);
+			have = true;
+		}
+	}
+	else if (hit_on_map(&au.hit, author_image()))
+	{
+		hit_texel(&au.hit, W, H, false, &tu, &tv);     // unwrapped: a shape can cross a tile's edge
+		have = true;
+	}
+	if (have)
+	{
+		const float u = tu / (float)W, v = tv / (float)H;
+		if (sl.drag_shape == SEL_LASSO)
+		{
+			bool moved = true;
+			if (sl.num_dpts)
+			{
+				const float dx = (u - sl.dpts[sl.num_dpts * 2 - 2]) * W, dy = (v - sl.dpts[sl.num_dpts * 2 - 1]) * H;
+				moved = dx * dx + dy * dy >= 0.25f;     // half a texel on
+			}
+			if (moved && sl.num_dpts < SEL_MAX_POINTS)
+				sel_drag_point(u, v);
+		}
+		else if (!sl.num_dpts)
+		{
+			// a rectangle or ellipse: two opposite corners, the second following the cursor
+			sel_drag_point(u, v);
+			sel_drag_point(u, v);
+		}
+		else if (sl.dpts[2] != u || sl.dpts[3] != v)
+		{
+			sl.dpts[2] = u;
+			sl.dpts[3] = v;
+			sl.dirty = true;
+		}
+	}
+	if (sl.drag_commit)
+		select_commit(W, H);
 }
 
 static void paint_step(void)
@@ -4294,8 +6308,8 @@ static void paint_step(void)
 		return;
 	}
 
-	// the lock, for this map (a new map is the base texture's size, as the lock was made)
-	lock_sync();
+	// the lock and the selection, for this map (a new map is the base texture's size, as they were made)
+	region_sync();
 
 	const int W = img->upload_width, H = img->upload_height;
 	dab_ctx_t c;
@@ -4374,6 +6388,91 @@ static void paint_step(void)
 	au.have_last = true;
 }
 
+/* EMISSIVE'S TINT (the panel's red, green, blue): how much of each of the
+   texture's channels the glow keeps, one for the whole map, held in its colours
+   (emit_bake). Read back when a material's painted map is first shown - its
+   colours over the albedo times its brightness, channel by channel, which never
+   clip as the map holds half - and a change makes every texel's colour again from
+   its brightness: one undo step a drag. */
+static void emit_sync(void)
+{
+	if (au.slot != SLOT_EMISSIVE || au.stage >= 0)
+		return;
+	const int mi = MAT_IndexOf(au.mat);
+	image_t *img = author_image();
+	const int ii = img ? image_index(img) : -1;
+	if (mi == au.emit_mat && ii == au.emit_image)
+		return;
+	if (mi != au.emit_mat)
+		au.emit_tint[0] = au.emit_tint[1] = au.emit_tint[2] = 1.f;
+	au.emit_mat = mi;
+	au.emit_image = ii;
+
+	byte probe[3];
+	if (img && img->pix_data && img->pixel_format == PF_R8G8B8A8_UNORM
+		&& base_rgb(0, 0, img->upload_width, img->upload_height, probe))
+	{
+		const int W = img->upload_width, H = img->upload_height;
+		double num[3] = { 0.0, 0.0, 0.0 }, den[3] = { 0.0, 0.0, 0.0 };
+		for (int y = 0; y < H; y++)
+		{
+			for (int x = 0; x < W; x++)
+			{
+				const byte *px = img->pix_data + ((size_t)y * W + x) * 4;
+				byte albedo[3];
+				if (!px[3] || !base_rgb(x, y, W, H, albedo))
+					continue;
+				const float b = (float)px[3] / 255.f;
+				for (int c = 0; c < 3; c++)
+				{
+					const float k = srgb_to_linear((float)albedo[c] / 255.f) * b;
+					if (k < 0.02f)
+						continue;
+					num[c] += img->is_srgb ? srgb_to_linear((float)px[c] / 255.f) : (float)px[c] / 255.f;
+					den[c] += k;
+				}
+			}
+		}
+		for (int c = 0; c < 3; c++)
+			if (den[c] > 0.0)
+				au.emit_tint[c] = floorf(Q_clipf((float)(num[c] / den[c]), 0.f, 1.f) * 100.f + 0.5f) / 100.f;
+	}
+	memcpy(au.emit_baked, au.emit_tint, sizeof(au.emit_baked));
+}
+
+static void emit_retint(void)
+{
+	if (au.slot != SLOT_EMISSIVE || au.stage >= 0 || !memcmp(au.emit_tint, au.emit_baked, sizeof(au.emit_tint)))
+		return;
+	memcpy(au.emit_baked, au.emit_tint, sizeof(au.emit_baked));
+	image_t *img = author_image();
+	const char *why;
+	if (!img || !image_paintable(img, &why))
+		return;     // no painted map yet: the first stroke's takes the tint as it is
+
+	stroke_touch(img);
+	const int W = img->upload_width, H = img->upload_height;
+	bool changed = false;
+	for (int y = 0; y < H; y++)
+	{
+		for (int x = 0; x < W; x++)
+		{
+			float v[3];
+			texel_get(img, img->pix_data, (size_t)y * W + x, SLOT_EMISSIVE, v);
+			changed |= texel_put(img, x, y, SLOT_EMISSIVE, v);
+		}
+	}
+	if (changed)
+	{
+		au.upload_image = image_index(img);
+		image_dirty[au.upload_image] = (uint8_t)(SLOT_EMISSIVE + 1);
+		image_stage[au.upload_image] = 0;
+	}
+	// a drag keeps its stroke open until the button comes up (MAT_AuthorKey)
+	if (au.drag < W_RED || au.drag > W_BLUE)
+		stroke_end();
+}
+
 static void author_tick(void)
 {
 	au.tick_queued = false;
@@ -4404,7 +6503,20 @@ static void author_tick(void)
 		au.lock_request = 0;
 		lock_command(kind, au.lock_toggle);
 	}
-	lock_sync();
+	// a selection made on another material or stage lies on nothing of this one
+	if (sl.num_steps && (sl.material != MAT_IndexOf(au.mat) || sl.stage != au.stage))
+		sel_clear("the selection was on another material or stage: dropped");
+	if (sl.dragging)
+		select_step();
+	region_sync();
+	emit_sync();
+	emit_retint();
+
+	if (au.range_request)
+	{
+		au.range_request = false;
+		range_apply();
+	}
 
 	if (au.painting)
 		paint_step();
@@ -4422,6 +6534,39 @@ bool MAT_AuthorActive(void)
 	return au.active;
 }
 
+/* PHOTO MODE AT HALF THE RAYS (Matt, 2026-11-21: "have the accumulation mode cast
+   half the rays ... it should do half the samples per frame so it improves the
+   responsiveness of the tool. And it should still complete a 4k image").
+
+   While the tool is open, photo mode's accumulation runs as sparse rendering
+   (pt_sparse, main.c sparse_rendering_rate): each frame lights a blue-noise
+   mat_author_sparse of the pixels - direct light and every bounce - and weights
+   them by its inverse. That is unbiased, so the plain average photo mode keeps
+   converges to the same picture, at the full render resolution; each pixel just
+   gets its samples every other frame. The progress count needs that many more
+   frames to read 100% (evaluate_reference_mode), so "done" is the same samples
+   a pixel as before. The primary rays, the fog and the compositing stay at every
+   pixel, so a frame costs less than half as much, not half. It saves time only
+   where pt_sparse does: with the tile lists (ray query, one GPU,
+   pt_tile_compaction 1) - else the same picture at the same cost.
+
+   0 or 1 = off, every pixel every frame. Below 1/16 is held at 1/16. Read every
+   frame. */
+static cvar_t *mat_author_sparse;
+
+float MAT_AuthorSparseRate(void)
+{
+	if (!mat_author_sparse)
+		mat_author_sparse = Cvar_Get("mat_author_sparse", "0.5", CVAR_ARCHIVE);
+	if (!au.active)
+		return 0.f;
+
+	const float rate = mat_author_sparse->value;
+	if (rate <= 0.f || rate >= 1.f)
+		return 0.f;
+	return max(rate, 1.f / 16.f);
+}
+
 void MAT_AuthorCursorMove(float dx, float dy)
 {
 	if (!au.active)
@@ -4436,12 +6581,23 @@ void MAT_AuthorCursorMove(float dx, float dy)
 		return;
 	}
 
-	au.cx = Q_clipf(au.cx + dx * speed, 0.f, (float)(r_config.width - 1));
-	au.cy = Q_clipf(au.cy + dy * speed, 0.f, (float)(r_config.height - 1));
+	/* A control held: the cursor slows, so a slider - which follows it - moves a
+	   unit at a time without a steady hand; Shift slower again (not the dial's:
+	   Shift snaps it to 45 degrees). */
+	float drag_speed = 1.f;
+	if (au.drag != W_NONE)
+	{
+		drag_speed = Q_clipf(mat_author_slider_speed ? mat_author_slider_speed->value : 0.25f, 0.01f, 1.f);
+		if (Key_IsDown(K_SHIFT) && au.drag != W_DIAL)
+			drag_speed *= 0.25f;
+	}
+
+	au.cx = Q_clipf(au.cx + dx * speed * drag_speed, 0.f, (float)(r_config.width - 1));
+	au.cy = Q_clipf(au.cy + dy * speed * drag_speed, 0.f, (float)(r_config.height - 1));
 
 	if (au.drag != W_NONE)
 		drag_update(au.drag);
-	if (au.painting)
+	if (au.painting || sl.dragging)
 		queue_tick();
 }
 
@@ -4476,11 +6632,10 @@ void MAT_AuthorFillUBO(QVKUniformBuffer_t *ubo)
 	ubo->author_slot = au.slot;
 	ubo->author_map_w = W;
 	ubo->author_map_h = H;
-	ubo->author_brush_size = cur_w();
-	ubo->author_brush_h = cur_h();
-	ubo->author_brush_shape = cur_shape() == SHAPE_ROUND ? 0 : 1;
-	// the lock, once rasterised for this map (lock_sync, between frames)
-	ubo->author_lock_image = (lk.on && lk.mask_w == W && lk.mask_h == H && lock_image_ok()) ? (int)lk.image : 0;
+	ubo->author_brush_size = cur_size();
+	ubo->author_rect_r2 = 0;
+	// the lock and the selection, once rasterised for this map (region_sync, between frames)
+	ubo->author_lock_image = (region_on() && rg.w == W && rg.h == H && region_image_ok()) ? (int)rg.image : 0;
 
 	// a Quake III stage's own map: the material's surfaces, through the stage's tcMods
 	if (au.stage >= 0 && stage_info(NULL, NULL))
@@ -4503,19 +6658,20 @@ void MAT_AuthorFillUBO(QVKUniformBuffer_t *ubo)
 		return;
 	}
 
-	// the brush's centre: a line being drawn, swept from its start; under the cursor in the map
-	// view; else where it is on a surface
+	// the brush's centre: a line being drawn, swept from its start, or a rectangle; under the
+	// cursor in the map view; else where it is on a surface
 	float tu, tv;
-	if (line_preview())
+	if (drag_preview())
 	{
 		outline_t o;
-		line_centres(W, H, &o);
+		drag_outline(W, H, &o);
 		ubo->author_brush_valid = 1;
-		ubo->author_line = 1;
+		ubo->author_line = o.kind == OUT_RECT ? 2 : 1;
 		ubo->author_center2_x = o.c2x;
 		ubo->author_center2_y = o.c2y;
 		ubo->author_line_dx2 = o.dx;
 		ubo->author_line_dy2 = o.dy;
+		ubo->author_rect_r2 = o.r2;
 	}
 	else if (view2d_texel(&tu, &tv))
 	{
@@ -4589,6 +6745,20 @@ bool MAT_AuthorKey(unsigned key, bool down)
 	if (!au.active)
 		return false;
 
+	const bool ctrl = Key_IsDown(K_CTRL), alt = Key_IsDown(K_ALT), shift = Key_IsDown(K_SHIFT);
+	float mx, my;
+	cursor_virtual(&mx, &my);
+
+	// a number being typed into its box: its keys first (Escape leaves the box, not the tool);
+	// a click off the panel takes the number and does nothing more
+	if (au.edit_id != W_NONE)
+	{
+		const int w = widget_at(mx, my);
+		const bool click_off = key == K_MOUSE1 && down && (w == W_NONE || w == W_VIEW2D);
+		if (edit_key(key, down) || click_off)
+			return true;
+	}
+
 	if (key == K_ESCAPE)
 	{
 		if (down)
@@ -4596,15 +6766,17 @@ bool MAT_AuthorKey(unsigned key, bool down)
 		return true;
 	}
 
-	const bool ctrl = Key_IsDown(K_CTRL), alt = Key_IsDown(K_ALT), shift = Key_IsDown(K_SHIFT);
-	float mx, my;
-	cursor_virtual(&mx, &my);
-
 	switch (key)
 	{
 	case K_MOUSE1:
 		if (!down)
 		{
+			if (sl.dragging)
+			{
+				// the shape ends here: made at the next tick, between frames
+				sl.drag_commit = true;
+				queue_tick();
+			}
 			if (au.painting && au.line_active)
 			{
 				// the line ends here: painted at the next tick, between frames
@@ -4616,7 +6788,14 @@ bool MAT_AuthorKey(unsigned key, bool down)
 				au.painting = false;
 				stroke_end();
 			}
+			const bool tint_drag = au.drag >= W_RED && au.drag <= W_BLUE;
 			au.drag = W_NONE;
+			if (tint_drag)
+			{
+				// the emissive tint let go of: its last change, and the drag as one undo step
+				emit_retint();
+				stroke_end();
+			}
 			return true;
 		}
 		if (!material_ok())
@@ -4628,7 +6807,12 @@ bool MAT_AuthorKey(unsigned key, bool down)
 		}
 		{
 			const int w = widget_at(mx, my);
-			if (w == W_VIEW2D || w == W_NONE)
+			if ((w == W_VIEW2D || w == W_NONE) && au.select != SEL_OFF)
+			{
+				// a selection: Shift adds to it, Ctrl takes away, neither replaces it
+				select_begin(w == W_VIEW2D, shift, ctrl);
+			}
+			else if (w == W_VIEW2D || w == W_NONE)
 			{
 				au.painting = true;
 				au.paint_2d = (w == W_VIEW2D);
@@ -4636,8 +6820,8 @@ bool MAT_AuthorKey(unsigned key, bool down)
 				au.create_tried = false;
 				au.fill_done = false;
 				au.spray_ms = 0;
-				// a line starts where the cursor first is on the map (paint_step)
-				au.line_active = au.line_mode && au.tool != TOOL_FILL;
+				// a line or rectangle starts where the cursor first is on the map (paint_step)
+				au.line_active = au.stroke != STROKE_FREE && au.tool != TOOL_FILL;
 				au.line_have = au.line_commit = false;
 				queue_tick();
 			}
@@ -4656,8 +6840,8 @@ bool MAT_AuthorKey(unsigned key, bool down)
 			return true;
 		if (au.show_2d && widget_at(mx, my) == W_VIEW2D)
 			view2d_zoom(key == K_MWHEELUP);
-		else if (size_slider_step(widget_at(mx, my), (key == K_MWHEELUP ? 1 : -1) * (shift ? 10 : 1)))
-			;   // over a size slider: a texel at a time (Shift: ten)
+		else if (field_step(field_under(mx, my), (key == K_MWHEELUP ? 1 : -1) * (shift ? 10 : 1)))
+			;   // over a slider or its number: one at a time (Shift: ten)
 		else if (shift)
 			value_step(key == K_MWHEELUP ? 1 : -1);
 		else if (ctrl)
@@ -4701,7 +6885,9 @@ bool MAT_AuthorKey(unsigned key, bool down)
 		if (down)
 		{
 			au.show_base = !au.show_base;
-			author_status(au.show_base ? "map view: the base texture under the map" : "map view: the map alone");
+			author_status(!au.show_base ? "map view: the map alone"
+				: glow_view() ? "map view: the texture as bright as it glows, purple over what doesn't"
+				: "map view: the base texture under the map");
 		}
 		return true;
 
@@ -4716,24 +6902,56 @@ bool MAT_AuthorKey(unsigned key, bool down)
 			set_slot(key - '1');
 		return true;
 
-	case 'b':
-		if (down)
-			set_shape((au.brush_shape + (shift ? NUM_SHAPES - 1 : 1)) % NUM_SHAPES);
-		return true;
-
 	case 'l':
 		if (down)
-			set_line_mode(!au.line_mode);
+			set_stroke(au.stroke == STROKE_LINE ? STROKE_FREE : STROKE_LINE);
 		return true;
 
 	case 'r':
 		if (down)
-		{
-			if (au.brush_shape == SHAPE_RECT)
-				rect_turn();
-			else
-				author_status("R turns the rectangle brush - B picks it");
-		}
+			set_stroke(au.stroke == STROKE_RECT ? STROKE_FREE : STROKE_RECT);
+		return true;
+
+	case 'b':
+		// it cycled the brush shapes until 11-21
+		if (down)
+			author_status("the brush is round now - R drags a rectangle, corner to corner");
+		return true;
+
+	case 'm':
+		// the selection's shape: rect, ellipse, lasso, then back to painting (Shift: the other way)
+		if (down)
+			set_select((au.select + (shift ? NUM_SEL - 1 : 1)) % NUM_SEL);
+		return true;
+
+	case 'a':
+	case 'd':
+	case 'i':
+		/* Ctrl+A all, Ctrl+D none (Ctrl+Shift+D back), Ctrl+I invert - not while the
+		   right button flies the camera, where Ctrl is slow and A/D strafe; plain
+		   A and D always strafe (freecam.c). A key let go of always passes on, so a
+		   strafe begun before Ctrl went down still stops. */
+		if (!down || !ctrl || Key_IsDown(K_MOUSE2))
+			return false;
+		if (key == 'a')
+			sel_all();
+		else if (key == 'i')
+			sel_invert();
+		else if (shift)
+			sel_reselect();
+		else if (sl.num_steps)
+			sel_clear("selection dropped - Ctrl+Shift+D brings it back");
+		else
+			author_status("nothing is selected");
+		return true;
+
+	case K_LEFTARROW:
+	case K_RIGHTARROW:
+		// over a slider or its number: one at a time (Shift: ten)
+		if (field_under(mx, my) == W_NONE)
+			return false;
+		if (down)
+			field_step(field_under(mx, my), (key == K_RIGHTARROW ? 1 : -1) * (shift ? 10 : 1));
 		return true;
 
 	case K_TAB:
@@ -4752,6 +6970,12 @@ bool MAT_AuthorKey(unsigned key, bool down)
 	case 'y':
 		if (down && ctrl)
 			undo_apply(true);
+		return true;
+
+	case 'h':
+		// the camera back where it started - the panel's "home"
+		if (down)
+			camera_home();
 		return true;
 
 	case 's':
@@ -4834,21 +7058,74 @@ void MAT_AuthorCommand(pbr_material_t *crosshair)
 		return;
 	}
 
-	// mat author rect <length> <width>: the rectangle brush, in texels (length across the map, width down)
-	if (!Q_stricmp(word, "rect"))
+	// mat author select rect|ellipse|lasso|off | all|none|invert|back: the selection
+	if (!Q_stricmp(word, "select"))
 	{
-		if (Cmd_Argc() < 5)
-		{
-			Com_Printf("usage: mat author rect <length texels> <width texels>\n");
-			return;
-		}
 		if (!au.active)
 			author_start(crosshair, -1);
 		if (!au.active)
 			return;
-		au.rect_w = Q_clip(atoi(Cmd_Argv(3)), 1, AUTHOR_MAX_BRUSH);
-		au.rect_h = Q_clip(atoi(Cmd_Argv(4)), 1, AUTHOR_MAX_BRUSH);
-		set_shape(SHAPE_RECT);
+		const char *arg = Cmd_Argc() >= 4 ? Cmd_Argv(3) : "";
+		for (int s = 0; s < NUM_SEL; s++)
+		{
+			if (!Q_stricmp(arg, sel_label[s]))
+			{
+				set_select(s);
+				return;
+			}
+		}
+		if (!Q_stricmp(arg, "all"))
+			sel_all();
+		else if (!Q_stricmp(arg, "none"))
+		{
+			if (sl.num_steps)
+				sel_clear("selection dropped - 'mat author select back' brings it back");
+			else
+				author_status("nothing is selected");
+		}
+		else if (!Q_stricmp(arg, "invert"))
+			sel_invert();
+		else if (!Q_stricmp(arg, "back"))
+			sel_reselect();
+		else
+			Com_Printf("usage: mat author select rect|ellipse|lasso|off | all|none|invert|back\n");
+		return;
+	}
+
+	/* mat author range <dark> <bright>: the map being painted set over the selection
+	   (and lock; else all of it) from the base texture's brightness - the darkest
+	   to <dark>, the brightest to <bright>, in percent (emissive: 0..200) */
+	if (!Q_stricmp(word, "range"))
+	{
+		if (!au.active)
+			author_start(crosshair, -1);
+		if (!au.active)
+			return;
+		if (Cmd_Argc() < 5)
+		{
+			Com_Printf("usage: mat author range <dark%%> <bright%%> - e.g. 'mat author range 30 50' sets the darkest "
+				"of the base under the selection to 30%% and the brightest to 50%%\n");
+			return;
+		}
+		const float top = au.slot == SLOT_EMISSIVE ? 200.f : 100.f;
+		au.range[au.slot][0] = Q_clipf(floorf((float)atof(Cmd_Argv(3)) + 0.5f) / top, 0.f, 1.f);
+		au.range[au.slot][1] = Q_clipf(floorf((float)atof(Cmd_Argv(4)) + 0.5f) / top, 0.f, 1.f);
+		range_apply();
+		return;
+	}
+
+	// mat author free | line | rect [corner radius]: the stroke (a rectangle's radius in texels)
+	for (int s = 0; s < NUM_STROKES; s++)
+	{
+		if (Q_stricmp(word, stroke_label[s]))
+			continue;
+		if (!au.active)
+			author_start(crosshair, -1);
+		if (!au.active)
+			return;
+		if (s == STROKE_RECT && Cmd_Argc() >= 4)
+			au.rect_radius = Q_clip(atoi(Cmd_Argv(3)), 0, AUTHOR_MAX_RADIUS);
+		set_stroke(s);
 		return;
 	}
 
@@ -4859,7 +7136,8 @@ void MAT_AuthorCommand(pbr_material_t *crosshair)
 	if (word[0] && slot < 0)
 	{
 		Com_Printf("usage: mat author [roughness|metallic|normals|emissive|height] | stage <N|mat> | "
-			"rect <length> <width> | save | off\n");
+			"free | line | rect [corner radius] | select <shape|all|none|invert|back> | range <dark%%> <bright%%> | "
+			"save | off\n");
 		return;
 	}
 

@@ -456,6 +456,10 @@ void CL_DeltaFrame(void)
 
     CL_CheckPredictionError();
 
+    // which of the shots of ours this packet's flashes and sounds were
+    // already predicted (q3weapons.c)
+    CL_Q3W_FrameParsed();
+
     SCR_SetCrosshairColor();
 }
 
@@ -563,6 +567,37 @@ static void CL_RecordClientGun(int entnum, const entity_t *gun)
 
 /*
 ===============
+CL_AddQ1EntityLights
+
+A Quake 1 entity's light effects, on a level its own progs run (CS_Q1VM):
+modelindex4 holds them (Q1_LIGHT_*). Quake's CL_RelinkEntities and the
+rerelease's coloured ones. Quake's field of particles (EF_BRIGHTFIELD) is not
+drawn; nothing the shipped episodes do sets it.
+===============
+*/
+static void CL_AddQ1EntityLights(const entity_state_t *s1, const vec3_t origin)
+{
+    const int   lights = s1->modelindex4;
+    const float flicker = CL_FrameRand(s1->number + 0x20000) & 31;
+    vec3_t      org;
+
+    if (lights & Q1_LIGHT_BRIGHT) {
+        VectorCopy(origin, org);
+        org[2] += 16;
+        V_AddLight(org, 400 + flicker, 1.0f, 1.0f, 1.0f);
+    }
+    if (lights & Q1_LIGHT_DIM)
+        V_AddLight(origin, 200 + flicker, 1.0f, 1.0f, 1.0f);
+    if (lights & Q1_LIGHT_QUAD)
+        V_AddLight(origin, 200 + flicker, 0.25f, 0.25f, 1.0f);
+    if (lights & Q1_LIGHT_PENTA)
+        V_AddLight(origin, 200 + flicker, 1.0f, 0.25f, 0.25f);
+    if (lights & Q1_LIGHT_CANDLE)
+        V_AddLight(origin, 100 + flicker * 0.5f, 1.0f, 0.7f, 0.4f);
+}
+
+/*
+===============
 CL_AddPacketEntities
 
 ===============
@@ -630,7 +665,9 @@ static void CL_AddPacketEntities(void)
         // the invisibility powerup on a player (p_view.c's RF_TRANSLUCENT, which
         // blinks off in its last three seconds): the RTX renderers draw the body
         // and the weapon in its hands as water (RF_CLOAK). Matt, 2026-11-17.
-        const int cloak = ((renderfx & RF_TRANSLUCENT) && s1->modelindex == 255) ? RF_CLOAK : 0;
+        // (on a Quake 1 level run by its progs, 255 is just a model: CS_Q1VM)
+        const bool player_model = s1->modelindex == 255 && !cl.q1vm[0];
+        const int cloak = ((renderfx & RF_TRANSLUCENT) && player_model) ? RF_CLOAK : 0;
 
 
 	
@@ -833,7 +870,7 @@ static void CL_AddPacketEntities(void)
             ent.model = 0;
         } else {
             // set skin
-            if (s1->modelindex == 255) {
+            if (player_model) {
                 // use custom player skin
                 ent.skinnum = 0;
                 ci = &cl.clientinfo[s1->skinnum & 0xff];
@@ -909,7 +946,7 @@ static void CL_AddPacketEntities(void)
                        cl.lerpfrac, ent.angles);
 
             // mimic original ref_gl "leaning" bug (uuugly!)
-            if (s1->modelindex == 255 && cl_rollhack->integer) {
+            if (player_model && cl_rollhack->integer) {
                 ent.angles[ROLL] = -ent.angles[ROLL];
             }
         }
@@ -1143,7 +1180,10 @@ static void CL_AddPacketEntities(void)
             V_AddEntity(&ent);
         }
 
-        if (s1->modelindex4) {
+        if (s1->modelindex4 && cl.q1vm[0]) {
+            // Quake 1's lights (Q1_LIGHT_*), not a model
+            CL_AddQ1EntityLights(s1, ent.origin);
+        } else if (s1->modelindex4) {
             ent.model = cl.model_draw[s1->modelindex4];
             V_AddEntity(&ent);
         }
@@ -1169,7 +1209,11 @@ static void CL_AddPacketEntities(void)
         if (effects & ~EF_ROTATE) {
             if (effects & EF_ROCKET) {
                 if (!(cl_disable_particles->integer & NOPART_ROCKET_TRAIL)) {
-                    CL_RocketTrail(cent->lerp_origin, ent.origin, cent);
+                    // a Quake lava ball: Quake's rocket flag, but its smoke only
+                    if (CL_IsLavaBall(s1->modelindex))
+                        CL_LavaBallTrail(cent->lerp_origin, ent.origin, cent);
+                    else
+                        CL_RocketTrail(cent->lerp_origin, ent.origin, cent);
                 }
                 // under water yellower and stronger: the water takes the red
                 // first (CL_RocketTrail)
@@ -1203,6 +1247,11 @@ static void CL_AddPacketEntities(void)
             } else if (cl_ludicrous_gibs->integer && (effects == EF_GIB || effects == EF_GIBSCALE)) {
                 // heavy blood trail: many more particles, and they linger
                 CL_NonDiminishingTrail(cent->lerp_origin, ent.origin, cent, effects);
+            } else if ((effects & EF_GIB) && cl.q1vm[0]) {
+                // a Quake 1 gib (its progs' MF_GIB / MF_ZOMGIB): the same drip,
+                // cl_q1_gib_drops droplets wherever it puts one
+                CL_DiminishingTrailDrops(cent->lerp_origin, ent.origin, &cent->trailcount, effects,
+                                         Cvar_ClampInteger(cl_q1_gib_drops, 1, 8));
             } else if (effects & EF_GIB) {
                 CL_DiminishingTrail(cent->lerp_origin, ent.origin, cent, effects);
             } else if (effects & EF_GRENADE) {
@@ -2387,8 +2436,11 @@ static void CL_SetupThirdPersionView(void)
     VectorMA(cl.refdef.vieworg, -range * fscale, cl.v_forward, cl.refdef.vieworg);
     VectorMA(cl.refdef.vieworg, -range * rscale, cl.v_right, cl.refdef.vieworg);
 
+    // a Quake map would trace this small box as the player's hull (see
+    // CL_TraceBox): there it goes through as a point
     CM_BoxTrace(&trace, cl.playerEntityOrigin, cl.refdef.vieworg,
-                mins, maxs, cl.bsp->nodes, MASK_SOLID);
+                cl.bsp->q1 ? vec3_origin : mins, cl.bsp->q1 ? vec3_origin : maxs,
+                cl.bsp->nodes, MASK_SOLID);
     if (trace.fraction != 1.0f) {
         VectorCopy(trace.endpos, cl.refdef.vieworg);
     }

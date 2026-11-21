@@ -158,7 +158,7 @@ float getHeightFogDensity(vec3 p)
 }
 
 // How many of the frame's model lights one march step looks at. The rerelease
-// maps submit up to MAX_DLIGHTS (256) dynamic_lights per frame and this pass
+// maps submit up to MAX_DLIGHTS (512) dynamic_lights per frame and this pass
 // marches ~50 steps per ray, so looking at all of them everywhere is far too
 // much work. Instead each step takes a strided subset and scales the result
 // back up - the same stochastic trick sample_light_list uses - and the existing
@@ -713,6 +713,11 @@ vec3 getClusterLightInscatter(uint cluster_idx, vec3 p, vec3 sky_p, float rand01
 
 		uint light_type = uint(light.type);
 
+		// a stained glass window light (stained_glass.h) is not a shape this
+		// hand-made sum understands; cl_fog 3 samples it properly
+		if (light_type == DYNLIGHT_WINDOW)
+			continue;
+
 		vec3  lp;                  // the emitter's centre
 		float emit_area;           // area whose ratio to dist2 is the solid angle
 		float emit_profile = 1.0;  // the emitter's own directional falloff
@@ -1128,6 +1133,20 @@ float volume_light_estimate(LightPolygon light, vec3 p, vec3 view_dir, float g)
 		return 0.0;
 
 	uint light_type = uint(light.type);
+
+	/* A stained glass window light: its radiance x solid angle from p, if the
+	   line to it comes through the tile (window_light_mass - the receiving
+	   "normal" is the line itself, a volume has none), in the same currency
+	   as the rest. */
+	if (light_type == DYNLIGHT_WINDOW)
+	{
+		vec3 to_w;
+		float m = window_light_mass_volume(light, p, to_w);
+		if (m <= 0.0)
+			return 0.0;
+		float phase_w = ScatterPhase_HenyeyGreenstein(dot(view_dir, to_w), g);
+		return luminance(light.color) * m * phase_w * vol_scale * light.light_style_scale;
+	}
 
 	vec3  lp;
 	float emit_area;
@@ -1602,8 +1621,11 @@ vec3 fog_shade_chosen(vec3 p, vec3 view_dir, float g, vec3 rnd, uint chosen_idx,
 	// samples surfaces with, and none of them needs a normal at the receiving
 	// end - which is exactly why a volume can use them.
 	vec3  pos_light;
-	vec3  light_normal;
+	vec3  light_normal = vec3(0);
 	float pdfw = 0.0;
+	// a stained glass window light: the glass's colour where the sample came
+	// through (stained_glass.h); 1 for every other light
+	vec3  emit_tint = vec3(1);
 
 	switch (uint(light.type))
 	{
@@ -1616,6 +1638,11 @@ vec3 fog_shade_chosen(vec3 p, vec3 view_dir, float g, vec3 rnd, uint chosen_idx,
 	case DYNLIGHT_SPOT:
 		pos_light = sample_projected_spotlight(p, light.positions, light.spot_emission_profile,
 		                                       rnd.yz, light_normal, pdfw);
+		break;
+	case DYNLIGHT_WINDOW:
+		// its tint comes divided by pdfw already; the line below divides again
+		pos_light = sample_window_light(p, light, rnd.yz, emit_tint, pdfw);
+		emit_tint *= pdfw;
 		break;
 	default:
 		return vec3(0);
@@ -1633,8 +1660,9 @@ vec3 fog_shade_chosen(vec3 p, vec3 view_dir, float g, vec3 rnd, uint chosen_idx,
 
 	// The emitter's own cosine. sqrt() of it is light_lists.h's convention for
 	// softening a surface's emission profile, kept so a light casts the same
-	// relative brightness into the fog as onto a wall.
-	float profile = sqrt(max(0.0, -dot(light_normal, L)));
+	// relative brightness into the fog as onto a wall. (A window light's
+	// slant through the glass is in its tint.)
+	float profile = (uint(light.type) == DYNLIGHT_WINDOW) ? 1.0 : sqrt(max(0.0, -dot(light_normal, L)));
 	if (profile <= 0.0)
 		return vec3(0);
 
@@ -1662,7 +1690,7 @@ vec3 fog_shade_chosen(vec3 p, vec3 view_dir, float g, vec3 rnd, uint chosen_idx,
 	// because the RIS target function needs the same value.
 	float phase = ScatterPhase_HenyeyGreenstein(dot(view_dir, L), g);
 
-	vec3 contribution = light.color
+	vec3 contribution = light.color * emit_tint
 	                  * (profile * phase * fog_light_vol_scale(light.volumetric_scale, p)
 	                     * light.light_style_scale * W / pdfw);
 

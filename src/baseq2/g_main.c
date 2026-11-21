@@ -120,6 +120,9 @@ void ShutdownGame(void)
     // Quake III's bot library keeps its memory on the C heap (g_q3bot.c)
     BotEngine_Shutdown();
 
+    // Quake 1's progs were TAG_LEVEL too
+    QC_FreeProgs();
+
     gi.FreeTags(TAG_LEVEL);
     gi.FreeTags(TAG_GAME);
 }
@@ -272,6 +275,9 @@ void InitGame(void)
     Q3_InitGame();
     SP_Init();
     Bot_Init();
+
+    // Quake 1's progs: a new game starts with no spawn parms and no runes
+    Q1VM_GameInit();
 }
 
 
@@ -635,6 +641,19 @@ void G_RunFrame(void)
     level.framenum++;
     level.time = level.framenum * FRAMETIME;
 
+    // a Quake 1 demo playing back (g_q1demo.c)
+    if (Q1Demo_Active()) {
+        Q1Demo_RunFrame();
+        return;
+    }
+
+    // a Quake 1 level run by its own progs: its physics, its monsters, its
+    // players' views (g_q1vm_game.c)
+    if (Q1VM_Active()) {
+        Q1VM_RunFrame();
+        return;
+    }
+
     // choose a client for monsters to target this frame
     AI_SetSightClient();
 
@@ -682,6 +701,13 @@ void G_RunFrame(void)
             ent->old_origin_framenum = level.framenum;
         }
     }
+
+    // a new frame: the commands that follow (the bots' just below, a player's
+    // before the next frame) count their time from its start - where in the
+    // frame a Quake III gun fired a missile (Q3W_Think)
+    for (i = 1; i <= maxclients->value; i++)
+        if (g_edicts[i].inuse && g_edicts[i].client)
+            g_edicts[i].client->q3_cmd_msec = 0;
 
     // bots move now, as a player's own commands arrive before the frame
     Bot_RunFrame();

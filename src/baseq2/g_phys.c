@@ -799,7 +799,15 @@ void SV_Physics_Toss(edict_t *ent)
             }
         }
     } else {
-        VectorScale(ent->velocity, FRAMETIME, move);
+        float step = FRAMETIME;
+
+        // a Quake III missile fired part way into the last frame goes only the
+        // rest of that frame's way (g_q3weap.c Q3W_Missile)
+        if (ent->q3_late_ms > 0) {
+            step *= 1.0f - min(ent->q3_late_ms, 100) / 100.0f;
+            ent->q3_late_ms = 0;
+        }
+        VectorScale(ent->velocity, step, move);
         trace = SV_PushEntity(ent, move);
     }
 

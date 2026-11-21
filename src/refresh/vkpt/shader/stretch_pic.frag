@@ -43,7 +43,8 @@ layout(location = 0) in vec4 color;
 layout(location = 1) in flat uint tex_id;
 layout(location = 2) in vec2 tex_coord;
 layout(location = 3) in flat vec4 tex_rect;
-layout(location = 4) in flat uint pic_flags;  // bit 0: video frame; bit 1: ignore alpha; bit 2: nearest; bit 3: red as grey
+layout(location = 4) in flat uint pic_flags;  // bit 0: video frame; bit 1: ignore alpha; bit 2: nearest; bit 3: red as grey; bit 4: layer over base_id; bits 5-6: its glow view
+layout(location = 5) in flat uint base_id;    // bit 4's base texture
 
 layout(location = 0) out vec4 outColor;
 
@@ -91,6 +92,7 @@ main()
 		if ((pic_flags & 4u) != 0u)
 			tc = (min(floor(clamp(tex_coord, vec2(0), vec2(1)) * tex_size), tex_size - 1) + 0.5) / tex_size;
 		vec4 t = global_textureLod(tex_id, tc, 0);
+		const float stored_alpha = t.a;     // a painted emissive map's brightness (the glow view)
 
 		// 'mat print' showing a map as stored, whatever its alpha holds
 		if ((pic_flags & 2u) != 0u)
@@ -98,6 +100,42 @@ main()
 		// a roughness or metallic map as the path tracer reads it: red only
 		if ((pic_flags & 8u) != 0u)
 			t.rgb = t.rrr;
+
+		/* 'mat author's map view: the map as a layer over the base texture, at
+		   color.a. Mixed here, in sRGB-encoded values as an image editor's layer
+		   opacity is, not blended as light - in light a dark base under a bright
+		   map is lost, and more so with vid_hdr (vkpt_draw_stretch_subpic_layer).
+		   Same coordinates as the map, at the base's own size; opaque. */
+		if ((pic_flags & 16u) != 0u) {
+			vec2 base_size = vec2(max(global_textureSize(base_id, 0), ivec2(1)));
+			vec2 base_tc = clamp(tex_coord, tex_rect.xy + 0.5 / base_size, tex_rect.zw - 0.5 / base_size);
+			if ((pic_flags & 4u) != 0u)
+				base_tc = (min(floor(clamp(tex_coord, vec2(0), vec2(1)) * base_size), base_size - 1) + 0.5) / base_size;
+			vec3 b = global_textureLod(base_id, base_tc, 0).rgb;
+			const uint glow = (pic_flags >> 5) & 3u;
+			if (glow != 0u) {
+				/* The emissive map's GLOW VIEW (DRAW_GLOW_*): the base texture as
+				   bright as it glows, what glows less under a purple veil - color.a
+				   of it at 0%, none at 100% and up (Matt, 11-21: "I can't see what
+				   has been marked as emissive"). The brightness, 1 = 100%: a painted
+				   map's alpha, stored at half; any other glow's luminance over the
+				   texture's, as the first stroke converts it (create_emit_map). */
+				const vec3 rec709 = vec3(0.2126, 0.7152, 0.0722);
+				const float lb = dot(b, rec709);
+				float k = glow == 1u ? stored_alpha * 2.0
+				        : glow == 2u ? (lb > 1e-4 ? dot(t.rgb, rec709) / lb : 0.0)
+				        : 0.0;
+				k = clamp(k, 0.0, 2.0);
+				// over 100% the texture brighter; under it, veiled
+				vec3 lit = min(linear_to_srgb(clamp(b, vec3(0), vec3(1))) * max(k, 1.0), vec3(1));
+				t.rgb = srgb_to_linear(mix(lit, vec3(0.32, 0.02, 0.42), color.a * (1.0 - min(k, 1.0))));
+			}
+			else
+				t.rgb = srgb_to_linear(mix(linear_to_srgb(clamp(b, vec3(0), vec3(1))),
+				                           linear_to_srgb(clamp(t.rgb, vec3(0), vec3(1))), color.a));
+			t.a = 1.0;
+			c = vec4(1.0);
+		}
 
 		/* A video frame on an HDR screen: undo the piecewise sRGB decode the
 		   sampler did and apply the power curve an SDR monitor shows instead.

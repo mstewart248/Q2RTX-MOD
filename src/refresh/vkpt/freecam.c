@@ -36,6 +36,7 @@ player's own setting can't be saved as third person (see client.h).
 static vec3_t freecam_vieworg = { 0.f };
 static vec3_t freecam_start_vieworg = { 0.f };  // the player's eye when photo mode began
 static vec3_t freecam_viewangles = { 0.f };
+static vec3_t freecam_start_viewangles = { 0.f };  // where the player looked then
 static float freecam_zoom = 1.f;
 static bool freecam_keystate[6] = { 0 };
 static bool freecam_active = false;
@@ -61,6 +62,22 @@ void vkpt_freecam_reset()
 
 	cl_photo_third_person = false;
 	freecam_active = false;
+}
+
+/* Photo mode's camera back where it began: the player's eye, looking the way
+   the player looked, unzoomed - the "home" button and H in 'mat author' (Matt,
+   2026-11-21: "return the free camera in material mode back to the original
+   position"). The player model goes again, as it is at the eye. */
+void vkpt_freecam_home(void)
+{
+	if (!freecam_active)
+		return;
+
+	VectorCopy(freecam_start_vieworg, freecam_vieworg);
+	VectorCopy(freecam_start_viewangles, freecam_viewangles);
+	freecam_zoom = 1.f;
+	cl_photo_third_person = false;
+	vkpt_reset_accumulation();
 }
 
 /* True once photo mode's camera has moved away from the player's eye. From
@@ -165,6 +182,7 @@ void vkpt_freecam_update(float frame_time)
 		VectorCopy(vkpt_refdef.fd->vieworg, freecam_vieworg);
 		VectorCopy(vkpt_refdef.fd->vieworg, freecam_start_vieworg);
 		VectorCopy(vkpt_refdef.fd->viewangles, freecam_viewangles);
+		VectorCopy(vkpt_refdef.fd->viewangles, freecam_start_viewangles);
 		freecam_zoom = 1.f;
 		freecam_active = true;
 	}

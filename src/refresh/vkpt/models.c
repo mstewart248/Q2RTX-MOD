@@ -38,6 +38,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 */
 
 #include "vkpt.h"
+#include "color.h"
 
 #include "format/md2.h"
 #include "format/md3.h"
@@ -54,12 +55,87 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #error TESS_MAX_INDICES
 #endif
 
+/* One emissive texel as vkpt_extract_emissive_texture_info sums them for the
+   map's light_color: sRGB decoded, plus EMISSIVE_TRANSFORM_BIAS, not below 0. */
+static void emissive_texel(const image_t *img, int x, int y, vec3_t sum)
+{
+	const int w = img->upload_width, h = img->upload_height;
+	x %= w; if (x < 0) x += w;
+	y %= h; if (y < 0) y += h;
+	const byte *p = img->pix_data + ((size_t)y * w + x) * 4;
+	for (int c = 0; c < 3; c++)
+		sum[c] += max(0.f, decode_srgb(p[c]) + (float)EMISSIVE_TRANSFORM_BIAS);
+}
+
+/* WHAT ONE TRIANGLE OF A GLOWING SKIN EMITS: the mean of the emissive map over
+   the texels its texture coordinates cover (texel centres inside it; a sliver
+   that covers none is read at its corners and centre). False when it covers no
+   glow at all, or the pixels are not there to read (the caller then spreads the
+   map's mean over the whole mesh, as before).
+
+   Matt, 2026-11-21: a Quake model with a couple of small glowing spots lit the
+   floor all round it. Every triangle of a LIGHT skin was a light poly with the
+   map's light_color - its glow averaged over the bounding box of its glowing
+   texels - at full strength: the area fraction meant to dim it went into
+   light_poly_t.emissive_factor, which copy_light only reads for a Quake III
+   glow. So the whole body glowed as a lamp. Since 11-21 animated models (every
+   monster) make light polys too, which is when it showed. */
+static bool triangle_emission(const image_t *img, const float *ta, const float *tb, const float *tc, vec3_t out)
+{
+	VectorClear(out);
+	if (!img || !img->pix_data || img->pixel_format != PF_R8G8B8A8_UNORM
+		|| img->upload_width <= 0 || img->upload_height <= 0)
+		return false;
+
+	const int w = img->upload_width, h = img->upload_height;
+	const float x[3] = { ta[0] * w, tb[0] * w, tc[0] * w };
+	const float y[3] = { ta[1] * h, tb[1] * h, tc[1] * h };
+	const float minx = min(x[0], min(x[1], x[2])), maxx = max(x[0], max(x[1], x[2]));
+	const float miny = min(y[0], min(y[1], y[2])), maxy = max(y[0], max(y[1], y[2]));
+	if (!(maxx - minx <= 4.f * w && maxy - miny <= 4.f * h))
+		return false;   // tiled far past the map (or not a number): the mean, below
+
+	// twice the signed area: the edge tests below take either winding
+	const float area2 = (x[1] - x[0]) * (y[2] - y[0]) - (x[2] - x[0]) * (y[1] - y[0]);
+	vec3_t sum = { 0.f, 0.f, 0.f };
+	int count = 0;
+	if (fabsf(area2) > 1e-6f)
+	{
+		const float sign = area2 > 0.f ? 1.f : -1.f;
+		for (int py = (int)floorf(miny); py < (int)ceilf(maxy); py++)
+		{
+			const float cy = py + 0.5f;
+			for (int px = (int)floorf(minx); px < (int)ceilf(maxx); px++)
+			{
+				const float cx = px + 0.5f;
+				const float e0 = ((x[1] - x[0]) * (cy - y[0]) - (y[1] - y[0]) * (cx - x[0])) * sign;
+				const float e1 = ((x[2] - x[1]) * (cy - y[1]) - (y[2] - y[1]) * (cx - x[1])) * sign;
+				const float e2 = ((x[0] - x[2]) * (cy - y[2]) - (y[0] - y[2]) * (cx - x[2])) * sign;
+				if (e0 < 0.f || e1 < 0.f || e2 < 0.f)
+					continue;
+				emissive_texel(img, px, py, sum);
+				count++;
+			}
+		}
+	}
+	if (count == 0)
+	{
+		for (int k = 0; k < 3; k++)
+			emissive_texel(img, (int)floorf(x[k]), (int)floorf(y[k]), sum);
+		emissive_texel(img, (int)floorf((x[0] + x[1] + x[2]) / 3.f), (int)floorf((y[0] + y[1] + y[2]) / 3.f), sum);
+		count = 4;
+	}
+
+	VectorScale(sum, 1.f / (float)count, out);
+	return out[0] > 0.f || out[1] > 0.f || out[2] > 0.f;
+}
+
 static void extract_model_lights(model_t* model)
 {
 	// Count the triangles in the model that have a material with the is_light flag set
-	
-	int num_lights = 0;
-	
+
+	int num_lit_tris = 0;
+
 	for (int mesh_idx = 0; mesh_idx < model->nummeshes; mesh_idx++)
 	{
 		const maliasmesh_t* mesh = model->meshes + mesh_idx;
@@ -75,23 +151,16 @@ static void extract_model_lights(model_t* model)
 					return;
 				}
 
-				num_lights += mesh->numtris;
+				num_lit_tris += mesh->numtris;
 			}
 		}
 	}
 
 	// If there are no light triangles, there's nothing to do
-	if (num_lights == 0)
+	if (num_lit_tris == 0)
 		return;
 
 	// Validate our current implementation limitations, give warnings if they are hit
-	
-	if (model->numframes > 1)
-	{
-		Com_DPrintf("Warning: model %s has LIGHT material(s) but more than 1 vertex animation frame, "
-			"which is unsupported.\n", model->name);
-		return;
-	}
 
 	if (model->iqmData && model->iqmData->blend_weights)
 	{
@@ -100,43 +169,110 @@ static void extract_model_lights(model_t* model)
 		return;
 	}
 
+	/* A vertex-animated model (md2, md3, a Quake 1 .mdl) keeps one set of light
+	   triangles per frame, frame after frame: num_light_polys is one frame's,
+	   model_light_polys (main.c) picks the entity's. Quake 1's torches are
+	   flame.mdl's 6 frames and flame2.mdl's 17, and they are the room's light
+	   (11-21: Matt's torches glowed and lit nothing - more than one frame used
+	   to mean no light at all). An IQM's positions are its one bind pose. */
+	const int frames = model->iqmData ? 1 : max(model->numframes, 1);
+	if (model->iqmData && model->numframes > 1)
+	{
+		Com_DPrintf("Warning: model %s has LIGHT material(s) but more than 1 animation frame, "
+			"which is unsupported.\n", model->name);
+		return;
+	}
+
+	/* What each light triangle emits (triangle_emission), measured once from the
+	   texture coordinates - the same in every frame - and only the ones that
+	   glow become light polys, the same set in every frame. A map whose pixels
+	   cannot be read spreads its mean over the mesh: light_color (the mean over
+	   its glowing texels' box) times that box's share of the map. */
+	vec3_t *emit = Z_Malloc(sizeof(vec3_t) * num_lit_tris);
+	int num_lights = 0;
+	{
+		int k = 0;
+		for (int mesh_idx = 0; mesh_idx < model->nummeshes; mesh_idx++)
+		{
+			const maliasmesh_t* mesh = model->meshes + mesh_idx;
+			const pbr_material_t* mat = mesh->numskins ? mesh->materials[0] : NULL;
+			if (!mat || (mat->flags & MATERIAL_FLAG_LIGHT) == 0 || !mat->image_emissive)
+				continue;
+
+			const image_t *img = mat->image_emissive;
+			vec3_t mean;
+			VectorScale(img->light_color,
+				(img->max_light_texcoord[0] - img->min_light_texcoord[0]) *
+				(img->max_light_texcoord[1] - img->min_light_texcoord[1]), mean);
+			const bool readable = mesh->tex_coords && img->pix_data && img->pixel_format == PF_R8G8B8A8_UNORM;
+
+			for (int tri_idx = 0; tri_idx < mesh->numtris; tri_idx++, k++)
+			{
+				const int *ix = mesh->indices + tri_idx * 3;
+				if (!readable || !triangle_emission(img, mesh->tex_coords[ix[0]], mesh->tex_coords[ix[1]],
+					mesh->tex_coords[ix[2]], emit[k]))
+				{
+					if (readable)
+						VectorClear(emit[k]);   // read, and dark
+					else
+						VectorCopy(mean, emit[k]);
+				}
+				if (emit[k][0] > 0.f || emit[k][1] > 0.f || emit[k][2] > 0.f)
+					num_lights++;
+			}
+		}
+	}
+	if (num_lights == 0)
+	{
+		Z_Free(emit);
+		return;
+	}
+
 	// Actually extract the lights now
-	
-	if (!(model->light_polys = Hunk_Alloc(&model->hunk, sizeof(light_poly_t) * num_lights))) {
-		Com_DPrintf("Warning: unable to allocate memory for %i light polygons.\n", num_lights);
+
+	if (!(model->light_polys = Hunk_Alloc(&model->hunk, sizeof(light_poly_t) * num_lights * frames))) {
+		Com_DPrintf("Warning: unable to allocate memory for %i light polygons.\n", num_lights * frames);
+		Z_Free(emit);
 		return;
 	}
 	model->num_light_polys = num_lights;
 
 	num_lights = 0;
 
-	for (int mesh_idx = 0; mesh_idx < model->nummeshes; mesh_idx++)
+	for (int frame = 0; frame < frames; frame++)
 	{
-		const maliasmesh_t* mesh = model->meshes + mesh_idx;
-		assert(mesh->numskins == 1);
-		assert(mesh->indices);
-		assert(mesh->positions);
-		
-		pbr_material_t* mat = mesh->materials[0];
-		if ((mat->flags & MATERIAL_FLAG_LIGHT) != 0 && mat->image_emissive)
+		int k = 0;
+		for (int mesh_idx = 0; mesh_idx < model->nummeshes; mesh_idx++)
 		{
-			for (int tri_idx = 0; tri_idx < mesh->numtris; tri_idx++)
+			const maliasmesh_t* mesh = model->meshes + mesh_idx;
+			pbr_material_t* mat = mesh->numskins ? mesh->materials[0] : NULL;
+			if (!mat || (mat->flags & MATERIAL_FLAG_LIGHT) == 0 || !mat->image_emissive)
+				continue;
+			assert(mesh->numskins == 1);
+			assert(mesh->indices);
+			assert(mesh->positions);
+
+			for (int tri_idx = 0; tri_idx < mesh->numtris; tri_idx++, k++)
 			{
+				if (emit[k][0] <= 0.f && emit[k][1] <= 0.f && emit[k][2] <= 0.f)
+					continue;
+
 				light_poly_t* light = model->light_polys + num_lights;
 				num_lights++;
 
 				int i0 = mesh->indices[tri_idx * 3 + 0];
 				int i1 = mesh->indices[tri_idx * 3 + 1];
 				int i2 = mesh->indices[tri_idx * 3 + 2];
-				
+
 				assert(i0 < mesh->numverts);
 				assert(i1 < mesh->numverts);
 				assert(i2 < mesh->numverts);
 
-				memcpy(light->positions + 0, mesh->positions + i0, sizeof(vec3_t));
-				memcpy(light->positions + 3, mesh->positions + i1, sizeof(vec3_t));
-				memcpy(light->positions + 6, mesh->positions + i2, sizeof(vec3_t));
-				
+				const vec3_t *pos = mesh->positions + (size_t)frame * mesh->numverts;
+				memcpy(light->positions + 0, pos + i0, sizeof(vec3_t));
+				memcpy(light->positions + 3, pos + i1, sizeof(vec3_t));
+				memcpy(light->positions + 6, pos + i2, sizeof(vec3_t));
+
 				// Cluster is assigned after model instancing and transformation
 				light->cluster = -1;
 
@@ -145,24 +281,15 @@ static void extract_model_lights(model_t* model)
 				// this light" - so the unset sentinel has to be written, not assumed
 				light->volumetric_scale = LIGHT_VOLUMETRIC_SCALE_UNSET;
 
-				VectorCopy(mat->image_emissive->light_color, light->color);
+				// its own glow; copy_light scales it by the material's emissive and light factors
+				VectorCopy(emit[k], light->color);
+				light->emissive_factor = 1.f;
 
-				if (!mat->image_emissive->entire_texture_emissive)
-				{
-					// This extraction doesn't support partially emissive textures, so pretend the entire
-					// texture is uniformly emissive and dim the light according to the area fraction.
-					light->emissive_factor =
-						(mat->image_emissive->max_light_texcoord[0] - mat->image_emissive->min_light_texcoord[0]) *
-						(mat->image_emissive->max_light_texcoord[1] - mat->image_emissive->min_light_texcoord[1]);
-				}
-				else
-					light->emissive_factor = 1.f;
-				
 				get_triangle_off_center(light->positions, light->off_center, NULL, 1.f);
-				
 			}
 		}
 	}
+	Z_Free(emit);
 }
 
 /*

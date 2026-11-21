@@ -138,6 +138,8 @@ static cvar_t   *cl_q3_gibs_time;
 static cvar_t   *cl_q3_gibs_max;
 static cvar_t   *cl_q3_gib_drops;
 
+static void q3p_register(void);         // PREDICTED SHOTS
+
 // cl_q3_debug 1: what the plasma ball, the marks and the impact flashes did,
 // once a second (q3w_debug_print) - Matt saw none of them on 11-18; the
 // renderer's own line (transparency.c) says whether they reached it
@@ -579,6 +581,8 @@ void CL_Q3W_RegisterMedia(void)
     q3w.sfx_lghit[2] = q3w_sound("weapons/lightning/lg_hit3.wav");
     q3w.sfx_plasmaexp = q3w_sound("weapons/plasma/plasmx1a.wav");
     q3w.sfx_rockexp = q3w_sound("weapons/rocket/rocklx1a.wav");
+
+    q3p_register();
 }
 
 static q3wgun_t *q3w_gun_for_model(qhandle_t model)
@@ -832,6 +836,8 @@ static struct {
     int         muzzle_time;    // cl.time it was
 } q3v;
 
+static int q3p_view_state(int state);   // PREDICTED SHOTS
+
 // the hand's frame (cg_weapons.c CG_MapTorsoToWeaponFrame): 0 still, 1-6 the
 // torso's attack, 6-10 its drop and 11-14 its raise, which follows the drop
 static float q3w_hand_frame(const q3wgun_t *g, int state, const q3wshooter_t *sh)
@@ -948,7 +954,7 @@ bool CL_Q3W_AddViewWeapon(const entity_t *gun, int gunframe)
     vec3_t          hand_axis[3], gun_origin, gun_axis[3], part_origin, part_axis[3], local[3];
     q3wtag_t        tag;
     entity_t        e;
-    int             state = gunframe & Q3_GUNFRAME_STATE;
+    int             state = q3p_view_state(gunframe & Q3_GUNFRAME_STATE);
     bool            firing;
 
     if (!g)
@@ -2327,6 +2333,290 @@ void CL_Q3W_MuzzleFlash(int entnum, int mz, cdlight_t *dl)
 /*
 ==============================================================================
 
+PREDICTED SHOTS (cl_q3_predict_shots)
+
+OUR OWN GUN FIRES ON OUR OWN MACHINE, AS QUAKE III'S DOES. A player wrote in
+(2026-11-21): the Quake III mode "still feels too Quake 2 in terms of
+responsiveness ... the precise timing and responsiveness of weapon firing is
+not as good as Quake 3", and beat Crash on Nightmare at once in Quake3e.
+
+The gun itself already runs as Quake III's does - g_q3weap.c Q3W_Think, on
+every usercmd, with Quake III's millisecond weaponTime. What did not was
+everything we SEE and HEAR of a shot: its sound, flash, light, brass and the
+gun's recoil all came from the server, which sends them with its next 10 Hz
+frame - up to 100 ms after the click. Quake III's client runs PM_Weapon on its
+own commands (cg_predict.c) and plays EV_FIRE_WEAPON the moment a predicted
+command fires. Now so does ours: CL_Q3W_PredictCmd runs the same machine on
+each command as it is made, and a shot is shown then. The shot itself - the
+hit, the missile - is still the server's.
+
+KEEPING IN STEP. Every stat is in use, so the server's weaponTime cannot be
+sent; but the two machines run the same commands from the same start, and
+both drop back to time 0 the moment the trigger is up. ps.gunframe's six-bit
+shot count says what the server fired up to the command a frame acknowledges
+(CL_Q3W_FrameParsed): its flashes and fire sounds of ours in that packet that
+we predicted are dropped, the rest (a shot we did not foresee - a gauntlet
+hit, a gun just raised, an out-of-step burst) still play, and our count is
+lined up with the server's from there.
+
+Not foreseen, and left to the server: the gauntlet (it fires on a hit), a
+change of gun begun this frame, the last shot of the ammo. cl_q3_predict_shots
+0 is the old behaviour.
+
+==============================================================================
+*/
+
+#define Q3P_SHOTS   Q3_GUNFRAME_SHOTS   // the shot count wraps at 64
+
+// g_q3weap.c q3w_info's fire_time and flash_sound
+static const struct {
+    int         fire_time;
+    const char  *sound;     // NULL: the machinegun picks one of four
+} q3p_info[Q3W_NUM] = {
+    [Q3W_GAUNTLET]   = {  400, NULL },
+    [Q3W_MACHINEGUN] = {  100, NULL },
+    [Q3W_SHOTGUN]    = { 1000, "weapons/shotgun/sshotf1b.wav" },
+    [Q3W_GRENADE]    = {  800, "weapons/grenade/grenlf1a.wav" },
+    [Q3W_ROCKET]     = {  800, "weapons/rocket/rocklf1a.wav" },
+    [Q3W_LIGHTNING]  = {   50, "weapons/lightning/lg_fire.wav" },
+    [Q3W_RAILGUN]    = { 1500, "weapons/railgun/railgf1a.wav" },
+    [Q3W_PLASMA]     = {  100, "weapons/plasma/hyprbf1a.wav" },
+    [Q3W_BFG]        = {  200, "weapons/bfg/bfg_fire.wav" },
+};
+
+static cvar_t   *cl_q3_predict_shots;
+
+static struct {
+    bool        active;         // the last command was predicted
+    bool        firing;         // WEAPON_FIRING
+    int         weapon;         // the Q3W_* it was predicted with
+    int         time;           // client->q3_weapon_time
+    int         shots;          // client->q3_shots & Q3P_SHOTS
+    byte        shots_at[CMD_BACKUP];   // the count after each command
+    int         ack;            // the command the last frame acknowledged
+    int         server_shots;   // and the server's count at it
+    int         skip_flashes;   // the server's copies of ours in this packet
+    int         skip_sounds;
+    qhandle_t   sfx[Q3W_NUM], sfx_mg[4];
+} q3p;
+
+static void q3p_register(void)
+{
+    int i;
+
+    memset(&q3p, 0, sizeof(q3p));
+    for (i = 1; i < Q3W_NUM; i++)
+        if (q3p_info[i].sound)
+            q3p.sfx[i] = q3w_sound(q3p_info[i].sound);
+    for (i = 0; i < 4; i++)
+        q3p.sfx_mg[i] = q3w_sound(va("weapons/machinegun/machgf%db.wav", i + 1));
+}
+
+// the Quake III gun the server has up in our hand, ready or firing; 0 when
+// there is nothing to predict
+static int q3p_weapon(void)
+{
+    const player_state_t    *ps = &cl.frame.ps;
+    const int               state = ps->gunframe & Q3_GUNFRAME_STATE;
+    q3wgun_t                *g;
+
+    if (!cl_q3_predict_shots->integer || !cl_predict->integer || cls.demo.playback || !cl.frame.valid)
+        return 0;
+    // dead, a spectator, frozen at the intermission
+    if (ps->pmove.pm_type != PM_NORMAL || (ps->pmove.pm_flags & PMF_NO_PREDICTION))
+        return 0;
+    if (ps->stats[STAT_HEALTH] <= 0)
+        return 0;
+    // raising or lowering: the server's
+    if (state != Q3_GUNFRAME_READY && state != Q3_GUNFRAME_FIRING)
+        return 0;
+    if (ps->gunindex <= 0 || ps->gunindex >= MAX_MODELS)
+        return 0;
+    g = q3w_gun_for_model(cl.model_draw[ps->gunindex]);
+    return g ? (int)(g - q3w_guns) : 0;
+}
+
+// Q3W_Think's time between shots: haste (g_q3.c Q3_PmoveGravity puts it in
+// the gravity's low bit for prediction) 1.3 times as fast, the CTF Time Accel
+// (stat 31 its icon, g_ctf.c) twice
+static int q3p_fire_time(int w)
+{
+    int t = q3p_info[w].fire_time;
+    int tech = cl.frame.ps.stats[31];
+
+    if (cl.frame.ps.pmove.gravity & 1)
+        t = (int)(t / 1.3f);
+    if (tech > 0 && tech < MAX_IMAGES && strstr(cl.configstrings[CS_IMAGES + tech], "tech3"))
+        t /= 2;
+    return t;
+}
+
+// a predicted shot: what the server's svc_muzzleflash and fire sound would
+// have done (CL_MuzzleFlash: the light, the view and model flashes, the brass)
+static void q3p_shot(int w, bool was_firing)
+{
+    const int       self = cl.frame.clientNum + 1;
+    mz_params_t     saved = mz;
+    qhandle_t       sfx;
+
+    mz.entity = self;
+    mz.weapon = MZ_Q3_GAUNTLET + w - 1;
+    mz.silenced = false;
+    mz.has_dir = false;
+    CL_MuzzleFlash();
+    mz = saved;
+
+    // the lightning gun's fire sound only as the trigger goes down; its hum
+    // loops after (the server's weapon sound)
+    if (w == Q3W_MACHINEGUN)
+        sfx = q3p.sfx_mg[Q_rand() & 3];
+    else if (w == Q3W_LIGHTNING && was_firing)
+        sfx = 0;
+    else
+        sfx = q3p.sfx[w];
+    if (sfx)
+        S_StartSound(NULL, self, CHAN_WEAPON, sfx, 1, ATTN_NORM, 0);
+}
+
+/*
+=================
+CL_Q3W_PredictCmd
+
+CL_FinalizeCmd, as command (number) is stored: Q3W_Think on it, once.
+=================
+*/
+void CL_Q3W_PredictCmd(int number)
+{
+    const usercmd_t *cmd = &cl.cmds[number & CMD_MASK];
+    const int       w = q3p_weapon();
+    int             pending;
+    bool            was_firing;
+
+    if (!w) {
+        q3p.active = false;
+        q3p.firing = false;
+        q3p.time = 0;
+        goto done;
+    }
+    if (!q3p.active || w != q3p.weapon) {
+        // taking over from the server, with its gun up: from rest
+        q3p.weapon = w;
+        q3p.time = 0;
+        q3p.firing = false;
+    }
+    q3p.active = true;
+
+    if (q3p.time > 0)
+        q3p.time -= cmd->msec;
+    if (q3p.time > 0)
+        goto done;
+
+    if (!(cmd->buttons & BUTTON_ATTACK)) {
+        q3p.time = 0;
+        q3p.firing = false;
+        goto done;
+    }
+
+    // the gauntlet fires only on a hit, which is the server's to find
+    if (w == Q3W_GAUNTLET) {
+        q3p.time = 0;
+        q3p.firing = true;
+        goto done;
+    }
+
+    // out of ammo, counting the shots the server has not seen yet: the
+    // server clicks and changes gun
+    pending = (q3p.shots - q3p.shots_at[q3p.ack & CMD_MASK]) & Q3P_SHOTS;
+    if (cl.frame.ps.stats[STAT_AMMO] - pending <= 0) {
+        q3p.firing = false;
+        q3p.time += 500;
+        goto done;
+    }
+
+    was_firing = q3p.firing;
+    q3p.shots = (q3p.shots + 1) & Q3P_SHOTS;
+    q3p.firing = true;
+    q3p.time += q3p_fire_time(w);
+    q3p_shot(w, was_firing);
+
+done:
+    q3p.shots_at[number & CMD_MASK] = q3p.shots;
+}
+
+/*
+=================
+CL_Q3W_FrameParsed
+
+CL_DeltaFrame: the server's shot count at the command this frame
+acknowledges. The flashes and fire sounds of ours that follow in the packet
+are for the shots it fired since the last frame; as many of those as we
+predicted are dropped (CL_Q3W_SkipServerFlash/Sound).
+=================
+*/
+void CL_Q3W_FrameParsed(void)
+{
+    int ack, server, covered, fresh, off, n;
+
+    q3p.skip_flashes = q3p.skip_sounds = 0;
+    if (!cls.netchan || cls.demo.playback)
+        return;
+
+    ack = cl.history[cls.netchan->incoming_acknowledged & CMD_MASK].cmdNumber;
+    if (cl.cmdNumber - ack >= CMD_BACKUP || ack - q3p.ack < 0) {
+        q3p.ack = ack;
+        q3p.server_shots = cl.frame.ps.gunframe & Q3P_SHOTS;
+        return;
+    }
+    server = cl.frame.ps.gunframe & Q3P_SHOTS;
+
+    if (q3p.ack && cl.cmdNumber - q3p.ack < CMD_BACKUP) {
+        covered = (q3p.shots_at[ack & CMD_MASK] - q3p.shots_at[q3p.ack & CMD_MASK]) & Q3P_SHOTS;
+        fresh = (server - q3p.server_shots) & Q3P_SHOTS;
+        q3p.skip_flashes = q3p.skip_sounds = min(covered, fresh);
+    }
+
+    // our count lined up with the server's, from the acknowledged command on
+    off = (server - q3p.shots_at[ack & CMD_MASK]) & Q3P_SHOTS;
+    if (off) {
+        for (n = ack; n - cl.cmdNumber <= 0; n++)
+            q3p.shots_at[n & CMD_MASK] = (q3p.shots_at[n & CMD_MASK] + off) & Q3P_SHOTS;
+        q3p.shots = (q3p.shots + off) & Q3P_SHOTS;
+    }
+    q3p.ack = ack;
+    q3p.server_shots = server;
+}
+
+// parse.c: the server's muzzle flash of a shot of ours already shown
+bool CL_Q3W_SkipServerFlash(int entity, int weapon)
+{
+    if (q3p.skip_flashes <= 0 || entity != cl.frame.clientNum + 1 ||
+        weapon < MZ_Q3_GAUNTLET || weapon > MZ_Q3_BFG)
+        return false;
+    q3p.skip_flashes--;
+    return true;
+}
+
+// parse.c: the server's fire sound of a shot of ours already heard
+bool CL_Q3W_SkipServerSound(int entity, int channel)
+{
+    if (q3p.skip_sounds <= 0 || entity != cl.frame.clientNum + 1 || channel != CHAN_WEAPON)
+        return false;
+    q3p.skip_sounds--;
+    return true;
+}
+
+// the view gun's state: ours while we predict, the server's while it raises
+// or lowers the gun
+static int q3p_view_state(int state)
+{
+    if (q3p.active && (state == Q3_GUNFRAME_READY || state == Q3_GUNFRAME_FIRING))
+        return q3p.firing ? Q3_GUNFRAME_FIRING : Q3_GUNFRAME_READY;
+    return state;
+}
+
+/*
+==============================================================================
+
 GIBS (cg_effects.c CG_GibPlayer, cg_localents.c CG_AddFragment)
 
 Where Quake III's game is played (q3w_q3_game; the game's g_q3.c
@@ -2707,6 +2997,11 @@ void CL_Q3W_Clear(void)
     memset(q3w_balls, 0, sizeof(q3w_balls));
     memset(q3w_shooters, 0, sizeof(q3w_shooters));
     memset(&q3v, 0, sizeof(q3v));
+    // a new server's commands start again from 0; the sounds stay registered
+    q3p.active = q3p.firing = false;
+    q3p.time = q3p.shots = q3p.ack = q3p.server_shots = 0;
+    q3p.skip_flashes = q3p.skip_sounds = 0;
+    memset(q3p.shots_at, 0, sizeof(q3p.shots_at));
 }
 
 void CL_Q3W_Init(void)
@@ -2737,6 +3032,10 @@ void CL_Q3W_Init(void)
     // droplets for each drip of a gib's blood trail with the simulation on
     // (Matt, 11-19: "3x the amount of blood in the trails"); Blood menu
     cl_q3_gib_drops = Cvar_Get("cl_q3_gib_drops", "3", CVAR_ARCHIVE);
+    // 1: our own Quake III gun's shots are shown and heard as the command
+    // fires them, as Quake III's are, not when the server's 10 Hz frame says
+    // so (PREDICTED SHOTS); 0: the server's
+    cl_q3_predict_shots = Cvar_Get("cl_q3_predict_shots", "1", CVAR_ARCHIVE);
 
     CL_Q3W_Clear();
 }

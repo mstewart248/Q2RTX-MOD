@@ -582,6 +582,17 @@ static const spawn_field_t temp_fields[] = {
     {"fade_start_dist", STOFS(fade_start_dist), F_INT},
     {"fade_end_dist", STOFS(fade_end_dist), F_INT},
 
+    // Quake 1 (g_q1.c); the rest are its worldspawn's and secret doors'
+    {"mangle", STOFS(mangle), F_VECTOR},
+    {"dest", STOFS(dest), F_VECTOR},
+    {"dest2", STOFS(dest2), F_VECTOR},
+    {"worldtype", 0, F_IGNORE},
+    {"wad", 0, F_IGNORE},
+    {"t_length", 0, F_IGNORE},
+    {"t_width", 0, F_IGNORE},
+    {"fog", 0, F_IGNORE},       // Quake 1 rerelease fog: read by the client (mapfog.c)
+    {"fog_info_entity", 0, F_IGNORE},
+
     {NULL}
 };
 
@@ -639,8 +650,10 @@ void ED_CallSpawn(edict_t *ent)
         }
     }
 
-    // the bot match's Quake III guns stand in for Quake II's (g_q3weap.c)
+    // the bot match's Quake III guns stand in for Quake II's (g_q3weap.c),
+    // or Quake's do (g_q1weap.c)
     lookup = Q3W_SpawnClassname(ent, lookup);
+    lookup = Q1W_SpawnClassname(lookup);
 
     // check item spawn functions
     for (i = 0, item = itemlist ; i < game.num_items ; i++, item++) {
@@ -1331,12 +1344,24 @@ void SpawnEntities(const char *mapname, const char *entities, const char *spawnp
     level.is_n64 = !strncmp(level.mapname, "q64/", 4);
     // a Quake III Arena map, as the server found it when it loaded the BSP
     level.q3map = gi.cvar("sv_map_q3", "0", 0)->integer != 0;
+    // a Quake 1 map, the same way (g_q1.c)
+    level.q1map = gi.cvar("sv_map_q1", "0", 0)->integer != 0;
     // the bot match's Quake III weapons and physics, before any item spawns
     Q3_LevelRules();
 
     // set client fields on player ents
     for (i = 0 ; i < game.maxclients ; i++)
         g_edicts[i + 1].client = game.clients + i;
+
+    // a Quake 1 map started for one of Quake's demos (the attract loop's
+    // q1demo): the demo plays on it instead of its entities (g_q1demo.c)
+    if (Q1Demo_SpawnEntities(mapname))
+        return;
+
+    // a Quake 1 map out of deathmatch: the episode's own progs.dat runs it
+    // (g_q1vm_game.c), and none of the rest of this applies
+    if (Q1VM_SpawnEntities(mapname, entities))
+        return;
 
     ent = NULL;
     inhibit = 0;
@@ -1405,6 +1430,8 @@ void SpawnEntities(const char *mapname, const char *entities, const char *spawnp
 
         if (level.q3map)
             Q3_SpawnEntity(ent);    // the Quake III entities, translated
+        else if (level.q1map)
+            Q1_SpawnEntity(ent);    // the Quake 1 entities, translated
         else
             ED_CallSpawn(ent);
     }
@@ -1424,6 +1451,9 @@ void SpawnEntities(const char *mapname, const char *entities, const char *spawnp
     // the weapons and items the players bring with them, after the map's own
     // precaches, so switching to one or firing it does not load it mid-game
     G_PrecacheInventoryItems();
+
+    // Quake 1: doors that touch get a team, to move as one
+    Q1_LinkDoors();
 
     G_FindTeams();
 
@@ -1730,7 +1760,8 @@ void SP_worldspawn(edict_t *ent)
 
     // the bot match's Quake III weapons and physics: the engine's pmove and
     // the clients' prediction, view weapons and effects all read this
-    gi.configstring(CS_Q3RULES, va("%d%d", level.q3_weapons, level.q3_physics ? 1 : 0));
+    // ('3': Quake's guns, g_q1weap.c)
+    gi.configstring(CS_Q3RULES, va("%d%d", level.q1_weapons ? 3 : level.q3_weapons, level.q3_physics ? 1 : 0));
 
     // status bar program
     if (G_CTF())
@@ -1835,6 +1866,8 @@ void SP_worldspawn(edict_t *ent)
         CTF_Precache();
     // WEAP_Q3_* (21..29): Quake III's guns, in a game with them (g_q3weap.c)
     Q3W_Precache();
+    // Quake's guns, in a game with them: Quake II's third-person models
+    Q1W_Precache();
 
     //-------------------
 

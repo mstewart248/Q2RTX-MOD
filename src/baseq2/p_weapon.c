@@ -25,6 +25,12 @@ static byte     damage_multiplier;
 static bool     is_quadfire;
 static byte     is_silenced;
 
+// the weapon think running now runs twice (Quake's guns, g_q1weap.c)
+bool Weapon_IsQuadfire(void)
+{
+    return is_quadfire;
+}
+
 
 void weapon_grenade_fire(edict_t *ent, bool held);
 
@@ -286,9 +292,11 @@ void ChangeWeapon(edict_t *ent)
     ent->client->ps.gunframe = 0;
     ent->client->ps.gunindex = gi.modelindex(ent->client->pers.weapon->view_model);
 
-    // a Quake III gun is raised on its own clock
+    // a Quake III gun is raised on its own clock; a Quake one is up at once
     if (ent->client->pers.weapon->flags & IT_Q3)
         Q3W_WeaponChanged(ent);
+    if (ent->client->pers.weapon->flags & IT_Q1)
+        Q1W_WeaponChanged(ent);
 
     ent->client->anim_priority = ANIM_PAIN;
     if (ent->client->ps.pmove.pm_flags & PMF_DUCKED) {

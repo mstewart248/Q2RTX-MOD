@@ -64,6 +64,11 @@ qhandle_t   cl_mod_lightning;
 qhandle_t   cl_mod_heatbeam;
 qhandle_t   cl_mod_explo4_big;
 
+// Quake 1's beams (TE_Q1: cl.q1vm, or cl.q1_weapons): bolt, bolt2, bolt3 and beam.mdl
+static qhandle_t    cl_q1_bolt[4];
+static void CL_Q1RegisterTEntSounds(void);
+static void CL_Q1RegisterTEntModels(void);
+
 extern cvar_t* cvar_pt_particle_emissive;
 
 // [Q2RTX] Draw YOUR OWN plasma beam from the world muzzle instead of deriving
@@ -322,6 +327,9 @@ void CL_RegisterTEntSounds(void)
     };
     for (i = 0; i < (int)q_countof(played_by_name); i++)
         S_RegisterSound(played_by_name[i]);
+
+    // a Quake 1 level run by its progs: Quake's own impact sounds
+    CL_Q1RegisterTEntSounds();
 }
 
 /*
@@ -376,6 +384,9 @@ void CL_RegisterTEntModels(void)
 
     // the bot match's Quake III guns, and the brass Quake II's throw too
     CL_Q3W_RegisterMedia();
+
+    // a Quake 1 level run by its progs: its beams and its palette
+    CL_Q1RegisterTEntModels();
 }
 
 /*
@@ -1418,6 +1429,10 @@ static void CL_AddBeams(void)
                 ent.angles[0] = angles[0];
                 ent.angles[1] = angles[1];
                 ent.angles[2] = CL_FrameRand((i << 10) + seg++) % 360;
+                // Quake 1's bolts are all light, as its palette's fullbrights drew them
+                if (b->model && (b->model == cl_q1_bolt[0] || b->model == cl_q1_bolt[1] ||
+                                               b->model == cl_q1_bolt[2] || b->model == cl_q1_bolt[3]))
+                    ent.flags = RF_FULLBRIGHT;
             }
 
             V_AddEntity(&ent);
@@ -2749,6 +2764,363 @@ static void dirtoangles(vec3_t angles)
 }
 
 /*
+==============================================================================
+
+QUAKE 1'S TEMP ENTITIES
+
+TE_Q1, from Quake 1's own game code (baseq2 g_q1vm*.c; cl.q1vm is the
+episode whose progs run the level): Quake's cl_tent.c and r_part.c, with its
+sounds and its palette's colours. Its rocket and grenade blasts are Quake
+II's fire and Flow, as the Quake III guns' are, and its blood is this tree's.
+
+==============================================================================
+*/
+
+static qhandle_t    cl_q1_sfx_wizhit, cl_q1_sfx_knighthit, cl_q1_sfx_tink1;
+static qhandle_t    cl_q1_sfx_ric[3], cl_q1_sfx_r_exp3;
+static byte         cl_q1_palette[768];
+static bool         cl_q1_have_palette;
+
+#define Q1_PARTICLE_GRAVITY     40      // Quake's pt_slowgrav: sv_gravity * 0.05
+
+// effects.c's particle count scale
+static float CL_Q1ParticleFactor(void)
+{
+    static cvar_t *factor;
+
+    if (!factor)
+        factor = Cvar_Get("cl_particle_num_factor", "1", 0);
+    return factor->value;
+}
+
+/* The Quake episode whose sounds and models TE_Q1 uses: the one whose progs
+   run the level (cl.q1vm), or Quake's own for the bot match's Quake guns
+   (cl.q1_weapons, baseq2 g_q1weap.c) - NULL for neither. */
+static const char *CL_Q1Episode(void)
+{
+    if (cl.q1vm[0])
+        return cl.q1vm;
+    if (cl.q1_weapons)
+        return "id1";
+    return NULL;
+}
+
+static qhandle_t CL_Q1Sound(const char *name)
+{
+    char path[MAX_QPATH];
+
+    Q_snprintf(path, sizeof(path), "#id1/%s/sound/%s", CL_Q1Episode(), name);
+    return S_RegisterSound(path);
+}
+
+static qhandle_t CL_Q1Model(const char *name)
+{
+    char path[MAX_QPATH];
+
+    Q_snprintf(path, sizeof(path), "id1/%s/%s", CL_Q1Episode(), name);
+    return FS_FileExists(path) ? R_RegisterModel(path) : 0;
+}
+
+static void CL_Q1RegisterTEntSounds(void)
+{
+    if (!CL_Q1Episode())
+        return;
+
+    cl_q1_sfx_wizhit = CL_Q1Sound("wizard/hit.wav");
+    cl_q1_sfx_knighthit = CL_Q1Sound("hknight/hit.wav");
+    cl_q1_sfx_tink1 = CL_Q1Sound("weapons/tink1.wav");
+    cl_q1_sfx_ric[0] = CL_Q1Sound("weapons/ric1.wav");
+    cl_q1_sfx_ric[1] = CL_Q1Sound("weapons/ric2.wav");
+    cl_q1_sfx_ric[2] = CL_Q1Sound("weapons/ric3.wav");
+    cl_q1_sfx_r_exp3 = CL_Q1Sound("weapons/r_exp3.wav");
+}
+
+static void CL_Q1RegisterTEntModels(void)
+{
+    static const char *const bolts[4] = {
+        "progs/bolt.mdl", "progs/bolt2.mdl", "progs/bolt3.mdl", "progs/beam.mdl"
+    };
+
+    memset(cl_q1_bolt, 0, sizeof(cl_q1_bolt));
+    if (!CL_Q1Episode())
+        return;
+
+    for (int i = 0; i < 4; i++)
+        cl_q1_bolt[i] = CL_Q1Model(bolts[i]);
+
+    if (!cl_q1_have_palette) {
+        void *data = NULL;
+        int len = FS_LoadFile("id1/gfx/palette.lmp", &data);
+
+        if (data && len >= (int)sizeof(cl_q1_palette)) {
+            memcpy(cl_q1_palette, data, sizeof(cl_q1_palette));
+            cl_q1_have_palette = true;
+        }
+        if (data)
+            FS_FreeFile(data);
+    }
+}
+
+// a particle in Quake's palette colour, gone after (life) seconds
+static cparticle_t *CL_Q1Particle(const vec3_t org, int color, float life, float gravity, float brightness)
+{
+    cparticle_t *p = CL_AllocParticle();
+
+    if (!p)
+        return NULL;
+
+    p->time = cl.time;
+    VectorCopy(org, p->org);
+    VectorClear(p->vel);
+    VectorSet(p->accel, 0, 0, -gravity);
+    color &= 255;
+    if (cl_q1_have_palette) {
+        p->color = -1;
+        p->rgba.u8[0] = cl_q1_palette[color * 3 + 0];
+        p->rgba.u8[1] = cl_q1_palette[color * 3 + 1];
+        p->rgba.u8[2] = cl_q1_palette[color * 3 + 2];
+        p->rgba.u8[3] = 255;
+    } else {
+        p->color = color;
+    }
+    p->alpha = 1.0f;
+    // Quake's popped at their time; these fade out over it
+    p->alphavel = -1.0f / max(life, 0.05f);
+    p->brightness = brightness;
+    return p;
+}
+
+static void CL_Q1BlobExplosion(const vec3_t org)
+{
+    const int count = 1024 * CL_Q1ParticleFactor();
+
+    for (int i = 0; i < count; i++) {
+        vec3_t o;
+        int color = (i & 1) ? 66 + Q_rand() % 6 : 150 + Q_rand() % 6;
+        for (int j = 0; j < 3; j++)
+            o[j] = org[j] + ((int)(Q_rand() % 32) - 16);
+        cparticle_t *p = CL_Q1Particle(o, color, 1 + (Q_rand() & 8) * 0.05f, Q1_PARTICLE_GRAVITY, 1.0f);
+        if (!p)
+            return;
+        for (int j = 0; j < 3; j++)
+            p->vel[j] = (int)(Q_rand() % 512) - 256;
+        if (i & 1)
+            VectorScale(p->vel, 0.5f, p->accel);    // pt_blob: pushing outward
+        p->accel[2] -= Q1_PARTICLE_GRAVITY;
+    }
+}
+
+static void CL_Q1ParticleExplosion2(const vec3_t org, int start, int length)
+{
+    const int count = 512 * CL_Q1ParticleFactor();
+    int mod = 0;
+
+    if (length < 1)
+        length = 1;
+    for (int i = 0; i < count; i++) {
+        vec3_t o;
+        for (int j = 0; j < 3; j++)
+            o[j] = org[j] + ((int)(Q_rand() % 32) - 16);
+        cparticle_t *p = CL_Q1Particle(o, start + (mod++ % length), 0.3f, Q1_PARTICLE_GRAVITY, 1.0f);
+        if (!p)
+            return;
+        for (int j = 0; j < 3; j++)
+            p->vel[j] = (int)(Q_rand() % 512) - 256;
+    }
+}
+
+// Quake's R_RunParticleEffect: the particle() builtin, and spikes and bullets
+// on walls
+static void CL_Q1RunParticleEffect(const vec3_t org, const vec3_t dir, int color, int count)
+{
+    count *= CL_Q1ParticleFactor();
+    for (int i = 0; i < count; i++) {
+        vec3_t o;
+        for (int j = 0; j < 3; j++)
+            o[j] = org[j] + ((int)(Q_rand() & 15) - 8);
+        cparticle_t *p = CL_Q1Particle(o, (color & ~7) + (Q_rand() & 7), 0.1f * (1 + Q_rand() % 5),
+                                       Q1_PARTICLE_GRAVITY, 0.5f);
+        if (!p)
+            return;
+        VectorScale(dir, 15, p->vel);
+    }
+}
+
+static void CL_Q1LavaSplash(const vec3_t org)
+{
+    for (int i = -16; i < 16; i++) {
+        for (int j = -16; j < 16; j++) {
+            vec3_t dir, o;
+            dir[0] = j * 8 + (Q_rand() & 7);
+            dir[1] = i * 8 + (Q_rand() & 7);
+            dir[2] = 256;
+            o[0] = org[0] + dir[0];
+            o[1] = org[1] + dir[1];
+            o[2] = org[2] + (Q_rand() & 63);
+            cparticle_t *p = CL_Q1Particle(o, 224 + (Q_rand() & 7), 2 + (Q_rand() & 31) * 0.02f,
+                                           Q1_PARTICLE_GRAVITY, 1.0f);
+            if (!p)
+                return;
+            VectorNormalize(dir);
+            VectorScale(dir, 50 + (Q_rand() & 63), p->vel);
+        }
+    }
+}
+
+static void CL_Q1TeleportSplash(const vec3_t org)
+{
+    for (int i = -16; i < 16; i += 4) {
+        for (int j = -16; j < 16; j += 4) {
+            for (int k = -24; k < 32; k += 4) {
+                vec3_t dir, o;
+                dir[0] = j * 8;
+                dir[1] = i * 8;
+                dir[2] = k * 8;
+                o[0] = org[0] + i + (Q_rand() & 3);
+                o[1] = org[1] + j + (Q_rand() & 3);
+                o[2] = org[2] + k + (Q_rand() & 3);
+                cparticle_t *p = CL_Q1Particle(o, 7 + (Q_rand() & 7), 0.2f + (Q_rand() & 7) * 0.02f,
+                                               Q1_PARTICLE_GRAVITY, 1.0f);
+                if (!p)
+                    return;
+                VectorNormalize(dir);
+                VectorScale(dir, 50 + (Q_rand() & 63), p->vel);
+            }
+        }
+    }
+}
+
+static void CL_Q1TempEntity(void)
+{
+    explosion_t *ex;
+    cdlight_t   *dl;
+    int         i;
+
+    switch (te.q1kind) {
+    case TE_Q1_WIZSPIKE:        // spike hitting wall
+        CL_Q1RunParticleEffect(te.pos1, vec3_origin, 20, 30);
+        S_StartSound(te.pos1, 0, 0, cl_q1_sfx_wizhit, 1, ATTN_NORM, 0);
+        break;
+
+    case TE_Q1_KNIGHTSPIKE:     // spike hitting wall
+        CL_Q1RunParticleEffect(te.pos1, vec3_origin, 226, 20);
+        S_StartSound(te.pos1, 0, 0, cl_q1_sfx_knighthit, 1, ATTN_NORM, 0);
+        break;
+
+    case TE_Q1_SPIKE:           // spike hitting wall
+    case TE_Q1_SUPERSPIKE:      // super spike hitting wall
+        CL_Q1RunParticleEffect(te.pos1, vec3_origin, 0, te.q1kind == TE_Q1_SPIKE ? 10 : 20);
+        if (Q_rand() % 5) {
+            S_StartSound(te.pos1, 0, 0, cl_q1_sfx_tink1, 1, ATTN_NORM, 0);
+        } else {
+            i = Q_rand() & 3;
+            S_StartSound(te.pos1, 0, 0, cl_q1_sfx_ric[i == 1 ? 0 : i == 2 ? 1 : 2], 1, ATTN_NORM, 0);
+        }
+        break;
+
+    case TE_Q1_GUNSHOT:         // bullet hitting wall
+        CL_Q1RunParticleEffect(te.pos1, vec3_origin, 0, 20);
+        break;
+
+    case TE_Q1_EXPLOSION:       // rocket and grenade explosion
+        ex = CL_PlainExplosion(false);
+        if (cl_disable_explosions->integer & NOEXP_ROCKET)
+            ex->type = ex_light;
+        CL_FlowExplosion(ex, 1.0f, R_FLOW_FIRE);
+        if (!ex->underwater)
+            CL_FlowGibEvent(false, te.pos1, te.pos1);
+        if (!(cl_disable_particles->integer & NOPART_ROCKET_EXPLOSION))
+            CL_ExplosionParticles(te.pos1);
+        if (cl_dlight_hacks->integer & DLHACK_SMALLER_EXPLOSION)
+            ex->light = 200;
+        S_StartSound(te.pos1, 0, 0, cl_q1_sfx_r_exp3, 1, ATTN_NORM, 0);
+        break;
+
+    case TE_Q1_TAREXPLOSION:    // tarbaby explosion
+        CL_Q1BlobExplosion(te.pos1);
+        dl = CL_AllocDlight(0);
+        VectorCopy(te.pos1, dl->origin);
+        dl->radius = 350;
+        dl->die = cl.time + 500;
+        dl->decay = 300;
+        VectorSet(dl->color, 0.6f, 0.3f, 1.0f);
+        S_StartSound(te.pos1, 0, 0, cl_q1_sfx_r_exp3, 1, ATTN_NORM, 0);
+        break;
+
+    case TE_Q1_EXPLOSION2:      // color mapped explosion
+        CL_Q1ParticleExplosion2(te.pos1, te.color, te.count);
+        dl = CL_AllocDlight(0);
+        VectorCopy(te.pos1, dl->origin);
+        dl->radius = 350;
+        dl->die = cl.time + 500;
+        dl->decay = 300;
+        VectorSet(dl->color, 1.0f, 0.8f, 0.6f);
+        S_StartSound(te.pos1, 0, 0, cl_q1_sfx_r_exp3, 1, ATTN_NORM, 0);
+        break;
+
+    case TE_Q1_LIGHTNING1:      // lightning bolts
+    case TE_Q1_LIGHTNING2:
+    case TE_Q1_LIGHTNING3:
+    case TE_Q1_BEAM: {
+        const int b = te.q1kind == TE_Q1_LIGHTNING1 ? 0 : te.q1kind == TE_Q1_LIGHTNING2 ? 1 :
+                      te.q1kind == TE_Q1_LIGHTNING3 ? 2 : 3;
+        if (cl_q1_bolt[b])
+            CL_ParseBeam(cl_q1_bolt[b]);
+        break;
+    }
+
+    case TE_Q1_LAVASPLASH:
+        CL_Q1LavaSplash(te.pos1);
+        break;
+
+    case TE_Q1_TELEPORT:
+        CL_Q1TeleportSplash(te.pos1);
+        break;
+
+    case TE_Q1_PARTICLE:
+        // Quake's blood (SpawnBlood's 73, its red) is this tree's
+        if ((te.color & ~15) == 64 && !(cl_disable_particles->integer & NOPART_BLOOD)) {
+            vec3_t dir;
+            int count = te.count * 2;
+            VectorCopy(te.dir, dir);
+            if (VectorNormalize(dir) < 0.01f)
+                VectorSet(dir, 0, 0, 1);
+            clamp(count, 8, 60);
+            CL_BloodParticleEffect(te.pos1, dir, 0xe8, count);
+        } else if (te.count == 255) {
+            // Quake's R_RunParticleEffect read 255 as 1024: its rocket blast
+            CL_ExplosionParticles(te.pos1);
+        } else {
+            CL_Q1RunParticleEffect(te.pos1, te.dir, te.color, te.count);
+        }
+        break;
+
+    case TE_Q1_MUZZLEFLASH:
+        // Quake's EF_MUZZLEFLASH: a light out in front, for a tenth of a second
+        if (te.entity1 > 0 && te.entity1 < MAX_EDICTS) {
+            centity_t *pl = &cl_entities[te.entity1];
+            vec3_t fv;
+
+            dl = CL_AllocDlight(te.entity1);
+            if (te.entity1 == cl.frame.clientNum + 1)
+                VectorCopy(cl.playerEntityOrigin, dl->origin);
+            else
+                VectorCopy(pl->current.origin, dl->origin);
+            AngleVectors(pl->current.angles, fv, NULL, NULL);
+            dl->origin[2] += 16;
+            VectorMA(dl->origin, 18, fv, dl->origin);
+            dl->radius = 200 + (Q_rand() & 31);
+            dl->die = cl.time + 100;
+            VectorSet(dl->color, 1.0f, 0.85f, 0.6f);
+        }
+        break;
+
+    default:
+        break;
+    }
+}
+
+/*
 =================
 CL_ParseTEnt
 =================
@@ -3126,6 +3498,11 @@ void CL_ParseTEnt(void)
 
     case TE_Q3_GIBS:
         CL_Q3W_Gibs(te.pos1);
+        break;
+
+    // Quake 1's, from its own game code
+    case TE_Q1:
+        CL_Q1TempEntity();
         break;
 
     case TE_BFG_LASER:

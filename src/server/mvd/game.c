@@ -1663,6 +1663,9 @@ void MVD_LinkEdict(mvd_t *mvd, edict_t *ent)
 
     if (ent->s.solid == PACKED_BSP) {
         index = ent->s.modelindex;
+        // "*N" sits one past index N + 1 from "*254" on (SV_SpawnServer)
+        if (index > 0 && index < MAX_MODELS && mvd->configstrings[CS_MODELS + index][0] == '*')
+            index = atoi(mvd->configstrings[CS_MODELS + index] + 1) + 1;
         if (index < 1 || index > cache->nummodels) {
             Com_WPrintf("%s: entity %d: bad inline model index: %d\n",
                         __func__, ent->s.number, index);

@@ -339,6 +339,8 @@ static void add_light_pairs(const light_poly_t *light, uint32_t gpu_index, float
 {
 	if (light->color[0] < 0.f)
 		return; // a sky portal: the sky is not traced (pt_caustics 1 keeps it)
+	if (light->type == DYNLIGHT_WINDOW)
+		return; // stained glass's light behind a wall: no shape photons can leave
 
 	float style = 1.f;
 	if (light->style != 0 && vkpt_refdef.fd->lightstyles)

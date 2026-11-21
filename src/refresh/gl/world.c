@@ -552,7 +552,8 @@ static void GL_WorldNode_r(mnode_t *node, int clipflags)
 void GL_DrawWorld(void)
 {
     // auto cycle the world frame for texture animation
-    gl_world.frame = (int)(glr.fd.time * 2);
+    // Quake II animates wall textures twice a second, Quake 1 five times
+    gl_world.frame = (int)(glr.fd.time * (gl_static.world.cache && gl_static.world.cache->q1 ? 5 : 2));
 
     glr.ent = &gl_world;
 

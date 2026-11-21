@@ -205,6 +205,9 @@ get_unshadowed_path_contrib(
 	case DYNLIGHT_SPOT:
 		m = projected_spotlight_area(light.positions, light.spot_emission_profile, position, normal, view_direction, phong_exp, phong_scale, phong_weight);
 		break;
+	case DYNLIGHT_WINDOW:
+		m = window_light_mass(light, position, normal);
+		break;
 	}
 
 	float light_lum = luminance(light.color);
@@ -287,7 +290,7 @@ process_selected_light_restir(
 	{
 		LightPolygon light = get_light_polygon(light_idx);
 
-		vec3 light_normal;
+		vec3 light_normal = vec3(0); // DYNLIGHT_WINDOW: its tint - see sample_lights
 
 		switch (uint(light.type))
 		{
@@ -299,6 +302,9 @@ process_selected_light_restir(
 			break;
 		case DYNLIGHT_SPOT:
 			pos_on_light_polygonal = sample_projected_spotlight(position, light.positions, light.spot_emission_profile, light_position, light_normal, polygonal_light_pdfw);
+			break;
+		case DYNLIGHT_WINDOW:
+			pos_on_light_polygonal = sample_window_light(position, light, light_position, light_normal, polygonal_light_pdfw);
 			break;
 		}
 
@@ -312,7 +318,11 @@ process_selected_light_restir(
 			float spotlight = sqrt(LdotNL);
 			float inv_pdfw = 1.0 / polygonal_light_pdfw;
 
-			if (light.color.r >= 0)
+			if (uint(light.type) == DYNLIGHT_WINDOW)
+			{
+				contrib_polygonal = light.color * light_normal * light.light_style_scale;
+			}
+			else if (light.color.r >= 0)
 			{
 				contrib_polygonal = light.color * (inv_pdfw * spotlight * light.light_style_scale);
 			}
@@ -403,7 +413,8 @@ process_selected_light_restir(
 	}
 	else if (direct_specular_weight > 0 && !is_sun && !polygonal_light_is_sky
 		&& global_ubo.pt_light_mis != 0 && global_ubo.pt_specular_mis != 0
-		&& int(light_idx) < global_ubo.num_static_lights)
+		&& int(light_idx) < global_ubo.num_static_lights
+		&& uint(get_light_polygon(light_idx).type) == DYNLIGHT_POLYGON)
 	{
 		// pt_light_mis: ReSTIR DI only runs on the first surface. Same weight as
 		// get_direct_illumination, so the bounce ray's share in indirect_lighting.rgen
@@ -474,6 +485,9 @@ restir_sample_visible(uint light_idx, vec2 light_position, vec3 position, vec3 v
 			break;
 		case DYNLIGHT_SPOT:
 			pos_on_light = sample_projected_spotlight(position, light.positions, light.spot_emission_profile, light_position, light_normal, pdfw);
+			break;
+		case DYNLIGHT_WINDOW:
+			pos_on_light = sample_window_light(position, light, light_position, light_normal, pdfw);
 			break;
 		}
 

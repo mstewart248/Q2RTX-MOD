@@ -458,6 +458,13 @@ int SV_NoSaveGames(void)
     if (Cvar_VariableInteger("deathmatch"))
         return 1;
 
+    // (a Quake 1 level run by its own progs.dat saves the progs' machine:
+    // baseq2 g_q1vm_game.c, Q1VM_WriteLevel)
+
+    // a Quake 1 demo playing back (q1demo, baseq2 g_q1demo.c) has nothing to keep
+    if (Cvar_VariableInteger("sv_q1demo"))
+        return 1;
+
     return 0;
 }
 
@@ -478,6 +485,14 @@ void SV_AutoSaveBegin(mapcmd_t *cmd)
 
     if (SV_NoSaveGames())
         return;
+
+    // leaving a Quake 1 level its progs run: Quake has no hubs - a level is
+    // always entered afresh (start.bsp's gates read the runes as it spawns) -
+    // so nothing is kept to come back to
+    if (Cvar_VariableInteger("sv_q1vm")) {
+        wipe_save_dir(SAVE_CURRENT);
+        return;
+    }
 
     memset(bitmap, 0, sizeof(bitmap));
 

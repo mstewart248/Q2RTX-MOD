@@ -416,6 +416,14 @@ static mnode_t *SV_HullForEntity(edict_t *ent)
     if (ent->solid == SOLID_BSP) {
         int i = ent->s.modelindex - 1;
 
+        // "*N" is usually model index N + 1, but not from "*254" on (slot 255
+        // is MODELINDEX_PLAYER, see SV_SpawnServer): go by the name
+        if (ent->s.modelindex > 0 && ent->s.modelindex < MAX_MODELS) {
+            const char *s = sv.configstrings[CS_MODELS + ent->s.modelindex];
+            if (s[0] == '*')
+                i = atoi(s + 1);
+        }
+
         // explicit hulls in the BSP model
         if (i <= 0 || i >= sv.cm.cache->nummodels)
             Com_Error(ERR_DROP, "%s: inline model %d out of range", __func__, i);

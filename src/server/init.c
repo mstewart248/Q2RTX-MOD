@@ -88,6 +88,13 @@ static void resolve_masters(void)
 #endif
 }
 
+// the highest model index SV_SpawnServer gives a map's brush models: one per
+// model, world included, stepping over MODELINDEX_PLAYER
+static int SV_InlineModelSlots(int nummodels)
+{
+    return nummodels + (nummodels >= MODELINDEX_PLAYER);
+}
+
 // optionally load the entity string from external source
 static void override_entity_string(const char *server)
 {
@@ -257,10 +264,17 @@ void SV_SpawnServer(mapcmd_t *cmd, qboolean isMguMap)
         sv.cm = cmd->cm;
         sprintf(sv.configstrings[CS_MAPCHECKSUM], "%d", (int)sv.cm.cache->checksum);
 
-        // set inline model names
+        // set inline model names: "*N" at model index N + 1, except that
+        // MODELINDEX_PLAYER is never a model (see PF_FindIndex), so from "*254"
+        // on they sit one higher. Only Quake 1 maps get that far (mg3/map8 has
+        // 363); before this, "*254" landed in the reserved slot, the game's
+        // modelindex("*254") made a second copy higher up, and
+        // SV_HullForEntity's index - 1 read that as another model's hull.
+        // SV_ParseMapCmd refused maps that can't fit (SV_InlineModelSlots).
         Q_concat(sv.configstrings[CS_MODELS + 1], MAX_QPATH, "maps/", cmd->server, ".bsp");
         for (i = 1; i < sv.cm.cache->nummodels; i++) {
-            sprintf(sv.configstrings[CS_MODELS + 1 + i], "*%d", i);
+            int index = 1 + i + (1 + i >= MODELINDEX_PLAYER);
+            sprintf(sv.configstrings[CS_MODELS + index], "*%d", i);
         }
 
         entitystring = sv.entitystring ? sv.entitystring : sv.cm.cache->entitystring;
@@ -287,6 +301,9 @@ void SV_SpawnServer(mapcmd_t *cmd, qboolean isMguMap)
     // than through the game API, which stays the stock one: the game reads
     // sv_map_q3 in SpawnEntities to translate the map's Quake III entities.
     Cvar_FullSet("sv_map_q3", (cmd->state == ss_game && sv.cm.cache && sv.cm.cache->q3) ? "1" : "0",
+                 CVAR_ROM, FROM_CODE);
+    // a Quake 1 map (common/bsp_q1.c), the same way (game g_q1.c)
+    Cvar_FullSet("sv_map_q1", (cmd->state == ss_game && sv.cm.cache && sv.cm.cache->q1) ? "1" : "0",
                  CVAR_ROM, FROM_CODE);
 
     // load and spawn all other entities
@@ -412,6 +429,20 @@ bool SV_ParseMapCmd(mapcmd_t *cmd)
         }
         cmd->state = ss_game;
         Com_LoadMark("collision map");
+
+        // every brush model needs a model index (SV_SpawnServer numbers them
+        // all up front). Past MAX_MODELS they used to run on into the sound
+        // configstrings; mg3/secret2 (524 brush models) is the one map that big.
+        if (ret >= 0) {
+            int slots = SV_InlineModelSlots(cmd->cm.cache->nummodels);
+            if (slots >= MAX_MODELS) {
+                Com_Printf("Couldn't load %s: it has %d brush models, which need "
+                           "model indexes up to %d (the most is %d)\n", expanded,
+                           cmd->cm.cache->nummodels - 1, slots, MAX_MODELS - 1);
+                CM_FreeMap(&cmd->cm);
+                return false;
+            }
+        }
     }
 
     if (ret < 0) {

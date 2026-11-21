@@ -805,8 +805,10 @@ void G_SetStats(edict_t *ent)
         ent->client->ps.stats[STAT_AMMO_ICON] = 0;
         ent->client->ps.stats[STAT_AMMO] = 0;
     } else {
+        const char *q1_icon = Q1W_AmmoIcon(ent->client->pers.weapon);   // Quake's guns: its icons
+
         item = &itemlist[ent->client->ammo_index];
-        ent->client->ps.stats[STAT_AMMO_ICON] = gi.imageindex(item->icon);
+        ent->client->ps.stats[STAT_AMMO_ICON] = gi.imageindex(q1_icon ? (char *)q1_icon : item->icon);
         ent->client->ps.stats[STAT_AMMO] = ent->client->pers.inventory[ent->client->ammo_index];
     }
 

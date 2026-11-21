@@ -1345,9 +1345,38 @@ typedef enum {
 	// body's origin. The client throws the pieces itself (q3weapons.c), as
 	// Quake III's EV_GIB_PLAYER did.
 	TE_Q3_GIBS,
+	// Quake 1's temp entities, from its own game code (g_q1vm*.c, CS_Q1VM).
+	// Fork-local: append below, never above. [byte Q1 kind] then Quake 1's own
+	// payload in Quake II's encodings, so the client handles them as Quake 1's
+	// cl_tent.c did, with Quake 1's sounds:
+	//   TE_Q1_SPIKE .. TE_Q1_TELEPORT (0-4, 7, 8, 10, 11): [pos]
+	//   TE_Q1_LIGHTNING1/2/3, TE_Q1_BEAM (5, 6, 9, 13): [short entity][start][end]
+	//   TE_Q1_EXPLOSION2 (12): [pos][byte colour start][byte colour length]
+	//   TE_Q1_PARTICLE (64): the particle() builtin, [pos][char dir * 16 x3]
+	//                        [byte count][byte palette colour]
+	//   TE_Q1_MUZZLEFLASH (65): an EF_MUZZLEFLASH, [short entity]
+	TE_Q1,
 
     TE_NUM_ENTITIES
 } temp_event_t;
+
+// TE_Q1's kinds: Quake 1's TE_ numbers, then the fork's own
+#define TE_Q1_SPIKE         0
+#define TE_Q1_SUPERSPIKE    1
+#define TE_Q1_GUNSHOT       2
+#define TE_Q1_EXPLOSION     3
+#define TE_Q1_TAREXPLOSION  4
+#define TE_Q1_LIGHTNING1    5
+#define TE_Q1_LIGHTNING2    6
+#define TE_Q1_WIZSPIKE      7
+#define TE_Q1_KNIGHTSPIKE   8
+#define TE_Q1_LIGHTNING3    9
+#define TE_Q1_LAVASPLASH    10
+#define TE_Q1_TELEPORT      11
+#define TE_Q1_EXPLOSION2    12
+#define TE_Q1_BEAM          13
+#define TE_Q1_PARTICLE      64
+#define TE_Q1_MUZZLEFLASH   65
 
 // TE_DAMAGE_INDICATOR: at most this many sources per packet, and the bits of
 // each source's first byte
@@ -1439,6 +1468,29 @@ typedef enum {
 // #define STAT_POI_X           19
 // #define STAT_POI_Y           20
 // #define STAT_POI_Z           21
+
+// Under CS_Q1VM, what Quake 1's status bar reads (screen.c draws it as sbar.c
+// did) besides STAT_HEALTH, STAT_AMMO, STAT_ARMOR, STAT_LAYOUTS and STAT_FRAGS.
+// Slots the client leaves alone (6-11) and CTF's (24-31), which no Quake 1 game
+// uses. ITEMS and WEAPON are 32 bits, split in halves.
+#define STAT_Q1_MONSTERS        6       // killed
+#define STAT_Q1_TOTALMONSTERS   7
+#define STAT_Q1_SECRETS         8       // found
+#define STAT_Q1_TOTALSECRETS    9
+#define STAT_Q1_TIME            10      // the level's seconds, stopped at its end
+#define STAT_Q1_INTERMISSION    11      // 1 intermission, 2 finale, 3 cutscene; | STAT_Q1_SHOWSCORES
+#define STAT_Q1_SHOWSCORES      0x100   // (in STAT_Q1_INTERMISSION) Quake's +showscores, Tab's "inven" here
+#define STAT_Q1_HIT             0x200   // (in STAT_Q1_INTERMISSION) a count of the hits taken, mod 64: Quake's svc_damage
+#define STAT_Q1_HITS            0x7e00  // ... its bits; the state is what is left (STAT_Q1_STATE)
+#define STAT_Q1_STATE           0xff
+#define STAT_Q1_ITEMS_LO        24      // items | items2 << 23, or serverflags << 28
+#define STAT_Q1_ITEMS_HI        25
+#define STAT_Q1_WEAPON_LO       26      // the weapon: one bit of items
+#define STAT_Q1_WEAPON_HI       27
+#define STAT_Q1_SHELLS          28
+#define STAT_Q1_NAILS           29
+#define STAT_Q1_ROCKETS         30
+#define STAT_Q1_CELLS           31
 
 #define MAX_STATS               32
 
@@ -1565,7 +1617,27 @@ typedef enum {
 // so prediction and the server move the player alike. Empty = "00".
 #define CS_Q3RULES              (CS_GENERAL + 5)
 #define Q3RULES_WEAPONS(s)      (((s)[0] >= '0' && (s)[0] <= '2') ? (s)[0] - '0' : 0)
+#define Q3RULES_Q1WEAPONS(s)    ((s)[0] == '3')     // Quake's guns (baseq2 g_q1weap.c)
 #define Q3RULES_PHYSICS(s)      ((s)[0] && (s)[1] == '1')
+
+// Set by this tree's baseq2 game while Quake 1's own game code (its progs.dat,
+// g_q1vm*.c) runs the level: the episode's name, "id1", "hipnotic"... - whose
+// copies of the effects' models and sounds the clients load
+// ("id1/<episode>/..."). Its entities then mean Quake 1 things:
+// modelindex 255 is an ordinary model (Quake 1 maps can have that many), not
+// "the player's model and skin"; modelindex4 carries Quake 1's light effects
+// (Q1_EF_* in entity_state_t below) instead of a model; and TE_Q1 temp
+// entities follow. Empty on every other map.
+#define CS_Q1VM                 (CS_GENERAL + 6)
+
+// what an entity's modelindex4 means under CS_Q1VM: Quake 1's lights, which
+// Quake II's effects have no room for (its trails take EF_ bits as usual)
+#define Q1_LIGHT_BRIGHTFIELD    1
+#define Q1_LIGHT_BRIGHT         4       // a 400 unit light
+#define Q1_LIGHT_DIM            8       // a 200 unit light
+#define Q1_LIGHT_QUAD           16      // the rerelease's blue quad glow
+#define Q1_LIGHT_PENTA          32      // the rerelease's red pentagram glow
+#define Q1_LIGHT_CANDLE         64      // the rerelease's small candle light
 
 // Some mods actually exploit CS_STATUSBAR to take space up to CS_AIRACCEL
 #define CS_SIZE(cs) \

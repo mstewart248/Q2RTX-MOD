@@ -2328,6 +2328,46 @@ bool vkpt_q3_sky_set(const q3shader_t *sky)
     return q3_sky.num_layers > 0;
 }
 
+/* A QUAKE 1 SKY's two cloud layers (main.c q1_sky_faces), drawn per ray by
+   q3_sky.glsl like a Quake III sky's - with Quake's own projection, which a
+   negative cloud height asks for. GLQuake's EmitSkyPolys moved them 8 and 16
+   units a second over 128-unit tiles: the front layer twice as fast as the
+   back one, the parallax. pt_q3_sky_clouds 0 leaves them still, in the cube
+   map.
+
+   (scale) is how bright the blended clouds are once made linear (the bake
+   works it out); its negation is the "cloud height", so the shader learns
+   both the projection and the scale from the one number. */
+bool vkpt_q1_sky_set(image_t *back, image_t *front, float scale)
+{
+    image_t *const images[2] = { back, front };
+
+    q3_sky_cvars();
+    memset(&q3_sky, 0, sizeof(q3_sky));
+
+    if (!cvar_pt_q3_sky_clouds->integer || !back)
+        return false;
+
+    q3_sky.cloud_height = -max(scale, 1e-3f);   // Quake 1's flattened sphere
+
+    for (int l = 0; l < 2; l++) {
+        if (!images[l])
+            continue;
+
+        q3pstage_t *ps = &q3_sky.layers[q3_sky.num_layers++];
+        memset(ps, 0, sizeof(*ps));
+        ps->images[0] = images[l];
+        ps->num_images = 1;
+        ps->src_blend = l ? Q3BF_SRC_ALPHA : Q3BF_ONE;
+        ps->dst_blend = l ? Q3BF_ONE_MINUS_SRC_ALPHA : Q3BF_ZERO;
+        ps->num_tcmods = 1;
+        ps->tcmods[0].type = Q3TCMOD_SCROLL;
+        ps->tcmods[0].v[0] = ps->tcmods[0].v[1] = (l ? 16.f : 8.f) / 128.f;
+    }
+
+    return true;
+}
+
 void vkpt_q3_sky_upload(QVKUniformBuffer_t *ubo, float time)
 {
     int n = 0;

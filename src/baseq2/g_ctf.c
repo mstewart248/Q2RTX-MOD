@@ -297,6 +297,15 @@ void CTF_FlagSetup(edict_t *ent)
 
     VectorCopy(ent->s.origin, dest);
     dest[2] -= 128;
+    // a Quake 1 map traces this box as a whole player (droptofloor says why):
+    // drop the flag's centre as a point, and stand it on what that finds
+    if (level.q1map) {
+        tr = gi.trace(ent->s.origin, vec3_origin, vec3_origin, dest, ent, MASK_SOLID);
+        if (!tr.startsolid && tr.fraction < 1) {
+            tr.endpos[2] -= ent->mins[2];
+            goto placed;
+        }
+    }
     tr = gi.trace(ent->s.origin, ent->mins, ent->maxs, dest, ent, MASK_SOLID);
     if (tr.startsolid) {
         gi.dprintf("CTF_FlagSetup: %s startsolid at %s\n", ent->classname, vtos(ent->s.origin));
@@ -304,6 +313,7 @@ void CTF_FlagSetup(edict_t *ent)
         return;
     }
 
+placed:
     VectorCopy(tr.endpos, ent->s.origin);
     gi.linkentity(ent);
 

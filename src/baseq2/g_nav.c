@@ -1073,7 +1073,9 @@ static void Nav_FindTeleporters(void)
                 continue;
             jumppad = true;
             dest = NULL;
-        } else if (e->touch == teleporter_touch || e->touch == q3_teleport_touch) {
+        } else if (e->touch == teleporter_touch || e->touch == q3_teleport_touch ||
+                   (e->touch == q1_teleport_touch && !e->targetname)) {
+            // (a Quake 1 one with a targetname carries only just after it fires)
             dest = G_Find(NULL, FOFS(targetname), e->target);
             if (!dest)
                 continue;

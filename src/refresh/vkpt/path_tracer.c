@@ -2050,7 +2050,9 @@ vkpt_pt_tile_layout(uint32_t screen_width, uint32_t screen_height, vkpt_tile_lay
 		const int bounces = cvar_pt_num_bounce_rays ? (int)roundf(cvar_pt_num_bounce_rays->value) : 2;
 		layout->path_regions = bounces >= 3 ? 2 : 1;
 	}
-	if (cvar_pt_sparse && cvar_pt_sparse->value > 0.f)
+	// (and while mat author's photo mode lights half the pixels: MAT_AuthorSparseRate -
+	// the buffer is remade once going into the tool and once coming out)
+	if ((cvar_pt_sparse && cvar_pt_sparse->value > 0.f) || MAT_AuthorSparseRate() > 0.f)
 		layout->path_regions = 2;
 	layout->path_stride = (tiles_x + 2) * tiles_y * 64;
 	layout->path_offset = layout->data_offset + PT_TILE_LISTS * layout->max;

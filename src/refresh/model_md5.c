@@ -187,6 +187,15 @@ static void MD5_Matrix34Invert(const float *inMat, float *outMat)
     outMat[11] = -DotProduct(outMat + 8, trans);
 }
 
+static void MD5_Matrix34Multiply(const float *a, const float *b, float *out)
+{
+    for (int r = 0; r < 3; r++) {
+        const float *ar = a + r * 4;
+        for (int c = 0; c < 4; c++)
+            out[r * 4 + c] = ar[0] * b[c] + ar[1] * b[4 + c] + ar[2] * b[8 + c] + (c == 3 ? ar[3] : 0.0f);
+    }
+}
+
 static void MD5_TransformPoint(const float *mat, const vec3_t in, vec3_t out)
 {
     out[0] = mat[0] * in[0] + mat[1] * in[1] + mat[2] * in[2] + mat[3];
@@ -666,6 +675,190 @@ static void MD5_WeldSeamNormals(iqm_model_t *iqmData, int total_verts)
 =================================================================
 */
 
+static vec3_t   md5_load_offset;
+static bool     md5_load_offset_set;
+static float    md5_load_scale = 1.0f;
+
+void MD5_SetLoadOffset(const vec_t *offset)
+{
+    md5_load_offset_set = offset && (offset[0] || offset[1] || offset[2]);
+    if (md5_load_offset_set)
+        VectorCopy(offset, md5_load_offset);
+    else
+        VectorClear(md5_load_offset);
+}
+
+void MD5_SetLoadScale(float scale)
+{
+    md5_load_scale = scale > 0.0f ? scale : 1.0f;
+}
+
+/*
+Scales a loaded model by (s) about its origin: the bind positions, and every
+joint's translation in the bind and in each frame. Skinning is (pose x inverse
+bind) x position, and a uniform scale commutes with the rotations, so the
+whole model - at rest or animated - comes out (s) times as big. Normals keep.
+Quake 1's rerelease box meshes are 2/3 of the boxes they stand in for (KEX
+draws them 1.5 times up: shellssmall is 15 units across, b_shell0 22).
+*/
+static void MD5_ApplyScale(iqm_model_t *iqmData, int num_joints, float s)
+{
+    for (int j = 0; j < num_joints; j++) {
+        float *m = iqmData->bindJoints + j * 12;
+        m[3] *= s;
+        m[7] *= s;
+        m[11] *= s;
+        MD5_Matrix34Invert(m, iqmData->invBindJoints + j * 12);
+    }
+
+    for (uint32_t v = 0; v < iqmData->num_vertexes * 3; v++)
+        iqmData->positions[v] *= s;
+
+    if (iqmData->poses) {
+        for (uint32_t f = 0; f < iqmData->num_frames; f++)
+            for (int j = 0; j < num_joints; j++)
+                VectorScale(iqmData->poses[f * num_joints + j].translate, s,
+                            iqmData->poses[f * num_joints + j].translate);
+    }
+
+    iqmData->bounds = NULL;
+}
+
+/*
+Moves a loaded model by (o): the bind positions, the bind joints and the root
+joints of every frame. Moving the vertices alone is not enough - skinning
+puts each through its joint's (pose x inverse bind), and a frame that turns
+the root would turn the offset with it. Moved together, pose and bind cancel
+as before and the whole model is (o) away. The .md5anim's bounds were not
+moved and, for the boxes this is for, are wrong anyway (a few units across);
+GL and software cull by the bind pose instead (MD5_FrameBounds).
+*/
+static void MD5_ApplyOffset(iqm_model_t *iqmData, int num_joints, const vec3_t o)
+{
+    for (int j = 0; j < num_joints; j++) {
+        float *m = iqmData->bindJoints + j * 12;
+        m[3] += o[0];
+        m[7] += o[1];
+        m[11] += o[2];
+        MD5_Matrix34Invert(m, iqmData->invBindJoints + j * 12);
+    }
+
+    for (uint32_t v = 0; v < iqmData->num_vertexes; v++)
+        VectorAdd(iqmData->positions + v * 3, o, iqmData->positions + v * 3);
+
+    if (iqmData->poses) {
+        for (uint32_t f = 0; f < iqmData->num_frames; f++) {
+            for (int j = 0; j < num_joints; j++) {
+                if (iqmData->jointParents[j] < 0)
+                    VectorAdd(iqmData->poses[f * num_joints + j].translate, o,
+                              iqmData->poses[f * num_joints + j].translate);
+            }
+        }
+    }
+
+    iqmData->bounds = NULL;
+}
+
+/* A MUZZLE FLASH JOINT. The Quake rerelease's md5s carry the flash on a joint of
+   its own - "flame" (v_nail2, v_shot, v_rock, soldier, enforcer), "flame_1".."_3"
+   (v_nail, v_rock2), "small_flame"/"big_flame" (player) - that JUMPS: parked
+   behind or inside the gun on frames with no flash, at one barrel or another on
+   those with one. Blended, v_nail2's slid between its barrels and up out of the
+   gun's body (Matt, 2026-11-21: "it should be right barrel left barrel and it's
+   moving the muzzle flashes in between"). Such a joint takes the nearer frame's
+   pose whole (R_ComputeIQMTransforms) - what Quake, which never blended, drew. */
+static bool md5_snap_joint(const char *name)
+{
+    const size_t len = strlen(name);
+    if (!Q_stricmp(name, "flame") || !Q_stricmpn(name, "flame_", 6))
+        return true;
+    return len > 6 && !Q_stricmp(name + len - 6, "_flame");
+}
+
+/* A MUZZLE FLASH RIDES ITS BARREL. Snapping a flash joint to the nearer frame
+   keeps it off the blend between where it is parked and the muzzle, but the
+   barrels it sits on still blend: v_nail2's four turn 45 degrees a frame and its
+   one "flame" joint (parented to the root, not to a barrel) is put on a barrel
+   of each frame, so snapped it sat up to 22.5 degrees round from that barrel -
+   between two of them (Matt, 2026-11-21: "the muzzle flash on the chain gun seem
+   to have the same problem as the nail gun"). v_nail's recoiling barrels left
+   their flashes off the muzzles the same way.
+
+   So for each frame a flash joint is tied to the joint it sits on there, and
+   R_ComputeIQMTransforms places it by that joint's BLENDED pose at this frame's
+   offset from it. "Sits on" = nearest ACROSS the model's +x, the way a Quake
+   model faces, the whole distance only a tie-break: v_nail2's aligned barrel is
+   0.2 across (the body 3.6, the next barrel 4.8); v_nail's right barrel 0.4
+   where the nearer "middlestick" is 4.1. A flash with joints below it only
+   snaps, as before. */
+static void MD5_SnapRiders(model_t *model, iqm_model_t *iqmData, int num_joints)
+{
+    if (!iqmData->jointSnap || !iqmData->poses || !iqmData->num_frames)
+        return;
+
+    const int num_frames = (int)iqmData->num_frames;
+    short *rider = MOD_Malloc(sizeof(short) * num_frames * num_joints);
+    float *offset = MOD_Malloc(sizeof(float) * 12 * num_frames * num_joints);
+    float *abs_m = Z_Malloc(sizeof(float) * 12 * num_joints);
+    if (!rider || !offset) {
+        Z_Free(abs_m);
+        return;
+    }
+
+    for (int f = 0; f < num_frames; f++) {
+        const iqm_transform_t *pose = iqmData->poses + f * num_joints;
+
+        // this frame's absolute joints, as R_ComputeIQMTransforms composes them
+        for (int j = 0; j < num_joints; j++) {
+            float local[12];
+            MD5_JointToMatrix(pose[j].rotate, pose[j].translate, local);
+            if (iqmData->jointParents[j] >= 0)
+                MD5_Matrix34Multiply(abs_m + iqmData->jointParents[j] * 12, local, abs_m + j * 12);
+            else
+                memcpy(abs_m + j * 12, local, sizeof(local));
+        }
+
+        for (int s = 0; s < num_joints; s++) {
+            short *out = rider + f * num_joints + s;
+            *out = -1;
+            if (!iqmData->jointSnap[s])
+                continue;
+
+            bool has_children = false;
+            for (int c = 0; c < num_joints; c++)
+                if (iqmData->jointParents[c] == s)
+                    has_children = true;
+            if (has_children)
+                continue;
+
+            const float *ps = abs_m + s * 12;
+            float best = 1e30f;
+            for (int r = 0; r < num_joints; r++) {
+                if (iqmData->jointSnap[r])
+                    continue;
+                const float *pr = abs_m + r * 12;
+                const float dx = ps[3] - pr[3], dy = ps[7] - pr[7], dz = ps[11] - pr[11];
+                const float across = sqrtf(dy * dy + dz * dz);
+                const float score = across + 0.1f * sqrtf(dx * dx + dy * dy + dz * dz);
+                if (score < best) {
+                    best = score;
+                    *out = (short)r;
+                }
+            }
+            if (*out < 0)
+                continue;
+
+            float inv_rider[12];
+            MD5_Matrix34Invert(abs_m + *out * 12, inv_rider);
+            MD5_Matrix34Multiply(inv_rider, ps, offset + ((size_t)f * num_joints + s) * 12);
+        }
+    }
+
+    Z_Free(abs_m);
+    iqmData->jointSnapRider = rider;
+    iqmData->jointSnapOffset = offset;
+}
+
 int MOD_LoadMD5_Base(model_t *model, const void *rawdata, size_t length, const char *mod_name)
 {
     md5_parse_t     p;
@@ -744,6 +937,17 @@ int MOD_LoadMD5_Base(model_t *model, const void *rawdata, size_t length, const c
 
         MD5_JointToMatrix(rot, pos, bindJoints + i * 12);
         MD5_Matrix34Invert(bindJoints + i * 12, iqmData->invBindJoints + i * 12);
+
+        if (md5_snap_joint(iqmData->jointNames + i * MAX_QPATH)) {
+            if (!iqmData->jointSnap) {
+                if (!(iqmData->jointSnap = MOD_Malloc(num_joints))) {
+                    ret = Q_ERR(ENOMEM);
+                    goto fail;
+                }
+                memset(iqmData->jointSnap, 0, num_joints);
+            }
+            iqmData->jointSnap[i] = 1;
+        }
     }
     MD5_Expect(&p, "}");
 
@@ -1011,6 +1215,14 @@ int MOD_LoadMD5_Base(model_t *model, const void *rawdata, size_t length, const c
         MD5_LoadScale(iqmData, mod_name, iqmData->jointNames, num_joints);
     else
         Com_DPrintf("%s: no usable .md5anim, using bind pose\n", mod_name);
+
+    if (md5_load_scale != 1.0f)
+        MD5_ApplyScale(iqmData, num_joints, md5_load_scale);
+    if (md5_load_offset_set)
+        MD5_ApplyOffset(iqmData, num_joints, md5_load_offset);
+
+    // after the scale and offset, which move the poses
+    MD5_SnapRiders(model, iqmData, num_joints);
 
     MD5_FreeMeshes(meshes, parsed_meshes);
     return Q_ERR_SUCCESS;
@@ -1505,6 +1717,32 @@ int MD5_ResolveSkins(const char *mod_name, md5_skin_t *skins)
     int numskins;
 
     memset(skins, 0, sizeof(*skins) * MAX_ALIAS_SKINS);
+
+    /* QUAKE 1's rerelease md5s sit beside the .mdl, in progs/, with no .md2
+       to take a skin list from: skin N is <model>_<NN>_00.lmp, the first
+       frame of the .mdl's skin N (model_q1.c chose the md5 knowing it has as
+       many as the .mdl). The name keeps the game's "id1/<episode>/", so an
+       add-on's own skin wins on its maps; images.c reads the .lmp. */
+    if (!strstr(mod_name, "/md5/")
+        && (!Q_strncasecmp(mod_name, "id1/", 4) || !Q_strncasecmp(mod_name, "progs/", 6))) {
+        char stem[MAX_QPATH];
+
+        COM_StripExtension(stem, mod_name, sizeof(stem));
+        for (numskins = 0; numskins < MAX_ALIAS_SKINS; numskins++) {
+            if (Q_snprintf(skins[numskins].path, sizeof(skins[numskins].path), "%s_%02d_00.lmp",
+                           stem, numskins) >= sizeof(skins[numskins].path))
+                break;
+            if (!FS_FileExists(skins[numskins].path))
+                break;
+        }
+        if (numskins < MAX_ALIAS_SKINS)
+            skins[numskins].path[0] = 0;
+        if (!numskins) {
+            Q_snprintf(skins[0].path, sizeof(skins[0].path), "%s_00_00.lmp", stem);
+            numskins = 1;
+        }
+        return numskins;
+    }
 
     COM_FilePath(mod_name, base_path, sizeof(base_path));
 

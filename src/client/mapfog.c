@@ -139,10 +139,82 @@ static cvar_t   *cl_fog_rerelease;
 
 /*
 =================
+mapfog_q1_color
+
+A Quake 1 info_fog writes its colour 0..255 ("60 50 50"), its worldspawn
+"fog" 0..1: the same colour either way.
+=================
+*/
+static void mapfog_q1_color(vec3_t c)
+{
+    if (c[0] > 1 || c[1] > 1 || c[2] > 1)
+        VectorScale(c, 1.0f / 255, c);
+}
+
+/*
+=================
+CL_FindInfoFog
+
+A Quake 1 rerelease map's worldspawn "fog_info_entity": the info_fog of that
+targetname, from the entities after worldspawn. It carries the Quake II
+rerelease's own keys, fog_density and fog_color.
+=================
+*/
+static bool CL_FindInfoFog(const char *data, const char *name, mapfog_t *out)
+{
+    char        key[64], cls[64], tname[MAX_QPATH], color[64], density[64];
+    const char  *token;
+
+    while (1) {
+        token = COM_Parse(&data);
+        if (!data || strcmp(token, "{"))
+            return false;
+        cls[0] = tname[0] = color[0] = density[0] = 0;
+        while (1) {
+            token = COM_Parse(&data);
+            if (!data || !strcmp(token, "}"))
+                break;
+            Q_strlcpy(key, token, sizeof(key));
+            token = COM_Parse(&data);
+            if (!data)
+                return false;
+            if (!strcmp(key, "classname"))
+                Q_strlcpy(cls, token, sizeof(cls));
+            else if (!strcmp(key, "targetname"))
+                Q_strlcpy(tname, token, sizeof(tname));
+            else if (!strcmp(key, "fog_color"))
+                Q_strlcpy(color, token, sizeof(color));
+            else if (!strcmp(key, "fog_density"))
+                Q_strlcpy(density, token, sizeof(density));
+        }
+        if (!data)
+            return false;
+        if (!strcmp(cls, "info_fog") && !Q_stricmp(tname, name) && density[0]) {
+            out->density = atof(density);
+            if (sscanf(color, "%f %f %f", &out->color[0], &out->color[1], &out->color[2]) != 3)
+                VectorSet(out->color, 0.3f, 0.3f, 0.3f);
+            mapfog_q1_color(out->color);
+            return out->density > 0;
+        }
+    }
+}
+
+/*
+=================
 CL_ParseWorldspawnFog
 
 Walks the first entity block of the lump. worldspawn is always entity 0, so
-there is no need to scan the rest.
+there is no need to scan the rest - except for a Quake 1 map's info_fog.
+
+QUAKE 1. Its rerelease runs on the same KEX engine as Quake II's, and its fog
+is the same plain distance fog: worldspawn "fog" "density r g b" (FitzQuake's
+key, 71 maps - every id1 map among them), or "fog_info_entity" naming an
+info_fog that holds fog_density / fog_color (dopa, mg1, mg3: 42 maps; colour
+0..255 there), with "_skyfog" for how far the sky is fogged (fog_sky_factor).
+The density is the same number too: KEX's density / 64 * depth, 1 - exp(-d^2),
+is the GL_EXP2 fog FitzQuake gave the "fog" key. "_fog" is the editor's copy,
+used only when nothing else is there. mg1's trigger_fog_transition, which
+fades between two info_fogs as the player crosses it, is not read yet.
 =================
 */
 static bool CL_ParseWorldspawnFog(const char *data, mapfog_t *out)
@@ -151,6 +223,10 @@ static bool CL_ParseWorldspawnFog(const char *data, mapfog_t *out)
     const char  *token;
     bool        is_world = false;
     bool        got_any = false;
+    float       q1fog[4], q1edfog[4], q1skyfog = -1;
+    int         q1n = 0, q1edn = 0;
+    bool        got_sky = false;
+    char        q1info[MAX_QPATH] = "";
 
     memset(out, 0, sizeof(*out));
 
@@ -181,6 +257,15 @@ static bool CL_ParseWorldspawnFog(const char *data, mapfog_t *out)
             sscanf(token, "%f %f %f", &out->color[0], &out->color[1], &out->color[2]);
         } else if (!strcmp(key, "fog_sky_factor")) {
             out->sky_factor = atof(token);
+            got_sky = true;
+        } else if (!strcmp(key, "fog")) {
+            q1n = sscanf(token, "%f %f %f %f", &q1fog[0], &q1fog[1], &q1fog[2], &q1fog[3]);
+        } else if (!strcmp(key, "_fog")) {
+            q1edn = sscanf(token, "%f %f %f %f", &q1edfog[0], &q1edfog[1], &q1edfog[2], &q1edfog[3]);
+        } else if (!Q_stricmp(key, "_skyfog")) {
+            q1skyfog = atof(token);
+        } else if (!strcmp(key, "fog_info_entity")) {
+            Q_strlcpy(q1info, token, sizeof(q1info));
         } else if (!strcmp(key, "heightfog_density")) {
             out->hf_density = atof(token);
             got_any = true;
@@ -197,6 +282,27 @@ static bool CL_ParseWorldspawnFog(const char *data, mapfog_t *out)
         } else if (!strcmp(key, "heightfog_end_color")) {
             sscanf(token, "%f %f %f", &out->hf_end_color[0], &out->hf_end_color[1], &out->hf_end_color[2]);
         }
+    }
+
+    // Quake 1's, where the map has none of Quake II's keys: its info_fog,
+    // else "fog", else the editor's "_fog" (FitzQuake's grey without a colour)
+    if (is_world && !got_any) {
+        const float *q1 = q1n >= 1 && q1fog[0] > 0 ? q1fog : q1edn >= 1 && q1edfog[0] > 0 ? q1edfog : NULL;
+        const int n = q1 == q1fog ? q1n : q1edn;
+
+        if (q1info[0] && CL_FindInfoFog(data, q1info, out)) {
+            got_any = true;
+        } else if (q1) {
+            out->density = q1[0];
+            if (n >= 4)
+                VectorCopy(q1 + 1, out->color);
+            else
+                VectorSet(out->color, 0.3f, 0.3f, 0.3f);
+            mapfog_q1_color(out->color);
+            got_any = true;
+        }
+        if (got_any && !got_sky && q1skyfog >= 0)
+            out->sky_factor = q1skyfog;
     }
 
     mapfog_finish(out);
@@ -576,12 +682,123 @@ static void CL_UpdateTriggerFog(void)
     }
 }
 
+/*
+=======================================================================
+
+QUAKE 1'S FOG COMMAND
+
+FitzQuake's "fog" console command, which MG1's progs stuff into the player's
+console (fog.qc: trigger_fog, trigger_fog_transition, a spawn spot's
+fog_info_entity). It is "q1fog" here - "fog" is the renderer's fog volumes
+(vkpt/fog.c) - and the baseq2 game renames it on the way (g_q1vm_cmds.c):
+
+    q1fog <density>                 q1fog <density> <fade s>
+    q1fog <r> <g> <b>               q1fog <density> <r> <g> <b> [fade s]
+
+It sets the distance fog and its colour, fading from wherever they are over
+the time given, on top of the map's own and whatever cl_fog_rerelease says:
+Quake 1 had only this fog. A new map clears it. As with trigger_fog, the
+render scale stays the map's own, so a thicker fog renders thicker.
+
+=======================================================================
+*/
+
+typedef struct {
+    bool        active;
+    float       from_density, to_density;
+    vec3_t      from_color, to_color;
+    int         start, duration;
+} cmdfog_t;
+
+static cmdfog_t cl_cmdfog;
+static float    cl_cmdfog_peak;     // the reference when worldspawn has no fog
+
+// the command's fog right now
+static void mapfog_cmd_value(float *density, vec3_t color)
+{
+    const cmdfog_t *f = &cl_cmdfog;
+    float t = 1;
+
+    if (f->duration > 0 && cl.time < f->start + f->duration)
+        t = cl.time <= f->start ? 0 : (float)(cl.time - f->start) / f->duration;
+    *density = f->from_density + (f->to_density - f->from_density) * t;
+    LerpVector(f->from_color, f->to_color, t, color);
+}
+
+static void CL_Q1Fog_f(void)
+{
+    float   density, fade = 0;
+    vec3_t  color;
+    int     i;
+
+    // where it is now: the last command's, else the map's
+    if (cl_cmdfog.active) {
+        mapfog_cmd_value(&density, color);
+    } else {
+        density = cl_mapfog.valid ? cl_mapfog.density : 0;
+        VectorCopy(cl_mapfog.color, color);
+    }
+
+    switch (Cmd_Argc()) {
+    case 2:
+        density = atof(Cmd_Argv(1));
+        break;
+    case 3:
+        density = atof(Cmd_Argv(1));
+        fade = atof(Cmd_Argv(2));
+        break;
+    case 4:
+        for (i = 0; i < 3; i++)
+            color[i] = atof(Cmd_Argv(1 + i));
+        break;
+    case 5:
+    case 6:
+        density = atof(Cmd_Argv(1));
+        for (i = 0; i < 3; i++)
+            color[i] = atof(Cmd_Argv(2 + i));
+        if (Cmd_Argc() == 6)
+            fade = atof(Cmd_Argv(5));
+        break;
+    default:
+        Com_Printf("usage:\n"
+                   "   %s <density> [fade seconds]\n"
+                   "   %s <red> <green> <blue>\n"
+                   "   %s <density> <red> <green> <blue> [fade seconds]\n"
+                   "current values:\n"
+                   "   density is %g\n"
+                   "   color is %g %g %g\n",
+                   Cmd_Argv(0), Cmd_Argv(0), Cmd_Argv(0), density, color[0], color[1], color[2]);
+        return;
+    }
+
+    if (density < 0)
+        density = 0;
+    for (i = 0; i < 3; i++)
+        clamp(color[i], 0, 1);
+
+    if (cl_cmdfog.active) {
+        mapfog_cmd_value(&cl_cmdfog.from_density, cl_cmdfog.from_color);
+    } else {
+        cl_cmdfog.from_density = cl_mapfog.valid ? cl_mapfog.density : 0;
+        VectorCopy(cl_mapfog.color, cl_cmdfog.from_color);
+    }
+    cl_cmdfog.to_density = density;
+    VectorCopy(color, cl_cmdfog.to_color);
+    cl_cmdfog.start = cl.time;
+    cl_cmdfog.duration = fade > 0 ? (int)(fade * 1000) : 0;
+    cl_cmdfog.active = true;
+
+    cl_cmdfog_peak = max(cl_cmdfog_peak, density / MAPFOG_DISTANCEFOG_REFERENCE);
+}
+
 static void CL_ClearTriggerFog(void)
 {
     cl_numtrigfogs = 0;
     cl_trigfog_peak = 0;
     memset(cl_fogfades, 0, sizeof(cl_fogfades));
     cl_fogfade_instant_until = -1;
+    memset(&cl_cmdfog, 0, sizeof(cl_cmdfog));
+    cl_cmdfog_peak = 0;
 }
 
 // Fog is on or off. The old 1/2/3 modes are gone: 1 is what was mode 3, the
@@ -606,6 +823,9 @@ void CL_InitMapFog(void)
     // The rerelease's own fog rules and its trigger_fogs - see the notes at
     // the top of the file. Read every frame, so it switches live.
     cl_fog_rerelease = Cvar_Get("cl_fog_rerelease", "0", CVAR_ARCHIVE);
+
+    // Quake 1's FitzQuake fog command, as MG1's progs send it
+    Cmd_AddCommand("q1fog", CL_Q1Fog_f);
 
     /* THE FIVE FOG KNOBS - the only things that set how bright the fog is.
        Registered here only to make them ARCHIVE; the renderer owns them (the
@@ -706,6 +926,9 @@ bool CL_GetMapFog(mapfog_params_t *out)
     if (peak <= 0.0f && rerelease &&
         (cl_fogfades[FADE_FOG].active || cl_fogfades[FADE_HEIGHTFOG].active))
         peak = cl_trigfog_peak;
+    // a Quake 1 map whose only fog is MG1's q1fog command
+    if (peak <= 0.0f && cl_cmdfog.active)
+        peak = cl_cmdfog_peak;
 
     if (peak <= 0.0f) {
         out->density = MAPFOG_DISTANCEFOG_REFERENCE;    // density 1 everywhere
@@ -723,6 +946,8 @@ bool CL_GetMapFog(mapfog_params_t *out)
         fog.hf_color_start_z = fog.hf_start_z;
         fog.hf_color_end_z = fog.hf_end_z;
     }
+    if (cl_cmdfog.active)
+        mapfog_cmd_value(&fog.density, fog.color);
 
     // a band with no thickness would divide by zero in the shader
     if (fog.hf_start_z <= fog.hf_end_z)
@@ -765,6 +990,8 @@ bool CL_GetMapFogKEX(mapfog_kex_t *out)
     fog = cl_mapfog_kex;
     mapfog_fade_value(&cl_fogfades[FADE_FOG], FADE_FOG, &fog);
     mapfog_fade_value(&cl_fogfades[FADE_HEIGHTFOG], FADE_HEIGHTFOG, &fog);
+    if (cl_cmdfog.active)
+        mapfog_cmd_value(&fog.density, fog.color);
 
     // KEX draws height fog only with both a density and a falloff, and a band
     // with no thickness would divide by zero in its colour ramp

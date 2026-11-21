@@ -254,6 +254,12 @@ game and feeds the model its own output, frame after frame.
   base colour at a fixed mip, no normal map, roughness 1, no specular — so
   metal and glossy surfaces bounced light like matte walls. Bounces now get the
   real material, with a ray-cone texture LOD.
+* **See-through glow in glossy reflections** (`pt_bounce_transparent`, on by
+  default). Glowing see-through surfaces, such as Quake III's additive console
+  rings, used to show only in perfect mirrors (`CHROME` with roughness under
+  0.02). A glossy reflection now also picks up the glow of the nearest such
+  surface in front of what it hits. It only adds light; whatever is behind the
+  surface isn't dimmed. `0` turns it off.
 * **Underwater screen warp** (`pt_water_warp`). Unlike the original's
   post-process resample, this bends the *camera rays*, so it costs no sharpness
   through DLSS, has real off-screen geometry to bend in from, and never touches
@@ -877,7 +883,14 @@ maps too:
   machinegun, shotgun, grenade and rocket launchers, lightning gun, railgun,
   plasma gun and BFG10K), or **by player model**, so a Quake III model gets
   Quake III's guns and a Quake II model Quake II's. **Spawn with** (`g_q3_kit`)
-  says what Quake II's guns start from.
+  says what Quake II's guns start from. With Quake installed, **quake**
+  (`g_q3_weapons 3`, and it needs no Quake III) deals Quake's guns instead:
+  the axe, shotgun and super shotgun, nailgun and super nailgun, grenade and
+  rocket launchers and the Thunderbolt, with Quake's damage, ammo, pickups and
+  obituaries. Everyone spawns with the axe and shotgun, nails come out of
+  bullets, and both launchers fire rockets. They are drawn with Quake's own
+  models, and with its icons in the weapon bar and wheel; their explosions
+  and rocket trails are the [simulated fire and smoke](#simulated-fire-and-smoke-nvidia-flow).
 * **Movement** (`g_q3_physics`): Quake II's running, jumping and knockback, or
   Quake III's: its speed, friction, jump height and knockback, so strafe
   jumping and rocket jumps work the way they did there.
@@ -942,7 +955,12 @@ blue skin.
   (`pt_q3_sun_scale`, `pt_q3_sun_color`). `sky_override` swaps in another sky.
 * **Fog**: fog brushes become [volumetric fog](#volumetric-fog-and-atmosphere)
   (`pt_fog_q3_thickness`).
-* **Mirrors and portals** reflect and look through, as in Quake III.
+* **Mirrors and portals** reflect and look through, as in Quake III, and so
+  do Quake's teleporter gates. Light comes through a portal too, so a lit room
+  on the far side lights this one, and a lamp behind a teleporter gate shines
+  through it (`pt_portal_light`), and DLSS Ray
+  Reconstruction is told to trust the current frame on a portal's view, which
+  moves under the flat surface's motion vectors (`pt_dlss_portal_responsive`).
 * **Materials**: `baseq3/materials/quake3.mat` gives Quake III's textures
   roughness, metal and normal maps. Quake III's painted-on environment-map
   shine becomes a real reflection of the room (`pt_q3_env_shine 1`, the
@@ -1649,6 +1667,15 @@ puts the entity back to dormant.
 Only debug mode makes a dormant map light pickable — with the markers off there is
 nothing on screen to aim at.
 
+A **Quake 1** map's lights are map lights the same way: its shadow-casting
+`dynamiclight` entities and every light its compiler baked in (`light`,
+`light_fluoro`, `light_globe`, the torches, `light_candle`...). A replacement
+takes the entity's colour and its brightness from Quake's `light` value (300 is
+about 3.6 on the editor's scale), and a light the game switches keeps switching
+through its style. `cl_dynamic_lights 1` lets the unreplaced ones light the map,
+to compare. `light_q1_entities 1` brings back the old behaviour: on a map with no
+light file, its lights are copied into the editor as placed lights.
+
 ## The file
 
 `<gamedir>/maps/lights/<mapname>.cfg`, rewritten in full after every change. It
@@ -1832,7 +1859,7 @@ Materials can be examined and modified at run time.
 | `mat author [map]` | **(new)** paint the material's maps with a brush in photo mode. See [Painting material maps](#painting-material-maps-mat-author) |
 | `mat stage<N> <setting> <value>` | **(new)** one stage of a Quake III shader: `map` (its image; `map off` leaves the stage out), or a surface of its own where it shows — `roughness_override`, `metalness_factor`, `specular_factor`, `bump_scale`, `texture_roughness`, `texture_metallic`, `texture_normals`, `emissive_factor`. `none` takes a setting away. In a `.mat` file: `stage2_roughness_override 0.8` |
 | `mat view_weapon [N] <command>` | **(new)** any of these for the gun in your hands instead of the crosshair's material (`mat view_weapon print`). Alone, it lists the gun's materials and their N |
-| `mat create_instance` | give the surface at the crosshair its own material, so it can be tuned without affecting other uses of the same texture. Writes an empty section to `materials/<map>.mat` and reloads |
+| `mat create_instance` | give the surface at the crosshair its own material, so it can be tuned without affecting other uses of the same texture. Writes an empty section to `materials/<map>.mat` and reloads. On a placed model (a torch, a lamp) it gives that one model its own material, keyed on where it stands, so each torch can have its own `emissive_factor` and `light_factor` |
 | `mat reload` | **(new)** re-read every `.mat` file from disk, and any texture saved since it was loaded, re-apply per-map overrides and MD5 inheritance, re-detect sidecars, and rebuild. Auto-generated materials are left alone, and the count of each is reported |
 | `mat save` | **(new)** write what `mat <attribute> <value>` changed back into the `.mat` entries those materials came from — only those lines; the old file is kept as `.bak` |
 | `mat save <filename> [all] [force]` | write the active materials to a new file. `all` saves everything rather than only the undefined ones; `force` overwrites an existing file |
@@ -1863,22 +1890,27 @@ controls when it starts.
 | Input | Does |
 |---|---|
 | hold **right mouse** | look around; **WASD** / **Q E** fly (**Shift** fast, **Ctrl** slow); **Ctrl + right mouse** zooms |
+| **H**, or the panel's **home** | the camera back where it started: the player's eye, unzoomed |
 | **left mouse** | paint (or press a panel control) |
 | **Alt + left mouse** | switch to the material under the brush |
-| **mouse wheel**, **[ ]** | brush size. Over a size slider the wheel steps one texel (**Shift**: ten) |
+| **mouse wheel**, **[ ]** | brush size; in rectangle mode, the rectangle's corner radius |
 | **Shift + wheel** | the value being painted |
 | **Ctrl + wheel** | falloff |
 | **1**–**5** | the map: roughness, metallic, normals, emissive, height |
-| **B** (**Shift + B** back) | brush shape: round, square, rectangle |
-| **R** | turn the rectangle (swap its length and width) |
 | **L** | line mode on or off |
+| **R** | rectangle mode on or off: press at one corner, let go at the other |
+| click a slider's **number box** | type a value; **Enter** takes it, **Esc** leaves it as it was |
+| **wheel** or **← →** over a slider | step it by one (**Shift**: ten) |
+| **Shift** while dragging a slider | finer still (sliders already move the cursor at `mat_author_slider_speed`, 0.25) |
 | **T** (**Shift + T** back) | next tool: brush, spray, hatch, noise, blur, fill |
 | **G** | fill on or off |
 | **F** / **P** | lock painting to the face / the piece under the brush. **Shift** adds or removes one; **F** or **P** over the lock, or **U**, unlocks |
+| **M** (**Shift + M** back) | selection shape: rectangle, ellipse, lasso, then back to painting. Left-drag selects; **Shift** + drag adds, **Ctrl** + drag takes away, a click drops it |
+| **Ctrl + A** / **Ctrl + D** / **Ctrl + I** | select all / drop the selection (**Ctrl + Shift + D** brings it back) / invert it |
 | **Tab** | the map view (a flat view of the map, paintable) |
 | **O** | the base texture under the map in the map view, or the map alone |
-| **Ctrl + Z** | undo |
-| **Ctrl + Y**, **Ctrl + Shift + Z** | redo |
+| **Ctrl + Z** | undo, on the map being painted |
+| **Ctrl + Y**, **Ctrl + Shift + Z** | redo, on the map being painted |
 | **Ctrl + S** | save |
 | **Esc** | leave |
 
@@ -1888,7 +1920,8 @@ controls when it starts.
   texels it is about to change are outlined on the surface (and in the map
   view). A map tiles over the world, so painting one wall paints every use of
   that texture; mirrored UV halves on a model paint together.
-* **Roughness** and **metallic** paint a value from 0 to 100%.
+* **Roughness** and **metallic** paint a value from 0 to 100%, starting at
+  100% roughness and 0% metallic (a texture with no maps).
 * **Normals** paint a *direction* and an *intensity*. The direction is a tilt
   relative to the screen, converted per surface to its texture axes; in the map
   view it is relative to the image. Intensity 0 paints flat.
@@ -1917,9 +1950,9 @@ controls when it starts.
 
 ### Brushes and tools
 
-* **Shapes**: round, square, or a rectangle with its own **length** (across the
-  map) and **width** (down it) in texels, set with the sliders, their **-** /
-  **+** buttons, or `mat author rect <length> <width>`. Default 32 × 4.
+* **The brush is round**, its size in texels across.
+* **Strokes**: **free**, **line** or **rect**, on the panel or **L** / **R**, or
+  `mat author free`, `mat author line`, `mat author rect [corner radius]`.
 * **Falloff** softens the outer part of the brush. Each texel is blended from
   what was there by the stroke's highest weight on it, so a soft stroke blends
   into the existing map rather than wiping it, and a second stroke builds on the
@@ -1927,6 +1960,15 @@ controls when it starts.
 * **Line**: press where the line starts and let go where it ends. Until then the
   brush is shown swept along it; on release the whole line is painted as one
   stroke, with any tool but fill.
+* **Rectangle**: press on the texel at one corner and let go on the one at the
+  other. Until then the rectangle is outlined; on release every texel in it is
+  painted as one stroke, with any tool but fill. Its corners are rounded by the
+  **corner radius** in texels (panel slider, or the wheel while in this mode),
+  never more than half its shorter side. Falloff softens the outer part of its
+  half-width.
+* **Numbers**: every slider has a box with its number (percent, texels or
+  degrees; the normal's direction too). Click it and type, then **Enter**.
+  Sliders snap to whole numbers.
 * **Tools**:
 
 | Tool | Does | Its setting |
@@ -1936,7 +1978,7 @@ controls when it starts.
 | hatch | crossed diagonal lines, fixed to the texel grid so strokes line up | spacing in texels |
 | noise | the value give or take an amount, fixed per texel for the stroke | amount |
 | blur | smooths what is already there | strength |
-| fill | fills the lock; with no lock, floods neighbouring texels within a tolerance of the clicked one, by the map's values or by the base texture's colour | tolerance |
+| fill | fills the lock and/or selection; with neither, floods neighbouring texels within a tolerance of the clicked one, by the map's values or by the base texture's colour | tolerance |
 
 ### Locks: one face or one piece
 
@@ -1949,12 +1991,65 @@ there. Fill fills it in one click. The lock bleeds two texels past its own
 triangles into texels nothing else uses, so a seam is left without an unpainted
 rim.
 
+### Selections and brightness ranges
+
+**M** (or the panel's **select** row) picks a selection shape: **rect**,
+**ellipse** or **lasso**. The left button then drags out a selection instead of
+painting, on the surface or in the map view. **Shift** + drag adds to the
+selection, **Ctrl** + drag takes away from it, and a click that drags nothing
+drops it. **Ctrl + A** selects the whole map, **Ctrl + D** drops the selection
+(**Ctrl + Shift + D** brings it back) and **Ctrl + I** inverts it. Picking a
+painting tool or stroke, or pressing **M** past lasso, goes back to painting.
+In the map view a selection can start off the image and run past its edges, so
+it takes every texel along them. The part past an edge is cut off; it doesn't
+wrap round to the other side.
+The same from the console: `mat author select rect|ellipse|lasso|off|all|none|invert|back`.
+
+A selection is kept in the map's own coordinates, so it lies on every map of
+the material (roughness, metallic and the rest) whatever their sizes. It shows
+the way a lock does, darkened outside with a cyan edge, and in the map view
+with marching ants along its shapes. **All painting stays inside it**, every
+tool, and inside the lock too when both are on. Fill fills it in one click.
+Switching to another material or Quake III stage drops it.
+
+**Brightness range.** With a selection (or select mode on), the panel shows
+**dark** and **bright** values and an **apply** button. Apply sets every
+selected texel of the map being painted from how bright the base texture is
+there: the darkest texel of the selection gets **dark**, the brightest gets
+**bright**, and everything in between is spread in a straight line. Set the
+metallic map's range to 30 and 50 and the selection becomes 30% to 50%
+metallic, following the texture's own light and dark. Put **bright** below
+**dark** to give brighter texels less (shinier highlights on a roughness map,
+for example). Make them equal for a plain fill. The darkest and brightest are
+the selection's 1st and 99th percentile, so a few stray texels don't set the
+spread, and the panel shows that spread (`base 12-48%`). Works on roughness,
+metallic, height and emissive brightness (0–200%), not normals. With nothing
+selected it applies to the whole map. Each apply is one undo step. From the
+console: `mat author range <dark%> <bright%>`.
+
+### Photo mode at half the rays
+
+While the tool is open, photo mode's accumulation lights only half the
+pixels each frame (a blue-noise pattern that moves every frame, each lit
+pixel counted twice). The tool responds faster, and the photo converges to
+the same picture at full resolution; the progress counter takes twice as many
+frames to reach 100%, the same samples per pixel as before.
+`mat_author_sparse` sets the fraction (default 0.5; 0 or 1 = every pixel).
+It saves time only where `pt_sparse` does: with tile compaction on (ray
+query, one GPU).
+
 ### The map view
 
 **Tab** shows the map flat, like `mat print`'s preview, and it can be painted
 too. The wheel zooms and the right button drags it. The base texture is drawn
 underneath, with the map laid over it at an opacity set on the panel (**O**
 shows the map alone). A lock shows here as well.
+
+The emissive map is shown differently: the texture itself, as bright as it
+glows (50% is half as bright, 200% twice), with a purple veil over whatever
+glows less. The veil is at full strength over 0%, and the panel's slider sets
+how strong that is. Before the first stroke, the view shows the glow the
+material already has. The caption gives the brightness under the cursor.
 
 ### Quake III shader stages
 
@@ -1973,8 +2068,12 @@ picture.
 
 ### Undo and saving
 
-Each stroke is one undo step, up to 128 of them or 512 MB. Painting stays in
-memory until it is saved. Leaving with **Esc** or `mat author off` keeps the
+Each stroke is one undo step, up to 128 of them or 512 MB in all. **Undo and
+redo only touch the map being painted**: switching to another map or material
+and pressing **Ctrl + Z** never reaches back into the one before. Each map
+keeps its own history, there when you come back to it, and the panel's undo
+and redo buttons show how many steps that map has. Painting stays in memory
+until it is saved. Leaving with **Esc** or `mat author off` keeps the
 paint and the undo history and warns that it is **not saved**; `mat author`
 carries on from there.
 
@@ -1986,7 +2085,10 @@ map:
   fine steps). Normals and emissive can't be painted into one.
 * **Anything else** — a texture inside a `.pak`, a JPG, or a map the first
   stroke created — is written as a new PNG under `materialDev/`, and every
-  material that uses it is pointed at the new file. The `.mat` entries are then
+  material that uses it is pointed at the new file. A Quake II texture's goes
+  into the game folder (`rerelease/materialDev`); a Quake III material's (one
+  from `baseq3/materials`, such as `quake3.mat`) goes into
+  `baseq3/materialDev`, next to the rest of Quake III's. The `.mat` entries are then
   updated the way [`mat save`](#the-mat-command) does: only those lines change,
   and the old `.mat` is kept as `.bak`.
 

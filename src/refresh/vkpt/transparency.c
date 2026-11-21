@@ -1028,8 +1028,27 @@ static void write_sprite_geometry(const float* view_matrix, const entity_t* enti
 		// set up the quad - reference code is in function GL_DrawSpriteModel
 
 		vec3_t up, down, left, right;
+		vec3_t sprite_origin;
+		VectorCopy(e->origin, sprite_origin);
 
-		if (cvar_pt_projection->integer != PROJECTION_RECTILINEAR)
+		if (model->sprite_oriented)
+		{
+			// Quake's SPR_ORIENTED: the billboard's right and up are the
+			// entity's own, so it lies flat on the wall it was put against
+			// (hipnotic's bullet holes) - lifted a little off it, toward the
+			// eye, so the wall cannot hide it
+			vec3_t fwd, rt, upv, to_camera;
+			AngleVectors(e->angles, fwd, rt, upv);
+
+			VectorScale(rt, frame->origin_x, left);
+			VectorScale(rt, frame->origin_x - frame->width, right);
+			VectorScale(upv, -frame->origin_y, down);
+			VectorScale(upv, frame->height - frame->origin_y, up);
+
+			VectorSubtract(view_origin, e->origin, to_camera);
+			VectorMA(sprite_origin, DotProduct(fwd, to_camera) >= 0 ? 0.5f : -0.5f, fwd, sprite_origin);
+		}
+		else if (cvar_pt_projection->integer != PROJECTION_RECTILINEAR)
 		{
 			// make the sprite always face the camera and always vertical in the curved projection modes
 
@@ -1072,10 +1091,10 @@ static void write_sprite_geometry(const float* view_matrix, const entity_t* enti
 			VectorScale(right, e->scale, right);
 		}
 
-		VectorAdd3(e->origin, down, left, vertex_positions[0]);
-		VectorAdd3(e->origin, up, left, vertex_positions[1]);
-		VectorAdd3(e->origin, up, right, vertex_positions[2]);
-		VectorAdd3(e->origin, down, right, vertex_positions[3]);
+		VectorAdd3(sprite_origin, down, left, vertex_positions[0]);
+		VectorAdd3(sprite_origin, up, left, vertex_positions[1]);
+		VectorAdd3(sprite_origin, up, right, vertex_positions[2]);
+		VectorAdd3(sprite_origin, down, right, vertex_positions[3]);
 
 		vertex_positions += 4;
 		sprite_info += TR_SPRITE_INFO_SIZE / sizeof(uint32_t);

@@ -1208,6 +1208,15 @@ static void ct_capture_light(const light_poly_t *src, ct_light_t *l)
 		return;
 	}
 
+	// a stained glass window light (DYNLIGHT_WINDOW): its positions are texture
+	// axes, not a triangle, and this tracer has no sampler for it - it lights
+	// nothing here
+	if (src->type == DYNLIGHT_WINDOW) {
+		VectorClear(l->radiance);
+		l->vol_scale = 0.f;
+		return;
+	}
+
 	float style = 1.f;
 	if (src->style > 0 && src->style < MAX_LIGHTSTYLES)
 		style = scene.light_styles[src->style];

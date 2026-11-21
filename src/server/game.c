@@ -43,8 +43,8 @@ static int PF_FindIndex(const char *name, int start, int max, const char *func)
         // it through cl.clientinfo. It was never handed out while MAX_MODELS was
         // 256, but with the raised limit a busy map reached it: mgu5m3's two
         // ammo_grenades drew as player models. Never give it to a file, as the
-        // rerelease reserves it (MODELINDEX_PLAYER). Inline models are numbered
-        // in SV_SpawnServer and stop below it (the most any map has is 227).
+        // rerelease reserves it (MODELINDEX_PLAYER). SV_SpawnServer numbers the
+        // inline models around it too (Quake 1 maps have up to 363).
         // The slot is left EMPTY, so every client loop that walks the model
         // configstrings has to step over it rather than stop there - stopping
         // left every model from 256 up unloaded (mgu6m1's invulnerability).

@@ -675,9 +675,12 @@ bool Pickup_Ammo(edict_t *ent, edict_t *other)
     int         count;
     bool        weapon;
 
-    // Quake III's guns take Quake III's amounts from the box (g_q3weap.c)
+    // Quake III's guns take Quake III's amounts from the box (g_q3weap.c),
+    // Quake's Quake's (g_q1weap.c)
     if (level.q3_weapons && Q3W_PlayerQ3(other))
         return Q3W_PickupAmmo(ent, other);
+    if (level.q1_weapons)
+        return Q1W_PickupAmmo(ent, other);
 
     weapon = (ent->item->flags & IT_WEAPON);
     if ((weapon) && ((int)dmflags->value & DF_INFINITE_AMMO))
@@ -1056,6 +1059,7 @@ edict_t *Drop_Item(edict_t *ent, gitem_t *item)
     Q3_DroppedItem(dropped);    // Quake III's quad model on its maps
     Q3W_DroppedItem(dropped);   // a gun in a match by player model: both games'
     Q3W_ItemModel(dropped);
+    Q1W_ItemModel(dropped);     // Quake's guns stand on their origin
     dropped->solid = SOLID_TRIGGER;
     dropped->movetype = MOVETYPE_TOSS;
     dropped->touch = drop_temp_touch;
@@ -1175,12 +1179,78 @@ void droptofloor(edict_t *ent)
     else
         gi.setmodel(ent, ent->item->world_model);
     Q3W_ItemModel(ent);     // Quake III's guns: bigger, or both games' (g_q3weap.c)
+    Q1W_ItemModel(ent);     // Quake's guns stand on their origin (g_q1weap.c)
     ent->solid = SOLID_TRIGGER;
     ent->movetype = MOVETYPE_TOSS;
     ent->touch = Touch_Item;
 
     v = tv(0, 0, -128);
     VectorAdd(ent->s.origin, v, dest);
+
+    // A Quake 1 map collides through its clip hulls, and any box wider than a
+    // point is traced as a whole player (hull 1, 56 tall): an item in a low
+    // alcove (ctf1's armors) starts "in solid" and would be deleted below.
+    // So, in order (g_q1.c):
+    //  1. drop the item's centre as a point and stand its box on that;
+    //  2. Quake 1's own droptofloor: its item box, 32 wide and 56 tall from
+    //     the bottom, may START in solid - only a trace that never leaves solid
+    //     (allsolid) or finds no floor in 256 loses the item. That is where
+    //     Quake 1 itself puts an item whose centre is buried (e2m5's health),
+    //     or one that waits more than 128 above its floor (mg3 dm1's
+    //     lightning gun, on a func_bob pillar);
+    //  3. the nearest clear point within 32 units, for what Quake 1 would lose.
+    if (level.q1map) {
+        static const float step[5] = { 0, 16, -16, 32, -32 };
+        static const vec3_t q1mins = { -16, -16, 0 }, q1maxs = { 16, 16, 56 };
+        vec3_t  start, down;
+        int     x, y, z;
+
+        tr = gi.trace(ent->s.origin, vec3_origin, vec3_origin, dest, ent, MASK_SOLID);
+        if (!tr.startsolid && tr.fraction < 1 && tr.ent) {
+            VectorCopy(tr.endpos, ent->s.origin);
+            ent->s.origin[2] -= ent->mins[2];
+            goto q1_ground;
+        }
+
+        VectorSet(start, ent->s.origin[0], ent->s.origin[1], ent->s.origin[2] + ent->mins[2]);
+        VectorSet(down, start[0], start[1], start[2] - 256);
+        tr = gi.trace(start, q1mins, q1maxs, down, ent, MASK_SOLID);
+        if (!tr.allsolid && tr.fraction < 1 && tr.ent) {
+            if (tr.startsolid)
+                gi.dprintf("droptofloor: %s at %s starts in solid, dropped to %.0f as Quake 1 does\n",
+                           ent->classname, vtos(ent->s.origin), tr.endpos[2] - ent->mins[2]);
+            VectorCopy(tr.endpos, ent->s.origin);
+            ent->s.origin[2] -= ent->mins[2];
+            goto q1_ground;
+        }
+
+        for (z = 0; z <= 32; z += 16) {
+            for (x = 0; x < 5; x++) {
+                for (y = 0; y < 5; y++) {
+                    VectorSet(start, ent->s.origin[0] + step[x], ent->s.origin[1] + step[y], ent->s.origin[2] + z);
+                    VectorSet(down, start[0], start[1], dest[2]);
+                    tr = gi.trace(start, vec3_origin, vec3_origin, down, ent, MASK_SOLID);
+                    if (tr.startsolid || tr.fraction == 1 || !tr.ent)
+                        continue;
+                    gi.dprintf("droptofloor: %s at %s moved off solid to %s\n", ent->classname,
+                               vtos(ent->s.origin), vtos(tr.endpos));
+                    VectorCopy(tr.endpos, ent->s.origin);
+                    ent->s.origin[2] -= ent->mins[2];
+                    goto q1_ground;
+                }
+            }
+        }
+
+        // Quake 1 deletes it too ("Bonus item fell out of level")
+        gi.dprintf("droptofloor: %s startsolid at %s\n", ent->classname, vtos(ent->s.origin));
+        G_FreeEdict(ent);
+        return;
+
+q1_ground:
+        ent->groundentity = tr.ent;
+        ent->groundentity_linkcount = tr.ent->linkcount;
+        goto placed;
+    }
 
     tr = gi.trace(ent->s.origin, ent->mins, ent->maxs, dest, ent, MASK_SOLID);
     if (tr.startsolid) {
@@ -1297,7 +1367,8 @@ void PrecacheItem(gitem_t *it)
             s++;
 
         // determine type based on extension
-        if (!strcmp(data + len - 3, "md2") || !strcmp(data + len - 3, "md3"))
+        if (!strcmp(data + len - 3, "md2") || !strcmp(data + len - 3, "md3") ||
+            !strcmp(data + len - 3, "mdl"))     // Quake's guns' (g_q1weap.c)
             gi.modelindex(data);
         else if (!strcmp(data + len - 3, "sp2"))
             gi.modelindex(data);
@@ -3790,6 +3861,172 @@ gitem_t itemlist[] = {
         /* precache */ ""
     },
 
+    // Quake's guns, for a bot match with them (g_q1weap.c, level.q1_weapons).
+    // Their names are Quake II's where the guns share one, and Q1W_FindItem
+    // picks Quake's for `use` and `give`. Quake places no axe or shotgun, so
+    // the axe wears its view model should it ever lie on the floor (it is
+    // never dropped), and both shotguns the double barrel's pickup.
+    {
+        "weapon_q1_axe",
+        Pickup_Q1Weapon,
+        Use_Weapon,
+        NULL,
+        Weapon_Q1,
+        "#id1/sound/weapons/pkup.wav",
+        "id1/id1/progs/v_axe.mdl", EF_ROTATE,
+        "id1/id1/progs/v_axe.mdl",
+        /* icon */      "/id1/id1/gfx/weapons/ww_axe_1.lmp",
+        /* pickup */    "Axe",
+        0,
+        0,
+        NULL,
+        IT_WEAPON | IT_MELEE | IT_Q1,
+        WEAP_CHAINFIST,
+        NULL,
+        Q1W_AXE,
+        /* precache */ "#id1/sound/weapons/ax1.wav #id1/sound/player/axhit1.wav #id1/sound/player/axhit2.wav"
+    },
+    {
+        "weapon_q1_shotgun",
+        Pickup_Q1Weapon,
+        Use_Weapon,
+        Drop_Weapon,
+        Weapon_Q1,
+        "#id1/sound/weapons/pkup.wav",
+        "id1/id1/progs/g_shot.mdl", EF_ROTATE,
+        "id1/id1/progs/v_shot.mdl",
+        /* icon */      "/id1/id1/gfx/weapons/ww_shotgun1_1.lmp",
+        /* pickup */    "Shotgun",
+        0,
+        1,
+        "Shells",
+        IT_WEAPON | IT_Q1,
+        WEAP_SHOTGUN,
+        NULL,
+        Q1W_SHOTGUN,
+        /* precache */ "#id1/sound/weapons/guncock.wav"
+    },
+    {
+        "weapon_q1_supershotgun",
+        Pickup_Q1Weapon,
+        Use_Weapon,
+        Drop_Weapon,
+        Weapon_Q1,
+        "#id1/sound/weapons/pkup.wav",
+        "id1/id1/progs/g_shot.mdl", EF_ROTATE,
+        "id1/id1/progs/v_shot2.mdl",
+        /* icon */      "/id1/id1/gfx/weapons/ww_shotgun2_1.lmp",
+        /* pickup */    "Super Shotgun",
+        0,
+        2,
+        "Shells",
+        IT_WEAPON | IT_Q1,
+        WEAP_SUPERSHOTGUN,
+        NULL,
+        Q1W_SUPERSHOTGUN,
+        /* precache */ "#id1/sound/weapons/shotgn2.wav"
+    },
+    {
+        "weapon_q1_nailgun",
+        Pickup_Q1Weapon,
+        Use_Weapon,
+        Drop_Weapon,
+        Weapon_Q1,
+        "#id1/sound/weapons/pkup.wav",
+        "id1/id1/progs/g_nail.mdl", EF_ROTATE,
+        "id1/id1/progs/v_nail.mdl",
+        /* icon */      "/id1/id1/gfx/weapons/ww_nail1_1.lmp",
+        /* pickup */    "Nailgun",
+        0,
+        1,
+        "Bullets",
+        IT_WEAPON | IT_Q1,
+        WEAP_MACHINEGUN,
+        NULL,
+        Q1W_NAILGUN,
+        /* precache */ "id1/id1/progs/spike.mdl #id1/sound/weapons/rocket1i.wav"
+    },
+    {
+        "weapon_q1_supernailgun",
+        Pickup_Q1Weapon,
+        Use_Weapon,
+        Drop_Weapon,
+        Weapon_Q1,
+        "#id1/sound/weapons/pkup.wav",
+        "id1/id1/progs/g_nail2.mdl", EF_ROTATE,
+        "id1/id1/progs/v_nail2.mdl",
+        /* icon */      "/id1/id1/gfx/weapons/ww_nail2_1.lmp",
+        /* pickup */    "Super Nailgun",
+        0,
+        2,
+        "Bullets",
+        IT_WEAPON | IT_Q1,
+        WEAP_CHAINGUN,
+        NULL,
+        Q1W_SUPERNAILGUN,
+        /* precache */ "id1/id1/progs/s_spike.mdl #id1/sound/weapons/spike2.wav"
+    },
+    {
+        "weapon_q1_grenadelauncher",
+        Pickup_Q1Weapon,
+        Use_Weapon,
+        Drop_Weapon,
+        Weapon_Q1,
+        "#id1/sound/weapons/pkup.wav",
+        "id1/id1/progs/g_rock.mdl", EF_ROTATE,
+        "id1/id1/progs/v_rock.mdl",
+        /* icon */      "/id1/id1/gfx/weapons/ww_rocket1_1.lmp",
+        /* pickup */    "Grenade Launcher",
+        0,
+        1,
+        "Rockets",
+        IT_WEAPON | IT_Q1,
+        WEAP_GRENADELAUNCHER,
+        NULL,
+        Q1W_GRENADE,
+        /* precache */ "id1/id1/progs/grenade.mdl #id1/sound/weapons/grenade.wav #id1/sound/weapons/bounce.wav #id1/sound/weapons/r_exp3.wav"
+    },
+    {
+        "weapon_q1_rocketlauncher",
+        Pickup_Q1Weapon,
+        Use_Weapon,
+        Drop_Weapon,
+        Weapon_Q1,
+        "#id1/sound/weapons/pkup.wav",
+        "id1/id1/progs/g_rock2.mdl", EF_ROTATE,
+        "id1/id1/progs/v_rock2.mdl",
+        /* icon */      "/id1/id1/gfx/weapons/ww_rocket2_1.lmp",
+        /* pickup */    "Rocket Launcher",
+        0,
+        1,
+        "Rockets",
+        IT_WEAPON | IT_Q1,
+        WEAP_ROCKETLAUNCHER,
+        NULL,
+        Q1W_ROCKET,
+        /* precache */ "id1/id1/progs/missile.mdl #id1/sound/weapons/sgun1.wav #id1/sound/weapons/r_exp3.wav"
+    },
+    {
+        "weapon_q1_lightning",
+        Pickup_Q1Weapon,
+        Use_Weapon,
+        Drop_Weapon,
+        Weapon_Q1,
+        "#id1/sound/weapons/pkup.wav",
+        "id1/id1/progs/g_light.mdl", EF_ROTATE,
+        "id1/id1/progs/v_light.mdl",
+        /* icon */      "/id1/id1/gfx/weapons/ww_light_1.lmp",
+        /* pickup */    "Thunderbolt",
+        0,
+        1,
+        "Cells",
+        IT_WEAPON | IT_Q1,
+        WEAP_PLASMA,
+        NULL,
+        Q1W_LIGHTNING,
+        /* precache */ "id1/id1/progs/bolt2.mdl #id1/sound/weapons/lstart.wav #id1/sound/weapons/lhit.wav"
+    },
+
     // end of list marker
     {NULL}
 };
@@ -3907,6 +4144,15 @@ static const char *const rerelease_weapon_order[] = {
     "weapon_q3_railgun",
     "weapon_q3_plasmagun",
     "weapon_q3_bfg",
+    // Quake's, in its own impulse order (g_q1weap.c)
+    "weapon_q1_axe",
+    "weapon_q1_shotgun",
+    "weapon_q1_supershotgun",
+    "weapon_q1_nailgun",
+    "weapon_q1_supernailgun",
+    "weapon_q1_grenadelauncher",
+    "weapon_q1_rocketlauncher",
+    "weapon_q1_lightning",
 };
 
 int weapon_cycle[MAX_ITEMS];        // itemlist indices, in weapon bar order

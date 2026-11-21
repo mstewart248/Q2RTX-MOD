@@ -77,14 +77,16 @@ static be_player_t  be_players[Q3B_MAX_CLIENTS];
 
 static const char *const be_slot_names[Q3B_WP_NUM_WEAPONS][BE_SLOT_GUNS] = {
     { NULL },
-    { "weapon_q3_gauntlet", "weapon_chainfist" },
+    // Quake's guns (g_q1weap.c) where they play most alike: the nailguns'
+    // nails fly, as the plasma gun's balls do
+    { "weapon_q3_gauntlet", "weapon_chainfist", "weapon_q1_axe" },
     { "weapon_q3_machinegun", "weapon_chaingun", "weapon_machinegun", "weapon_etf_rifle", "weapon_blaster" },
-    { "weapon_q3_shotgun", "weapon_supershotgun", "weapon_shotgun" },
-    { "weapon_q3_grenadelauncher", "weapon_grenadelauncher", "weapon_proxlauncher" },
-    { "weapon_q3_rocketlauncher", "weapon_rocketlauncher", "weapon_phalanx" },
-    { "weapon_q3_lightning", "weapon_plasmabeam" },
+    { "weapon_q3_shotgun", "weapon_supershotgun", "weapon_shotgun", "weapon_q1_supershotgun", "weapon_q1_shotgun" },
+    { "weapon_q3_grenadelauncher", "weapon_grenadelauncher", "weapon_proxlauncher", "weapon_q1_grenadelauncher" },
+    { "weapon_q3_rocketlauncher", "weapon_rocketlauncher", "weapon_phalanx", "weapon_q1_rocketlauncher" },
+    { "weapon_q3_lightning", "weapon_plasmabeam", "weapon_q1_lightning" },
     { "weapon_q3_railgun", "weapon_railgun", "weapon_disintegrator" },
-    { "weapon_q3_plasmagun", "weapon_hyperblaster", "weapon_boomer" },
+    { "weapon_q3_plasmagun", "weapon_hyperblaster", "weapon_boomer", "weapon_q1_supernailgun", "weapon_q1_nailgun" },
     { "weapon_q3_bfg", "weapon_bfg" },
     { NULL },
 };

@@ -225,6 +225,10 @@ void Cmd_Give_f(edict_t *ent)
             // player who plays with them (g_q3weap.c)
             if (!!(it->flags & IT_Q3) != Q3W_PlayerQ3(ent))
                 continue;
+            // and Quake's only in a game of them, and then only Quake's
+            // (g_q1weap.c): the rest are what they stand in for
+            if (!!(it->flags & IT_Q1) != level.q1_weapons)
+                continue;
             ent->client->pers.inventory[i] += 1;
             // Load it now, as a map's own weapons are. Otherwise each gun's
             // view model was registered on its first switch, its projectile
@@ -1313,6 +1317,15 @@ void ClientCommand(edict_t *ent)
         return;     // not fully in game yet
 
     cmd = gi.argv(0);
+
+    // a Quake 1 demo playing back takes nothing (g_q1demo.c)
+    if (Q1Demo_Active())
+        return;
+
+    // a Quake 1 level run by its progs takes its own commands (weapons by
+    // impulse, kill, god...); talk and the player list fall through
+    if (Q1VM_Active() && Q1VM_ClientCommand(ent))
+        return;
 
     if (Q_stricmp(cmd, "players") == 0) {
         Cmd_Players_f(ent);

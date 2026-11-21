@@ -96,6 +96,24 @@ begin environment
         range --status "how bright the MAP's skybox LOOKS - does not change the light it casts (pt_sky_brightness)" \
             "map sky brightness" pt_sky_brightness 0 2 0.1
     endif
+    // A Quake 1 map's own sky - its scrolling clouds, in sky type "rerelease"
+    // (the renderer publishes sky_q1_active). Its look, its light and its fog
+    // each on their own, over the two map sky settings above; any other sky
+    // type shows the Q2RTX sky and these are hidden (vkpt main.c, pt_q1_sky_*).
+    ifeq sky_q1_active 1
+        range --status "how bright the QUAKE sky LOOKS - 1 is its texture's own colours, as Quake drew it. Does not change the light it casts (pt_q1_sky_brightness)" \
+            "quake sky brightness" pt_q1_sky_brightness 0 4 0.1
+        range --status "how much light the QUAKE sky casts into the level - does not change how it looks (pt_q1_sky_light)" \
+            "quake sky light" pt_q1_sky_light 0 4 0.1
+        range --status "the RED in the light the QUAKE sky casts (and in its fog) - 1 is the sky's own colour; does not change how it looks (pt_q1_sky_light_r)" \
+            "quake sky light red" pt_q1_sky_light_r 0 2 0.05
+        range --status "the GREEN in the light the QUAKE sky casts (and in its fog) - 1 is the sky's own colour; does not change how it looks (pt_q1_sky_light_g)" \
+            "quake sky light green" pt_q1_sky_light_g 0 2 0.05
+        range --status "the BLUE in the light the QUAKE sky casts (and in its fog) - 1 is the sky's own colour; does not change how it looks (pt_q1_sky_light_b)" \
+            "quake sky light blue" pt_q1_sky_light_b 0 2 0.05
+        range --status "how much the QUAKE sky lights the fog - does not change how it looks or the light on the level (pt_q1_sky_fog)" \
+            "quake sky fog" pt_q1_sky_fog 0 4 0.1
+    endif
     // WHERE THE SUN IS, is the MAP's to say in "rerelease" sky mode, so none of
     // these four are shown there. A rerelease map states its own hour or carries
     // the previous map's, and the way to overrule that is to pick a different sky
@@ -878,6 +896,10 @@ begin blood
             range --status "how thick a Quake III gib's blood trail is: each drip becomes this many droplets, a little apart. 1 is the trail a Quake II gib leaves (cl_q3_gib_drops)" \
                 "quake iii gib trail" cl_q3_gib_drops 1 8 1
         endif
+        ifge fs_quake1 1
+            range --status "how thick a Quake gib's blood trail is (the Quake campaigns): each drip becomes this many droplets, a little apart. 1 is the trail a Quake II gib leaves (cl_q1_gib_drops)" \
+                "quake gib trail" cl_q1_gib_drops 1 8 1
+        endif
 
         ifeq cl_blood_collision 1
             blank
@@ -1376,12 +1398,22 @@ begin startserver
     //title "Start Server"
     banner m_banner_start_server
     ifeq fs_quake3 1
+    ifge fs_quake1 1
+        pairs --live --status "quake iii arena or quake: their maps, with the weapons and movement chosen below" "map set" bot_mapset "quake ii" 0 "quake iii arena" 1 quake 2
+    endif
+    ifle fs_quake1 0
         pairs --live --status "quake iii arena: its arenas and ctf maps, with its items and the weapons and movement chosen below" "map set" bot_mapset "quake ii" 0 "quake iii arena" 1
     endif
-    ifneq bot_mapset 1
+    endif
+    ifneq fs_quake3 1
+    ifge fs_quake1 1
+        pairs --live --status "quake: its deathmatch and ctf maps and its levels, with quake ii's items in its items' places" "map set" bot_mapset "quake ii" 0 quake 2
+    endif
+    endif
+    ifeq bot_mapset 0
         pairs --live --status "deathmatch, or the campaign's maps played together (coop)" "rules" _ui_server_coop deathmatch 0 cooperative 1
     endif
-    ifeqor bot_mapset 1 _ui_server_coop 0
+    ifneqor bot_mapset 0 _ui_server_coop 1
     ifeq fs_rerelease 1
         pairs --live --status "team deathmatch: red against blue, teams kept even. capture the flag: take their flag to yours" "game mode" bot_mode deathmatch 0 "team deathmatch" 1 "capture the flag" 2
     endif
@@ -1389,8 +1421,16 @@ begin startserver
         pairs --live --status "team deathmatch: red against blue, teams kept even" "game mode" bot_mode deathmatch 0 "team deathmatch" 1
     endif
     endif
-    ifneq bot_mapset 1
+    ifeq bot_mapset 0
         strings --status "(_ui_nextserver)" "initial map" _ui_nextserver $$com_maplist
+    endif
+    ifeq bot_mapset 2
+    ifeq bot_mode 2
+        pairs --levelshot "map" bot_map_q1ctf "McKinley Base" q1/ctf/ctf1 "McKinley Station" q1/ctf/ctf2 "Spill the Blood" q1/ctf/ctf3 "Gloom Castles" q1/ctf/ctf4 "Vertigo" q1/ctf/ctf6 "The Strongbox" q1/ctf/ctf7 "Chthon's Capture House" q1/ctf/ctf8 "Da Ancient War Grounds" q1/ctf/ctf9
+    endif
+    ifneq bot_mode 2
+        pairs --levelshot "map" bot_map_q1 "Place of Two Deaths" q1/dm1 "Claustrophobopolis" q1/dm2 "The Abandoned Base" q1/dm3 "The Bad Place" q1/dm4 "The Cistern" q1/dm5 "The Dark Zone" q1/dm6 "The Edge" q1/dm7 "Acrophobia" q1/dm8 "Base 32" q1/base32b "Death 32" q1/death32c "The Edge of Oblivion" q1/hipnotic/hipdm1 "The Theater of Doom" q1/dopa/e5dm "Art of the Condemned" q1/mg1/mgdm1 "The Bad Space" q1/mg1/mgdm2 "The Mustard Factory" q1/mg1/mgdm3 "The Boiler" q1/mg1/mgdm4 "The Crooked Place" q1/mg3/dm1 "Entrance" q1/start "Slipgate Complex" q1/e1m1 "Castle of the Damned" q1/e1m2 "The Necropolis" q1/e1m3 "The Grisly Grotto" q1/e1m4 "Gloom Keep" q1/e1m5 "The Door To Chthon" q1/e1m6 "The House of Chthon" q1/e1m7 "Ziggurat Vertigo" q1/e1m8 "The Installation" q1/e2m1 "Ogre Citadel" q1/e2m2 "Crypt of Decay" q1/e2m3 "The Ebon Fortress" q1/e2m4 "The Wizard's Manse" q1/e2m5 "The Dismal Oubliette" q1/e2m6 "Underearth" q1/e2m7 "Termination Central" q1/e3m1 "The Vaults of Zin" q1/e3m2 "The Tomb of Terror" q1/e3m3 "Satan's Dark Delight" q1/e3m4 "Wind Tunnels" q1/e3m5 "Chambers of Torment" q1/e3m6 "The Haunted Halls" q1/e3m7 "The Sewage System" q1/e4m1 "The Tower of Despair" q1/e4m2 "The Elder God Shrine" q1/e4m3 "The Palace of Hate" q1/e4m4 "Hell's Atrium" q1/e4m5 "The Pain Maze" q1/e4m6 "Azure Agony" q1/e4m7 "The Nameless City" q1/e4m8 "Shub-Niggurath's Pit" q1/end
+    endif
     endif
     ifeq bot_mapset 1
     ifeq bot_mode 2
@@ -1401,13 +1441,26 @@ begin startserver
     endif
         pairs --status "quake iii: 5 / 25 / 50 / 100 health, 5 / 50 / 100 armor, the battle suit. quake ii: its own, the environment suit" "health and armor" g_q3_items "quake iii arena" 1 "quake ii" 0
     ifneq g_q3_weapons 1
+    ifneq g_q3_weapons 3
         pairs --status "what every player with quake ii's weapons spawns holding" "spawn with" g_q3_kit "blaster, machinegun" 0 "chainfist, machinegun" 1 "blaster" 2
     endif
     endif
-    ifeqor bot_mapset 1 _ui_server_coop 0
+    endif
+    ifneqor bot_mapset 0 _ui_server_coop 1
+    // "quake" (3, baseq2 g_q1weap.c) needs only Quake's data, not Quake III's
     ifeq fs_quake3 1
+    ifeq fs_quake1_id1 1
+        pairs --status "quake iii arena: its gauntlet, machinegun, shotgun, grenade and rocket launchers, lightning gun, railgun, plasma gun and bfg10k for everyone. by player model: quake iii's for quake iii models, quake ii's for quake ii models. quake: its axe, shotguns, nailguns, grenade and rocket launchers and thunderbolt for everyone (g_q3_weapons)" "weapons" g_q3_weapons "quake ii" 0 "quake iii arena" 1 "by player model" 2 "quake" 3
+    endif
+    ifneq fs_quake1_id1 1
         pairs --status "quake iii arena: its gauntlet, machinegun, shotgun, grenade and rocket launchers, lightning gun, railgun, plasma gun and bfg10k for everyone. by player model: quake iii's for quake iii models, quake ii's for quake ii models (g_q3_weapons)" "weapons" g_q3_weapons "quake ii" 0 "quake iii arena" 1 "by player model" 2
+    endif
         pairs --status "quake iii arena: its faster running, air control, jumps and knockback, for everyone (g_q3_physics)" "movement" g_q3_physics "quake ii" 0 "quake iii arena" 1
+    endif
+    ifneq fs_quake3 1
+    ifeq fs_quake1_id1 1
+        pairs --status "quake: its axe, shotguns, nailguns, grenade and rocket launchers and thunderbolt for everyone, with quake's ammo, pickups and damage (g_q3_weapons)" "weapons" g_q3_weapons "quake ii" 0 "quake" 3
+    endif
     endif
     ifge bot_mode 1
         toggle --status "teammates' shots hurt each other. off as in quake iii arena (bot_friendly_fire)" "friendly fire" bot_friendly_fire
@@ -1422,7 +1475,7 @@ begin startserver
     field --integer --status "0 - no time limit" --width 3 "time limit" timelimit
     field --integer --width 3 "max players" maxclients
     field --width 16 "host name" hostname
-    ifeqor bot_mapset 1 _ui_server_coop 0
+    ifneqor bot_mapset 0 _ui_server_coop 1
         pairs --live --status "bots in the empty slots: the bot match's line-up, at the skills set there. 0: people only (bot_server_count)" "bots" bot_server_count 0 0 1 1 2 2 3 3 4 4 5 5 6 6 7 7 8 8 9 9 10 10 11 11 12 12 13 13 14 14 15 15
     ifge bot_server_count 1
     ifeq fs_quake3 1
@@ -1446,7 +1499,15 @@ begin startserver
         action --align "begin game!" "forcemenuoff; set sp_campaign 0; set bot_match 2; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; set cheats 0; map $bot_map_q3 force"
     endif
     endif
-    ifneq bot_mapset 1
+    ifeq bot_mapset 2
+    ifeq bot_mode 2
+        action --align "begin game!" "forcemenuoff; set sp_campaign 0; set bot_match 2; set teamplay 0; set ctf 1; deathmatch 1; coop 0; set cheats 0; map $bot_map_q1ctf force"
+    endif
+    ifneq bot_mode 2
+        action --align "begin game!" "forcemenuoff; set sp_campaign 0; set bot_match 2; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; set cheats 0; map $bot_map_q1 force"
+    endif
+    endif
+    ifeq bot_mapset 0
     ifeq _ui_server_coop 1
         action --align "begin game!" "forcemenuoff; set sp_campaign 0; set bot_match 0; set teamplay 0; set ctf 0; deathmatch 0; coop 1; set cheats 0; map $_ui_nextserver force"
     endif
@@ -1486,10 +1547,14 @@ begin multiplayer
     endif
 end
 
-// The game first, then the difficulty: a campaign goes on to 'skill' below,
-// with the command that starts it in _ui_campaign; a bot match goes on to
-// 'botmatch', where each bot has its own skill. fs_rerelease is set by the
-// filesystem from the active game directory.
+// The GAME menu, by game (Matt, 11-20: "Quake, Quake2, Quake 3 Arena, Bot
+// match"): Quake opens 'quake1', every Quake campaign installed; Quake II opens
+// 'quake2', its campaigns, or with only the one (no rerelease) goes straight
+// to the difficulty; Quake III Arena goes straight to its own single player
+// game; Bot Match to 'botmatch', where each bot has its own skill. A game
+// whose data is not installed has no row. A Quake II campaign goes on to
+// 'skill' below, with the command that starts it in _ui_campaign.
+// fs_rerelease is set by the filesystem from the active game directory.
 //
 // The rerelease's campaigns: 'newgame' plays the intro cinematic and starts
 // base1; 'newgame_mg2' drops straight into the Call of the Machine hub with no
@@ -1505,19 +1570,23 @@ begin singleplayer
     background #212F3CD0
     style --compact
     banner m_banner_game
-    action "quake ii" "set _ui_campaign newgame; pushmenu skill"
+    // Quake (1), when its paks are in id1/ (fs_quake1 counts the episodes
+    // found): its campaigns on their own page, below
+    ifneq fs_quake1 0
+        action "quake" pushmenu quake1
+    endif
     ifeq fs_rerelease 1
-        action "call of the machine" "set _ui_campaign newgame_mg2; pushmenu skill"
-        action "the reckoning" "set _ui_campaign newgame_xatrix; pushmenu skill"
-        action "ground zero" "set _ui_campaign newgame_rogue; pushmenu skill"
+        action "quake ii" pushmenu quake2
+    endif
+    ifneq fs_rerelease 1
+        action "quake ii" "set _ui_campaign newgame; pushmenu skill"
     endif
     // Quake III Arena's own single player game, in its own menus
-    // (src/client/ui/q3sp.c, src/baseq2/g_sp.c) - above Quake II 64
+    // (src/client/ui/q3sp.c, src/baseq2/g_sp.c)
     ifeq fs_quake3 1
         action "quake iii arena" levelselect
     endif
     ifeq fs_rerelease 1
-        action "quake ii 64" "set _ui_campaign newgame_n64; pushmenu skill"
         action "bot match" "bot_lineup; pushmenu botmatch"
     endif
     ifneq fs_rerelease 1
@@ -1528,6 +1597,55 @@ begin singleplayer
     blank
     action "load game..." pushmenu loadgame
     action "save game..." pushmenu savegame
+end
+
+// Quake II's campaigns, in the rerelease (the only game directory that has
+// more than the one): the game, its three expansions and Quake II 64, each
+// on to the difficulty.
+begin quake2
+    background #212F3CD0
+    style --compact
+    banner m_banner_game
+    action "quake ii" "set _ui_campaign newgame; pushmenu skill"
+    action "call of the machine" "set _ui_campaign newgame_mg2; pushmenu skill"
+    action "the reckoning" "set _ui_campaign newgame_xatrix; pushmenu skill"
+    action "ground zero" "set _ui_campaign newgame_rogue; pushmenu skill"
+    action "quake ii 64" "set _ui_campaign newgame_n64; pushmenu skill"
+    blank
+    action "load game..." pushmenu loadgame
+end
+
+// Quake's campaigns: the game and each expansion the paks under id1/ have
+// (fs_quake1_<episode>, files.c), in the rerelease's order and with its names
+// (mapdb.json, loc_english.txt). Each runs its own progs.dat (g_q1vm*.c) and
+// goes straight onto its start map. No difficulty menu (Matt, 11-20): a new
+// game is Normal, and the start map's own skill halls change it for the next
+// map, as in Quake. The commands are all here, so they need no alias in an
+// install's default.cfg.
+begin quake1
+    background #212F3CD0
+    style --compact
+    banner m_banner_game
+    ifeq fs_quake1_id1 1
+        action "quake" "skill 1; deathmatch 0; coop 0; maxclients 1; set bot_match 0; set sp_campaign 0; killserver; map q1/start"
+    endif
+    ifeq fs_quake1_hipnotic 1
+        action "scourge of armagon" "skill 1; deathmatch 0; coop 0; maxclients 1; set bot_match 0; set sp_campaign 0; killserver; map q1/hipnotic/start"
+    endif
+    ifeq fs_quake1_rogue 1
+        action "dissolution of eternity" "skill 1; deathmatch 0; coop 0; maxclients 1; set bot_match 0; set sp_campaign 0; killserver; map q1/rogue/start"
+    endif
+    ifeq fs_quake1_dopa 1
+        action "dimension of the past" "skill 1; deathmatch 0; coop 0; maxclients 1; set bot_match 0; set sp_campaign 0; killserver; map q1/dopa/start"
+    endif
+    ifeq fs_quake1_mg1 1
+        action "dimension of the machine" "skill 1; deathmatch 0; coop 0; maxclients 1; set bot_match 0; set sp_campaign 0; killserver; map q1/mg1/start"
+    endif
+    ifeq fs_quake1_mg3 1
+        action "dawn of the machine" "skill 1; deathmatch 0; coop 0; maxclients 1; set bot_match 0; set sp_campaign 0; killserver; map q1/mg3/start"
+    endif
+    blank
+    action "load game..." pushmenu loadgame
 end
 
 begin skill
@@ -1597,6 +1715,15 @@ end
 // knockback (src/common/pmove.c). Both take effect when the match starts.
 // Every Quake III row hides without its data (fs_quake3 0), and the game
 // then treats both as Quake II's whatever a config says (Q3_LevelRules).
+// With Quake's data (fs_quake1_id1 1), "weapons" also offers Quake's guns
+// (g_q3_weapons 3, src/baseq2/g_q1weap.c) - with or without Quake III.
+//
+// With Quake's data (the rerelease's pak0.pak files under id1/, fs_quake1 =
+// how many of its episodes), "map set" also offers Quake's maps (bot_mapset
+// 2): its deathmatch maps, the add-ons', and the first game's levels
+// (bot_map_q1), or the Threewave CTF maps in capture the flag (bot_map_q1ctf).
+// Their entities become Quake II's in src/baseq2/g_q1.c. A row for every map
+// set but Quake II's co-op is `ifneqor bot_mapset 0 _ui_server_coop 1`.
 begin botmatch
     background #212F3CD0
     style --compact
@@ -1609,7 +1736,27 @@ begin botmatch
     endif
     ifle bot_mode 2
     ifeq fs_quake3 1
+    ifge fs_quake1 1
+        pairs --live --status "quake iii arena or quake: their maps, with the weapons chosen below and quake ii's items in their items' places" "map set" bot_mapset "quake ii" 0 "quake iii arena" 1 quake 2
+    endif
+    ifle fs_quake1 0
         pairs --live --status "quake iii arena: its maps, with the weapons chosen below and quake ii's items in its items' places" "map set" bot_mapset "quake ii" 0 "quake iii arena" 1
+    endif
+    endif
+    ifneq fs_quake3 1
+    ifge fs_quake1 1
+        pairs --live --status "quake: its maps, with the weapons chosen below and quake ii's items in its items' places" "map set" bot_mapset "quake ii" 0 quake 2
+    endif
+    endif
+    // Quake's: its deathmatch maps, the add-ons', then the first game's own
+    // levels; in capture the flag, the Threewave CTF maps (id1/ctf)
+    ifeq bot_mapset 2
+    ifeq bot_mode 2
+        pairs --levelshot "map" bot_map_q1ctf "McKinley Base" q1/ctf/ctf1 "McKinley Station" q1/ctf/ctf2 "Spill the Blood" q1/ctf/ctf3 "Gloom Castles" q1/ctf/ctf4 "Vertigo" q1/ctf/ctf6 "The Strongbox" q1/ctf/ctf7 "Chthon's Capture House" q1/ctf/ctf8 "Da Ancient War Grounds" q1/ctf/ctf9
+    endif
+    ifneq bot_mode 2
+        pairs --levelshot "map" bot_map_q1 "Place of Two Deaths" q1/dm1 "Claustrophobopolis" q1/dm2 "The Abandoned Base" q1/dm3 "The Bad Place" q1/dm4 "The Cistern" q1/dm5 "The Dark Zone" q1/dm6 "The Edge" q1/dm7 "Acrophobia" q1/dm8 "Base 32" q1/base32b "Death 32" q1/death32c "The Edge of Oblivion" q1/hipnotic/hipdm1 "The Theater of Doom" q1/dopa/e5dm "Art of the Condemned" q1/mg1/mgdm1 "The Bad Space" q1/mg1/mgdm2 "The Mustard Factory" q1/mg1/mgdm3 "The Boiler" q1/mg1/mgdm4 "The Crooked Place" q1/mg3/dm1 "Entrance" q1/start "Slipgate Complex" q1/e1m1 "Castle of the Damned" q1/e1m2 "The Necropolis" q1/e1m3 "The Grisly Grotto" q1/e1m4 "Gloom Keep" q1/e1m5 "The Door To Chthon" q1/e1m6 "The House of Chthon" q1/e1m7 "Ziggurat Vertigo" q1/e1m8 "The Installation" q1/e2m1 "Ogre Citadel" q1/e2m2 "Crypt of Decay" q1/e2m3 "The Ebon Fortress" q1/e2m4 "The Wizard's Manse" q1/e2m5 "The Dismal Oubliette" q1/e2m6 "Underearth" q1/e2m7 "Termination Central" q1/e3m1 "The Vaults of Zin" q1/e3m2 "The Tomb of Terror" q1/e3m3 "Satan's Dark Delight" q1/e3m4 "Wind Tunnels" q1/e3m5 "Chambers of Torment" q1/e3m6 "The Haunted Halls" q1/e3m7 "The Sewage System" q1/e4m1 "The Tower of Despair" q1/e4m2 "The Elder God Shrine" q1/e4m3 "The Palace of Hate" q1/e4m4 "Hell's Atrium" q1/e4m5 "The Pain Maze" q1/e4m6 "Azure Agony" q1/e4m7 "The Nameless City" q1/e4m8 "Shub-Niggurath's Pit" q1/end
+    endif
     endif
     ifeq bot_mapset 1
     ifeq bot_mode 2
@@ -1620,10 +1767,12 @@ begin botmatch
     endif
         pairs --status "quake iii: 5 / 25 / 50 / 100 health, 5 / 50 / 100 armor, the battle suit. quake ii: its own, the environment suit" "health and armor" g_q3_items "quake iii arena" 1 "quake ii" 0
     ifneq g_q3_weapons 1
+    ifneq g_q3_weapons 3
         pairs --status "what every player with quake ii's weapons spawns holding" "spawn with" g_q3_kit "blaster, machinegun" 0 "chainfist, machinegun" 1 "blaster" 2
     endif
     endif
-    ifneq bot_mapset 1
+    endif
+    ifeq bot_mapset 0
     ifeq bot_mode 2
         pairs --levelshot "map" bot_map_ctf "McKinley Revival" q2ctf1 "Stronghold Opposition" q2ctf2 "The Smelter" q2ctf3 "Outlands II" q2ctf4 "Capture Showdown" q2ctf5 "Captured Reckoning" q2kctf1 "Nexus CTF" q2kctf2 "Something Epic" ndctf0
     endif
@@ -1658,9 +1807,20 @@ begin botmatch
     endif
     endif
     endif
+    // "quake" (3, baseq2 g_q1weap.c) needs only Quake's data, not Quake III's
     ifeq fs_quake3 1
+    ifeq fs_quake1_id1 1
+        pairs --status "quake iii arena: its gauntlet, machinegun, shotgun, grenade and rocket launchers, lightning gun, railgun, plasma gun and bfg10k for everyone. by player model: quake iii's for quake iii models, quake ii's for quake ii models. quake: its axe, shotguns, nailguns, grenade and rocket launchers and thunderbolt for everyone (g_q3_weapons)" "weapons" g_q3_weapons "quake ii" 0 "quake iii arena" 1 "by player model" 2 "quake" 3
+    endif
+    ifneq fs_quake1_id1 1
         pairs --status "quake iii arena: its gauntlet, machinegun, shotgun, grenade and rocket launchers, lightning gun, railgun, plasma gun and bfg10k for everyone. by player model: quake iii's for quake iii models, quake ii's for quake ii models (g_q3_weapons)" "weapons" g_q3_weapons "quake ii" 0 "quake iii arena" 1 "by player model" 2
+    endif
         pairs --status "quake iii arena: its faster running, air control, jumps and knockback, for everyone (g_q3_physics)" "movement" g_q3_physics "quake ii" 0 "quake iii arena" 1
+    endif
+    ifneq fs_quake3 1
+    ifeq fs_quake1_id1 1
+        pairs --status "quake: its axe, shotguns, nailguns, grenade and rocket launchers and thunderbolt for everyone, with quake's ammo, pickups and damage (g_q3_weapons)" "weapons" g_q3_weapons "quake ii" 0 "quake" 3
+    endif
     endif
     endif
     // co-op (bot_mode 3): a campaign map, you and the bots against its
@@ -1766,7 +1926,15 @@ begin botmatch
         action --align "start match" "forcemenuoff; set sp_campaign 0; set bot_match 1; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; maxclients 16; set cheats $bot_cheats; map $bot_map_q3 force"
     endif
     endif
-    ifneq bot_mapset 1
+    ifeq bot_mapset 2
+    ifeq bot_mode 2
+        action --align "start match" "forcemenuoff; set sp_campaign 0; set bot_match 1; set teamplay 0; set ctf 1; deathmatch 1; coop 0; maxclients 16; set cheats $bot_cheats; map $bot_map_q1ctf force"
+    endif
+    ifneq bot_mode 2
+        action --align "start match" "forcemenuoff; set sp_campaign 0; set bot_match 1; set teamplay $bot_mode; set ctf 0; deathmatch 1; coop 0; maxclients 16; set cheats $bot_cheats; map $bot_map_q1 force"
+    endif
+    endif
+    ifeq bot_mapset 0
     ifeq bot_mode 2
         action --align "start match" "forcemenuoff; set sp_campaign 0; set bot_match 1; set teamplay 0; set ctf 1; deathmatch 1; coop 0; maxclients 16; set cheats $bot_cheats; map $bot_map_ctf force"
     endif

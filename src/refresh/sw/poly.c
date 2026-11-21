@@ -1012,7 +1012,7 @@ void R_IMFlatShadedQuad(const vec3_t a, const vec3_t b, const vec3_t c, const ve
 void R_DrawSprite(void)
 {
     vec5_t      *pverts;
-    vec3_t      left, up, right, down;
+    vec3_t      left, up, right, down, org;
     mspriteframe_t  *frame;
     int             textured;
 
@@ -1027,10 +1027,30 @@ void R_DrawSprite(void)
     if (!r_polydesc.pixels)
         return;
 
-    // generate the sprite's axes, completely parallel to the viewplane.
-    VectorCopy(vup, r_polydesc.vup);
-    VectorCopy(vright, r_polydesc.vright);
-    VectorCopy(vpn, r_polydesc.vpn);
+    VectorCopy(r_entorigin, org);
+
+    if (currentmodel->sprite_oriented) {
+        // Quake SPR_ORIENTED (hipnotic bullet holes): the poster lies in the
+        // plane of the entity's angles, as Quake's r_sprite.c. vpn must point
+        // away from the eye for the 1/z gradients, and the poster sits 0.5
+        // units off the wall toward the eye (as vkpt/GL) so it doesn't fight it.
+        float side;
+
+        AngleVectors(currententity->angles, r_polydesc.vpn,
+                     r_polydesc.vright, r_polydesc.vup);
+        side = DotProduct(modelorg, r_polydesc.vpn);
+        if (fabsf(side) < 1)
+            return;     // edge-on
+        if (side > 0)
+            VectorNegate(r_polydesc.vpn, r_polydesc.vpn);
+        VectorMA(org, -0.5f, r_polydesc.vpn, org);
+        r_polydesc.dist = -0.5f;
+    } else {
+        // generate the sprite's axes, completely parallel to the viewplane.
+        VectorCopy(vup, r_polydesc.vup);
+        VectorCopy(vright, r_polydesc.vright);
+        VectorCopy(vpn, r_polydesc.vpn);
+    }
 
 // build the sprite poster in worldspace
     VectorScale(r_polydesc.vright,
@@ -1047,27 +1067,27 @@ void R_DrawSprite(void)
 
     pverts = r_clip_verts[0];
 
-    pverts[0][0] = r_entorigin[0] + up[0] + left[0];
-    pverts[0][1] = r_entorigin[1] + up[1] + left[1];
-    pverts[0][2] = r_entorigin[2] + up[2] + left[2];
+    pverts[0][0] = org[0] + up[0] + left[0];
+    pverts[0][1] = org[1] + up[1] + left[1];
+    pverts[0][2] = org[2] + up[2] + left[2];
     pverts[0][3] = 0;
     pverts[0][4] = 0;
 
-    pverts[1][0] = r_entorigin[0] + up[0] + right[0];
-    pverts[1][1] = r_entorigin[1] + up[1] + right[1];
-    pverts[1][2] = r_entorigin[2] + up[2] + right[2];
+    pverts[1][0] = org[0] + up[0] + right[0];
+    pverts[1][1] = org[1] + up[1] + right[1];
+    pverts[1][2] = org[2] + up[2] + right[2];
     pverts[1][3] = frame->width;
     pverts[1][4] = 0;
 
-    pverts[2][0] = r_entorigin[0] + down[0] + right[0];
-    pverts[2][1] = r_entorigin[1] + down[1] + right[1];
-    pverts[2][2] = r_entorigin[2] + down[2] + right[2];
+    pverts[2][0] = org[0] + down[0] + right[0];
+    pverts[2][1] = org[1] + down[1] + right[1];
+    pverts[2][2] = org[2] + down[2] + right[2];
     pverts[2][3] = frame->width;
     pverts[2][4] = frame->height;
 
-    pverts[3][0] = r_entorigin[0] + down[0] + left[0];
-    pverts[3][1] = r_entorigin[1] + down[1] + left[1];
-    pverts[3][2] = r_entorigin[2] + down[2] + left[2];
+    pverts[3][0] = org[0] + down[0] + left[0];
+    pverts[3][1] = org[1] + down[1] + left[1];
+    pverts[3][2] = org[2] + down[2] + left[2];
     pverts[3][3] = 0;
     pverts[3][4] = frame->height;
 

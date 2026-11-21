@@ -778,6 +778,15 @@ void Key_Event(unsigned key, bool down, unsigned time)
     // inventory list.
     if (Key_IsInvenBinding(keybindings[key]) &&
         (cls.key_dest == KEY_GAME || !down)) {
+        // Quake 1 under its own progs: the key is Quake's held scoreboard
+        // (+showscores), shown while it is down (g_q1vm_game.c)
+        if (cl.q1vm[0] && cls.state == ca_active && !cls.demo.playback) {
+            if (down && keydown[key] == 1)
+                CL_ClientCommand("inven");
+            else if (!down)
+                CL_ClientCommand("putaway");
+            return;
+        }
         if (SCR_ItemWheelKey(down, down && keydown[key] > 1))
             return;
     }

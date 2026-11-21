@@ -35,6 +35,13 @@ SET(SRC_BASEQ2
 	baseq2/g_botchar.c
 	baseq2/g_ctf.c
 	baseq2/g_q3.c
+	baseq2/g_q1.c
+	baseq2/g_q1demo.c
+	baseq2/g_q1vm.c
+	baseq2/g_q1vm_cmds.c
+	baseq2/g_q1vm_game.c
+	baseq2/g_q1vm_phys.c
+	baseq2/g_q1weap.c
 	baseq2/g_q3weap.c
 	baseq2/g_sp.c
 	baseq2/g_xatrix.c
@@ -193,6 +200,7 @@ SET(SRC_CLIENT
 	client/q3weapons.c
 	client/refresh.c
 	client/roq.c
+	client/sbar_q1.c
 	client/screen.c
 	client/tent.c
 	client/view.c
@@ -251,6 +259,7 @@ SET(HEADERS_SERVER
 
 SET(SRC_COMMON
 	common/bsp.c
+	common/bsp_q1.c
 	common/bsp_q3.c
 	common/cmd.c
 	common/cmodel.c
@@ -285,6 +294,7 @@ SET(SRC_REFRESH
 	refresh/models.c
 	refresh/model_iqm.c
 	refresh/model_md5.c
+	refresh/model_q1.c
 	refresh/stb/stb.c
 )
 

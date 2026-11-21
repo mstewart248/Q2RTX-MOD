@@ -415,6 +415,110 @@ static bool MOD_MergedModel(const char *name, char *source, size_t size, int *sk
     return false;
 }
 
+/*
+=================
+MOD_LoadQuake1
+
+A Quake 1 model - the QuakeC game's "id1/<episode>/progs/ogre.mdl" - as the
+file model_q1.c makes of it: the rerelease's .md5mesh when cl_md5_models is
+on and one fits, else an .md2, .sp2 or .md3 built from the Quake one, which
+every renderer's own loader then takes. An md5 that does not load costs the
+model its skeletal version and nothing else, as for Quake II's.
+=================
+*/
+static int MOD_LoadQuake1(const char *name, size_t namelen, model_t **model_p)
+{
+    bool md5 = MOD_LoadMD5 && cl_md5_models->integer;
+    model_t *model = MOD_Alloc();
+    int ret = Q_ERR_UNKNOWN_FORMAT;
+
+    if (!model)
+        return Q_ERR_OUT_OF_SLOTS;
+
+    for (int pass = 0; pass < 2; pass++) {
+        char load_name[MAX_QPATH];
+        void *data = NULL;
+        size_t length = 0;
+        vec3_t offset;
+        float scale;
+        int sprite_type;
+        uint32_t ident;
+        mod_load_t load = NULL;
+
+        ret = MOD_Q1Build(name, md5, &data, &length, load_name, sizeof(load_name), offset, &scale, &sprite_type);
+        if (ret == Q_ERR_TOO_MANY && !Q_stricmp(COM_FileExtension(name), ".bsp")) {
+            // a whole map, precached as a model the way Quake listed its
+            // world: nothing draws it, so it is nothing
+            Com_DPrintf("%s: %s is a map, not a box; drawn as nothing\n", __func__, name);
+            memset(model, 0, sizeof(*model));
+            memcpy(model->name, name, namelen + 1);
+            model->registration_sequence = registration_sequence;
+            model->type = MOD_EMPTY;
+            ret = Q_ERR_SUCCESS;
+            break;
+        }
+        if (ret)
+            break;
+
+        ident = length >= 4 ? LittleLong(*(uint32_t *)data) : 0;
+        switch (ident) {
+        case MD2_IDENT:
+            load = MOD_LoadMD2;
+            break;
+#if USE_MD3
+        case MD3_IDENT:
+            load = MOD_LoadMD3;
+            break;
+#endif
+        case SP2_IDENT:
+            load = MOD_LoadSP2;
+            break;
+        case MD5_IDENT:
+            load = MOD_LoadMD5;
+            break;
+        }
+
+        memset(model, 0, sizeof(*model));
+        memcpy(model->name, name, namelen + 1);
+        model->registration_sequence = registration_sequence;
+
+        // a box's md5 is sized and moved to stand where the box did (model_q1.c)
+        MD5_SetLoadOffset(ident == MD5_IDENT ? offset : NULL);
+        MD5_SetLoadScale(ident == MD5_IDENT ? scale : 1.0f);
+        ret = load ? load(model, data, length, load_name) : Q_ERR_UNKNOWN_FORMAT;
+        MD5_SetLoadOffset(NULL);
+        MD5_SetLoadScale(1.0f);
+        Z_Free(data);
+
+        if (!ret) {
+            // Quake's upright sprites (types 0 and 1) turn only about the
+            // vertical, like a torch's flame; the rest face the eye
+            if (model->type == MOD_SPRITE && (sprite_type == 0 || sprite_type == 1))
+                model->sprite_vertical = true;
+            // SPR_ORIENTED (3) lies in the plane of the entity's angles: a
+            // decal on the wall it was put against
+            if (model->type == MOD_SPRITE && sprite_type == 3)
+                model->sprite_oriented = true;
+            break;
+        }
+        if (ident != MD5_IDENT || !md5)
+            break;
+
+        Com_WPrintf("%s: %s failed to load (%s); falling back to %s\n",
+                    __func__, load_name, Q_ErrorString(ret), name);
+        md5 = false;
+    }
+
+    if (ret) {
+        memset(model, 0, sizeof(*model));
+        return ret;
+    }
+
+    model->model_class = get_model_class(model->name);
+    *model_p = model;
+    return Q_ERR_SUCCESS;
+}
+
 qhandle_t R_RegisterModel(const char *name)
 {
     char normalized[MAX_QPATH];
@@ -460,6 +564,14 @@ qhandle_t R_RegisterModel(const char *name)
     model = MOD_Find(normalized);
     if (model) {
         MOD_Reference(model);
+        goto done;
+    }
+
+    // Quake 1's .mdl, .spr and box .bsp (model_q1.c)
+    if (MOD_Q1IsModel(normalized)) {
+        ret = MOD_LoadQuake1(normalized, namelen, &model);
+        if (ret)
+            goto fail1;
         goto done;
     }
 

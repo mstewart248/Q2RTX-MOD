@@ -7167,6 +7167,87 @@ void CL_GrenadeTrail(const vec3_t start, const vec3_t end, centity_t *old)
 
 /*
 ===============
+CL_IsLavaBall
+
+A Quake lava ball's model: misc_fireball's lavaball.mdl (every episode) or
+hipnotic's lavarock.mdl. Quake flags both with the rocket's trail, as it does
+the rocket itself (missile.mdl) and rogue's multi-rocket - those keep it.
+===============
+*/
+bool CL_IsLavaBall(int modelindex)
+{
+    static const char *const names[] = { "/progs/lavaball.mdl", "/progs/lavarock.mdl" };
+
+    if (modelindex <= 0 || modelindex >= MAX_MODELS)
+        return false;
+
+    const char *model = cl.configstrings[CS_MODELS + modelindex];
+    const size_t len = strlen(model);
+    for (int i = 0; i < q_countof(names); i++) {
+        const size_t n = strlen(names[i]);
+        if (len >= n && !Q_strcasecmp(model + len - n, names[i]))
+            return true;
+    }
+    return false;
+}
+
+/*
+===============
+CL_LavaBallTrail
+
+A Quake lava ball's trail (CL_IsLavaBall): with cl_rocket_flame 1 the smoke a
+rocket leaves, as NVIDIA Flow smoke, but no flame (Matt, 11-21: "get rid of
+the flame and just have the smoke trail"); a grenade's trail in the renderer
+(flow_grenade_spheres with `lava`), at a rocket's size and thickness and not
+thinning out. Otherwise the rocket's particle smoke, or with cl_rocket_flame 0
+the classic trail, which is what Quake drew.
+
+No gas goes in while the ball is in lava, water or a wall, or about to fly
+into one. Every misc_fireball ball starts 56 units down in the lava and dies
+on the pit floor, or on the underside of a walkway it flew up into. What went
+in there rose out of the lava, or up through the walkway, after the ball had
+gone: the fires "puffing up from nothing" (Matt, 11-21).
+===============
+*/
+#define LAVA_BALL_CLEARANCE     12.0f   // the rocket smoke's 8-unit puff, jittered up to 40% bigger
+
+void CL_LavaBallTrail(const vec3_t start, const vec3_t end, centity_t *old)
+{
+    vec3_t vel, fwd, ahead;
+    const float speed = CL_RocketMotion(old, vel, fwd);
+
+    if (!cl_rocket_flame->integer) {
+        CL_RocketClassicTrail(start, end, old);
+        return;
+    }
+
+    if (cl_rocket_flame->integer == 1 && R_FlowEmit) {
+        if (speed > 50.0f)
+            VectorMA(end, LAVA_BALL_CLEARANCE, fwd, ahead);
+        else
+            VectorCopy(end, ahead);
+        if ((CL_PointContents(end) | CL_PointContents(ahead)) & (MASK_SOLID | MASK_WATER))
+            return;
+
+        r_flow_emit_t emit = {
+            .kind = R_FLOW_TRAIL,
+            .style = R_FLOW_FIRE,
+            .scale = 1.0f,
+            .key = old->current.number,
+            .smoke_only = true,
+            .lava = true,
+        };
+        VectorCopy(end, emit.origin);
+        VectorCopy(end, emit.end);
+        if (R_FlowEmit(&emit) & R_FLOW_DRAWN)
+            return;
+    }
+
+    CL_RocketSmoke(start, end, fwd);
+}
+
+/*
+===============
 CL_RailTrail
 
 ===============

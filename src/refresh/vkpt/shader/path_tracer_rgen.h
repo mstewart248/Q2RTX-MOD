@@ -119,8 +119,11 @@ struct Ray {
 	float t_min, t_max;
 };
 
+/* The sky in a direction, as DRAWN: the primary and reflected/refracted rays
+   that see it (they apply pt_sky_brightness). Every lighting lookup goes
+   through env_map, below. */
 vec3
-env_map(vec3 direction, bool remove_sun)
+env_map_seen(vec3 direction, bool remove_sun)
 {
 	direction = (global_ubo.environment_rotation_matrix * vec4(direction, 0)).xyz;
 
@@ -147,6 +150,16 @@ env_map(vec3 direction, bool remove_sun)
 #endif
 	}
 	return envmap;
+}
+
+/* The sky in a direction as LIGHT - sky lights, bounces, ReSTIR, SHaRC: as
+   drawn, times a Quake 1 sky's light colour (pt_q1_sky_light_r/g/b; 1 1 1
+   otherwise), so the colour it casts can be set apart from how it looks, as
+   pt_q1_sky_light is from pt_q1_sky_brightness. */
+vec3
+env_map(vec3 direction, bool remove_sun)
+{
+	return env_map_seen(direction, remove_sun) * global_ubo.q1_sky_light_tint.rgb;
 }
 
 // depends on env_map
@@ -1350,6 +1363,10 @@ vec3 caustic_light_anchor(int light_index, vec3 pos_on_light)
 
 	if (uint(light.type) == DYNLIGHT_POLYGON)
 		return (light.positions[0] + light.positions[1] + light.positions[2]) * (1.0 / 3.0);
+	// a window light's positions are its texture axes, not points; its sample is
+	// already the one spot on the glass the light comes through
+	if (uint(light.type) == DYNLIGHT_WINDOW)
+		return pos_on_light;
 	return light.positions[0]; // DYNLIGHT_SPHERE, DYNLIGHT_SPOT: the centre
 }
 
@@ -1848,7 +1865,8 @@ get_direct_illumination(
 	}
 	else if (direct_specular_weight > 0 && bounce == 0 && !polygonal_light_is_sky
 		&& global_ubo.pt_light_mis != 0 && global_ubo.pt_specular_mis != 0
-		&& light_index >= 0 && light_index < global_ubo.num_static_lights)
+		&& light_index >= 0 && light_index < global_ubo.num_static_lights
+		&& uint(get_light_polygon(light_index).type) == DYNLIGHT_POLYGON)
 	{
 		// pt_light_mis: a BSP-world lamp on the first surface. indirect_lighting.rgen
 		// gives the specular bounce ray that hits it the other share.
@@ -2902,6 +2920,34 @@ get_material(
 			}
 		}
 	}
+
+	/* STAINED GLASS (stained_glass.h): what the glass shows is the light behind
+	   it, through it - lit up inside round the light's way through, the light
+	   itself seen through the clear share - in place of any emissive texture.
+	   The irradiance on the glass at the middle of the tile is pi x
+	   emissive_factor x the face's scale (the window light's own, bsp_mesh.c).
+	   The room's light on it is mostly let through, not sent back:
+	   STAINED_ALBEDO of the texture's colour is its diffuse. Compiled out
+	   with spec_q3 0 (STAINED_GLASS_CODE). */
+	if (STAINED_GLASS_CODE && minfo.stained_glass && dot(geo_normal, geo_normal) > 0.0)
+	{
+		const float STAINED_ALBEDO = 0.35;
+		vec3 glass = base_color;
+		base_color *= STAINED_ALBEDO;
+		emissive = vec3(0);
+
+		vec3 p = triangle.positions * bary;
+		vec2 uv = triangle.tex_coords * bary;
+		vec3 corner, e_u, e_v;
+		if (triangle.emissive_factor > 0 && stained_tile_frame(triangle.positions, triangle.tex_coords, p, uv, corner, e_u, e_v))
+		{
+			vec3 n_room = dot(geo_normal, ray_direction) < 0.0 ? geo_normal : -geo_normal;
+			vec3 n_shade = dot(normal, n_room) > 0.0 ? normal : n_room;
+			StainedLight sl = stained_light(corner, e_u, e_v, n_room, minfo);
+			float E_c = M_PI * minfo.emissive_factor * triangle.emissive_factor;
+			emissive = stained_glass_radiance(sl, minfo, p, n_shade, -ray_direction, glass) * E_c;
+		}
+	}
 }
 
 // The picture rectangle inside a security-camera screen texture, in texture coordinates.
@@ -2934,6 +2980,88 @@ vec3 portal_transform_point(mat4 portal, vec3 p)
 vec3 portal_transform_vector(mat4 portal, vec3 v)
 {
 	return vec3(dot(portal[1].xyz, v), dot(portal[2].xyz, v), dot(portal[3].xyz, v));
+}
+
+/* WHERE A RAY GOES ON FROM A PORTAL it met at `position`, on a face whose normal is
+   `normal` (either way round), for a camera slot is_portal_camera says is one. Shared
+   by reflect_refract.rgen - what the eye sees through it - and indirect_lighting.rgen
+   (pt_portal_light) - the light that comes through it.
+
+   A Quake 1 teleporter's gate (cameras.c, vkpt_cameras_q1_gate, column 0's .w below
+   -1.5): the ray goes on from the destination, turned so that "into the gate" is the
+   way the destination faces - by the face it met, so either side of a gate looks where
+   walking in from that side sends you. The gate's floor is the destination's floor,
+   and a point on the gate is the same point across the destination's view. Then it
+   wavers, as Quake's water does. Column 0: the gate's floor; 1: the destination's, and
+   its yaw; 2: the waver's size (radians) and speed.
+
+   A Quake III portal: the ray goes on from the matching point of the far side, turned
+   as the portal turns it - Quake III's R_MirrorPoint and R_MirrorVector. */
+void portal_carry_ray(mat4 camera_data, vec3 normal, inout vec3 position, inout vec3 direction)
+{
+	if(camera_data[0].w < -1.5)
+	{
+		vec3 n = dot(normal, direction) > 0.0 ? -normal : normal;   // toward the eye
+		vec2 into = normalize(-n.xy);       // standing faces only (cameras.c)
+		vec2 across = vec2(-into.y, into.x);
+		float turn = camera_data[1].w - atan(into.y, into.x);
+		float c = cos(turn), s = sin(turn);
+
+		vec3 rel = position - camera_data[0].xyz;
+		rel.xy -= into * dot(rel.xy, into);     // onto the gate's plane
+		float along = dot(rel.xy, across);
+
+		position = camera_data[1].xyz + vec3(c * rel.x - s * rel.y, s * rel.x + c * rel.y, rel.z);
+		direction = vec3(c * direction.x - s * direction.y, s * direction.x + c * direction.y, direction.z);
+
+		float waver = camera_data[2].x;
+		vec3 side = cross(direction, vec3(0, 0, 1));
+		if(waver > 0.0 && dot(side, side) > 1e-6)
+		{
+			// Quake's water, sines across the surface moving with time: one
+			// wave a 64-unit tile, along the gate and up it
+			const float k = 6.2831853 / 64.0;
+			float t = global_ubo.time * camera_data[2].y;
+			side = normalize(side);
+			vec3 up = cross(side, direction);
+			vec2 w = waver * vec2(sin(rel.z * k + t), sin(along * k + 1.3 * t + 1.7));
+			direction += side * w.x + up * w.y;
+		}
+		direction = normalize(direction);
+	}
+	else
+	{
+		position = portal_transform_point(camera_data, position);
+		direction = normalize(portal_transform_vector(camera_data, direction));
+	}
+}
+
+/* pt_portal_light: HOW MUCH A QUAKE 1 TELEPORTER'S GATE (camera slot data `gate`) IS
+   WORTH SAMPLING THE LIGHTS BEHIND FROM `position`. direct_lighting.rgen's
+   add_portal_light picks one gate in proportion to it, and indirect_lighting.rgen asks
+   it whether the lights a bounce ray meets through that gate were sampled - so the two
+   must agree on which gates are 0. Its solid angle as a flat rectangle seen from here,
+   a little more for one behind the normal, which a corner of it could still light.
+   0 for a gate with no light through it (cameras.c, q1_gate_shapes: no faces, or a
+   destination in the solid), from inside its slab, or so far that it looks smaller
+   than PORTAL_LIGHT_MIN_ANGLE - from there a light through it is lost. Column 0: the
+   gate's floor; column 2's .w its height; column 3 the way it stands (.xy), its half
+   width and half thickness. */
+#define PORTAL_LIGHT_MIN_ANGLE 0.002    // steradians: a 64 x 128 gate head on from 2000 units
+float portal_light_gate_weight(mat4 gate, vec3 position, vec3 normal)
+{
+	if (gate[0].w > -1.5 || gate[2].w <= 0.0)
+		return 0.0;
+	float s = dot(position.xy - gate[0].xy, gate[3].xy);
+	float d_plane = abs(s) - gate[3].w;
+	if (d_plane < 1.0)
+		return 0.0;
+	vec3 to_gate = vec3(gate[0].xy + sign(s) * gate[3].w * gate[3].xy, gate[0].z + 0.5 * gate[2].w) - position;
+	float dist = length(to_gate);
+	float omega = 2.0 * gate[3].z * gate[2].w * d_plane / (dist * dist * dist);
+	if (!(omega >= PORTAL_LIGHT_MIN_ANGLE))
+		return 0.0;
+	return min(omega, 2.0 * M_PI) * (max(0.0, dot(normal, to_gate) / dist) + 0.1);
 }
 
 bool get_camera_uv(vec2 tex_coord, out vec2 cameraUV)

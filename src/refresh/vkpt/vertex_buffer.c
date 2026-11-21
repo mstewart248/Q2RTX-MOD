@@ -1037,13 +1037,34 @@ copy_light(light_poly_t* light, float* vblight, const float* sky_radiance)
 	// light type reaches here without it set.
 	vblight[15] = (light->type == DYNLIGHT_SPOT) ? (float)light->spot_emission_profile : 0.f;
 
-	// The fifth vec4. Only x is used so far; the rest is there because the
-	// buffer is vec4-strided, and is the obvious place for the next per-light
-	// property that comes along.
+	// The fifth vec4: x the volumetric scale; yzw a window light's tile
+	// offsets and plane distance (light_poly_t.window).
 	vblight[16] = resolve_volumetric_scale(light);
 	vblight[17] = 0.f;
 	vblight[18] = 0.f;
 	vblight[19] = 0.f;
+
+	// A stained glass tile's light (DYNLIGHT_WINDOW, stained_glass.h): the
+	// material index rides in the spot profile's slot, twice over plus the
+	// normal's flip (bsp_mesh.c keeps that in spot_emission_profile), so the
+	// shader can read the light's height, distance, size and the glass's texture
+	if (light->type == DYNLIGHT_WINDOW)
+	{
+		const int index = light->material ? (int)(light->material - r_materials) : 0;
+		vblight[15] = (float)(index * 2 + (light->spot_emission_profile & 1));
+		vblight[17] = light->window[0];
+		vblight[18] = light->window[1];
+		vblight[19] = light->window[2];
+	}
+	// ... and its soft fill, the share the glass spreads (stained_scatter),
+	// read here so the console's changes to it show at once
+	else if (light->material && light->material->stained_glass && light->color[0] >= 0.f)
+	{
+		const float s = light->material->stained_scatter;
+		vblight[3] *= s;
+		vblight[7] *= s;
+		vblight[11] *= s;
+	}
 }
 
 extern char cluster_debug_mask[VIS_MAX_BYTES];
@@ -1285,6 +1306,25 @@ vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp
 		if (material->caustic_ripple > 0.f && MAT_IsKind(material->flags, MATERIAL_KIND_GLASS)) {
 			mat_data[10] = floatToHalf(material->caustic_ripple);
 			q3_materials = true;
+		}
+
+		// stained glass (material.h): bit 16 of word 10 on, bit 17 a sun, the
+		// spread in whole degrees in its top byte; height and distance in word
+		// 11, size (degrees) and scatter in word 12. REGULAR only - the kind
+		// that draws it opaque. Compiled out with spec_q3 0, like the glass
+		// features above (measured 11-21: it spilled indirect lighting's
+		// registers, 96 -> 160 B local memory).
+		if (material->stained_glass && MAT_IsKind(material->flags, MATERIAL_KIND_REGULAR)) {
+			q3_materials = true;
+			mat_data[10] |= 1u << 16;
+			if (material->stained_light_sun)
+				mat_data[10] |= 1u << 17;
+			uint32_t spread = (uint32_t)(material->stained_spread + 0.5f);
+			mat_data[10] |= max(1u, min(spread, 255u)) << 24;
+			mat_data[11] = floatToHalf(material->stained_light_height);
+			mat_data[11] |= (uint32_t)floatToHalf(material->stained_light_distance) << 16;
+			mat_data[12] = floatToHalf(material->stained_light_size);
+			mat_data[12] |= (uint32_t)floatToHalf(material->stained_scatter) << 16;
 		}
 	}
 

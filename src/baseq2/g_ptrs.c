@@ -1026,6 +1026,16 @@ extern void trigger_elevator_use(void);
 extern void trigger_enable(void);
 extern void trigger_flashlight_touch(void);
 extern void trigger_fog_touch(void);
+extern void q1_bob_blocked(void);
+extern void q1_bob_think(void);
+extern void q1_bob_use(void);
+extern void q1_teleport_touch(void);
+extern void q1_teleport_use(void);
+extern void q1_trigger_killed(void);
+extern void q1_setskill_touch(void);
+extern void q1_torch_think(void);
+extern void q1_explobox_explode(void);
+extern void q1_explobox_die(void);
 extern void trigger_gravity_touch(void);
 extern void trigger_gravity_use(void);
 extern void trigger_health_relay_use(void);
@@ -2226,5 +2236,16 @@ const save_ptr_t save_ptrs[] = {
 // appended, not sorted in: save_ptrs[] is indexed positionally (see SAVE_VERSION in g_save.c)
 { P_touch, gib_touch_upright },
 { P_touch, trigger_fog_touch },
+// Quake 1 maps (g_q1.c): a single-player game saves on every level start
+{ P_think, q1_bob_think },
+{ P_blocked, q1_bob_blocked },
+{ P_touch, q1_teleport_touch },
+{ P_use, q1_bob_use },
+{ P_use, q1_teleport_use },
+{ P_die, q1_trigger_killed },
+{ P_touch, q1_setskill_touch },
+{ P_think, q1_torch_think },
+{ P_think, q1_explobox_explode },
+{ P_die, q1_explobox_die },
 };
 const int num_save_ptrs = sizeof(save_ptrs) / sizeof(save_ptrs[0]);

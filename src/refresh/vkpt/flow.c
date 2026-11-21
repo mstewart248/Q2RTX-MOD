@@ -230,6 +230,7 @@ typedef struct {
 	vec3_t          heading;    // a trail: which way its source last moved, or 0
 	vec3_t          last;       // a rocket's trail: where its source was at Flow's last step
 	bool            smoke_only; // a trail of fire with no flame: a grenade's
+	bool            lava;       // ... a Quake lava ball's: a rocket's smoke, unthinned
 	float           flown;      // a grenade's trail: units its source has gone
 	int             light;      // a trail: its light slot, or -1
 	uint32_t        light_generation;   // ... while the slot has this generation
@@ -688,6 +689,7 @@ static struct {
 	// the slot, and its seed, which the sums are relative to; and how many
 	// blocks were added up. 0 blocks is no sums to read.
 	uint32_t                light_sum_blocks[FLOW_SET_COUNT];
+	unsigned                bad_light_sums;     // slots dropped for non-finite sums (vkpt_flow_describe_lights)
 	uint32_t                light_sum_generation[FLOW_SET_COUNT][FLOW_MAX_LIGHTS];
 	vec3_t                  light_sum_seed[FLOW_SET_COUNT][FLOW_MAX_LIGHTS];
 	uint64_t                lights_collected_frame;    // qvk.frame_counter + 1
@@ -1237,6 +1239,15 @@ static void flow_lights_collect(int set)
 			continue;
 
 		const double *s = sums[i];
+		// Gas gone wrong - an infinity or a NaN anywhere in the slot's blocks.
+		// Not seen; but NaN fails every test below, `power < 4` included, so it
+		// went into the scene as a light of NaN colour at a NaN place, and from
+		// there into every pixel that drew it and the denoiser's whole frame.
+		if (!isfinite(s[0] + s[1] + s[2] + s[3] + s[4] + s[5] + s[6] + s[7])) {
+			flow.bad_light_sums++;
+			l->lit = false;
+			continue;
+		}
 		if (s[6] <= 0.0) {
 			// nothing glows near it any more - or nothing yet, for a moment
 			if (l->age > 0.3f)
@@ -1988,6 +1999,14 @@ static void flow_emitter_gas(const flow_emitter_t *e, float *radius, float *expa
 			0.5f * Cvar_ClampValue(cvar_pt_flow_fire_glow_start, 0.f, 0.5f));
 		*fuel = 0.f;
 		*smoke = cvar_pt_flow_grenade_smoke->value;
+		if (e->lava) {
+			// a Quake lava ball's: the smoke a rocket leaves, without its
+			// flame (Matt, 11-21: "get rid of the flame and just have the
+			// smoke trail"), lifted only as a grenade's is
+			*radius = cvar_pt_flow_rocket_radius->value;
+			*expansion = cvar_pt_flow_rocket_expansion->value;
+			*smoke = cvar_pt_flow_rocket_smoke->value;
+		}
 	}
 	else if (e->kind == R_FLOW_TRAIL && e->layer == R_FLOW_FIRE) {
 		// a rocket's, see flow_rocket_spheres
@@ -2327,7 +2346,8 @@ static int flow_grenade_spheres(flow_emitter_t *e, int num_spheres, float cell_s
 	for (int i = 0; i < puffs; i++) {
 		const float f = (float)(i + 1) / puffs;
 		const float flown = e->flown + dist * f;
-		const float share = thin_length > 0.f && flown < thin_length
+		// a lava ball's smoke stays thick all the way, as a rocket's does
+		const float share = e->lava ? 1.f : thin_length > 0.f && flown < thin_length
 			? 1.f - (1.f - thin) * (flown / thin_length) : thin;
 
 		NvFlowGridEmitterSphereParams *sphere = &flow.spheres[num_spheres];
@@ -4483,7 +4503,7 @@ static int vkpt_flow_emit(const r_flow_emit_t *emit)
 		for (int i = 0; i < flow.num_emitters; i++) {
 			flow_emitter_t *e = &flow.emitters[i];
 			if (e->kind == R_FLOW_TRAIL && e->key == emit->key && e->layer == (int)emit->style &&
-				e->smoke_only == emit->smoke_only) {
+				e->smoke_only == emit->smoke_only && e->lava == emit->lava) {
 				// a rocket's or a grenade's lets go at half as much again as
 				// its share...
 				if (emit->style == R_FLOW_FIRE && !flow_rocket_room(1.5f)) {
@@ -4517,6 +4537,7 @@ static int vkpt_flow_emit(const r_flow_emit_t *emit)
 			e->key = emit->key;
 			e->seen = true;
 			e->smoke_only = emit->style == R_FLOW_FIRE && emit->smoke_only;
+			e->lava = e->smoke_only && emit->lava;
 			VectorCopy(emit->origin, e->last);
 			// A light that keeps to its source: the glow behind it, gathered
 			// from as far back as the trail glows. Only plasma has a trail's
@@ -6036,6 +6057,39 @@ void vkpt_flow_ambient(VkCommandBuffer cmd_buf)
 		0, 1, &after, 0, NULL, 0, NULL);
 #else
 	(void)cmd_buf;
+#endif
+}
+
+/*
+One line on Flow's lights for a log (main.c's exposure spike): how many, the
+brightest's power (radiance x radius^2: a classic explosion 1600, a rocket's
+fireball some 5000) and radius and how far it is from the eye, and how many
+slots were ever dropped for gas gone non-finite.
+*/
+void vkpt_flow_describe_lights(char *buf, size_t size)
+{
+	if (!size)
+		return;
+	buf[0] = 0;
+#if USE_FLOW
+	if (!flow.grid) {
+		Q_strlcpy(buf, "Flow: off.", size);
+		return;
+	}
+	float best = 0.f, radius = 0.f, distance = 0.f;
+	for (int n = 0; n < flow.num_dlights; n++) {
+		const dlight_t *dl = &flow.dlights[n];
+		const float power = flow_luminance(dl->color) * dl->radius * dl->radius;
+		if (power > best) {
+			vec3_t d;
+			best = power;
+			radius = dl->radius;
+			VectorSubtract(dl->origin, flow.view_origin, d);
+			distance = VectorLength(d);
+		}
+	}
+	Q_snprintf(buf, size, "Flow: %d lights, brightest %.0f (radius %.0f, %.0f units away); %u dropped as non-finite.",
+		flow.num_dlights, best, radius, distance, flow.bad_light_sums);
 #endif
 }
 

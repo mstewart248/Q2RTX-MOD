@@ -82,7 +82,8 @@ float bounce_store_roughness(float roughness)
 	return round(clamp(roughness, 0.0, 1.0) * 256.0) / 256.0;
 }
 
-float bounce_origin_flags = 0.0;    // this ray's origin, from the pass before (later bounces)
+float bounce_origin_flags = 0.0;    // this ray's origin, from the pass before (later bounces);
+                                    // negative once the ray went through a portal (pt_portal_light)
 
 /* Was the vertex this bounce ray left from light sampled (NEE)? Then every light it
    can hit was already counted there - all of its diffuse part, and the specular part
@@ -93,6 +94,13 @@ float bounce_origin_flags = 0.0;    // this ray's origin, from the pass before (
    polygons that are lights. */
 bool ray_origin_light_sampled()
 {
+	// pt_portal_light: light sampling looks for a light in a straight line, and one
+	// reached through a portal was never sampled along this path - it counts in full.
+	// Except through one Quake 1 gate straight from the primary surface (-0.5, set in
+	// the portal loop): direct_lighting.rgen sampled the lights behind it there
+	// (add_portal_light), so the same rule as a straight line's.
+	if (bounce_origin_flags < 0.0)
+		return bounce_origin_flags > -0.75 && bounce_number == 0 && global_ubo.pt_direct_polygon_lights >= 0;
 	if (bounce_number == 0)
 		return global_ubo.pt_direct_polygon_lights >= 0;
 	if (mod(bounce_origin_flags, 2.0) >= 1.0)
@@ -150,6 +158,66 @@ bounce_texture_lod(Triangle triangle, uint tex_index, float cone_width, vec3 ray
 	float lod = 0.5 * log2(texel_area / world_area) + log2(max(cone_width, 1e-4) / cos_theta);
 
 	return max(0, lod + global_ubo.pt_bounce_lod_bias);
+}
+
+/* pt_bounce_transparent: A SEE-THROUGH SURFACE'S GLOW IN A GLOSSY REFLECTION.
+
+   The bounce mask (BOUNCE_RAY_CULL_MASK) has no AS_FLAG_TRANSPARENT, so a surface of
+   kind TRANSPARENT - a Quake III additive effect such as q3tourney4's sfx/console03
+   rings, a trans33 pane - was in no glossy reflection at all. Only the mirror pass
+   (reflect_refract.rgen: CHROME / SCREEN under MAX_MIRROR_ROUGHNESS) traces that
+   group. Matt, 2026-11-21: the rings vanished from a metal box the moment its kind
+   went from CHROME to REGULAR, or as soon as the CHROME had any roughness - both
+   send the reflection here.
+
+   This looks along the specular ray, up to the solid surface it hit (ray.t_max), at
+   the see-through instances only (trace_caustic_hit: the nearest one, no any-hit;
+   that group is FORCE_OPAQUE and cull-disabled), and returns that surface's glow as
+   it is drawn: the Quake III program's composite where it has one, otherwise the
+   emissive map, times the surface's emissive_factor - what get_material gives - and
+   the spotlight term every other emissive bounce hit gets (sample_light_lists).
+   Light is only added: what is behind the surface is not dimmed, and a translucent
+   surface's own lit colour is not shaded (it was missing before as well).
+   ray_payload_geometry is the solid hit's again on return. `cone_base` and
+   `cone_spread`: the ray cone's width at the ray's origin and its spread past the
+   pixel angle, as the solid hit's mip is chosen. */
+vec3 bounce_transparent_glow(Ray ray, float cone_base, float cone_spread, out float hit_t, out bool is_light)
+{
+	hit_t = 0.0;
+	is_light = false;
+
+	RayPayloadGeometry solid = ray_payload_geometry;
+	trace_caustic_hit(ray);
+
+	vec3 glow = vec3(0);
+	if (found_intersection(ray_payload_geometry))
+	{
+		Triangle t = get_hit_triangle(ray_payload_geometry);
+		if ((t.material_id & MATERIAL_KIND_MASK) == MATERIAL_KIND_TRANSPARENT && t.emissive_factor > 0)
+		{
+			hit_t = ray_payload_geometry.hit_distance;
+			is_light = (t.material_id & MATERIAL_FLAG_LIGHT) != 0;
+
+			vec3 bary = get_hit_barycentric(ray_payload_geometry);
+			vec2 tex_coord = t.tex_coords * bary;
+			vec3 n = normalize(t.normals * bary);
+			MaterialInfo minfo = get_material_info(t.material_id);
+
+			float lod = bounce_texture_lod(t, minfo.base_texture,
+				cone_base + cone_spread * hit_t, ray.direction, n);
+
+			vec3 q3_albedo;
+			float q3_alpha;
+			if (!q3_program_material(t.material_id, t.positions * bary, tex_coord, vec2(0), vec2(0), lod,
+				n, ray.direction, minfo.base_texture, false, q3_albedo, glow, q3_alpha))
+				glow = sample_emissive_texture(t.material_id, minfo, tex_coord, vec2(0), vec2(0), lod);
+
+			glow *= t.emissive_factor * sqrt(abs(dot(ray.direction, n)));
+		}
+	}
+
+	ray_payload_geometry = solid;
+	return glow;
 }
 
 /* pt_bounce_lobe_select: how often the first bounce samples the specular lobe.
@@ -574,9 +642,56 @@ indirect_lighting(
 		shadow_cull_mask |= AS_FLAG_VIEWER_WEAPON;
 	}
 
-	trace_geometry_ray(bounce_ray, true, bounce_cull_mask);
+	/* pt_portal_light: LIGHT THROUGH A PORTAL. A bounce ray that meets a Quake 1
+	   teleporter's gate or a Quake III portal goes on from its far side, as the eye's
+	   ray does (reflect_refract.rgen, portal_carry_ray), so the room a portal opens on
+	   lights this side of it (Matt, 2026-11-21: "light passes through portals"). Up to
+	   two portals in a row. From here on bounce_ray and bounce_direction are the far
+	   side's - the hit is shaded there, and a later bounce goes on from there - but the
+	   denoiser still gets the direction the light arrived from at this surface.
+	   (One trace call site in a loop: a second inlined copy of the trace cost 32 B more
+	   local memory.) */
+	bool portal_light = Q3_SHADERS && global_ubo.pt_portal_light != 0 && global_ubo.pt_cameras != 0;
+	for(int portal_pass = 0; ; portal_pass++)
+	{
+		trace_geometry_ray(bounce_ray, true, bounce_cull_mask);
 
-	if(use_restir_gi && !is_specular_ray)
+		if(!portal_light || portal_pass == 2 || !found_intersection(ray_payload_geometry))
+			break;
+		Triangle portal_tri = get_hit_triangle(ray_payload_geometry);
+		if(!is_camera(portal_tri.material_id) || !is_portal_camera(camera_id_of_material(portal_tri.material_id)))
+			break;
+
+		vec3 portal_pos = portal_tri.positions * get_hit_barycentric(ray_payload_geometry);
+		vec3 portal_normal = normalize(cross(
+			portal_tri.positions[1] - portal_tri.positions[0],
+			portal_tri.positions[2] - portal_tri.positions[1]));
+		vec3 portal_dir = bounce_ray.direction;
+		mat4 portal_camera = global_ubo.security_camera_data[camera_id_of_material(portal_tri.material_id)];
+		portal_carry_ray(portal_camera, portal_normal, portal_pos, portal_dir);
+
+		// (This state rides on variables held anyway - a bool and a uint of its own
+		// spilled 32 B more to local memory. From here on bounce_origin_flags is read
+		// only by ray_origin_light_sampled(), and gi_sample_normal only for a ReSTIR GI
+		// candidate, which a bounce through a portal never is. A later bounce's SH
+		// direction is its view direction, see the end of indirect_lighting().)
+		if(spec_bounce_index == 0 && bounce_origin_flags >= 0.0)
+			gi_sample_normal = bounce_direction;
+		// -0.5: the first portal from the primary surface, a Quake 1 gate whose lights
+		// direct_lighting.rgen sampled from here (ray_origin_light_sampled)
+		bounce_origin_flags = (portal_pass == 0 && bounce_number == 0
+			&& portal_light_gate_weight(portal_camera, position, normal) > 0.0) ? -0.5 : -1.0;
+
+		bounce_ray.origin = portal_pos + portal_dir * 0.01;
+		bounce_ray.direction = portal_dir;
+		bounce_ray.t_min = 0;
+		bounce_ray.t_max = 10000;
+		bounce_direction = portal_dir;
+	}
+
+	// (ReSTIR GI's reuse looks for a sample in a straight line from each pixel, and
+	// one through a portal is not there: such a bounce lights its own pixel instead)
+	if(use_restir_gi && !is_specular_ray && bounce_origin_flags >= 0.0)
 	{
 		gi_candidate = true;
 		gi_t0 = bounce_throughput;
@@ -658,6 +773,25 @@ indirect_lighting(
 		// first-person effects and drops the reflection-only twins
 		vec4 transparency = trace_effects_ray(bounce_ray, /* skip_procedural = */ true, /* reflection_ray = */ false);
 		bounce_contrib += transparency.rgb * transparency.a * bounce_throughput * (1.0 - direct_specular_weight);
+
+		// pt_bounce_transparent: a see-through surface's glow in front of what the ray hit
+		// (bounce_transparent_glow). Weighted as an emissive hit below: a light that was
+		// light sampled gives only the share the sampling did not take.
+		if (global_ubo.pt_bounce_transparent != 0)
+		{
+			float pixel_angle = 2.0 / (abs(global_ubo.P[1][1]) * float(global_ubo.height));
+			float glow_spread = global_ubo.temporal_blend_factor > 0.0 ? 0.0 : 2.0 * primary_roughness * primary_roughness;
+			float glow_t;
+			bool glow_is_light;
+			vec3 glow = bounce_transparent_glow(bounce_ray,
+				pixel_angle * length(position - global_ubo.cam_pos.xyz), pixel_angle + glow_spread,
+				glow_t, glow_is_light);
+
+			float glow_weight = (glow_is_light && ray_origin_light_sampled())
+				? 1.0 - direct_specular_weight
+				: (1.0 - fake_specular_weight) / max(1, glow_t * primary_roughness * global_ubo.pt_specular_anti_flicker * 0.01);
+			bounce_contrib += glow * bounce_throughput * glow_weight;
+		}
 	}
 
 	Triangle triangle;
@@ -765,8 +899,9 @@ indirect_lighting(
 			{
 				// MIS with direct specular - from the primary surface only, as
 				// get_direct_illumination weights its side (bounce 0); from a bounce
-				// hit the two keep the plain direct_specular_weight split
-				if (global_ubo.pt_specular_mis != 0 && spec_bounce_index == 0)
+				// hit the two keep the plain direct_specular_weight split, and so does
+				// a ray through a portal (add_portal_light's split, direct_lighting.rgen)
+				if (global_ubo.pt_specular_mis != 0 && spec_bounce_index == 0 && bounce_origin_flags >= 0.0)
 				{
 					mat3 projected_positions = project_triangle(triangle.positions, position);
 
@@ -936,7 +1071,8 @@ indirect_lighting(
 					// with, so the two add up to the whole highlight. Instanced models
 					// (doors, lamps on models) keep the old split, as their light side does.
 					float light_share = direct_specular_weight;
-					if(light_share > 0 && spec_bounce_index == 0
+					// (not through a portal: add_portal_light keeps the plain split)
+					if(light_share > 0 && spec_bounce_index == 0 && bounce_origin_flags >= 0.0
 						&& global_ubo.pt_light_mis != 0 && global_ubo.pt_specular_mis != 0
 						&& (ray_payload_geometry.buffer_and_instance_idx & 0xffff) == VERTEX_BUFFER_WORLD
 						&& triangle.instance_index == ~0u)
@@ -1282,6 +1418,11 @@ main()
 	}
 
 	indirect_lighting(ipos, half_res, bounce_direction, bounce_contrib, is_specular_ray);
+
+	// pt_portal_light: the SH below is projected on the way the light arrives here, not
+	// the way it went on from a portal (gi_sample_normal: see the trace in indirect_lighting())
+	if(!gi_candidate && any(notEqual(gi_sample_normal, vec3(0))))
+		bounce_direction = gi_sample_normal;
 
 #ifdef KHR_RAY_QUERY
 	// pt_bounce_cull: the next bounce runs only over the paths that go on to it. Every

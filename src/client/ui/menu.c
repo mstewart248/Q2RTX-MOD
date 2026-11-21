@@ -2015,6 +2015,10 @@ bool Menu_UpdateConditions(menuFrameWork_t *menu)
 					show = (v == cond->value)
 					    || (cond->cvar2 && Menu_PendingValue(menu, cond->cvar2) == cond->value2);
 					break;
+				case MENU_COND_NEQ_OR:
+					show = (v != cond->value)
+					    || (cond->cvar2 && Menu_PendingValue(menu, cond->cvar2) != cond->value2);
+					break;
 				}
 			}
 

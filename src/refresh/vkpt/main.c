@@ -128,6 +128,39 @@ cvar_t* cvar_pt_surface_lights_threshold = NULL;
 cvar_t* cvar_pt_bsp_radiance_scale = NULL;
 cvar_t *cvar_pt_light_style_reach = NULL;
 cvar_t *cvar_pt_bsp_sky_lights = NULL;
+cvar_t *cvar_pt_q1_sky_lights = NULL;
+cvar_t *cvar_pt_q1_sky_brightness = NULL;
+cvar_t *cvar_pt_q1_sky_light = NULL;
+cvar_t *cvar_pt_q1_sky_fog = NULL;
+static cvar_t *sky_q1_active;
+// a Quake 1 sky's brightness (q1_sky_faces); 0 = the sky is not a Quake 1 one
+static float q1_sky_scale;
+
+// The Quake 1 sky is the one being SHOWN: the map's is one (q1_sky_faces) and
+// sky type "rerelease" lets a map's own sky through
+// (vkpt_physical_sky_uses_skybox). Any other sky type renders the Q2RTX sky it
+// names, lighting the map through the same sky faces, and none of the
+// pt_q1_sky_* settings apply.
+static bool q1_sky_shown(void)
+{
+	return q1_sky_scale > 0.f && vkpt_physical_sky_uses_skybox();
+}
+
+// pt_q1_sky_light, never quite 0: the cloud height carries it and its sign
+// says "Quake 1"
+static float q1_sky_light(void)
+{
+	return max(cvar_pt_q1_sky_light->value, 1e-4f);
+}
+
+static cvar_t *cvar_pt_q1_sky_light_rgb[3];
+
+// pt_q1_sky_light_r/g/b, the colour of the light a shown Quake 1 sky casts; white otherwise
+static void q1_sky_light_tint(vec3_t out)
+{
+	for (int i = 0; i < 3; i++)
+		out[i] = q1_sky_shown() ? max(cvar_pt_q1_sky_light_rgb[i]->value, 0.f) : 1.f;
+}
 cvar_t *cvar_pt_fog_lava = NULL;
 cvar_t *cvar_pt_accumulation_rendering = NULL;
 cvar_t *cvar_pt_accumulation_rendering_framenum = NULL;
@@ -177,6 +210,7 @@ cvar_t* cvar_min_driver_version_amd = NULL;
 cvar_t *cvar_ray_tracing_api = NULL;
 cvar_t *cvar_vk_validation = NULL;
 cvar_t *cvar_tm_exposure_speed_bots = NULL;	// prepare_ubo: the eye's speed-up in a Bot Match
+static cvar_t *cvar_tm_readback_jump = NULL;	// R_RenderFrame_RTX: a one-frame exposure readback spike
 
 extern uiStatic_t uis;
 
@@ -208,6 +242,9 @@ static bool temporal_frame_valid = false;
 static uint32_t pt_field_offset_prev = 0;
 
 static int world_anim_frame = 0;
+// how many times the world's texture animation has stepped since the map loaded:
+// the frame a Quake 1 brush model's textures show (process_bsp_entity)
+static int world_anim_steps = 0;
 
 static vec3_t avg_envmap_color = { 0.f };
 // From the last readback, for cpu_bench: the sun's colour is integrated from the
@@ -3634,6 +3671,11 @@ destroy_vulkan(void)
 
 static int entity_frame_num = 0;
 static uint32_t model_entity_ids[2][MAX_MODEL_INSTANCES];
+// For `mat create_instance` on a model (process_render_feedback): where each model
+// instance's entity stands, and the material index it was drawn with (0 = not a
+// placed model: the gun in hand, a brush entity)
+static vec3_t   model_instance_origin[2][MAX_MODEL_INSTANCES];
+static uint32_t model_instance_material[2][MAX_MODEL_INSTANCES];
 static int blood_model_instance_idx = -1;
 
 // Where the blood section starts in the instanced buffers. A HIGH-WATER MARK of
@@ -3685,7 +3727,7 @@ static bool warn_once_for_model(const model_t* model, int site)
 	return true;
 }
 
-static pbr_material_t const * get_mesh_material(const entity_t* entity, const model_t* model, const maliasmesh_t* mesh)
+static pbr_material_t const * get_mesh_skin_material(const entity_t* entity, const model_t* model, const maliasmesh_t* mesh)
 {
 	if (entity->skin)
 	{
@@ -3705,6 +3747,24 @@ static pbr_material_t const * get_mesh_material(const entity_t* entity, const mo
 		skinnum = wanted;
 
 	return mesh->materials[skinnum];
+}
+
+/* The skin's material - or this placed model's own instance of it, where a .mat
+   section names one for where it stands (MAT_EntityInstance: a torch with a
+   light_factor of its own). Not for the gun in hand, which stands where the
+   player does. */
+static pbr_material_t const * get_mesh_material(const entity_t* entity, const model_t* model, const maliasmesh_t* mesh)
+{
+	pbr_material_t const* mat = get_mesh_skin_material(entity, model, mesh);
+
+	if (mat && mat->has_entity_instances && !(entity->flags & RF_WEAPONMODEL))
+	{
+		pbr_material_t const* instance = MAT_EntityInstance(mat, entity->origin);
+		if (instance)
+			return instance;
+	}
+
+	return mat;
 }
 
 // The pass vkpt_model_vbo_layout put a static model's mesh in (vertex_buffer.c):
@@ -4079,8 +4139,14 @@ static inline void transform_point(const float* p, const float* matrix, float* r
 	VectorCopy(transformed, result); // vec4 -> vec3
 }
 
-static void instance_model_lights(int num_light_polys, const light_poly_t* light_polys, const float* transform, entity_hash_t hash)
+static void instance_model_lights(int num_light_polys, const light_poly_t* light_polys, const float* transform, entity_hash_t hash,
+	const entity_t* entity)
 {
+	// a placed model's instance (get_mesh_material) casts its own light_factor;
+	// its light polys mostly share one material, so one lookup does them all
+	const pbr_material_t* last_base = NULL;
+	const pbr_material_t* last_material = NULL;
+
 	for (int nlight = 0; nlight < num_light_polys; nlight++)
 	{
 		if (num_model_lights >= MAX_MODEL_LIGHTS)
@@ -4108,6 +4174,17 @@ static void instance_model_lights(int num_light_polys, const light_poly_t* light
 		// Copy the other light properties
 		VectorCopy(src_light->color, dst_light->color);
 		dst_light->material = src_light->material;
+		if (entity && src_light->material && src_light->material->has_entity_instances
+			&& !(entity->flags & RF_WEAPONMODEL))
+		{
+			if (src_light->material != last_base)
+			{
+				last_base = src_light->material;
+				last_material = MAT_EntityInstance(last_base, entity->origin);
+			}
+			if (last_material)
+				dst_light->material = (pbr_material_t*)last_material;
+		}
 		dst_light->style = src_light->style;
 		dst_light->type = DYNLIGHT_POLYGON;
 		dst_light->volumetric_scale = src_light->volumetric_scale;
@@ -4125,6 +4202,20 @@ static void instance_model_lights(int num_light_polys, const light_poly_t* light
 		num_model_lights++;
 	}
 }
+/* An alias model's light triangles for this entity. A vertex-animated one keeps
+   a set per frame (models.c extract_model_lights): the frame the entity's pose
+   is nearer to - the torch's flame lights the room from where it is drawn. */
+static const light_poly_t *model_light_polys(const model_t *model, const entity_t *entity)
+{
+	if (model->iqmData || model->numframes <= 1)
+		return model->light_polys;
+	int frame = entity->backlerp >= 0.5f ? entity->oldframe : entity->frame;
+	frame %= model->numframes;
+	if (frame < 0)
+		frame += model->numframes;
+	return model->light_polys + (size_t)frame * model->num_light_polys;
+}
+
 static const mat4 g_identity_transform = {
 	{ 1.f, 0.f, 0.f, 0.f },
 	{ 0.f, 1.f, 0.f, 0.f },
@@ -4184,6 +4275,7 @@ static void process_bsp_entity(const entity_t* entity, int* instance_count)
 	hash.bsp = 1;
 
 	memcpy(&model_entity_ids[entity_frame_num][current_instance_idx], &hash, sizeof(uint32_t));
+	model_instance_material[entity_frame_num][current_instance_idx] = 0;
 
 	ModelInstance* mi = uniform_instance_buffer->model_instances + current_instance_idx;
 	memcpy(&mi->transform, transform, sizeof(transform));
@@ -4200,7 +4292,15 @@ static void process_bsp_entity(const entity_t* entity, int* instance_count)
 	mi->pose_lerp_prev_frame = 0.f;
 	mi->iqm_matrix_offset_curr_frame = -1;
 	mi->iqm_matrix_offset_prev_frame = -1;
-	mi->frame = entity->frame;
+	/* Quake II animates a brush model's textures by its entity frame; Quake
+	   animates "+0".."+9" on every face by the clock, five frames a second, as
+	   the world's (animate_materials.comp). The model's light polys step with
+	   the world (bsp_mesh_animate_light_polys), so with the entity frame e1m1's
+	   +0basebtn buttons sat lit on their first frame while the light they cast
+	   blinked (Matt, 2026-11-21). The alternates ("+a", a pressed button) are
+	   not linked to the frames they replace (bsp_q1.c), so the entity frame has
+	   nothing more to pick on a Quake 1 map. */
+	mi->frame = vkpt_refdef.bsp_mesh_world.q1 ? world_anim_steps : entity->frame;
 	mi->alpha = (entity->flags & RF_TRANSLUCENT) ? entity->alpha : 1.f;
 	mi->render_buffer_idx = VERTEX_BUFFER_WORLD;
 	mi->render_prim_offset = model->geometry.prim_offsets[0];
@@ -4209,7 +4309,7 @@ static void process_bsp_entity(const entity_t* entity, int* instance_count)
 	mi->texture_flags = 0;
 	mi->instance_pad0 = mi->instance_pad1 = mi->instance_pad2 = 0;
 
-	instance_model_lights(model->num_light_polys, model->light_polys, transform, hash);
+	instance_model_lights(model->num_light_polys, model->light_polys, transform, hash, NULL);
 
 	if (vkpt_model_geometry_has_blas(&model->geometry))
 	{
@@ -4409,6 +4509,9 @@ static void process_regular_entity(
 		hash.bsp = 0;
 
 		memcpy(&model_entity_ids[entity_frame_num][current_instance_index], &hash, sizeof(uint32_t));
+		VectorCopy(entity->origin, model_instance_origin[entity_frame_num][current_instance_index]);
+		model_instance_material[entity_frame_num][current_instance_index] =
+			is_viewer_weapon ? 0 : (material_id & MATERIAL_INDEX_MASK);
 		
 		ModelInstance* mi = uniform_instance_buffer->model_instances + current_instance_index;
 
@@ -4465,10 +4568,78 @@ static void process_regular_entity(
 	*num_instanced_prim = current_num_instanced_prim;
 }
 
+/* MODEL EMISSIVES THAT STAY PUT RIDE THE FOG'S LONG HISTORY (Matt, 2026-11-21, of
+   Quake 1's torches and braziers: "It's WAY too noisy"; more depth slices and the
+   finest fog quality "didn't seem to clean up the noise in any noticeable way" - the
+   grain is the short history's ~2.5 frames, not the grid). A model's glowing
+   triangles used to ride the short history with the weapon fire
+   (pt_fog_froxel_dyn_split, global_ubo.h), as every md2 emissive did.
+   One whose entity has not gone more than MODEL_LIGHT_FIXTURE_DIST from where it
+   first appeared - a torch, a brazier, an item, a monster before it first walks - is
+   now a FIXTURE, like a placed light or a brush entity's emissive: hash.bsp, which
+   partition_bmodel_lights packs at the front for the long history. Once an entity
+   has moved it stays on the short history for the rest of its life (cent->id is new
+   for every life of an entity), so a monster that starts walking switches once, not
+   back and forth. The viewer's weapon and the muzzle flashes are never fixtures.
+   pt_fog_model_light_fixtures 0 = the old rule, every model light short. Live. */
+#define MODEL_LIGHT_FIXTURE_SLOTS   1024    // a power of two
+#define MODEL_LIGHT_FIXTURE_PROBES  32
+#define MODEL_LIGHT_FIXTURE_DIST    8.f     // world units; an item's bob stays inside
+#define MODEL_LIGHT_FIXTURE_STALE   60      // frames unseen before a slot is reused
+
+static struct {
+	int         id;
+	bool        moved;
+	unsigned    last_frame;
+	vec3_t      origin;     // where it first appeared
+} model_light_fixtures[MODEL_LIGHT_FIXTURE_SLOTS];
+static unsigned model_light_fixture_frame = MODEL_LIGHT_FIXTURE_STALE + 1;
+static cvar_t *cvar_pt_fog_model_light_fixtures;
+
+static bool
+model_light_is_fixture(const entity_t *entity)
+{
+	if (!cvar_pt_fog_model_light_fixtures)
+		cvar_pt_fog_model_light_fixtures = Cvar_Get("pt_fog_model_light_fixtures", "1", 0);
+	if (!cvar_pt_fog_model_light_fixtures->integer || entity->id <= 0)
+		return false;
+
+	const unsigned frame = model_light_fixture_frame;
+	int free_slot = -1;
+
+	// its own slot if it has one, else the first stale one along the probe
+	for (int p = 0; p < MODEL_LIGHT_FIXTURE_PROBES; p++)
+	{
+		const int s = (entity->id + p) & (MODEL_LIGHT_FIXTURE_SLOTS - 1);
+		if (model_light_fixtures[s].id == entity->id)
+		{
+			model_light_fixtures[s].last_frame = frame;
+			if (!model_light_fixtures[s].moved &&
+				DistanceSquared(entity->origin, model_light_fixtures[s].origin) >
+					MODEL_LIGHT_FIXTURE_DIST * MODEL_LIGHT_FIXTURE_DIST)
+				model_light_fixtures[s].moved = true;
+			return !model_light_fixtures[s].moved;
+		}
+		if (free_slot < 0 && (model_light_fixtures[s].id == 0 ||
+			model_light_fixtures[s].last_frame + MODEL_LIGHT_FIXTURE_STALE < frame))
+			free_slot = s;
+	}
+
+	if (free_slot < 0)
+		return false;   // the table is full: the old rule
+
+	model_light_fixtures[free_slot].id = entity->id;
+	model_light_fixtures[free_slot].moved = false;
+	model_light_fixtures[free_slot].last_frame = frame;
+	VectorCopy(entity->origin, model_light_fixtures[free_slot].origin);
+	return true;
+}
+
 static void
 prepare_entities(EntityUploadInfo* upload_info)
 {
 	entity_frame_num = !entity_frame_num;
+	model_light_fixture_frame++;
 	vkpt_caustics_begin_frame();
 
 	InstanceBuffer* instance_buffer = &vkpt_refdef.uniform_instance_buffer;
@@ -4551,9 +4722,11 @@ prepare_entities(EntityUploadInfo* upload_info)
 				hash.entity = i + 1;
 				hash.model = ~entity->model;
 				hash.mesh = 0;
-				hash.bsp = 0;
+				// a torch, a brazier: the fog's long history (model_light_is_fixture)
+				hash.bsp = (!is_viewer_weapon && model->model_class != MCLASS_FLASH &&
+					model_light_is_fixture(entity)) ? 1 : 0;
 
-				instance_model_lights(model->num_light_polys, model->light_polys, transform, hash);
+				instance_model_lights(model->num_light_polys, model_light_polys(model, entity), transform, hash, entity);
 			}
 		}
 	}
@@ -4918,6 +5091,27 @@ process_render_feedback(ref_feedback_t *feedback, mleaf_t* viewleaf, bool* sun_v
 		{
 			feedback->view_prim_instance_hash =
 				vkpt_refdef.bsp_mesh_world.prim_instance_hash[readback.primitive];
+		}
+
+		/* A placed model: the hash of where it stands (MAT_EntityInstanceHash). The
+		   readback is a frame or two old, so its instance index is checked against
+		   both entity frames for one drawn with the material it saw. */
+		feedback->view_on_model = false;
+		VectorClear(feedback->view_model_origin);
+		if (readback.instance != ~0u && readback.instance < MAX_MODEL_INSTANCES && readback.material != ~0u)
+		{
+			const uint32_t seen = readback.material & MATERIAL_INDEX_MASK;
+			for (int f = 0; f < 2; f++)
+			{
+				const int slot = f ? !entity_frame_num : entity_frame_num;
+				if (seen && model_instance_material[slot][readback.instance] == seen)
+				{
+					feedback->view_on_model = true;
+					VectorCopy(model_instance_origin[slot][readback.instance], feedback->view_model_origin);
+					feedback->view_prim_instance_hash = MAT_EntityInstanceHash(feedback->view_model_origin);
+					break;
+				}
+			}
 		}
 
 		Q_strlcpy(feedback->view_material, view_material, sizeof(feedback->view_material));
@@ -5464,7 +5658,12 @@ evaluate_reference_mode(reference_mode_t* ref_mode)
 		num_accumulated_frames++;
 
 		const int num_warmup_frames = 5;
-		const int num_frames_to_accumulate = get_accumulation_rendering_framenum();
+		int num_frames_to_accumulate = get_accumulation_rendering_framenum();
+		// mat author lights a fraction of the pixels a frame (MAT_AuthorSparseRate):
+		// that many more frames to the same samples a pixel, so 100% is the same photo
+		const float author_rate = MAT_AuthorSparseRate();
+		if (author_rate > 0.f)
+			num_frames_to_accumulate = (int)ceilf((float)num_frames_to_accumulate / author_rate);
 
 		ref_mode->enable_accumulation = true;
 		ref_mode->enable_denoiser = false;
@@ -5653,8 +5852,13 @@ sparse_rendering_rate(const reference_mode_t *ref_mode, const QVKUniformBuffer_t
 	const uint32_t width = qvk.extent_render.width, height = qvk.extent_render.height;
 	const char *reason = NULL;
 	float rate = 0.f;
+	// mat author's photo mode: its own rate, the accumulation filling in what a frame
+	// skips (MAT_AuthorSparseRate) - whatever pt_sparse says
+	const float author = ref_mode->enable_accumulation ? MAT_AuthorSparseRate() : 0.f;
 
-	if (setting <= 0.f)
+	if (author > 0.f)
+		rate = author;
+	else if (setting <= 0.f)
 		reason = "";
 	// DLSS-RR fills the pixels it skips in. A-SVGF on top of it (pt_dlss_bypass_denoiser
 	// 0) would take them for noise, and photo mode accumulates every pixel.
@@ -5688,7 +5892,10 @@ sparse_rendering_rate(const reference_mode_t *ref_mode, const QVKUniformBuffer_t
 
 	if (reason != last_reason || fabsf(rate - last_rate) >= 0.02f)
 	{
-		if (setting > 0.f && rate > 0.f)
+		if (author > 0.f)
+			Com_Printf("mat author: photo mode lights %.0f%% of the pixels a frame (%ux%u, mat_author_sparse)\n",
+				rate * 100.f, width, height);
+		else if (setting > 0.f && rate > 0.f)
 			Com_Printf("pt_sparse: lighting %.0f%% of the pixels a frame (%ux%u)\n", rate * 100.f, width, height);
 		else if (reason && reason[0])
 			Com_Printf("pt_sparse: %s\n", reason);
@@ -6334,6 +6541,27 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 	UBO_CVAR_LIST
 #undef UBO_CVAR_DO
 
+	// A Quake 1 sky's three settings. As seen: its texture's own colours times
+	// pt_q1_sky_brightness, whatever it lights the map with (the shader hands
+	// back the colours times the bake's scale times pt_q1_sky_light, so this
+	// divides those out). Its fog: the sky term times pt_q1_sky_fog. Its light
+	// goes in with the cloud height, after vkpt_q3_sky_upload.
+	{
+		const int shown = q1_sky_shown();
+		vec3_t tint;
+		q1_sky_light_tint(tint);    // its light's colour: env_map, not the sky as drawn
+		Vector4Set(ubo->q1_sky_light_tint, tint[0], tint[1], tint[2], 0.f);
+		if (shown) {
+			ubo->pt_sky_brightness *= max(0.f, cvar_pt_q1_sky_brightness->value) / (q1_sky_scale * q1_sky_light());
+			const float fog = max(0.f, cvar_pt_q1_sky_fog->value);
+			ubo->fog_sky_r *= fog * tint[0];
+			ubo->fog_sky_g *= fog * tint[1];
+			ubo->fog_sky_b *= fog * tint[2];
+		}
+		if (sky_q1_active->integer != shown)
+			Cvar_SetInteger(sky_q1_active, shown, FROM_CODE);   // for the menu
+	}
+
 	// tm_exposure_speed_bots: in a Bot Match the eye adapts this many times
 	// faster, both ways. An explosion's flash pulls the exposure down within a
 	// few frames, and the slow way back (tm_exposure_speed_down 1, a one-second
@@ -6566,8 +6794,11 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 	{
 		for (int n = 0; n < wm->num_cameras; n++)
 		{
+			// a Quake 1 teleporter: its gate and destination, the shader turns the ray
+			if (wm->cameras[n].q1_gate)
+				vkpt_cameras_q1_gate(wm, n, *ubo->security_camera_data[n]);
 			// a Quake III portal: a transform of the ray, not a picture (cameras.c)
-			if (wm->cameras[n].portal && wm->cameras[n].placed)
+			else if (wm->cameras[n].portal && wm->cameras[n].placed)
 				vkpt_cameras_q3_transform(wm, n, vkpt_refdef.fd ? vkpt_refdef.fd->time : 0.f, *ubo->security_camera_data[n]);
 			else
 				prepare_camera(wm->cameras[n].pos, wm->cameras[n].dir, *ubo->security_camera_data[n]);
@@ -6641,6 +6872,14 @@ update_mlight_prev_to_current()
 	for (int i = 0; i < light_entity_id_count[entity_frame_num]; i++) {
 		entity_hash_t hash = *(entity_hash_t*)&light_entity_ids[entity_frame_num][i];
 		if (hash.entity == 0u) continue;
+		// a map's fixed lights come in the same order every frame: the same
+		// index first, so hundreds of them (a Quake 1 map's light entities,
+		// lightedit.c) are not a search each
+		if (i < light_entity_id_count[!entity_frame_num] &&
+			light_entity_ids[entity_frame_num][i] == light_entity_ids[!entity_frame_num][i]) {
+			vkpt_refdef.uniform_instance_buffer.mlight_prev_to_current[i] = i;
+			continue;
+		}
 		for (int j = 0; j < light_entity_id_count[!entity_frame_num]; j++) {
 			if (light_entity_ids[entity_frame_num][i] == light_entity_ids[!entity_frame_num][j]) {
 				vkpt_refdef.uniform_instance_buffer.mlight_prev_to_current[j] = i;
@@ -6886,8 +7125,50 @@ vkpt_prepare_frame(refdef_t *fd, int waterLevel, vkpt_frame_prep_t *prep)
 
 	// Sometimes, the readback returns 1.0 luminance instead of the real value.
 	// Ignore these mysterious spikes.
-	if (adapted_luminance != 1.0f) 
-		prev_adapted_luminance = adapted_luminance;
+	//
+	/* ...AND ANY OTHER ONE-FRAME SPIKE (Matt, 2026-11-21: "sometimes when flow
+	   explosions go off the whole screen kind of strobes brightly ... It
+	   doesn't happen every time ... when I am killing lots of enemies with
+	   rockets"). Everything that glows by the exposure is scaled by this one
+	   number - Flow's fire and smoke, the explosion sprites, particles, the
+	   beams' lights - so a wrong readback brightens all of them at once, for
+	   a frame, and a fireball across the view takes the screen with it
+	   through the bloom. The eye cannot move like that: tone_mapping_curve.comp
+	   adapts at tm_exposure_speed_up 2 / _down 1 a second on log2, a few
+	   hundredths of a stop a frame. So a value more than tm_readback_jump
+	   times off the last one, either way, waits: if the next readback agrees
+	   with it (a new map, a reset curve, the bots' 20x eye at a low frame
+	   rate) it is taken a frame late; a lone one is dropped - and either way
+	   it is in the console, with Flow's lights next to it, so the next flash
+	   says whether this was it. NOT SEEN TO HAPPEN: a guard and a witness. */
+	{
+		static float pending_luminance = 0.f;
+		static unsigned last_report;
+		const float jump = Cvar_ClampValue(cvar_tm_readback_jump, 0.f, 1000.f);
+
+		if (adapted_luminance == 1.0f || !(adapted_luminance >= 0.f) || !isfinite(adapted_luminance)) {
+			// the old spike, or nothing a luminance can be
+		} else if (jump <= 1.f || prev_adapted_luminance <= 0.f || adapted_luminance <= 0.f
+			|| (adapted_luminance <= prev_adapted_luminance * jump && adapted_luminance * jump >= prev_adapted_luminance)) {
+			prev_adapted_luminance = adapted_luminance;
+			pending_luminance = 0.f;
+		} else if (pending_luminance > 0.f
+			&& adapted_luminance <= pending_luminance * jump && adapted_luminance * jump >= pending_luminance) {
+			// two in a row: the exposure really is there
+			prev_adapted_luminance = adapted_luminance;
+			pending_luminance = 0.f;
+		} else {
+			const unsigned now = Sys_Milliseconds();
+			if (now - last_report >= 500u) {
+				char flow_lights[160];
+				last_report = now;
+				vkpt_flow_describe_lights(flow_lights, sizeof(flow_lights));
+				Com_WPrintf("Exposure readback %.5f after %.5f (x%.1f) in one frame - held back a frame. %s\n",
+					adapted_luminance, prev_adapted_luminance, adapted_luminance / prev_adapted_luminance, flow_lights);
+			}
+			pending_luminance = adapted_luminance;
+		}
+	}
 	
 	if (prev_adapted_luminance <= 0.f)
 		prev_adapted_luminance = 0.005f;
@@ -6932,9 +7213,13 @@ vkpt_prepare_frame(refdef_t *fd, int waterLevel, vkpt_frame_prep_t *prep)
 	qvk.frame_menu_mode = cl_paused->integer == 1 && uis.menuDepth > 0 && render_world && !menu_clear_view;
 	qvk.frame_ui_blur = render_world ? SCR_ItemWheelBlur() : 0.f;
 
-	int new_world_anim_frame = (int)(fd->time * 2);
+	// Quake II animates wall textures twice a second, Quake 1 five times
+	const float world_anim_rate = (vkpt_refdef.bsp_mesh_world_loaded && vkpt_refdef.bsp_mesh_world.q1) ? 5.f : 2.f;
+	int new_world_anim_frame = (int)(fd->time * world_anim_rate);
 	bool update_world_animations = (new_world_anim_frame != world_anim_frame);
 	world_anim_frame = new_world_anim_frame;
+	if (update_world_animations)
+		world_anim_steps++;
 
 
 
@@ -7110,6 +7395,11 @@ vkpt_prepare_frame(refdef_t *fd, int waterLevel, vkpt_frame_prep_t *prep)
 
 	vkpt_physical_sky_update_ubo(ubo, &sun_light, render_world);
 	vkpt_q3_sky_upload(ubo, fd->time);
+	// a Quake 1 sky's light: its scale, which the shader multiplies the clouds
+	// by, times pt_q1_sky_light (the cloud height's size; prepare_ubo divides
+	// both back out of the sky as seen)
+	if (q1_sky_shown() && ubo->q3_sky_cloud_height < 0.f)
+		ubo->q3_sky_cloud_height = -q1_sky_scale * q1_sky_light();
 	vkpt_q3_quad_upload(ubo, fd->time);
 	vkpt_bloom_update(ubo, frame_time, ubo->medium != MEDIUM_NONE, qvk.frame_menu_mode, qvk.frame_ui_blur);
 	vkpt_motion_blur_update(frame_time);
@@ -7118,6 +7408,13 @@ vkpt_prepare_frame(refdef_t *fd, int waterLevel, vkpt_frame_prep_t *prep)
 		bsp_mesh_animate_light_polys(&vkpt_refdef.bsp_mesh_world);
 	vec3_t sky_radiance;
 	VectorScale(avg_envmap_color, ubo->pt_env_scale, sky_radiance);
+	if (q1_sky_shown()) {
+		vec3_t tint;
+		q1_sky_light_tint(tint);
+		VectorScale(sky_radiance, q1_sky_light(), sky_radiance);
+		for (int i = 0; i < 3; i++)
+			sky_radiance[i] *= tint[i];
+	}
 	vkpt_light_buffer_upload_to_staging(render_world, &vkpt_refdef.bsp_mesh_world, bsp_world_model, num_model_lights, model_lights, sky_radiance);
 
 	float shadowmap_view_proj[16];
@@ -9984,6 +10281,42 @@ vkpt_init_frontend(void)
 	// Nonzero settings should only be used for custom maps where sky surfaces are marked properly for Q2RTX.
 	cvar_pt_bsp_sky_lights = Cvar_Get("pt_bsp_sky_lights", "0", 0);
 
+	/* 1 = a Quake 1 map's sky faces are all sky lights, as maps/sky/<map>.txt
+	   makes a Quake II map's: nothing else marks them (no SURF_LIGHT, no
+	   cluster list), and Quake lit its outdoors from light entities that only
+	   ever went into its lightmaps. 0 = the sky lights only through rays that
+	   happen to hit it. Read at map load. */
+	cvar_pt_q1_sky_lights = Cvar_Get("pt_q1_sky_lights", "1", 0);
+
+	/* A QUAKE 1 SKY'S THREE SETTINGS, the environment menu's "quake sky"
+	   rows (shown while sky_q1_active, i.e. sky type "rerelease" on a Quake 1
+	   map). Any other sky type shows the Q2RTX sky it names and these do
+	   nothing.
+
+	   pt_q1_sky_brightness: how bright it LOOKS - 1 = its texture's own
+	   colours, as Quake drew it, fullbright. Not tied to its light: lit only
+	   as brightly as it looks, the sky lights nothing (sky1 averages about
+	   30/255), and drawn as brightly as it needs to be to light the map it
+	   blew out to pink-white with its near-black olives showing.
+	   pt_q1_sky_light: the light it casts, 1 = as bright on average as its
+	   texture's values taken as they are (q1_sky_faces).
+	   pt_q1_sky_fog: how much it lights the fog (the fog's sky term), 1 = as
+	   much as its light.
+	   They multiply pt_sky_brightness, pt_sky_light_scale and
+	   pt_fog_scale_skybox, which every map skybox has. */
+	cvar_pt_q1_sky_brightness = Cvar_Get("pt_q1_sky_brightness", "1", CVAR_ARCHIVE);
+	cvar_pt_q1_sky_light = Cvar_Get("pt_q1_sky_light", "1", CVAR_ARCHIVE);
+	cvar_pt_q1_sky_fog = Cvar_Get("pt_q1_sky_fog", "1", CVAR_ARCHIVE);
+	/* pt_q1_sky_light_r/g/b: the COLOUR of that light, each a multiplier of
+	   its channel (1 1 1 = the sky's own). The sky as seen keeps its colours.
+	   The sRGB decode (q1_sky_faces) brought the maroon skies' red back - and
+	   into the light with it (Matt, 11-21); this takes it out of the light
+	   alone. The fog's sky term takes it too. */
+	cvar_pt_q1_sky_light_rgb[0] = Cvar_Get("pt_q1_sky_light_r", "1", CVAR_ARCHIVE);
+	cvar_pt_q1_sky_light_rgb[1] = Cvar_Get("pt_q1_sky_light_g", "1", CVAR_ARCHIVE);
+	cvar_pt_q1_sky_light_rgb[2] = Cvar_Get("pt_q1_sky_light_b", "1", CVAR_ARCHIVE);
+	sky_q1_active = Cvar_Get("sky_q1_active", "0", CVAR_ROM);
+
 	// Let lava light the FOG. Lava that is not already a poly-light glows only
 	// through bounce rays, and the fog in-scatters from the light lists alone, so
 	// it made no fog at all. 1 builds a second set of lava lights that ONLY the
@@ -10115,6 +10448,9 @@ vkpt_init_frontend(void)
 	// 1 = the same eye as everywhere else; the video menu's "eye adjustment vs
 	// bots" picks a faster one (prepare_ubo)
 	cvar_tm_exposure_speed_bots = Cvar_Get("tm_exposure_speed_bots", "1", CVAR_ARCHIVE);
+	// a readback this many times off the last, either way, waits a frame to
+	// be believed (R_RenderFrame_RTX); 0 = take every one, as before
+	cvar_tm_readback_jump = Cvar_Get("tm_readback_jump", "3", 0);
 
 	cvar_flt_temporal_hf->changed = temporal_cvar_changed;
 	cvar_flt_temporal_lf->changed = temporal_cvar_changed;
@@ -10850,6 +11186,133 @@ static byte *q3_sky_faces(const char *shader_name, const char *const suf[6], int
 	return data;
 }
 
+/*
+=================
+q1_sky_faces
+
+A QUAKE 1 SKY, "%<texture>" from CL_SetSky: the map's own sky texture, two
+layers of clouds (images.c makes them, <texture>_q1sky0 the solid back one and
+_q1sky1 the front one, see-through where Quake's colour 0 was). GLQuake drew
+them on a sphere squashed flat (gl_warp.c EmitSkyPolys): for the direction d
+from the eye, s and t are d.xy * 6*63 / |(d.x, d.y, 3 d.z)|, over 128-texel
+tiles, and the front layer scrolls twice as fast as the back one - the
+parallax. q3_sky.glsl draws them that way per ray, moving
+(vkpt_q1_sky_set); this bakes them still into the cube map, which is what the
+sky's average colour - its tint in the fog - and the CPU path tracer see. The
+back layer is solid, so the bake is also what the GPU is given as the far box:
+whatever reads the cube map alone gets the clouds, not black.
+
+The layers blend in Quake's gamma-encoded values and the blend is then made
+linear and scaled, the same as the shader does it (q3_sky.glsl says why); the
+scale is worked out here, from the whole bake, and handed to vkpt_q1_sky_set.
+=================
+*/
+// the sRGB curve, as q3_sky.glsl's q1_sky_srgb_to_linear
+static inline float q1_sky_srgb_to_linear(float c)
+{
+	return c <= 0.04045f ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f);
+}
+
+static byte *q1_sky_faces(const char *sky, const char *const suf[6], int *out_size)
+{
+	static const char *const gl_faces[6] = { "rt", "lf", "bk", "ft", "up", "dn" };
+	q3_sky_layer_t  layers[2];
+	int             num_layers = 0;
+
+	for (int l = 0; l < 2; l++) {
+		char path[MAX_QPATH];
+		image_t *img;
+
+		Q_snprintf(path, sizeof(path), "textures/q1/%s_q1sky%d.wal", sky, l);
+		img = IMG_Find(path, IT_WALL, IF_REPEAT);
+		if (img == R_NOTEXTURE || !img->pix_data) {
+			if (l == 0) {
+				Com_WPrintf("Quake 1 sky texture %s not found in the map\n", sky);
+				return NULL;
+			}
+			continue;
+		}
+		layers[num_layers].image = img;
+		layers[num_layers].pix = img->pix_data;
+		layers[num_layers].w = img->upload_width;
+		layers[num_layers].h = img->upload_height;
+		num_layers++;
+	}
+
+	const int size = 256;
+	const size_t face_bytes = (size_t)size * size * 4;
+	const size_t face_texels = (size_t)size * size;
+	byte *data = Z_Malloc(face_bytes * 6);
+	// the blend in Quake's own (gamma-encoded) values, before it is made linear
+	float *blend = Z_Malloc(face_texels * 6 * 3 * sizeof(float));
+	// luminance taken as it is (how the sky was lit before) and made linear
+	double lum_as_is = 0, lum_linear = 0;
+
+	for (int f = 0; f < 6; f++) {
+		int axis = 0;
+		byte *out = data + face_bytes * f;
+
+		for (int a = 0; a < 6; a++)
+			if (!strcmp(gl_faces[a], suf[f]))
+				axis = a;
+
+		for (int y = 0; y < size; y++) {
+			for (int x = 0; x < size; x++) {
+				// the texel's direction, as the GL sky draws this face
+				float b[3] = { 2.f * (x + 0.5f) / size - 1.f, 1.f - 2.f * (y + 0.5f) / size, 1.f };
+				vec3_t d;
+
+				for (int j = 0; j < 3; j++) {
+					int k = q3_sky_st_to_vec[axis][j];
+					d[j] = k < 0 ? -b[-k - 1] : b[k - 1];
+				}
+				VectorNormalize(d);
+
+				const float len = sqrtf(d[0] * d[0] + d[1] * d[1] + 9.f * d[2] * d[2]);
+				const float s = d[0] * (6.f * 63.f / 128.f) / len;
+				const float t = d[1] * (6.f * 63.f / 128.f) / len;
+				float acc[3] = { 0 }, c[4];
+
+				for (int l = 0; l < num_layers; l++) {
+					q3_sky_sample(&layers[l], s, t, c);
+					const float a = l ? c[3] : 1.f;
+					for (int ch = 0; ch < 3; ch++)
+						acc[ch] += (c[ch] - acc[ch]) * a;
+				}
+
+				float *bl = blend + 3 * (face_texels * f + (size_t)y * size + x);
+				float lin[3];
+				for (int ch = 0; ch < 3; ch++) {
+					bl[ch] = q3_sky_clamp(acc[ch], 0, 1);
+					lin[ch] = q1_sky_srgb_to_linear(bl[ch]);
+				}
+				lum_as_is  += 0.2126f * bl[0]  + 0.7152f * bl[1]  + 0.0722f * bl[2];
+				lum_linear += 0.2126f * lin[0] + 0.7152f * lin[1] + 0.0722f * lin[2];
+			}
+		}
+	}
+
+	/* The sky is drawn as its blend made linear (q3_sky.glsl says why), times
+	   this: as bright on average as its values were taken as they are, which is
+	   how much light it cast before - the colours come back, the light stays. */
+	const float scale = lum_linear > 0 ? q3_sky_clamp((float)(lum_as_is / lum_linear), 1.f, 64.f) : 1.f;
+
+	for (size_t i = 0; i < face_texels * 6; i++) {
+		byte *px = data + 4 * i;
+		for (int ch = 0; ch < 3; ch++)
+			px[ch] = (byte)(q3_sky_clamp(q1_sky_srgb_to_linear(blend[3 * i + ch]) * scale, 0, 1) * 255.f + 0.5f);
+		px[3] = 255;
+	}
+	Z_Free(blend);
+
+	vkpt_q1_sky_set(layers[0].image, num_layers > 1 ? layers[1].image : NULL, scale);
+	q1_sky_scale = scale;
+	Com_DPrintf("Quake 1 sky %s: %d layer(s), brightness %.2f\n", sky, num_layers, scale);
+
+	*out_size = size;
+	return data;
+}
+
 void
 R_SetSky_RTX(const char *name, float rotate, int autorotate, const vec3_t axis)
 {
@@ -10873,6 +11336,8 @@ R_SetSky_RTX(const char *name, float rotate, int autorotate, const vec3_t axis)
 
 	// none unless this is a Quake III sky
 	vkpt_q3_sky_set(NULL);
+	// and not a Quake 1 one unless q1_sky_faces says so
+	q1_sky_scale = 0.f;
 
 	// a Quake III map's sky shader, baked into the six faces
 	if (name[0] == '*') {
@@ -10889,12 +11354,48 @@ R_SetSky_RTX(const char *name, float rotate, int autorotate, const vec3_t axis)
 			}
 		}
 		i = 6;
+	} else if (name[0] == '%') {
+		// a Quake 1 map's sky texture, its clouds baked into the six faces
+		data = q1_sky_faces(name + 1, suf, &w_prev);
+		h_prev = w_prev;
+		complete = data != NULL;
+		if (!data)
+			w_prev = h_prev = 1;
+		else {
+			const uint32_t *pix = (const uint32_t *)data;
+			for (size_t p = 0; p < (size_t)w_prev * h_prev * 6; p++) {
+				avg_color[0] += pix[p] & 0xff;
+				avg_color[1] += (pix[p] >> 8) & 0xff;
+				avg_color[2] += (pix[p] >> 16) & 0xff;
+			}
+		}
+		i = 6;
 	} else {
 		i = 0;
 	}
 
+	/* A QUAKE 1 SKYBOX IN QUAKE'S OWN ORIENTATION. The faces above put "ft" at
+	   +x and "rt" at +y (this cube is sampled .xzy, see env_map_seen) - stock
+	   Q2RTX's layout, a quarter turn from the one GLQuake, Quake II's GL
+	   renderer and KEX draw: "rt" at +x, "bk" at +y, "lf" at -x, "ft" at -y,
+	   and "up" / "dn" turned to match. Quake II's skies stay as they always
+	   were here (their map cfgs' sun hours were set by eye against them), but
+	   a Quake 1 rerelease sky has its sun painted where the map's _sun_mangle
+	   lit it from, and its light now comes from there (vkpt_q1_sun_load) - so
+	   the faces go where Quake puts them. mg3's start1: brightest spot at
+	   azimuth 254, elevation 72 as Quake draws it, mangle sun 255 / 80; drawn
+	   the stock way it was at 344. "up" and "dn" are turned in place below
+	   (checked by the seams: 1-3 against 11-31 for the other turns). */
+	static const char *const q1_suf[6] = { "rt", "lf", "up", "dn", "bk", "ft" };
+	const bool q1_box = !Q_strncasecmp(name, "id1/", 4);
+
 	for (; complete && i < 6; i++) {
-		Q_concat(pathname, sizeof(pathname), "env/", name, suf[i], ".tga");
+		// a Quake 1 skybox names its path in full ("id1/gfx/env/map1/map1_",
+		// CL_SetSky); Quake II's are in env/
+		if (q1_box)
+			Q_concat(pathname, sizeof(pathname), name, q1_suf[i], ".tga");
+		else
+			Q_concat(pathname, sizeof(pathname), "env/", name, suf[i], ".tga");
 		FS_NormalizePath(pathname);
 		image_t *img = IMG_Find(pathname, IT_SKY, IF_NONE);
 
@@ -10916,7 +11417,18 @@ R_SetSky_RTX(const char *name, float rotate, int autorotate, const vec3_t axis)
 
 		size_t s = (size_t)w_prev * h_prev * 4;
 
-		memcpy(data + s * i, img->pix_data, s);
+		if (q1_box && (i == 2 || i == 3) && w_prev == h_prev) {
+			// Quake's up / dn face turned a quarter: up's texel (x, y) is Quake's
+			// (W-1-y, x), dn's is (y, W-1-x)
+			const uint32_t *src = (const uint32_t *)img->pix_data;
+			uint32_t *dst = (uint32_t *)(data + s * i);
+			const int W = w_prev;
+			for (int y = 0; y < W; y++)
+				for (int x = 0; x < W; x++)
+					dst[y * W + x] = i == 2 ? src[x * W + (W - 1 - y)] : src[(W - 1 - x) * W + y];
+		} else {
+			memcpy(data + s * i, img->pix_data, s);
+		}
 
 		for (int p = 0; p < w_prev * h_prev; p++)
 		{
@@ -10969,8 +11481,11 @@ R_SetSky_RTX(const char *name, float rotate, int autorotate, const vec3_t axis)
 	// and which game it came from - see sky_use_map_skybox. A Quake III map's
 	// sky shader is as much a part of the map as a rerelease skybox, and is
 	// shown under the same setting whatever game directory is running.
+	// A Quake 1 map's sky - its texture's clouds or its rerelease skybox - is
+	// the same.
+	const bool own_sky = name[0] == '*' || name[0] == '%' || !Q_strncasecmp(name, "id1/", 4);
 	vkpt_physical_sky_set_map_skybox(!complete ? MAP_SKYBOX_NONE :
-		(Q_stricmp(cl.gamedir, "rerelease") == 0 || name[0] == '*') ? MAP_SKYBOX_RERELEASE : MAP_SKYBOX_OTHER);
+		(Q_stricmp(cl.gamedir, "rerelease") == 0 || own_sky) ? MAP_SKYBOX_RERELEASE : MAP_SKYBOX_OTHER);
 }
 
 void R_AddDecal_RTX(decal_t *d)
@@ -11049,6 +11564,10 @@ vkpt_begin_registration(const char *name)
 		vkpt_q3_sky_register();		// so the cfgs can mapcvar pt_q3_sun_scale etc.
 		Com_AddConfigFile("maps/quake3.cfg", 0);
 	}
+	// Every Quake 1 map's settings (id1/maps/quake1.cfg - Quake 1's maps are
+	// loaded as q1/<map>), the same way, before its own maps/q1/<map>.cfg
+	if (!Q_strncasecmp(name, "q1/", 3))
+		Com_AddConfigFile("maps/quake1.cfg", 0);
 	Com_AddConfigFile(va("maps/%s.cfg", name), 0);
 
 	// Quake III's quad damage look (powerups/quad) for this map, or none
@@ -11080,6 +11599,7 @@ vkpt_begin_registration(const char *name)
 	}
 	bsp_world_model = bsp;
 	vkpt_fog_set_world(bsp);  // a Quake III map's fog brushes
+	vkpt_q1_sun_load(bsp->q1 ? bsp->entitystring : NULL);  // a Quake 1 map's sun
 	// Map load: the map's cfgs and BSP file, its textures (read and decoded on
 	// this thread), its mesh and light lists, then the renderer's GPU side
 	Com_LoadMark("BSP");
@@ -11106,6 +11626,7 @@ vkpt_begin_registration(const char *name)
 	vkpt_refdef.bsp_mesh_world_loaded = 1;
 	bsp = NULL;
 	world_anim_frame = 0;
+	world_anim_steps = 0;
 
 	Cvar_Set("sv_novis", vkpt_refdef.bsp_mesh_world.num_cameras > 0 ? "1" : "0");
 
@@ -11134,6 +11655,11 @@ void
 vkpt_end_registration(void)
 {
 	vkpt_physical_sky_endRegistration();
+
+	// placed models' own materials, made now that every skin is registered and
+	// before a frame draws (MAT_RegisterEntityInstances) - and before the frees
+	// below, so a kept instance's own textures count as used
+	MAT_RegisterEntityInstances();
 
 	IMG_FreeUnused();
 	MOD_FreeUnused();

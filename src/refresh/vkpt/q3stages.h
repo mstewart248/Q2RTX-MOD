@@ -231,6 +231,12 @@ bool vkpt_q3_stage_paint_info(const pbr_material_t *mat, int stage, const image_
 // for the sky should then be the far box alone, or they would be drawn twice.
 bool vkpt_q3_sky_set(const q3shader_t *sky);
 
+// A Quake 1 sky's back and front cloud layers (front may be NULL), drawn by the
+// same code with Quake's projection, scrolling; (scale) multiplies their
+// blend once it is made linear. False when they are not drawn on the GPU
+// (pt_q3_sky_clouds 0, or no back layer).
+bool vkpt_q1_sky_set(image_t *back, image_t *front, float scale);
+
 // The layers' transforms and colours at `time` (seconds), into the UBO.
 void vkpt_q3_sky_upload(QVKUniformBuffer_t *ubo, float time);
 

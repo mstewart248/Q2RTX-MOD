@@ -710,6 +710,99 @@ static void SCR_DrawCenterString(void)
 /*
 ===============================================================================
 
+QUAKE III'S FRAG MESSAGE
+
+"You fragged Crash", and under it "Tied for 2nd place with 5" (cg_event.c
+CG_Obituary, CG_PlaceString): the game's q3_frag (g_sp.c SP_FragMessage), for
+a player with Quake III's guns. Quake III puts it up at once and the next one
+replaces it, so it has a slot of its own, not the typed-out queue above: 3 s
+(cg_centertime), the last 200 ms fading, at 30% of the screen's height. The
+place in Quake III's colours - 1st blue, 2nd red, 3rd yellow.
+
+===============================================================================
+*/
+
+static struct {
+    char        name[32];
+    int         place;          // 0: a team game, the name alone
+    bool        tied;
+    int         score;
+    unsigned    time_off;       // 0 = nothing up
+} scr_q3frag;
+
+static void SCR_Q3Frag_f(void)
+{
+    if (Cmd_Argc() < 2)
+        return;
+    Q_strlcpy(scr_q3frag.name, Cmd_Argv(1), sizeof(scr_q3frag.name));
+    scr_q3frag.place = Cmd_Argc() >= 5 ? atoi(Cmd_Argv(2)) : 0;
+    scr_q3frag.tied = Cmd_Argc() >= 5 && atoi(Cmd_Argv(3));
+    scr_q3frag.score = Cmd_Argc() >= 5 ? atoi(Cmd_Argv(4)) : 0;
+    scr_q3frag.time_off = cls.realtime + 3000;
+}
+
+static void SCR_DrawQ3Frag(void)
+{
+    char        line[MAX_QPATH], place[16];
+    const char  *tied = scr_q3frag.tied ? "Tied for " : "";
+    char        rest[32];
+    int         left = (int)(scr_q3frag.time_off - cls.realtime);
+    int         x, y, rank = scr_q3frag.place;
+    float       alpha = 1;
+    color_t     color;
+
+    if (!scr_q3frag.time_off)
+        return;
+    if (left <= 0 || left > 3000 || cls.state != ca_active) {
+        scr_q3frag.time_off = 0;
+        return;
+    }
+    if (left < 200)
+        alpha = left / 200.0f;
+    alpha *= scr_alpha->value;
+
+    y = scr.hud_height * 0.30f;
+    R_SetAlpha(alpha);
+    Q_snprintf(line, sizeof(line), "You fragged %s", scr_q3frag.name);
+    SCR_DrawStringEx(scr.hud_width / 2, y, UI_CENTER, MAX_STRING_CHARS, line, scr.font_pic);
+
+    if (rank > 0) {
+        if (rank == 1 || rank == 2 || rank == 3)
+            Q_snprintf(place, sizeof(place), "%s", rank == 1 ? "1st" : rank == 2 ? "2nd" : "3rd");
+        else if (rank >= 11 && rank <= 13)
+            Q_snprintf(place, sizeof(place), "%ith", rank);
+        else if (rank % 10 == 1)
+            Q_snprintf(place, sizeof(place), "%ist", rank);
+        else if (rank % 10 == 2)
+            Q_snprintf(place, sizeof(place), "%ind", rank);
+        else if (rank % 10 == 3)
+            Q_snprintf(place, sizeof(place), "%ird", rank);
+        else
+            Q_snprintf(place, sizeof(place), "%ith", rank);
+        Q_snprintf(rest, sizeof(rest), " place with %i", scr_q3frag.score);
+
+        // centred as one line, drawn in three pieces for the place's colour
+        y += CHAR_HEIGHT;
+        x = scr.hud_width / 2 - (int)(strlen(tied) + strlen(place) + strlen(rest)) * CHAR_WIDTH / 2;
+        x = R_DrawString(x, y, 0, MAX_STRING_CHARS, tied, scr.font_pic);
+        if (rank <= 3) {
+            color.u32 = rank == 1 ? U32_BLUE : rank == 2 ? U32_RED : U32_YELLOW;
+            color.u8[3] = (byte)(alpha * 255);
+            R_SetColor(color.u32);
+        }
+        x = R_DrawString(x, y, 0, MAX_STRING_CHARS, place, scr.font_pic);
+        R_ClearColor();
+        R_SetAlpha(alpha);
+        R_DrawString(x, y, 0, MAX_STRING_CHARS, rest, scr.font_pic);
+    }
+
+    R_ClearColor();
+    R_SetAlpha(scr_alpha->value);
+}
+
+/*
+===============================================================================
+
 LAGOMETER
 
 ===============================================================================
@@ -1526,6 +1619,9 @@ void SCR_RegisterMedia(void)
     rhud.damage_pic = R_RegisterPic("damage_indicator");
     scr.font_pic = R_RegisterFont(scr_font->string);
 
+    // Quake 1's status bar registers its own again on its next frame
+    SCR_Q1ClearMedia();
+
     scr_crosshair_changed(scr_crosshair);
 }
 
@@ -1569,6 +1665,8 @@ static const cmdreg_t scr_cmds[] = {
     { "-wheel1", SCR_WeaponWheelUp_f },
     { "+wheel2", SCR_EquipmentWheelDown_f },
     { "-wheel2", SCR_EquipmentWheelUp_f },
+    // the game's: Quake III's "You fragged X" (g_sp.c SP_FragMessage)
+    { "q3_frag", SCR_Q3Frag_f },
     { NULL }
 };
 
@@ -1810,9 +1908,11 @@ typedef struct {
     const char  *icon;      // pic name, minus the extension
     const char  *view;      // CS_MODELS path, which is how ps.gunindex names it
     const char  *ammo;      // CS_ITEMS pickup name of its ammo, NULL for none
-    bool        q3;         // Quake III's gun (see WB_NUM_Q3_SLOTS)
+    int         set;        // WB_Q2, or Quake III's or Quake's gun (WB_NUM_Q3/Q1_SLOTS)
     const char  *ammo_icon; // its ammo's pic, when iw_icons[] has none for it
 } wbslot_t;
+
+enum { WB_Q2, WB_Q3, WB_Q1 };
 
 static const wbslot_t wb_slots[] = {
     { "Blaster",          "w_blaster",       "models/weapons/v_blast/tris.md2",     NULL },
@@ -1847,19 +1947,36 @@ static const wbslot_t wb_slots[] = {
        the LAST item of its name (SCR_WeaponBarFindItem). "use <name>" gets the
        player's own game's gun either way (Q3W_FindItem). They are looked at
        only while the server runs Quake III's guns (cl.q3_weapons). */
-    { "Gauntlet",         "/icons/iconw_gauntlet.tga",   "models/weapons2/gauntlet/gauntlet.md3",   NULL,        true },
-    { "Machinegun",       "/icons/iconw_machinegun.tga", "models/weapons2/machinegun/machinegun.md3", "Bullets", true, "/icons/icona_machinegun.tga" },
-    { "Shotgun",          "/icons/iconw_shotgun.tga",    "models/weapons2/shotgun/shotgun.md3",     "Shells",    true, "/icons/icona_shotgun.tga" },
-    { "Grenade Launcher", "/icons/iconw_grenade.tga",    "models/weapons2/grenadel/grenadel.md3",   "Grenades",  true, "/icons/icona_grenade.tga" },
-    { "Rocket Launcher",  "/icons/iconw_rocket.tga",     "models/weapons2/rocketl/rocketl.md3",     "Rockets",   true, "/icons/icona_rocket.tga" },
-    { "Lightning Gun",    "/icons/iconw_lightning.tga",  "models/weapons2/lightning/lightning.md3", "Lightning", true, "/icons/icona_lightning.tga" },
-    { "Railgun",          "/icons/iconw_railgun.tga",    "models/weapons2/railgun/railgun.md3",     "Slugs",     true, "/icons/icona_railgun.tga" },
-    { "Plasma Gun",       "/icons/iconw_plasma.tga",     "models/weapons2/plasma/plasma.md3",       "Cells",     true, "/icons/icona_plasma.tga" },
-    { "BFG10K",           "/icons/iconw_bfg.tga",        "models/weapons2/bfg/bfg.md3",             "Bfg Ammo",  true, "/icons/icona_bfg.tga" },
+    { "Gauntlet",         "/icons/iconw_gauntlet.tga",   "models/weapons2/gauntlet/gauntlet.md3",   NULL,        WB_Q3 },
+    { "Machinegun",       "/icons/iconw_machinegun.tga", "models/weapons2/machinegun/machinegun.md3", "Bullets", WB_Q3, "/icons/icona_machinegun.tga" },
+    { "Shotgun",          "/icons/iconw_shotgun.tga",    "models/weapons2/shotgun/shotgun.md3",     "Shells",    WB_Q3, "/icons/icona_shotgun.tga" },
+    { "Grenade Launcher", "/icons/iconw_grenade.tga",    "models/weapons2/grenadel/grenadel.md3",   "Grenades",  WB_Q3, "/icons/icona_grenade.tga" },
+    { "Rocket Launcher",  "/icons/iconw_rocket.tga",     "models/weapons2/rocketl/rocketl.md3",     "Rockets",   WB_Q3, "/icons/icona_rocket.tga" },
+    { "Lightning Gun",    "/icons/iconw_lightning.tga",  "models/weapons2/lightning/lightning.md3", "Lightning", WB_Q3, "/icons/icona_lightning.tga" },
+    { "Railgun",          "/icons/iconw_railgun.tga",    "models/weapons2/railgun/railgun.md3",     "Slugs",     WB_Q3, "/icons/icona_railgun.tga" },
+    { "Plasma Gun",       "/icons/iconw_plasma.tga",     "models/weapons2/plasma/plasma.md3",       "Cells",     WB_Q3, "/icons/icona_plasma.tga" },
+    { "BFG10K",           "/icons/iconw_bfg.tga",        "models/weapons2/bfg/bfg.md3",             "Bfg Ammo",  WB_Q3, "/icons/icona_bfg.tga" },
+
+    /* QUAKE'S GUNS - the bot match's g_q3_weapons 3 (baseq2 g_q1weap.c), in
+       Quake's order, with its status bar's weapon and ammo icons (gfx.wad).
+       Their items come after Quake III's, and four share a name with a Quake II
+       or Quake III gun, so a Quake slot is the last item of its name and a
+       Quake III slot the last one before Quake's "Axe" (SCR_WeaponBarResolve).
+       Nails are Quake II's bullets. Looked at only while the server runs
+       Quake's guns (cl.q1_weapons). */
+    { "Axe",              "/id1/id1/gfx/weapons/ww_axe_1.lmp",      "id1/id1/progs/v_axe.mdl",   NULL,      WB_Q1 },
+    { "Shotgun",          "/id1/id1/gfx/weapons/ww_shotgun1_1.lmp", "id1/id1/progs/v_shot.mdl",  "Shells",  WB_Q1, "/id1/id1/gfx/sb_shells.lmp" },
+    { "Super Shotgun",    "/id1/id1/gfx/weapons/ww_shotgun2_1.lmp", "id1/id1/progs/v_shot2.mdl", "Shells",  WB_Q1, "/id1/id1/gfx/sb_shells.lmp" },
+    { "Nailgun",          "/id1/id1/gfx/weapons/ww_nail1_1.lmp",    "id1/id1/progs/v_nail.mdl",  "Bullets", WB_Q1, "/id1/id1/gfx/sb_nails.lmp" },
+    { "Super Nailgun",    "/id1/id1/gfx/weapons/ww_nail2_1.lmp",    "id1/id1/progs/v_nail2.mdl", "Bullets", WB_Q1, "/id1/id1/gfx/sb_nails.lmp" },
+    { "Grenade Launcher", "/id1/id1/gfx/weapons/ww_rocket1_1.lmp",  "id1/id1/progs/v_rock.mdl",  "Rockets", WB_Q1, "/id1/id1/gfx/sb_rocket.lmp" },
+    { "Rocket Launcher",  "/id1/id1/gfx/weapons/ww_rocket2_1.lmp",  "id1/id1/progs/v_rock2.mdl", "Rockets", WB_Q1, "/id1/id1/gfx/sb_rocket.lmp" },
+    { "Thunderbolt",      "/id1/id1/gfx/weapons/ww_light_1.lmp",    "id1/id1/progs/v_light.mdl", "Cells",   WB_Q1, "/id1/id1/gfx/sb_cells.lmp" },
 };
 
-// the Quake III slots, at the end of wb_slots[]
+// the Quake III slots, then Quake's, at the end of wb_slots[]
 #define WB_NUM_Q3_SLOTS     9
+#define WB_NUM_Q1_SLOTS     8
 
 // The same weapons in this tree's own itemlist order, which is the order a
 // weapnext walks outside the rerelease game.  Listed by pickup name so it can
@@ -1874,7 +1991,7 @@ static const char *const wb_classic_order[] = {
 
 #define WB_NUM_SLOTS    ((int)q_countof(wb_slots))
 
-#define WB_NUM_Q2_SLOTS (WB_NUM_SLOTS - WB_NUM_Q3_SLOTS)
+#define WB_NUM_Q2_SLOTS (WB_NUM_SLOTS - WB_NUM_Q3_SLOTS - WB_NUM_Q1_SLOTS)
 
 // the two lists have to hold the same Quake II weapons
 typedef char wb_orders_agree[q_countof(wb_classic_order) == WB_NUM_Q2_SLOTS ? 1 : -1];
@@ -1898,17 +2015,25 @@ static struct {
     unsigned    idle_time;              // cls.realtime the bar went idle
 } wb;
 
-// `last`: the last item of that name - Quake III's gun, where Quake II has one
-// of the same name before it
-static int SCR_WeaponBarFindItem(const char *name, bool last)
+// The item a slot of (set) names. The game lists Quake II's items, then Quake
+// III's guns, then Quake's (g_items.c), and a name can be in all three: Quake's
+// is the last item of the name, Quake III's the last one before Quake's first
+// gun, the Axe - a name only Quake has - and Quake II's the first.
+static int SCR_WeaponBarFindItem(const char *name, int set)
 {
     int     i;
 
     if (!name)
         return -1;
 
-    if (last) {
-        for (i = MAX_ITEMS - 1; i >= 0; i--)
+    if (set != WB_Q2) {
+        int end = MAX_ITEMS;
+        if (set == WB_Q3) {
+            int axe = SCR_WeaponBarFindItem("Axe", WB_Q2);
+            if (axe >= 0)
+                end = axe;
+        }
+        for (i = end - 1; i >= 0; i--)
             if (!strcmp(cl.configstrings[CS_ITEMS + i], name))
                 return i;
         return -1;
@@ -1931,17 +2056,18 @@ static void SCR_WeaponBarResolve(void)
     for (i = 0; i < WB_NUM_SLOTS; i++) {
         wb.order[i] = i;
 
-        // Quake III's guns only while the server deals them: otherwise their
-        // items exist but nobody carries one, and their icons are not looked
-        // up (a missing pic is a file search every time)
-        if (wb_slots[i].q3 && !cl.q3_weapons) {
+        // Quake III's or Quake's guns only while the server deals them:
+        // otherwise their items exist but nobody carries one, and their icons
+        // are not looked up (a missing pic is a file search every time)
+        if ((wb_slots[i].set == WB_Q3 && !cl.q3_weapons) ||
+            (wb_slots[i].set == WB_Q1 && !cl.q1_weapons)) {
             wb.item[i] = wb.ammo[i] = -1;
             wb.pic[i] = 0;
             continue;
         }
 
-        wb.item[i] = SCR_WeaponBarFindItem(wb_slots[i].item, wb_slots[i].q3);
-        wb.ammo[i] = SCR_WeaponBarFindItem(wb_slots[i].ammo, false);
+        wb.item[i] = SCR_WeaponBarFindItem(wb_slots[i].item, wb_slots[i].set);
+        wb.ammo[i] = SCR_WeaponBarFindItem(wb_slots[i].ammo, WB_Q2);
         wb.pic[i] = wb.item[i] >= 0 ? R_RegisterPic2(wb_slots[i].icon) : 0;
 
         // No icon, no slot.  baseq2 carries none of the rogue or xatrix art,
@@ -1967,7 +2093,7 @@ static void SCR_WeaponBarResolve(void)
                     wb.order[i] = j;
                     break;
                 }
-        // Quake III's stay where they are, after them
+        // Quake III's and Quake's stay where they are, after them
     }
 
     for (i = 0; i < WB_NUM_SLOTS; i++)
@@ -2455,7 +2581,9 @@ static bool SCR_ItemWheelEnabled(void)
     // rerelease only, by the same test the weapon bar makes: this is the one
     // game whose art has an icon for every item the wheel can show, and the
     // menu hides the option everywhere else (see fs_rerelease in q2rtx.menu).
-    return cl_itemwheel->integer && !Q_stricmp(cl.gamedir, "rerelease");
+    // Quake 1's own progs have no Quake II items to show (keys.c makes the
+    // inventory key Quake's scoreboard there)
+    return cl_itemwheel->integer && !Q_stricmp(cl.gamedir, "rerelease") && !cl.q1vm[0];
 }
 
 /*
@@ -3938,6 +4066,7 @@ cvar back out of the userinfo, and only sends the first two when it is on.
 void SCR_ClearHudEvents(void)
 {
     SCR_ClearCenterPrints();
+    scr_q3frag.time_off = 0;
     rhud.marker_frame = 0;
     rhud.marker_time = 0;
     memset(rhud.ind, 0, sizeof(rhud.ind));
@@ -4115,6 +4244,12 @@ static void SCR_DrawStats(void)
     if (scr_draw2d->integer <= 1)
         return;
 
+    // Quake 1's own game: Quake's own status bar (sbar_q1.c)
+    if (cl.q1vm[0]) {
+        SCR_Q1DrawStatusBar(scr.hud_width, scr.hud_height);
+        return;
+    }
+
     SCR_ExecuteLayoutString(cl.configstrings[CS_STATUSBAR]);
 }
 
@@ -4258,6 +4393,8 @@ static void SCR_Draw2D(void)
     SCR_DrawWeaponBar();
 
     SCR_DrawCenterString();
+
+    SCR_DrawQ3Frag();
 
     SCR_DrawNet();
 

@@ -174,6 +174,25 @@ trace_t CL_TraceBox(const vec3_t start, const vec3_t mins, const vec3_t maxs, co
         return t;
     }
 
+    /* A QUAKE MAP has no hull for a small box: BSP_Q1BoxTrace sends anything
+       3 units wide or more through the player's (32 x 32 x 56, lined up at the
+       box's bottom corner). The view weapon's 8-unit box then reached 52 units
+       up, started in the ceiling of any low alcove, and the gun was pulled back
+       behind the camera and vanished (Matt, 2026-11-21, a cubby on a Quake
+       map). A box smaller than the player goes through as its centre point,
+       hull 0 - Quake's own client never traced anything bigger. */
+    vec3_t q1_centre = { 0, 0, 0 }, q1_start, q1_end;
+    const bool q1_point = cl.bsp->q1 && mins && maxs &&
+                          maxs[0] - mins[0] >= 3 && maxs[0] - mins[0] < 32;
+    if (q1_point) {
+        VectorAvg(mins, maxs, q1_centre);
+        VectorAdd(start, q1_centre, q1_start);
+        VectorAdd(end, q1_centre, q1_end);
+        start = q1_start;
+        end = q1_end;
+        mins = maxs = vec3_origin;
+    }
+
     CM_BoxTrace(&t, start, end, mins, maxs, cl.bsp->nodes, contentmask);
     if (t.fraction < 1.0f)
         t.ent = (struct edict_s *)1;
@@ -188,6 +207,10 @@ trace_t CL_TraceBox(const vec3_t start, const vec3_t mins, const vec3_t maxs, co
     // else); without it blood fell straight through one onto the floor beneath.
     CL_ClipMoveToEntities_(start, mins, maxs, end, &t, !clip_bbox_entities,
                            contentmask);
+
+    // back from the centre to the box's own origin
+    if (q1_point)
+        VectorSubtract(t.endpos, q1_centre, t.endpos);
 
     return t;
 }
@@ -260,6 +283,14 @@ int CL_PointContents(const vec3_t point)
     return contents;
 }
 
+// Quake 1 has no crouch: down only swims. The game's Q1VM_ClientThink
+// drops the same moves, so prediction agrees with the server.
+static void CL_NoQuake1Crouch(pmove_t *pm)
+{
+    if (cl.q1vm[0] && pm->cmd.upmove < 0 && (pm->s.pm_flags & PMF_ON_GROUND))
+        pm->cmd.upmove = 0;
+}
+
 /*
 =================
 CL_PredictMovement
@@ -325,6 +356,7 @@ void CL_PredictMovement(void)
     // run frames
     while (++ack <= current) {
         pm.cmd = cl.cmds[ack & CMD_MASK];
+        CL_NoQuake1Crouch(&pm);
         Pmove(&pm, &cl.pmp);
 
         // save for debug checking
@@ -337,6 +369,7 @@ void CL_PredictMovement(void)
         pm.cmd.forwardmove = cl.localmove[0];
         pm.cmd.sidemove = cl.localmove[1];
         pm.cmd.upmove = cl.localmove[2];
+        CL_NoQuake1Crouch(&pm);
         Pmove(&pm, &cl.pmp);
         frame = current;
 
