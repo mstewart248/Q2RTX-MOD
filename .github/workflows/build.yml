@@ -128,9 +128,14 @@ jobs:
 
     # THE SHIPPED MEDIA, WITHOUT WHICH THE ARTIFACT DOES NOT RUN.
     #
-    # The Upload step below takes baseq2/ and rerelease/ straight out of the
-    # checkout, so anything not committed is simply absent from the build. Two
-    # required files can never be committed:
+    # The Upload step below takes baseq2/, baseq3/ and rerelease/ straight out
+    # of the checkout, so anything not committed is simply absent from the
+    # build. Those are the same three folders setup/package_release.py ships in
+    # a release; keep the two lists in step. baseq3/ (Quake III's materials and
+    # map cfgs) was missing from this list until 2026-11-21, so every build
+    # artifact drew Quake III without them even after the release had them.
+    # rogue/ and id1/ stay out of both (Matt, 2026-11-21).
+    # Two required files can never be committed:
     #
     #   baseq2/q2rtx_media.pkz   862 MB - over GitHub's 100 MB per-file limit
     #   baseq2/blue_noise.pkz     97 MB - under it, but LFS-sized and metered
@@ -176,6 +181,10 @@ jobs:
         done
         test -d baseq2/shader_vkpt || { echo "MISSING baseq2/shader_vkpt"; missing=1; }
         ls baseq2/shader_d3d12/*.dxil >/dev/null 2>&1 || { echo "MISSING baseq2/shader_d3d12"; missing=1; }
+        # the material files of each game folder the Upload step takes
+        for f in baseq3/materials/quake3.mat rerelease/materials/rerelease.mat; do
+          if [ -s "$f" ]; then echo "ok   $f"; else echo "MISSING $f"; missing=1; fi
+        done
         exit $missing
 
     - name: Upload
@@ -193,8 +202,8 @@ jobs:
           extern/steamaudio/THIRDPARTY.md
           extern/flow/LICENSE.md
           baseq2/
+          baseq3/
           rerelease/
-          rogue/
           license.txt
           notice.txt
 
@@ -244,7 +253,7 @@ jobs:
           q2rtx
           q2rtxded
           baseq2/
+          baseq3/
           rerelease/
-          rogue/
           license.txt
           notice.txt
