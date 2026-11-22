@@ -990,7 +990,7 @@ Quake III maps use the same tools as Quake II's, from `baseq3`:
 
 ## Quake support
 
-![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/Q1.png)
+![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/Q1.jpg)
 
 Quake's campaigns and maps run inside the Quake II engine, path traced like
 everything else. Nothing from Quake ships with this project. Copy the episode
