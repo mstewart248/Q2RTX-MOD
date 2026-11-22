@@ -442,6 +442,9 @@ struct MaterialInfo
 	float stained_size;
 	float stained_scatter;
 	float stained_spread;
+	/* the stained glass mask's texture, 0 = none: glass where it is white
+	   (stained_glass_texel), an ordinary surface where it is black */
+	uint stained_mask;
 	float bump_scale;
 	float roughness_override;
 	/* roughness_override IS the roughness, all over, rather than a floor: the
@@ -773,6 +776,9 @@ get_material_info(uint material_id)
 	minfo.stained_distance = unpackHalf2x16(data[11]).y;
 	minfo.stained_size = unpackHalf2x16(data[12]).x * 0.017453293;
 	minfo.stained_scatter = unpackHalf2x16(data[12]).y;
+	// the glass mask (texture_stained_mask): caustic_ripple's low half, which
+	// only a GLASS material uses; 0 = none, every texel is glass
+	minfo.stained_mask = minfo.stained_glass ? (data[10] & 0xffffu) : 0u;
 	minfo.bump_scale = unpackHalf2x16(data[2]).x;
 	minfo.roughness_override = unpackHalf2x16(data[2]).y;
 	minfo.roughness_whole = (data[4] & 0x80000000u) != 0u;

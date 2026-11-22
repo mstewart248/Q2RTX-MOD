@@ -236,18 +236,20 @@ static inline float Q_clipf(float a, float lo, float hi)
 	return a < lo ? lo : a > hi ? hi : a;
 }
 
-// the stage-capable slots come first: a Quake III stage paints SLOT_NORMAL and below
-enum { SLOT_ROUGH, SLOT_METAL, SLOT_NORMAL, SLOT_EMISSIVE, SLOT_HEIGHT, NUM_SLOTS };
+// the stage-capable slots come first: a Quake III stage paints SLOT_NORMAL and below.
+// SLOT_GLASS, last, is stained glass's mask (texture_stained_mask): which texels
+// are the glass, 1 or 0 - offered only for a stained_glass material (slot_offered).
+enum { SLOT_ROUGH, SLOT_METAL, SLOT_NORMAL, SLOT_EMISSIVE, SLOT_HEIGHT, SLOT_GLASS, NUM_SLOTS };
 
-static const char *const slot_label[NUM_SLOTS] = { "rough", "metal", "normal", "emissive", "height" };
-static const char *const slot_word[NUM_SLOTS] = { "roughness", "metallic", "normals", "emissive", "height" };
-static const char *const slot_attribute[NUM_SLOTS] = { "texture_roughness", "texture_metallic", "texture_normals", "texture_emissive", "texture_height" };
-static const char *const slot_suffix[NUM_SLOTS] = { "_rough", "_metal", "_n", "_emit", "_height" };
+static const char *const slot_label[NUM_SLOTS] = { "rough", "metal", "normal", "emissive", "height", "glass" };
+static const char *const slot_word[NUM_SLOTS] = { "roughness", "metallic", "normals", "emissive", "height", "glass" };
+static const char *const slot_attribute[NUM_SLOTS] = { "texture_roughness", "texture_metallic", "texture_normals", "texture_emissive", "texture_height", "texture_stained_mask" };
+static const char *const slot_suffix[NUM_SLOTS] = { "_rough", "_metal", "_n", "_emit", "_height", "_glassmask" };
 
-// one grey value per texel: roughness, metallic, height
+// one grey value per texel: roughness, metallic, height, the glass mask
 static inline bool slot_is_grey(int slot)
 {
-	return slot == SLOT_ROUGH || slot == SLOT_METAL || slot == SLOT_HEIGHT;
+	return slot == SLOT_ROUGH || slot == SLOT_METAL || slot == SLOT_HEIGHT || slot == SLOT_GLASS;
 }
 
 // one value painted per texel: the grey maps, and emissive's brightness (its alpha)
@@ -297,7 +299,7 @@ enum { SELSTEP_ADD, SELSTEP_SUB, SELSTEP_ALL, SELSTEP_INVERT };
 enum {
 	W_NONE,
 	W_PANEL,
-	W_SLOT0, W_SLOT1, W_SLOT2, W_SLOT3, W_SLOT4,
+	W_SLOT0, W_SLOT1, W_SLOT2, W_SLOT3, W_SLOT4, W_SLOT5,
 	W_VALUE,
 	W_DIAL,
 	W_INTENSITY,
@@ -319,7 +321,10 @@ enum {
 	W_RANGE_APPLY,
 	W_SEL_ALL, W_SEL_INVERT, W_SEL_NONE,
 	W_CAM_HOME,                     // the camera back where it started (H)
-	W_SEL0,                         // ... W_SEL0 + SEL_*: the selection's shapes
+	W_LIGHT_ON,                     // the flashlight at the camera, on or off (C)
+	W_LIGHT,                        // ... and its brightness
+	W_GLASS_PAINT, W_WALL_PAINT,    // the glass mask: paint glass, or the wall round it (X swaps)
+	W_SEL0,                        // ... W_SEL0 + SEL_*: the selection's shapes
 	W_STROKE0 = W_SEL0 + 4,         // ... W_STROKE0 + STROKE_*
 	W_STAGE_MAT = W_STROKE0 + NUM_STROKES,  // the material's own maps
 	W_STAGE0,                       // ... W_STAGE0 + N: stage N's
@@ -485,6 +490,20 @@ static int num_widgets;
 static cvar_t *mat_author_cursor_speed;
 static cvar_t *mat_author_slider_speed;
 
+// the flashlight at the camera (MAT_AuthorCameraLight); registered on first use (light_cvars)
+static cvar_t *mat_author_light;            // 1 = on: the panel's "flashlight", C, 'mat author light'
+static cvar_t *mat_author_light_scale;      // its brightness, 1 = the game's own flashlight
+static cvar_t *mat_author_light_cone;       // its cone, in degrees across
+
+static void light_cvars(void)
+{
+	if (mat_author_light)
+		return;
+	mat_author_light = Cvar_Get("mat_author_light", "0", CVAR_ARCHIVE);
+	mat_author_light_scale = Cvar_Get("mat_author_light_scale", "1", CVAR_ARCHIVE);
+	mat_author_light_cone = Cvar_Get("mat_author_light_cone", "90", CVAR_ARCHIVE);
+}
+
 // a locked triangle, by its UVs (normalised; the map's tiling wraps them)
 typedef struct {
 	float uv[6];
@@ -612,8 +631,19 @@ static image_t *slot_image(const pbr_material_t *mat, int slot)
 	case SLOT_NORMAL:   return mat->image_normals;
 	case SLOT_EMISSIVE: return mat->image_emissive;
 	case SLOT_HEIGHT:   return mat->image_height;
+	case SLOT_GLASS:    return mat->image_stained_mask;
 	default:            return NULL;
 	}
+}
+
+/* Is (slot) one (mat) can be painted in? The glass mask only for stained glass
+   (Matt, 11-22: "This mask option should only show up if the texture is marked
+   as stained glass") - and never a Quake III stage's, which has no mask. */
+static bool slot_offered(const pbr_material_t *mat, int slot)
+{
+	if (slot != SLOT_GLASS)
+		return true;
+	return mat && mat->stained_glass && au.stage < 0;
 }
 
 static int image_index(const image_t *img)
@@ -1151,6 +1181,9 @@ static void make_paint(const author_hit_t *hit, author_paint_t *p)
 	case SLOT_EMISSIVE:     // the brightness, 0..1 = 0..200% of the albedo
 		p->v[0] = p->v[1] = p->v[2] = Q_clipf(au.value[au.slot], 0.f, 1.f);
 		break;
+	case SLOT_GLASS:        // glass 1, or the wall round it 0
+		p->v[0] = p->v[1] = p->v[2] = au.value[SLOT_GLASS] >= 0.5f ? 1.f : 0.f;
+		break;
 	case SLOT_NORMAL:
 	{
 		// the direction on screen (y down), as the tangent frame's x/y
@@ -1248,6 +1281,7 @@ static void texel_get(const image_t *img, const byte *pix, size_t at, int slot, 
 	case SLOT_ROUGH:
 	case SLOT_METAL:
 	case SLOT_HEIGHT:
+	case SLOT_GLASS:
 		v[0] = (float)px[0] / 255.f;
 		if (img->is_srgb)
 			v[0] = srgb_to_linear(v[0]);
@@ -1272,6 +1306,15 @@ static void texel_get(const image_t *img, const byte *pix, size_t at, int slot, 
 // texel (x, y) of (img) becomes (v): true if it changed
 static bool texel_put(image_t *img, int x, int y, int slot, const float v[3])
 {
+	/* The glass mask is 1 or 0, whatever made the value: every tool's blend
+	   lands here, so a soft brush edge, the blur, the noise and the brightness
+	   range all cut at half way. A stroke's weight over a half flips a texel. */
+	float cut[3];
+	if (slot == SLOT_GLASS)
+	{
+		cut[0] = cut[1] = cut[2] = v[0] >= 0.5f ? 1.f : 0.f;
+		v = cut;
+	}
 	const size_t at = (size_t)y * img->upload_width + x;
 	if (img->pixel_format == PF_R16_UNORM)
 	{
@@ -1293,6 +1336,7 @@ static bool texel_put(image_t *img, int x, int y, int slot, const float v[3])
 		case SLOT_ROUGH:
 		case SLOT_METAL:
 		case SLOT_HEIGHT:
+		case SLOT_GLASS:
 			rgb[0] = rgb[1] = rgb[2] = to_byte(img->is_srgb ? linear_to_srgb(v[0]) : v[0]);
 			break;
 		case SLOT_NORMAL:
@@ -1369,6 +1413,7 @@ static void noise_target(const dab_ctx_t *c, int x, int y, float out[3])
 	case SLOT_METAL:
 	case SLOT_HEIGHT:
 	case SLOT_EMISSIVE:
+	case SLOT_GLASS:
 		out[0] = out[1] = out[2] = Q_clipf(out[0] + h * a, 0.f, 1.f);
 		break;
 	case SLOT_NORMAL:
@@ -2498,6 +2543,11 @@ static image_t *create_map(void)
 				p[0] = p[1] = p[2] = surface;
 				p[3] = 255;
 				break;
+			case SLOT_GLASS:
+				// all glass: what no mask means, so making it changes nothing
+				p[0] = p[1] = p[2] = 255;
+				p[3] = 255;
+				break;
 			default:
 				p[0] = p[1] = p[2] = 0;
 				p[3] = 255;
@@ -2911,8 +2961,10 @@ static int find_seeds(const soup_t *s, const author_hit_t *hit, byte *seed)
 	return n;
 }
 
-// one id per welded corner: within LOCK_WELD of each other, in the same group
-static int *weld_corners(const soup_t *s)
+/* one id per welded corner: (data) holds (dim) floats a corner - its position
+   (weld_corners) or its UV (a line's island) - and corners within (quantum) of
+   each other, in the same group, share one */
+static int *weld_by(const soup_t *s, const float *data, int dim, float quantum)
 {
 	const int nc = s->n * 3;
 	int *id = Z_Malloc(sizeof(int) * max(nc, 1));
@@ -2924,10 +2976,10 @@ static int *weld_corners(const soup_t *s)
 	int next = 0;
 	for (int c = 0; c < nc; c++)
 	{
-		const float *p = s->pos + c * 3;
+		const float *p = data + c * dim;
 		int *qc = q + c * 3;
 		for (int k = 0; k < 3; k++)
-			qc[k] = (int)floorf(p[k] / LOCK_WELD + 0.5f);
+			qc[k] = k < dim ? (int)floorf(p[k] / quantum + 0.5f) : 0;
 		const int g = s->group[c / 3];
 		uint32_t slot = hash32((uint32_t)qc[0] * 73856093u ^ (uint32_t)qc[1] * 19349663u
 			^ (uint32_t)qc[2] * 83492791u ^ (uint32_t)g * 2654435761u) & (uint32_t)(hsize - 1);
@@ -2953,6 +3005,12 @@ static int *weld_corners(const soup_t *s)
 	Z_Free(table);
 	Z_Free(q);
 	return id;
+}
+
+// one id per welded corner: within LOCK_WELD of each other, in the same group
+static int *weld_corners(const soup_t *s)
+{
+	return weld_by(s, s->pos, 3, LOCK_WELD);
 }
 
 typedef struct {
@@ -2988,7 +3046,8 @@ static uint64_t edge_key(int a, int b)
 
 /* (sel) grows from its seeds: a face across shared edges, to triangles facing
    within LOCK_FACE_DEG of the seed they grew from - so a curve stops after a
-   few degrees, not wherever its facets add up; a piece across any shared corner. */
+   few degrees, not wherever its facets add up; a piece across any shared corner;
+   'u', a UV island, across any shared edge (with (id) welding corners by UV). */
 static void grow(const soup_t *s, const int *id, int kind, byte *sel)
 {
 	const int n = s->n;
@@ -3013,7 +3072,7 @@ static void grow(const soup_t *s, const int *id, int kind, byte *sel)
 		for (int e = 0; e < 3; e++)
 		{
 			const int a = id[t * 3 + e], b = id[t * 3 + (e + 1) % 3];
-			keys[t * 3 + e].key = kind == 'f' ? edge_key(a, b) : (uint64_t)(uint32_t)a;
+			keys[t * 3 + e].key = kind != 'p' ? edge_key(a, b) : (uint64_t)(uint32_t)a;
 			keys[t * 3 + e].tri = t;
 		}
 	}
@@ -3037,7 +3096,7 @@ static void grow(const soup_t *s, const int *id, int kind, byte *sel)
 		for (int e = 0; e < 3; e++)
 		{
 			const int a = id[t * 3 + e], b = id[t * 3 + (e + 1) % 3];
-			const uint64_t key = kind == 'f' ? edge_key(a, b) : (uint64_t)(uint32_t)a;
+			const uint64_t key = kind != 'p' ? edge_key(a, b) : (uint64_t)(uint32_t)a;
 			for (int i = keyed_find(keys, nk, key); i < nk && keys[i].key == key; i++)
 			{
 				const int u = keys[i].tri;
@@ -3162,19 +3221,21 @@ static void raster_map_tri(const float *uv, int W, int H, byte *mask)
 	raster_tri(st, W, H, mask);
 }
 
-static void lock_rasterize(int W, int H)
+// (tris)' texels on a W x H map, bled past their edge into texels none of (cover) uses (see above)
+static byte *tris_rasterize(const lock_tri_t *tris, int num_tris, const lock_tri_t *cover_tris, int num_cover,
+	int W, int H, int *texels_out)
 {
 	const size_t n = (size_t)W * H;
 	byte *mask = Z_Mallocz(n);
 	stage_info(NULL, NULL);     // the stage's tcMods as they are now
-	for (int i = 0; i < lk.num_tris; i++)
-		raster_map_tri(lk.tris[i].uv, W, H, mask);
+	for (int i = 0; i < num_tris; i++)
+		raster_map_tri(tris[i].uv, W, H, mask);
 
-	if (lk.num_cover)
+	if (num_cover)
 	{
 		byte *cover = Z_Mallocz(n);
-		for (int i = 0; i < lk.num_cover; i++)
-			raster_map_tri(lk.cover[i].uv, W, H, cover);
+		for (int i = 0; i < num_cover; i++)
+			raster_map_tri(cover_tris[i].uv, W, H, cover);
 		byte *prev = Z_Malloc(n);
 		for (int pass = 0; pass < LOCK_BLEED; pass++)
 		{
@@ -3199,6 +3260,14 @@ static void lock_rasterize(int W, int H)
 	int texels = 0;
 	for (size_t i = 0; i < n; i++)
 		texels += mask[i];
+	*texels_out = texels;
+	return mask;
+}
+
+static void lock_rasterize(int W, int H)
+{
+	int texels;
+	byte *mask = tris_rasterize(lk.tris, lk.num_tris, lk.cover, lk.num_cover, W, H, &texels);
 	Z_Free(lk.mask);
 	lk.mask = mask;
 	lk.mask_w = W;
@@ -3419,6 +3488,135 @@ static void lock_command(int kind, bool toggle)
 	else
 		author_status("locked to a %s: %d triangle%s, %d texels - %c on it again unlocks", what, picked,
 			picked == 1 ? "" : "s", lk.texels, kind == 'f' ? 'F' : 'P');
+}
+
+/* ------------------------------------------------------------------------- */
+/* A LINE STAYS ON ITS PART OF THE MODEL                                     */
+/* ------------------------------------------------------------------------- */
+
+/* Matt, 2026-11-22, drawing lines on the Enforcer's helmet: "if the line will
+   jump to a different part of the texture, instead of splitting the line on
+   the model can we just make it so the line can't be any longer?"
+
+   A line is straight on the MAP, and a model's map is cut into islands - the
+   helmet's here, a shoulder's beside it - so a line from a point on one to a
+   point on another crosses whatever lies between them on the map, and its
+   pieces land all over the model. So when a line starts on a model, the island
+   under its start is found: the triangles joined to the one under the cursor
+   by edges whose two corners have the same UVs (grow 'u'; mirrored halves that
+   share UVs come along, as they share texels anyway), rasterised with the
+   lock's bleed past the island's edge (tris_rasterize). While it is drawn, the
+   line's end goes no further along it than the island does; with the cursor
+   off the island altogether, the end stays where it last was on it.
+
+   Lines only, and only on models: the world tiles its maps (a line on it is
+   left as it was), the map view is the map itself, and a rectangle is a
+   rectangle on the map whatever it covers. */
+#define LINE_UV_WELD        (1.f / 65536.f) // UVs this close are one corner, for the island
+
+static struct {
+	bool on;
+	bool held;                  // the end is held short of where the cursor is
+	byte *mask;                 // 1 = the island's texels, mask_w x mask_h (wrapped)
+	int mask_w, mask_h;
+} ln;
+
+static void island_clear(void)
+{
+	Z_Free(ln.mask);
+	memset(&ln, 0, sizeof(ln));
+}
+
+static bool island_has(float tu, float tv)
+{
+	const int x = wrap_i((int)floorf(tu), ln.mask_w), y = wrap_i((int)floorf(tv), ln.mask_h);
+	return ln.mask[(size_t)y * ln.mask_w + x] != 0;
+}
+
+// the island under (hit), the line's start at (tu, tv) on a W x H map; ln.on = found
+static void island_build(const author_hit_t *hit, int W, int H, float tu, float tv)
+{
+	island_clear();
+
+	soup_t s;
+	memset(&s, 0, sizeof(s));
+	soup_gather(hit, &s);
+	byte *sel = Z_Mallocz(max(s.n, 1));
+	int seeds = s.n ? find_seeds(&s, hit, sel) : 0;
+	for (int t = 0; t < s.n; t++)
+	{
+		if (sel[t] && s.group[t] == 0)
+		{
+			sel[t] = 0;     // the world's: its maps tile, and a line on it is left as it was
+			seeds--;
+		}
+	}
+
+	if (seeds > 0)
+	{
+		int *id = weld_by(&s, s.uv, 2, LINE_UV_WELD);
+		grow(&s, id, 'u', sel);
+		Z_Free(id);
+
+		// the island's triangles, and every triangle of the meshes it is in (for the bleed)
+		lock_tri_t *tris = NULL, *cover = NULL;
+		int num_tris = 0, cap_tris = 0, num_cover = 0, cap_cover = 0;
+		byte *in_group = Z_Mallocz(s.num_meshes + 1);
+		for (int t = 0; t < s.n; t++)
+		{
+			if (!sel[t])
+				continue;
+			lock_push(&tris, &num_tris, &cap_tris, s.uv + t * 6);
+			in_group[s.group[t]] = 1;
+		}
+		for (int t = 0; t < s.n; t++)
+			if (in_group[s.group[t]])
+				lock_push(&cover, &num_cover, &cap_cover, s.uv + t * 6);
+
+		int texels;
+		ln.mask = tris_rasterize(tris, num_tris, cover, num_cover, W, H, &texels);
+		ln.mask_w = W;
+		ln.mask_h = H;
+		// the texel the line starts in is on it, whatever the rasteriser made of a sliver there
+		ln.mask[(size_t)wrap_i((int)floorf(tv), H) * W + wrap_i((int)floorf(tu), W)] = 1;
+		ln.on = true;
+
+		Z_Free(in_group);
+		Z_Free(tris);
+		Z_Free(cover);
+	}
+
+	Z_Free(sel);
+	soup_free(&s);
+}
+
+/* The line's end for the cursor at (*tu, *tv), texels unwrapped: no further
+   along the line from its start (tu0, tv0) than the island goes, a quarter
+   texel at a time. False: the cursor is off the island, and the end stays. */
+static bool island_clamp(float tu0, float tv0, float *tu, float *tv, bool *held)
+{
+	*held = false;
+	if (!island_has(*tu, *tv))
+		return false;
+
+	const float dx = *tu - tu0, dy = *tv - tv0;
+	const int steps = (int)ceilf(sqrtf(dx * dx + dy * dy) * 4.f);
+	float last_u = tu0, last_v = tv0;
+	for (int i = 1; i <= steps; i++)
+	{
+		const float k = (float)i / (float)steps;
+		const float u = tu0 + dx * k, v = tv0 + dy * k;
+		if (!island_has(u, v))
+		{
+			*tu = last_u;
+			*tv = last_v;
+			*held = true;
+			return true;
+		}
+		last_u = u;
+		last_v = v;
+	}
+	return true;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -4029,6 +4227,7 @@ static void author_stop(const char *why)
 {
 	stroke_end();
 	upload_now();
+	island_clear();
 	au.active = false;
 	au.painting = false;
 	au.drag = W_NONE;
@@ -4086,6 +4285,7 @@ static void author_start(pbr_material_t *mat, int slot)
 		au.value[SLOT_METAL] = 0.f;
 		au.value[SLOT_HEIGHT] = 0.5f;
 		au.value[SLOT_EMISSIVE] = 0.5f;     // 100%: as bright as the texture
+		au.value[SLOT_GLASS] = 0.f;         // the mask starts all glass: what's painted first is wall
 		au.normal_angle = -(float)M_PI / 2.f;
 		au.normal_intensity = 0.5f;
 		au.emit_tint[0] = au.emit_tint[1] = au.emit_tint[2] = 1.f;
@@ -4130,8 +4330,13 @@ static void author_start(pbr_material_t *mat, int slot)
 	}
 	au.mat = mat;
 	Q_strlcpy(au.mat_name, mat->name, sizeof(au.mat_name));
-	if (slot >= 0 && !(au.stage >= 0 && slot > SLOT_NORMAL))
+	if (slot >= 0 && !(au.stage >= 0 && slot > SLOT_NORMAL) && slot_offered(mat, slot))
 		au.slot = slot;
+	else if (slot == SLOT_GLASS)
+		Com_Printf("mat author: %s isn't stained glass - the glass map is its mask "
+			"('mat stained_glass 1' or 'kind STAINEDGLASS' first)\n", mat->name);
+	if (!slot_offered(mat, au.slot))
+		au.slot = SLOT_ROUGH;
 	au.v2_fit_image = -2;
 	au.line_active = au.line_have = au.line_commit = false;
 
@@ -4153,9 +4358,12 @@ static void author_start(pbr_material_t *mat, int slot)
 		}
 		Con_Close(true);
 		Com_Printf("mat author: hold the RIGHT mouse button to look (WASD/QE fly, Shift fast, Ctrl slow,\n"
-			"  Ctrl + right button zooms); LEFT paints; Alt + left picks the material under the brush;\n"
+			"  Ctrl + right button zooms); H = camera back where it started; C = flashlight (a light\n"
+			"  at the camera; mat_author_light_scale, mat_author_light_cone);\n"
+			"  LEFT paints; Alt + left picks the material under the brush;\n"
 			"  wheel or [ ] = brush size (on the map view the wheel zooms, right-drag pans);\n"
-			"  Shift + wheel = value; Ctrl + wheel = falloff; 1-5 = map;\n"
+			"  Shift + wheel = value; Ctrl + wheel = falloff; 1-5 = map (6 = glass, stained glass's\n"
+			"  mask: glass or wall, X swaps);\n"
 			"  L = line (press where it starts, let go where it ends); R = rectangle (press at one\n"
 			"  corner, let go at the other; the wheel sets its corner radius);\n"
 			"  T = next tool (brush spray hatch noise blur fill), G = fill; Tab = map view, O = base under it;\n"
@@ -4184,10 +4392,27 @@ static void author_start(pbr_material_t *mat, int slot)
 			slot_word[au.slot]);
 }
 
+// the glass mask's paint: glass (true) or the wall round it
+static void glass_paint_set(bool glass)
+{
+	au.value[SLOT_GLASS] = glass ? 1.f : 0.f;
+	author_status(glass ? "painting glass: the light comes through here, and it glows"
+		: "painting wall: an ordinary surface here - no light through, no glow");
+}
+
 static void set_slot(int slot)
 {
 	if (slot == au.slot || slot < 0 || slot >= NUM_SLOTS)
 		return;
+	if (!slot_offered(au.mat, slot))
+	{
+		if (au.stage >= 0)
+			author_status("a stage has no glass mask: 'material' in the maps row paints the material's");
+		else
+			author_status("the glass map is a stained glass mask: %s isn't stained glass "
+				"('mat stained_glass 1' or 'kind STAINEDGLASS' first)", au.mat ? au.mat->name : "this");
+		return;
+	}
 	if (au.stage >= 0 && slot > SLOT_NORMAL)
 	{
 		if (slot == SLOT_EMISSIVE)
@@ -4327,6 +4552,12 @@ static void pick_material(void)
 	au.mat = mat;
 	Q_strlcpy(au.mat_name, mat->name, sizeof(au.mat_name));
 	au.v2_fit_image = -2;
+	if (!slot_offered(mat, au.slot))
+	{
+		au.slot = SLOT_ROUGH;
+		author_status("now painting %s - not stained glass, so its roughness map", mat->name);
+		return;
+	}
 	author_status("now painting %s", mat->name);
 }
 
@@ -4479,7 +4710,8 @@ static bool field_get(int id, field_t *f)
 	switch (id)
 	{
 	case W_VALUE:
-		if (!slot_is_scalar(au.slot))
+		// the glass mask paints glass or wall, no value between (W_GLASS_PAINT)
+		if (!slot_is_scalar(au.slot) || au.slot == SLOT_GLASS)
 			return false;
 		// emissive's brightness: 0..1 = 0..200%
 		f->name = au.slot == SLOT_EMISSIVE ? "brightness" : slot_word[au.slot];
@@ -4546,6 +4778,14 @@ static bool field_get(int id, field_t *f)
 		f->name = glow_view() ? "purple over what doesn't glow" : "map over the base";
 		f->v = (glow_view() ? au.glow_veil : au.layer_alpha) * 100.f;
 		return true;
+	case W_LIGHT:
+		// the flashlight's brightness: 100% = the game's own flashlight
+		light_cvars();
+		f->name = "flashlight";
+		f->hi = 1000.f;
+		f->squared = true;
+		f->v = max(0.f, mat_author_light_scale->value) * 100.f;
+		return true;
 	case W_DIAL:
 		// on screen, y down: 0 right, 90 down, 270 up
 		f->name = "leans";
@@ -4589,6 +4829,7 @@ static void field_set(int id, float v)
 	case W_RANGE_LO: case W_RANGE_HI: au.range[au.slot][id - W_RANGE_LO] = v / f.hi; break;
 	case W_TOOLOPT:   au.tool_opt[au.tool] = au.tool == TOOL_HATCH ? (v - 2.f) / 30.f : v / 100.f; break;
 	case W_LAYER:     *(glow_view() ? &au.glow_veil : &au.layer_alpha) = v / 100.f; break;
+	case W_LIGHT:     Cvar_SetValue(mat_author_light_scale, v / 100.f, FROM_CONSOLE); break;
 	case W_DIAL:      au.normal_angle = v * (float)M_PI / 180.f; break;
 	default:          break;
 	}
@@ -4749,6 +4990,11 @@ static void brush_size_step(int dir)
 // the main value of the map being painted, by Shift + wheel: 5 at a time
 static void value_step(int dir)
 {
+	if (au.slot == SLOT_GLASS)
+	{
+		glass_paint_set(dir > 0);
+		return;
+	}
 	field_step(au.slot == SLOT_NORMAL ? W_INTENSITY : W_VALUE, dir * 5);
 }
 
@@ -4854,15 +5100,34 @@ static void camera_home(void)
 	author_status("camera back where it started");
 }
 
+/* The flashlight on or off (Matt, 11-22: "a toggle for a camera light ... a
+   flashlight kind of thing for the material editor camera"): the panel's
+   "flashlight", C, 'mat author light'. MAT_AuthorCameraLight makes the light. */
+static void light_set(bool on)
+{
+	light_cvars();
+	Cvar_SetInteger(mat_author_light, on ? 1 : 0, FROM_CONSOLE);
+	author_status(on ? "flashlight on: a light at the camera, pointing where it looks" : "flashlight off");
+}
+
+static void light_toggle(void)
+{
+	light_cvars();
+	light_set(!mat_author_light->integer);
+}
+
 static void panel_press(int id)
 {
 	switch (id)
 	{
-	case W_SLOT0: case W_SLOT1: case W_SLOT2: case W_SLOT3: case W_SLOT4:
+	case W_SLOT0: case W_SLOT1: case W_SLOT2: case W_SLOT3: case W_SLOT4: case W_SLOT5:
 		set_slot(id - W_SLOT0);
 		break;
+	case W_GLASS_PAINT: glass_paint_set(true); break;
+	case W_WALL_PAINT:  glass_paint_set(false); break;
 	case W_VALUE: case W_DIAL: case W_INTENSITY: case W_RED: case W_GREEN: case W_BLUE: case W_SIZE:
 	case W_FALLOFF: case W_TOOLOPT: case W_LAYER: case W_RADIUS: case W_RANGE_LO: case W_RANGE_HI:
+	case W_LIGHT:
 		au.drag = id;
 		drag_update(id);
 		break;
@@ -4889,7 +5154,8 @@ static void panel_press(int id)
 	case W_SHOWBASE:    au.show_base = !au.show_base; break;
 	case W_SHOW2D: au.show_2d = !au.show_2d; au.v2_fit_image = -2; break;
 	case W_CAM_HOME: camera_home(); break;
-	case W_UNDO:   undo_apply(false); break;
+	case W_LIGHT_ON: light_toggle(); break;
+	case W_UNDO:  undo_apply(false); break;
 	case W_REDO:   undo_apply(true); break;
 	case W_SAVE:   author_save(); break;
 	case W_EXIT:   author_stop(""); break;
@@ -5164,6 +5430,9 @@ static void under_text(const under_t *u, char *buf, size_t size)
 	case SLOT_HEIGHT:
 		Q_snprintf(buf, size, "under %d%%", (int)(u->v[0] * 100.f + 0.5f));
 		break;
+	case SLOT_GLASS:
+		Q_strlcpy(buf, u->v[0] >= 0.5f ? "under glass" : "under wall", size);
+		break;
 	case SLOT_EMISSIVE:
 		Q_snprintf(buf, size, "under %d%%", (int)(u->v[0] * 200.f + 0.5f));
 		break;
@@ -5272,24 +5541,50 @@ static float panel_rows(float x0, float y0, const under_t *under, qhandle_t font
 		}
 	}
 
-	// a stage has no emissive or height map: their buttons are left out. Each
-	// button its label's width, the room left over shared out evenly.
-	const int slots = au.stage >= 0 ? SLOT_NORMAL + 1 : NUM_SLOTS;
+	// a stage has no emissive or height map: their buttons are left out, and
+	// the glass mask's (last) is there only for stained glass (slot_offered).
+	// Each button its label's width, the room left over shared out evenly; with
+	// all six, emissive's says "emit" so the row fits the panel.
+	const int slots = au.stage >= 0 ? SLOT_NORMAL + 1 : slot_offered(au.mat, SLOT_GLASS) ? NUM_SLOTS : SLOT_GLASS;
+	const char *labels[NUM_SLOTS];
 	int label_chars = 0;
 	for (int i = 0; i < slots; i++)
-		label_chars += (int)strlen(slot_label[i]);
+	{
+		labels[i] = (i == SLOT_EMISSIVE && slots == NUM_SLOTS) ? "emit" : slot_label[i];
+		label_chars += (int)strlen(labels[i]);
+	}
 	const float spare = max(0.f, (iw - (slots - 1) * 4.f - label_chars * CHAR_WIDTH) / (float)slots);
 	float slot_x = x;
 	for (int i = 0; i < slots; i++)
 	{
-		const float bw = (float)strlen(slot_label[i]) * CHAR_WIDTH + spare;
-		ui_button(W_SLOT0 + i, slot_x, y, bw, slot_label[i], au.slot == i, font);
+		const float bw = (float)strlen(labels[i]) * CHAR_WIDTH + spare;
+		ui_button(W_SLOT0 + i, slot_x, y, bw, labels[i], au.slot == i, font);
 		slot_x += bw + 4.f;
 	}
 	y += line + 6.f;
 
 	switch (au.slot)
 	{
+	case SLOT_GLASS:
+	{
+		// what a stroke makes the texels: glass, or the wall round it - 1 or 0, no
+		// value between (texel_put cuts every blend at half way)
+		const bool glass = au.value[SLOT_GLASS] >= 0.5f;
+		ui_text(x, y, 0, "paint (X swaps)", max_chars - under_n - 1, font);
+		ui_text(x + iw - under_n * CHAR_WIDTH, y, UI_ALTCOLOR, under_s, under_n, font);
+		y += line;
+		const float gbw = (iw - 4.f) * 0.5f;
+		ui_button(W_GLASS_PAINT, x, y, gbw, "glass", glass, font);
+		ui_button(W_WALL_PAINT, x + gbw + 4.f, y, gbw, "wall", !glass, font);
+		y += line + 4.f;
+		ui_text(x, y, UI_ALTCOLOR, "white glass: lit through, glows", max_chars, font);
+		y += line;
+		ui_text(x, y, UI_ALTCOLOR, "black wall: plain surface", max_chars, font);
+		y += line;
+		ui_text(x, y, UI_ALTCOLOR, "fill light + window box: on map load", max_chars, font);
+		y += line + 2.f;
+		break;
+	}
 	case SLOT_ROUGH:
 	case SLOT_METAL:
 	case SLOT_HEIGHT:
@@ -5507,6 +5802,14 @@ static float panel_rows(float x0, float y0, const under_t *under, qhandle_t font
 		y += line + 4.f;
 	}
 
+	// the flashlight at the camera, and while it is on, how bright
+	light_cvars();
+	const bool lit = mat_author_light->integer != 0;
+	ui_button(W_LIGHT_ON, x, y, vbw, lit ? "[x] flashlight" : "[ ] flashlight", lit, font);
+	if (lit)
+		ui_slider_num(W_LIGHT, x + vbw + 7.f, y, iw - vbw - 7.f, font);
+	y += line + 4.f;
+
 	// undo and redo: this map's own steps
 	const float b4 = (iw - 3 * 4.f) / 4.f;
 	int n_undo, n_redo;
@@ -5543,13 +5846,14 @@ static float panel_rows(float x0, float y0, const under_t *under, qhandle_t font
 		y += line;
 
 	// 36 characters a line at most
-	ui_text(x, y, UI_ALTCOLOR, "RMB look  WASD/QE fly  H home", max_chars, font);
+	ui_text(x, y, UI_ALTCOLOR, "RMB look  WASD/QE  H home  C light", max_chars, font);
 	y += line - 2.f;
 	ui_text(x, y, UI_ALTCOLOR, "Alt+click pick  wheel size/radius", max_chars, font);
 	y += line - 2.f;
 	ui_text(x, y, UI_ALTCOLOR, "Shift+wheel value  Ctrl+wheel soft", max_chars, font);
 	y += line - 2.f;
-	ui_text(x, y, UI_ALTCOLOR, "1-5 map  T tool  G fill  Tab 2D  O", max_chars, font);
+	ui_text(x, y, UI_ALTCOLOR, slot_offered(au.mat, SLOT_GLASS) ? "1-6 map  X glass/wall  T tool  G fill"
+		: "1-5 map  T tool  G fill  Tab 2D  O", max_chars, font);
 	y += line - 2.f;
 	ui_text(x, y, UI_ALTCOLOR, "L line  R rectangle  F face  P piece", max_chars, font);
 	y += line - 2.f;
@@ -6058,9 +6362,31 @@ static void line_step(image_t *img, dab_ctx_t *c)
 			au.line_tu0 = tu;
 			au.line_tv0 = tv;
 			au.line_hit = au.hit;
+			// a line on a model: the island of the map it starts on, to keep it there
+			if (!au.paint_2d && au.stroke == STROKE_LINE)
+				island_build(&au.hit, W, H, tu, tv);
+			else
+				island_clear();
 		}
-		au.line_tu1 = tu;
-		au.line_tv1 = tv;
+		bool take = true;
+		if (ln.on && !au.paint_2d && ln.mask_w == W && ln.mask_h == H)
+		{
+			bool held;
+			take = island_clamp(au.line_tu0, au.line_tv0, &tu, &tv, &held);
+			held = held || !take;
+			if (held && !ln.held)
+			{
+				// on the panel only: this comes and goes as the cursor moves
+				Q_strlcpy(au.status, "the line stops where this part of the model ends on the map", sizeof(au.status));
+				au.status_ms = Sys_Milliseconds();
+			}
+			ln.held = held;
+		}
+		if (take)
+		{
+			au.line_tu1 = tu;
+			au.line_tv1 = tv;
+		}
 	}
 	if (!au.line_commit)
 		return;
@@ -6070,6 +6396,8 @@ static void line_step(image_t *img, dab_ctx_t *c)
 	if (!au.line_have)
 		return;
 	au.line_have = false;
+	const bool held = ln.on && ln.held;
+	island_clear();
 
 	// ends on two parts of a model whose UVs lie far apart make no line on it
 	const bool rect = au.stroke == STROKE_RECT;
@@ -6102,7 +6430,8 @@ static void line_step(image_t *img, dab_ctx_t *c)
 	{
 		const float len = sqrtf((au.line_tu1 - au.line_tu0) * (au.line_tu1 - au.line_tu0)
 			+ (au.line_tv1 - au.line_tv0) * (au.line_tv1 - au.line_tv0));
-		author_status("line, %d texels long", (int)(len + 0.5f));
+		author_status("line, %d texels long%s", (int)(len + 0.5f),
+			held ? " - stopped where its part of the model ends on the map" : "");
 	}
 }
 
@@ -6567,6 +6896,65 @@ float MAT_AuthorSparseRate(void)
 	return max(rate, 1.f / 16.f);
 }
 
+/* THE FLASHLIGHT (Matt, 2026-11-22: "a toggle for a camera light. Basically a
+   flashlight kind of thing for the material editor camera"). While the tool is
+   open and mat_author_light is 1 - the panel's "flashlight", C, 'mat author
+   light' - a spot light sits at the free camera and points where it looks.
+
+   - Brightness: the game's own flashlight (cl_flashlight_intensity's default,
+     20000) times mat_author_light_scale, the panel's slider in percent.
+   - Cone: mat_author_light_cone degrees across, at full brightness over the
+     middle half of its width, fading to nothing at its edge.
+   - At the eye itself, not offset like the game's flashlight (view.c
+     V_Flashlight, which clears the gun): close work on a wall needs the light
+     right where the camera is, and a light on the view axis casts no shadow
+     you can see, so nothing hides what is being painted.
+   - No fog glow (volumetric scale 0): a headlamp's beam in the haze would veil
+     the very surface under the brush.
+   - One id, so ReSTIR keeps its reservoir as the camera flies.
+
+   main.c adds it with the frame's dlights, after vkpt_freecam_update has moved
+   fd's view to the free camera. Turning it on or off, or changing either cvar,
+   starts photo mode's average again, as a camera move does. */
+#define AUTHOR_LIGHT_INTENSITY  20000.f
+#define AUTHOR_LIGHT_ID         0x4d41544cu     // "MATL"
+
+bool MAT_AuthorCameraLight(const refdef_t *fd, dlight_t *light)
+{
+	static bool was_on;
+	static float was_scale, was_cone;
+
+	light_cvars();
+	const bool on = au.active && mat_author_light->integer;
+	const float scale = max(0.f, mat_author_light_scale->value);
+	const float cone = Q_clipf(mat_author_light_cone->value, 1.f, 179.f);
+	if (on != was_on || (on && (scale != was_scale || cone != was_cone)))
+		vkpt_reset_accumulation();
+	was_on = on;
+	was_scale = scale;
+	was_cone = cone;
+	if (!on || scale <= 0.f)
+		return false;
+
+	vec3_t forward;
+	AngleVectors(fd->viewangles, forward, NULL, NULL);
+
+	memset(light, 0, sizeof(*light));
+	VectorCopy(fd->vieworg, light->origin);
+	VectorSet(light->color, 1.f, 1.f, 1.f);
+	light->intensity = AUTHOR_LIGHT_INTENSITY * scale;
+	light->radius = 1.f;
+	light->volumetric_scale = 0.f;
+	light->id = AUTHOR_LIGHT_ID;
+	light->light_type = DLIGHT_SPOT;
+	VectorCopy(forward, light->spot.direction);
+	light->spot.emission_profile = DLIGHT_SPOT_EMISSION_PROFILE_FALLOFF;
+	const float half = DEG2RAD(cone * 0.5f);
+	light->spot.cos_total_width = cosf(half);
+	light->spot.cos_falloff_start = cosf(half * 0.5f);
+	return true;
+}
+
 void MAT_AuthorCursorMove(float dx, float dy)
 {
 	if (!au.active)
@@ -6610,6 +6998,16 @@ void MAT_AuthorFillUBO(QVKUniformBuffer_t *ubo)
 	ubo->author_stage = -1;
 	if (!au.active || !material_ok())
 		return;
+
+	// the glass mask, and the material stopped being stained glass ('mat
+	// stained_glass 0'): its button is gone, so is the slot
+	if (!slot_offered(au.mat, au.slot))
+	{
+		stroke_end();
+		au.slot = SLOT_ROUGH;
+		au.v2_fit_image = -2;
+		author_status("%s isn't stained glass any more: painting its roughness map", au.mat->name);
+	}
 
 	ubo->author_active = 1;
 	au.seq++;
@@ -6897,9 +7295,15 @@ bool MAT_AuthorKey(unsigned key, bool down)
 			brush_size_step(key == ']' ? 1 : -1);
 		return true;
 
-	case '1': case '2': case '3': case '4': case '5':
+	case '1': case '2': case '3': case '4': case '5': case '6':
 		if (down)
 			set_slot(key - '1');
+		return true;
+
+	case 'x':
+		// the glass mask: glass <-> the wall round it
+		if (down && au.slot == SLOT_GLASS)
+			glass_paint_set(au.value[SLOT_GLASS] < 0.5f);
 		return true;
 
 	case 'l':
@@ -6976,6 +7380,12 @@ bool MAT_AuthorKey(unsigned key, bool down)
 		// the camera back where it started - the panel's "home"
 		if (down)
 			camera_home();
+		return true;
+
+	case 'c':
+		// the flashlight at the camera - the panel's "flashlight"
+		if (down)
+			light_toggle();
 		return true;
 
 	case 's':
@@ -7114,6 +7524,23 @@ void MAT_AuthorCommand(pbr_material_t *crosshair)
 		return;
 	}
 
+	// mat author light [on|off]: the flashlight at the camera; no word toggles it
+	if (!Q_stricmp(word, "light") || !Q_stricmp(word, "flashlight"))
+	{
+		const char *arg = Cmd_Argc() >= 4 ? Cmd_Argv(3) : "";
+		light_cvars();
+		if (!Q_stricmp(arg, "on") || !strcmp(arg, "1"))
+			light_set(true);
+		else if (!Q_stricmp(arg, "off") || !strcmp(arg, "0"))
+			light_set(false);
+		else if (!arg[0])
+			light_toggle();
+		else
+			Com_Printf("usage: mat author light [on|off] - brightness: mat_author_light_scale (1 = the game's "
+				"flashlight), cone: mat_author_light_cone (degrees across)\n");
+		return;
+	}
+
 	// mat author free | line | rect [corner radius]: the stroke (a rectangle's radius in texels)
 	for (int s = 0; s < NUM_STROKES; s++)
 	{
@@ -7133,11 +7560,13 @@ void MAT_AuthorCommand(pbr_material_t *crosshair)
 	for (int i = 0; i < NUM_SLOTS; i++)
 		if (!Q_stricmp(word, slot_word[i]) || !Q_stricmp(word, slot_label[i]))
 			slot = i;
+	if (!Q_stricmp(word, "glassmask") || !Q_stricmp(word, "stained_mask"))
+		slot = SLOT_GLASS;
 	if (word[0] && slot < 0)
 	{
-		Com_Printf("usage: mat author [roughness|metallic|normals|emissive|height] | stage <N|mat> | "
+		Com_Printf("usage: mat author [roughness|metallic|normals|emissive|height|glass] | stage <N|mat> | "
 			"free | line | rect [corner radius] | select <shape|all|none|invert|back> | range <dark%%> <bright%%> | "
-			"save | off\n");
+			"light [on|off] | save | off\n");
 		return;
 	}
 

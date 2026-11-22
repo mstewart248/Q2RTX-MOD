@@ -2928,8 +2928,21 @@ get_material(
 	   emissive_factor x the face's scale (the window light's own, bsp_mesh.c).
 	   The room's light on it is mostly let through, not sent back:
 	   STAINED_ALBEDO of the texture's colour is its diffuse. Compiled out
-	   with spec_q3 0 (STAINED_GLASS_CODE). */
-	if (STAINED_GLASS_CODE && minfo.stained_glass && dot(geo_normal, geo_normal) > 0.0)
+	   with spec_q3 0 (STAINED_GLASS_CODE).
+	   With a glass mask (texture_stained_mask), a black texel is not glass
+	   but the surface round it - a frame, the wall - shaded as the REGULAR
+	   material it is, without the glow of the emissive texture the glass
+	   replaces. */
+	bool stained_texel = STAINED_GLASS_CODE && minfo.stained_glass && dot(geo_normal, geo_normal) > 0.0;
+	if (stained_texel && minfo.stained_mask != 0u)
+	{
+		emissive = vec3(0);
+		float glass_mask = (mip_level >= 0)
+			? global_textureLod(minfo.stained_mask, tex_coord, mip_level).r
+			: global_textureGrad(minfo.stained_mask, tex_coord, tex_coord_x, tex_coord_y).r;
+		stained_texel = glass_mask >= 0.5;
+	}
+	if (stained_texel)
 	{
 		const float STAINED_ALBEDO = 0.35;
 		vec3 glass = base_color;

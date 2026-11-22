@@ -1531,11 +1531,32 @@ static void PF_particle(void)
     float *dir = QC_G_VECTOR(QC_OFS_PARM1);
     int color = (int)QC_G_FLOAT(QC_OFS_PARM2);
     int count = (int)QC_G_FLOAT(QC_OFS_PARM3);
+    vec3_t where;
+
+    VectorCopy(org, where);
+
+    /* QUAKE'S PARTICLE EXPLOSION - count 255, which its client drew as
+       R_ParticleExplosion - asked for at an entity's own origin starts from the
+       middle of its box. That is an exploding barrel (misc.qc barrel_explode:
+       particle (self.origin, '0 0 0', 75, 255), the one blast Quake makes
+       without a TE_EXPLOSION), and misc_explobox's origin is its bottom corner
+       ('0 0 0' to '32 32 64'), so the burst - and the Flow fire the client now
+       lights for it (tent.c, TE_Q1_PARTICLE) - came out of the floor at one
+       corner of the barrel. */
+    if (count >= 255) {
+        int self = QC_FromProg(qvm.g->self);
+        if (self) {
+            qc_entvars_t *ev = QC_EV(self);
+            if (VectorCompare(ev->origin, org) && ev->size[0] > 0 && ev->size[2] > 0)
+                for (int i = 0; i < 3; i++)
+                    where[i] = org[i] + 0.5f * (ev->mins[i] + ev->maxs[i]);
+        }
+    }
 
     gi.WriteByte(svc_temp_entity);
     gi.WriteByte(TE_Q1);
     gi.WriteByte(TE_Q1_PARTICLE);
-    gi.WritePosition(org);
+    gi.WritePosition(where);
     for (int i = 0; i < 3; i++) {
         int v = (int)(dir[i] * 16);
         clamp(v, -128, 127);
@@ -1544,7 +1565,7 @@ static void PF_particle(void)
     clamp(count, 0, 255);
     gi.WriteByte(count);
     gi.WriteByte(color & 255);
-    gi.multicast(org, MULTICAST_PVS);
+    gi.multicast(where, MULTICAST_PVS);
 }
 
 /*

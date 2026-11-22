@@ -225,9 +225,9 @@ void Cmd_Give_f(edict_t *ent)
             // player who plays with them (g_q3weap.c)
             if (!!(it->flags & IT_Q3) != Q3W_PlayerQ3(ent))
                 continue;
-            // and Quake's only in a game of them, and then only Quake's
-            // (g_q1weap.c): the rest are what they stand in for
-            if (!!(it->flags & IT_Q1) != level.q1_weapons)
+            // and Quake's only to a player who plays with them, and then
+            // only Quake's (g_q1weap.c): the rest are what they stand in for
+            if (!!(it->flags & IT_Q1) != Q1W_PlayerQ1(ent))
                 continue;
             ent->client->pers.inventory[i] += 1;
             // Load it now, as a map's own weapons are. Otherwise each gun's

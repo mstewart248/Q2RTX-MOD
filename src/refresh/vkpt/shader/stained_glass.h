@@ -69,6 +69,16 @@ WHAT LIGHTS THE ROOM.
   * The spread share, s: an ordinary emissive light poly over the faces, in
     the texture's average colour (soft fill).
 
+THE GLASS MASK (texture_stained_mask, Matt 2026-11-22). A texture that is only
+partly a window - a stone frame round it, a wall it is set in - has a mask:
+white texels are glass, black ones an ordinary surface (the cut is half way;
+`mat author` paints it as 1 or 0). The black part is shaded as the REGULAR
+material it is, with no glow (get_material); the window light comes through
+the white part only (sample_window_light), and its rectangle is cut down to
+the box round the white texels (bsp_mesh.c), so it is not picked for a floor
+that would see it through the wall. The fill is the glass's average colour
+times its share of the tile. No mask = every texel glass, as before.
+
 ==============================================================================
 */
 
@@ -302,11 +312,42 @@ window_stained_light(WindowLight w, MaterialInfo m)
 	return stained_light(corner, e_u, e_v, w.n, m);
 }
 
-/* How much of the window light p gets, unshadowed and untextured - the mass
-   sample_lights() and ReSTIR's target pick it by. The light's solid angle (as
-   the sphere light's), times its radiance per unit `color`, times the straight
-   share; 0 if the line to the light's centre misses the tile (with the light's
-   own size as a margin). */
+/* What the glass lets through, on average, over a footprint r_uv (half-width,
+   in the tile) round uv: the base texture's luminance, read at the mip that
+   size, times the glass mask's coverage there. Never quite 0 - a floor of
+   1/256 - so the light stays pickable wherever it might reach and the pick
+   stays unbiased even where a mip averages lead and glass to black. */
+float
+stained_mean_through(MaterialInfo m, vec2 uv, vec2 r_uv)
+{
+	float through = 1.0;
+	if (m.base_texture != 0)
+	{
+		ivec2 size = global_textureSize(m.base_texture, 0);
+		float texels = 2.0 * max(r_uv.x * float(size.x), r_uv.y * float(size.y));
+		float lod = clamp(log2(max(texels, 1.0)), 0.0, 14.0);
+		vec3 T = clamp(global_textureLod(m.base_texture, uv, lod).rgb * m.base_factor, vec3(0), vec3(1));
+		through = luminance(T);
+	}
+	if (m.stained_mask != 0u)
+	{
+		ivec2 msize = global_textureSize(m.stained_mask, 0);
+		float texels = 2.0 * max(r_uv.x * float(msize.x), r_uv.y * float(msize.y));
+		float lod = clamp(log2(max(texels, 1.0)), 0.0, 14.0);
+		through *= global_textureLod(m.stained_mask, uv, lod).r;
+	}
+	return max(through, 1.0 / 256.0);
+}
+
+/* How much of the window light p gets, unshadowed - the mass sample_lights()
+   and ReSTIR's target pick it by, and the fog's estimate. The light's solid
+   angle (as the sphere light's), times its radiance per unit `color`, times
+   the straight share - and (pt_stained_mass 1) times what comes through: the
+   share of the light's footprint on the glass that lies on the window, and
+   what the glass lets through there on average (stained_mean_through). Without
+   that, a dark window (window01_2 lets through ~4%) was picked round its image
+   as if it were clear, nearly every time, for almost nothing - starving every
+   other light there: the slow, dark band round the image (Matt, 11-22). */
 float
 window_light_mass_volume(LightPolygon light, vec3 p, out vec3 dir)
 {
@@ -324,32 +365,59 @@ window_light_mass_volume(LightPolygon light, vec3 p, out vec3 dir)
 		return 0.0;
 
 	float solid_angle;
-	float margin;
+	float sin_a;        // the light's angular radius seen from p
 	if (s.sun)
-	{
-		solid_angle = 2.0 * M_PI * (1.0 - sqrt(max(1.0 - s.sin_size * s.sin_size, 0.0)));
-		margin = h * s.sin_size;
-	}
+		sin_a = s.sin_size;
 	else
 	{
 		vec3 d = s.lamp - p;
 		float dist = length(d);
 		dir = d / dist;
-		float sin_a = min(s.radius / dist, 1.0);
-		solid_angle = 2.0 * M_PI * (1.0 - sqrt(max(1.0 - sin_a * sin_a, 0.0)));
-		margin = s.radius;
+		sin_a = min(s.radius / dist, 1.0);
 	}
+	float cos_a = sqrt(max(1.0 - sin_a * sin_a, 0.0));
+	solid_angle = 2.0 * M_PI * (1.0 - cos_a);
 
 	float denom = dot(dir, w.n);
 	if (denom >= -1e-4)
 		return 0.0;
-	vec3 g = p + dir * (-h / denom);
+	float cos_g = -denom;
+	vec3 g = p + dir * (h / cos_g);
 	vec2 uv = vec2(dot(g, w.S) + w.window.x, dot(g, w.T) + w.window.y);
-	vec2 m_uv = margin * vec2(length(w.S), length(w.T)) / max(-denom, 0.1);
-	if (any(lessThan(uv, w.rect.xy - m_uv)) || any(greaterThan(uv, w.rect.zw + m_uv)))
+	vec2 per_unit = vec2(length(w.S), length(w.T));
+	float mass = solid_angle * s.radiance * (1.0 - m.stained_scatter);
+
+	if (global_ubo.pt_stained_mass == 0)
+	{
+		// the old weight (A/B): the whole light wherever the line to its centre
+		// crosses the rectangle, give or take the light's size
+		float margin = s.sun ? h * s.sin_size : s.radius;
+		vec2 m_uv = margin * per_unit / max(cos_g, 0.1);
+		if (any(lessThan(uv, w.rect.xy - m_uv)) || any(greaterThan(uv, w.rect.zw + m_uv)))
+			return 0.0;
+		return mass;
+	}
+
+	/* The light's footprint on the glass: the crossings of every line from p
+	   to the light lie within r of the centre's. Its far side, at the angle
+	   g + a from the normal, is the widest: h (tan(g + a) - tan g) - exact,
+	   so a floor point that can see a sliver of the light through the window
+	   is never weighed 0. Grazing past 90 degrees: the whole plane. */
+	float tan_g = sqrt(max(1.0 - cos_g * cos_g, 0.0)) / cos_g;
+	float tan_a = sin_a / max(cos_a, 1e-4);
+	float den = 1.0 - tan_g * tan_a;
+	float r = den > 1e-3 ? h * ((tan_g + tan_a) / den - tan_g) : 1e4;
+	vec2 r_uv = max(r * per_unit, vec2(1e-6));
+
+	// the share of that footprint (taken as a square) over the window's rectangle
+	vec2 lo = max(uv - r_uv, w.rect.xy);
+	vec2 hi = min(uv + r_uv, w.rect.zw);
+	vec2 o = clamp((hi - lo) / (2.0 * r_uv), vec2(0), vec2(1));
+	float cover = o.x * o.y;
+	if (cover <= 0.0)
 		return 0.0;
 
-	return solid_angle * s.radiance * (1.0 - m.stained_scatter);
+	return mass * cover * stained_mean_through(m, clamp(uv, w.rect.xy, w.rect.zw), r_uv);
 }
 
 // the same at a surface with normal n, which must face the light
@@ -424,11 +492,31 @@ sample_window_light(vec3 p, LightPolygon light, vec2 rnd, out vec3 tint, out flo
 	// The glass's colour at the crossing. The light's size blurs the window's
 	// image by blur * t at p - read the texture at about that footprint, so a
 	// soft image is not a noisy one.
+	float footprint = blur * t;
+
+	// the glass mask (texture_stained_mask): the light comes through its white
+	// texels only. Sharp, as the look's cut, where the image is sharp; read
+	// blurred - the share of glass round the spot - where the image is soft.
+	float glass = 1.0;
+	if (m.stained_mask != 0u)
+	{
+		ivec2 msize = global_textureSize(m.stained_mask, 0);
+		float mtexels = footprint * max(length(w.S) * float(msize.x), length(w.T) * float(msize.y));
+		float mlod = clamp(log2(max(mtexels, 1.0)) - 1.0, 0.0, 8.0);
+		float c = global_textureLod(m.stained_mask, uv, mlod).r;
+		glass = mix(step(0.5, c), c, clamp(mlod, 0.0, 1.0));
+		if (glass <= 0.0)
+		{
+			pdfw = 0.0;
+			return p;
+		}
+	}
+
 	vec3 T = vec3(1);
 	if (m.base_texture != 0)
 	{
 		ivec2 size = global_textureSize(m.base_texture, 0);
-		float texels = blur * t * max(length(w.S) * float(size.x), length(w.T) * float(size.y));
+		float texels = footprint * max(length(w.S) * float(size.x), length(w.T) * float(size.y));
 		float lod = clamp(log2(max(texels, 1.0)) - 1.0, 0.0, 8.0);
 		T = global_textureLod(m.base_texture, uv, lod).rgb;
 	}
@@ -436,7 +524,7 @@ sample_window_light(vec3 p, LightPolygon light, vec2 rnd, out vec3 tint, out flo
 
 	float cos_g = -denom;
 	tint = stained_thick_transmit(T, cos_g) * (stained_face_transmit(cos_g) * stained_face_transmit(cos_g))
-		* (s.radiance * (1.0 - m.stained_scatter) / pdfw);
+		* (s.radiance * (1.0 - m.stained_scatter) * glass / pdfw);
 
 	return g - dir * 0.5;
 }

@@ -1720,7 +1720,8 @@ static void CL_FixUpGender(void)
         }
     }
 
-    if (Q_stricmp(sk, "male") == 0 || Q_stricmp(sk, "cyborg") == 0)
+    if (Q_stricmp(sk, "male") == 0 || Q_stricmp(sk, "cyborg") == 0
+        || Q_stricmp(sk, Q1P_MODEL_NAME) == 0)      // Quake's Ranger
         Cvar_Set("gender", "male");
     else if (Q_stricmp(sk, "female") == 0 || Q_stricmp(sk, "crackhor") == 0)
         Cvar_Set("gender", "female");

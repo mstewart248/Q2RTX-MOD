@@ -51,6 +51,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "client/video.h"
 
 #include "q3player.h"
+#include "q1player.h"
 
 #if USE_ZLIB
 #include <zlib.h>
@@ -186,7 +187,11 @@ typedef struct clientinfo_s {
     qhandle_t weaponmodel[MAX_CLIENTWEAPONMODELS];
     q3pmodel_t q3;          // .q3 set: a Quake III model (q3player.c); skin 0,
                             // model = its legs, weaponmodel = the male's
+    bool q1;                // Quake's Ranger (q1player.c): skin 0, its own frames,
+                            // no weapon models - the gun is in his hands
 } clientinfo_t;
+
+bool    Q1P_Register(clientinfo_t *ci, const char *model, const char *skin);
 
 typedef struct {
     unsigned    sent;    // time sent, for calculating pings
@@ -377,7 +382,7 @@ typedef struct client_state_s {
     int         maxclients;
     pmoveParams_t pmp;
     int         q3_weapons;     // CS_Q3RULES: 0 Quake II, 1 Quake III, 2 by player model
-    bool        q1_weapons;     // CS_Q3RULES '3': Quake's guns (q3_weapons is then 0)
+    bool        q1_weapons;     // CS_Q3RULES '3' (q3_weapons is then 0), or "2x1": someone may carry Quake's guns
     // CS_Q1VM: the Quake 1 episode ("id1", "hipnotic"...) whose own progs run
     // the level, "" otherwise. Its entities then mean Quake 1 things: model
     // 255 is a model, modelindex4 is Quake 1's lights, TE_Q1 temp entities.
@@ -1675,6 +1680,17 @@ void    SCR_RegisterMedia(void);
 void    SCR_Q1RegisterMedia(void);
 void    SCR_Q1ClearMedia(void);
 void    SCR_Q1DrawStatusBar(int width, int height);
+
+// hud_q3.c: Quake III's HUD, for a Quake III character
+#define Q3HUD_ON        1       // SCR_Q3DrawHud drew: the status bar program leaves its pieces out
+#define Q3HUD_SCORES    2       // ... and the score boxes, so the frags too
+void    SCR_Q3HudInit(void);
+void    SCR_Q3HudRegisterMedia(void);
+void    SCR_Q3HudClearMedia(void);
+void    SCR_Q3HudDamage(const vec3_t dir);
+bool    SCR_Q3HudActive(void);
+bool    SCR_Q3HudDrawsStat(int stat);
+int     SCR_Q3DrawHud(int width, int height, float alpha, int *bar_top);
 
 void    SCR_ModeChanged(void);
 void    SCR_LagSample(void);

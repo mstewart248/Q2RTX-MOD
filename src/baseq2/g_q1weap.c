@@ -143,6 +143,116 @@ static bool Q1W_IsGun(const gitem_t *it)
 
 /*
 =================
+Q1W_ClientQ1 / Q1W_PlayerQ1
+
+Whether this player plays with Quake's guns this level: everyone, in a game
+of them (g_q3_weapons 3); in a match by player model (g_q3_weapons 2), anyone
+who is Quake's Ranger - "quake1/<skin>", the client's q1player.c - as a
+Quake III body gets Quake III's guns (Q3W_ClientQ3). Matt, 2026-11-22: "Quake
+1 ranger should use quake 1 weapons when playing with mixed weapons".
+=================
+*/
+#define Q1W_RANGER_MODEL    "quake1"    // the client's Q1P_MODEL_NAME
+
+bool Q1W_ClientQ1(const gclient_t *client)
+{
+    const char  *skin;
+    size_t      len = strlen(Q1W_RANGER_MODEL);
+
+    if (!client)
+        return false;
+    if (level.q1_weapons)
+        return true;
+    if (!level.q1_by_model)
+        return false;
+    skin = Info_ValueForKey((char *)client->pers.userinfo, "skin");
+    return !Q_strncasecmp(skin, Q1W_RANGER_MODEL, len) && (skin[len] == '/' || skin[len] == '\\');
+}
+
+bool Q1W_PlayerQ1(const edict_t *ent)
+{
+    return ent && ent->client && Q1W_ClientQ1(ent->client);
+}
+
+// Quake III's guns as Quake's, for the Ranger in a match by player model
+static const struct {
+    const char  *q3, *q1;
+} q1w_from_q3[] = {
+    { "weapon_q3_gauntlet",         "weapon_q1_axe" },
+    { "weapon_q3_machinegun",       "weapon_q1_nailgun" },
+    { "weapon_q3_shotgun",          "weapon_q1_supershotgun" },
+    { "weapon_q3_grenadelauncher",  "weapon_q1_grenadelauncher" },
+    { "weapon_q3_rocketlauncher",   "weapon_q1_rocketlauncher" },
+    { "weapon_q3_lightning",        "weapon_q1_lightning" },
+    { "weapon_q3_railgun",          "weapon_q1_lightning" },
+    { "weapon_q3_plasmagun",        "weapon_q1_supernailgun" },
+    { "weapon_q3_bfg",              "weapon_q1_lightning" },
+    // their own ammo: the cells of the Thunderbolt standing in
+    { "ammo_q3_lightning",          "ammo_cells" },
+    { "ammo_q3_bfg",                "ammo_cells" },
+};
+
+// and the other way, for everyone else and a gun a Ranger dropped: Quake II's
+// gun, and Quake III's for a Quake III body
+static const struct {
+    const char  *q2, *q3;
+} q1w_to[Q1W_NUM] = {
+    [Q1W_AXE]           = { "weapon_chainfist",         "weapon_q3_gauntlet" },
+    [Q1W_SHOTGUN]       = { "weapon_shotgun",           "weapon_q3_shotgun" },
+    [Q1W_SUPERSHOTGUN]  = { "weapon_supershotgun",      "weapon_q3_shotgun" },
+    [Q1W_NAILGUN]       = { "weapon_machinegun",        "weapon_q3_machinegun" },
+    [Q1W_SUPERNAILGUN]  = { "weapon_chaingun",          "weapon_q3_plasmagun" },
+    [Q1W_GRENADE]       = { "weapon_grenadelauncher",   "weapon_q3_grenadelauncher" },
+    [Q1W_ROCKET]        = { "weapon_rocketlauncher",    "weapon_q3_rocketlauncher" },
+    [Q1W_LIGHTNING]     = { "weapon_railgun",           "weapon_q3_lightning" },
+};
+
+/*
+=================
+Q1W_ItemFor
+
+Q3W_ItemFor, in a match by player model with Quake's Ranger in it: what
+(player) takes from (item) on the ground. The Ranger takes Quake's gun most
+like any other game's, and Quake's ammo for the ammo no Quake gun uses;
+anyone else takes their own game's gun for a Quake gun a Ranger dropped.
+Anything else is itself.
+=================
+*/
+gitem_t *Q1W_ItemFor(gitem_t *item, const edict_t *player)
+{
+    gitem_t     *other;
+    const char  *name;
+    int         i;
+
+    if (!item || !item->classname || !level.q1_by_model)
+        return item;
+
+    if (!Q1W_PlayerQ1(player)) {
+        if (!Q1W_IsGun(item))
+            return item;
+        name = Q3W_PlayerQ3(player) ? q1w_to[item->tag].q3 : q1w_to[item->tag].q2;
+        other = name ? Q1W_Item(name) : NULL;
+        return other ? other : item;
+    }
+
+    if (item->flags & IT_Q1)
+        return item;
+
+    if (item->flags & IT_Q3) {
+        for (i = 0; i < q_countof(q1w_from_q3); i++)
+            if (!strcmp(item->classname, q1w_from_q3[i].q3) && (other = Q1W_Item(q1w_from_q3[i].q1)))
+                return other;
+        return item;
+    }
+
+    for (i = 0; i < q_countof(q1w_swap); i++)
+        if (!strcmp(item->classname, q1w_swap[i].q2) && (other = Q1W_Item(q1w_swap[i].q1)))
+            return other;
+    return item;
+}
+
+/*
+=================
 Q1W_FindItem
 
 Q3W_FindItem, with Quake's guns: Quake's gun of a name before Quake II's or
@@ -409,7 +519,7 @@ void Q1W_Precache(void)
     };
     int     i;
 
-    if (!level.q1_weapons)
+    if (!level.q1_weapons && !level.q1_by_model)
         return;
 
     for (i = 1; i < Q1W_NUM; i++)

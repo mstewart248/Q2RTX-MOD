@@ -679,7 +679,7 @@ bool Pickup_Ammo(edict_t *ent, edict_t *other)
     // Quake's Quake's (g_q1weap.c)
     if (level.q3_weapons && Q3W_PlayerQ3(other))
         return Q3W_PickupAmmo(ent, other);
-    if (level.q1_weapons)
+    if (Q1W_PlayerQ1(other))
         return Q1W_PickupAmmo(ent, other);
 
     weapon = (ent->item->flags & IT_WEAPON);

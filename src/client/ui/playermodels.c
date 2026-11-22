@@ -28,6 +28,7 @@ PLAYER MODELS
 */
 
 static void PlayerModel_LoadQ3(void);
+static void PlayerModel_LoadQ1(void);
 static void PlayerModel_BuildCells(void);
 
 static bool IconOfSkinExists(char *skin, char **pcxfiles, int npcxfiles)
@@ -51,10 +52,13 @@ static int pmicmpfnc(const void *_a, const void *_b)
     const playerModelInfo_t *a = (const playerModelInfo_t *)_a;
     const playerModelInfo_t *b = (const playerModelInfo_t *)_b;
 
-    // Quake II's, then Quake III's
+    // Quake's, then Quake II's, then Quake III's (Matt, 2026-11-22: "in the
+    // player select quake 1 should come first")
+    if (a->q1 != b->q1)
+        return a->q1 ? -1 : 1;
     if (a->q3 != b->q3)
         return a->q3 ? 1 : -1;
-    if (a->q3)
+    if (a->q3 || a->q1)
         return Q_stricmp(a->directory, b->directory);
 
     /*
@@ -188,6 +192,7 @@ skip:
     }
 
     PlayerModel_LoadQ3();
+    PlayerModel_LoadQ1();
 
     qsort(uis.pmi, uis.numPlayerModels, sizeof(uis.pmi[0]), pmicmpfnc);
 
@@ -261,6 +266,26 @@ static void PlayerModel_LoadQ3(void)
     FS_FreeList((void **)list);
 }
 
+/*
+Quake's Ranger (q1player.c), when the Quake paks are in id1/: one model, one
+skin - "quake1/ranger".
+*/
+static void PlayerModel_LoadQ1(void)
+{
+    playerModelInfo_t *pmi;
+
+    if (uis.numPlayerModels >= MAX_PLAYERMODELS || !Q1P_Available())
+        return;
+
+    pmi = &uis.pmi[uis.numPlayerModels++];
+    pmi->q1 = true;
+    pmi->nskins = 1;
+    pmi->skindisplaynames = UI_Malloc(sizeof(char *) * 2);
+    pmi->skindisplaynames[0] = UI_CopyString(Q1P_SKIN_NAME);
+    pmi->skindisplaynames[1] = NULL;
+    pmi->directory = UI_CopyString(Q1P_MODEL_NAME);
+}
+
 // skins the game puts on by itself: team uniforms, the spy's disguise
 static bool PlayerModel_GridSkip(const playerModelInfo_t *pmi, const char *skin)
 {
@@ -274,13 +299,16 @@ static void PlayerModel_BuildCells(void)
     int i, j, n = 0;
     bool q3 = false;
 
+    // the grid as soon as there is anything but Quake II's: Quake III's
+    // models, or Quake's
     for (i = 0; i < uis.numPlayerModels; i++) {
         n += uis.pmi[i].nskins;
-        q3 |= uis.pmi[i].q3;
+        q3 |= uis.pmi[i].q3 || uis.pmi[i].q1;
     }
 
     uis.pmGrid = q3;
     uis.numPmCells = 0;
+    uis.pmQ2First = 0;
     uis.pmQ3First = 0;
     if (!q3 || !n)
         return;
@@ -288,6 +316,9 @@ static void PlayerModel_BuildCells(void)
     uis.pmCells = UI_Mallocz(sizeof(uis.pmCells[0]) * n);
     uis.pmCellNames = UI_Mallocz(sizeof(uis.pmCellNames[0]) * (n + 1));
 
+    // Quake's cells, Quake II's from pmQ2First, Quake III's from pmQ3First
+    // (pmicmpfnc's order)
+    uis.pmQ2First = -1;
     uis.pmQ3First = -1;
     for (i = 0; i < uis.numPlayerModels; i++) {
         const playerModelInfo_t *pmi = &uis.pmi[i];
@@ -297,6 +328,8 @@ static void PlayerModel_BuildCells(void)
 
             if (PlayerModel_GridSkip(pmi, pmi->skindisplaynames[j]))
                 continue;
+            if (!pmi->q1 && uis.pmQ2First < 0)
+                uis.pmQ2First = uis.numPmCells;
             if (pmi->q3 && uis.pmQ3First < 0)
                 uis.pmQ3First = uis.numPmCells;
 
@@ -310,6 +343,8 @@ static void PlayerModel_BuildCells(void)
     }
     if (uis.pmQ3First < 0)
         uis.pmQ3First = uis.numPmCells;
+    if (uis.pmQ2First < 0)
+        uis.pmQ2First = uis.pmQ3First;
     uis.pmCellNames[uis.numPmCells] = NULL;
 
     if (!uis.numPmCells)
@@ -390,7 +425,9 @@ qhandle_t PlayerModel_CellIcon(int cell)
     c = &uis.pmCells[cell];
     if (!c->icon) {
         pmi = &uis.pmi[c->model];
-        if (pmi->q3)
+        if (pmi->q1)
+            Q_strlcpy(path, Q1P_ICON_PATH, sizeof(path));     // the status bar's face
+        else if (pmi->q3)
             Q_concat(path, sizeof(path), "/models/players/", pmi->directory, "/icon_",
                      pmi->skindisplaynames[c->skin], ".tga");
         else
@@ -415,6 +452,7 @@ void PlayerModel_Free(void)
     uis.pmCellNames = NULL;
     uis.pmCells = NULL;
     uis.numPmCells = 0;
+    uis.pmQ2First = 0;
     uis.pmQ3First = 0;
     uis.pmGrid = false;
 

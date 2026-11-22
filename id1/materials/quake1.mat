@@ -135,6 +135,7 @@ progs/enforcer_00_00:
 	texture_roughness materialDev/remix/TextureDev3/Enforcer_Skin_rough1.png
 	texture_emissive materialDev/remix/TextureDev3/Enforcer_Skin_emissive.png
 	emissive_factor 2.5
+	texture_metallic materialDev/progs/enforcer_00_00_metal.png
 
 # Remix mat_C688F0A11FB5FBAB: progs/flame2.mdl skin 0
 progs/flame2_mdl_00_00:
@@ -144,7 +145,7 @@ progs/flame2_mdl_00_00:
 #	roughness_override 0.5
 	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
 	is_light 1
-	emissive_factor 5
+	emissive_factor 1
 #	the other Remix material for it, mat_F52D347AF59457F2 (padded_skin_raw upload) - in place of the lines above:
 #	Remix's default roughness - this material did not set one
 #	texture_roughness 0
@@ -239,6 +240,8 @@ progs/invulner_00_00:
 # Remix mat_F26D9AD9258FEF09: progs/knight_00_00.lmp
 progs/knight_00_00:
 	texture_base materialDev/progs/knight_00_00.png
+	texture_roughness materialDev/progs/knight_00_00_rough.png
+	texture_metallic materialDev/progs/knight_00_00_metal.png
 #	Remix roughness constant 0.365 - off, Q2RTX roughness = the maps: texture_roughness 0
 #	roughness_override 0.365
 #	Remix metallic constant 0.865 - off, Q2RTX shades a metal map only:
@@ -414,6 +417,7 @@ progs/v_nail_00_00:
 #	texture_metallic materialDev/remix/solid*M1.wal + metalness_factor 0.9
 	texture_emissive materialDev/remix/TextureDev2/NailGun_emissive.png
 	emissive_factor 2.5
+	texture_metallic materialDev/progs/v_nail_00_00_metal.png
 
 # Remix mat_3B9E76392EA29832: progs/v_rock2_00_00.lmp
 progs/v_rock2_00_00:
@@ -445,6 +449,8 @@ progs/v_shot2_00_00:
 #	texture_metallic materialDev/remix/solid*M1.wal + metalness_factor 1
 	texture_emissive materialDev/remix/TextureDev4/SuperShotgunSkin_emissive.png
 	emissive_factor 2.5
+	texture_metallic materialDev/progs/v_shot2_00_00_metal.png
+	texture_roughness materialDev/progs/v_shot2_00_00_rough.png
 
 # Remix mat_D8C61EAB8924A523: progs/v_shot_00_00.lmp
 progs/v_shot_00_00:
@@ -1255,6 +1261,7 @@ textures/q1/comp1_3:
 # Remix mat_CE416BE1CE9C38E3: comp1_4
 textures/q1/comp1_4:
 	texture_base materialDev/textures/q1/comp1_4.png
+	specular_factor 0
 #	Remix's default roughness 0.5 - off (this material did not set one):
 #	texture_roughness 0
 #	roughness_override 0.5
@@ -1743,6 +1750,7 @@ textures/q1/m5_5:
 	roughness_override -1
 	texture_metallic materialDev/textures/q1/m5_5_metal.png
 	metalness_factor 0.43
+	texture_normals materialDev/textures/q1/m5_5_n.png
 
 # Remix mat_27B18CA6EB06B3FD: med100
 textures/q1/med100:
@@ -2401,6 +2409,8 @@ textures/q1/switch_1:
 	texture_emissive materialDev/remix/TextureDev/RedChevron_Emissive.png
 	is_light 1
 	emissive_factor 1.25
+	default_radiance 1
+	light_factor 1
 
 # Remix mat_C59A3AFBF84AF3AD: tech01_1
 textures/q1/tech01_1:
@@ -2667,6 +2677,9 @@ textures/q1/twall1_1:
 # Remix mat_8B897CD27359F742: twall2_1
 textures/q1/twall2_1:
 	texture_base materialDev/textures/q1/twall2_1.png
+	specular_factor 0
+	emissive_factor 2
+	texture_emissive materialDev/textures/q1/twall2_1_emit.png
 #	Remix's default roughness 0.5 - off (this material did not set one):
 #	texture_roughness 0
 #	roughness_override 0.5
@@ -2838,14 +2851,18 @@ textures/q1/wgrnd1_6:
 
 # Remix mat_5CE0A2056EFCA876: window01_2
 textures/q1/window01_2:
-	texture_base materialDev/textures/q1/window01_2.png
-	texture_normals materialDev/remix/TextureDev4/BlueGlassWindow_normal.png
+	texture_base materialDev/textures/q1/window01_2_a.png
+	texture_normals materialDev/textures/q1/window01_2_n.png
 	metalness_factor 0
 #	Remix roughness constant 0 - off, Q2RTX roughness = the maps: texture_roughness 0
-#	roughness_override 0
-	texture_emissive materialDev/remix/TextureDev4/BlueGlassWindow.png
+	roughness_override 0
+	texture_emissive 0
 	is_light 1
-	emissive_factor 0.25
+	emissive_factor 0.5
+	kind REGULAR
+	stained_glass 1
+	stained_light_height 1
+	stained_light_sun 1
 
 # Remix mat_972E23E3F855EABE: window01_3
 textures/q1/window01_3:
@@ -2857,6 +2874,10 @@ textures/q1/window01_3:
 	texture_emissive materialDev/remix/TextureDev4/PurpleOrangeWindow.png
 	is_light 1
 	emissive_factor 0.25
+	kind REGULAR
+	stained_glass 1
+	stained_light_height 1
+	stained_light_sun 1
 
 # Remix mat_EAE363504377822C: window02_1
 textures/q1/window02_1:
@@ -2974,11 +2995,15 @@ textures/q1/wizmet1_8:
 textures/q1/wizwin1_2:
 	texture_base materialDev/textures/q1/wizwin1_2.png
 #	Remix's default roughness 0.5 - off (this material did not set one):
-#	texture_roughness 0
+	texture_roughness materialDev/textures/q1/wizwin1_2_rough.png
 #	roughness_override 0.5
-	texture_emissive materialDev/remix/TextureDev4/BlueSquareWindow_emissive.png
+	texture_emissive 0
 	is_light 1
 	emissive_factor 0.75
+	kind REGULAR
+	stained_glass 1
+	texture_stained_mask materialDev/textures/q1/wizwin1_2_glassmask.png
+	stained_light_sun 1
 
 # Remix mat_32DCD834D5541E07: wizwood1_3
 textures/q1/wizwood1_3:
@@ -12983,9 +13008,10 @@ textures/q1/sfloor4_4:
 #	texture_roughness materialDev/textures/q1/sfloor4_4_rough.png
 #	texture_metallic materialDev/textures/q1/sfloor4_4_metal.png
 #	texture_height materialDev/textures/q1/sfloor4_4_height.png
-#	texture_emissive materialDev/textures/q1/sfloor4_4_light.png
+	texture_emissive materialDev/textures/q1/sfloor4_4_emit.png
 #	66.0% of it glows (Quake's fullbright colours)
 	is_light 1
+	emissive_factor 2
 
 textures/q1/sfloor4_6:
 	texture_base materialDev/textures/q1/sfloor4_6.png
@@ -13670,9 +13696,11 @@ textures/q1/tech03_2:
 #	texture_roughness materialDev/textures/q1/tech03_2_rough.png
 #	texture_metallic materialDev/textures/q1/tech03_2_metal.png
 #	texture_height materialDev/textures/q1/tech03_2_height.png
-#	texture_emissive materialDev/textures/q1/tech03_2_light.png
+	texture_emissive materialDev/textures/q1/tech03_2_emit.png
 #	2.6% of it glows (Quake's fullbright colours)
 	is_light 1
+	emissive_factor 2
+	default_radiance 2
 
 textures/q1/tech04_1b:
 	texture_base materialDev/textures/q1/tech04_1b.png
@@ -19669,8 +19697,8 @@ progs/rubble_mdl_01_00:
 progs/s_spike_mdl_00_00:
 	texture_base materialDev/progs/s_spike_mdl_00_00.png
 #	texture_normals materialDev/progs/s_spike_mdl_00_00_n.png
-#	texture_roughness materialDev/progs/s_spike_mdl_00_00_rough.png
-#	texture_metallic materialDev/progs/s_spike_mdl_00_00_metal.png
+	texture_roughness materialDev/progs/s_spike_mdl_00_00_rough.png
+	texture_metallic materialDev/progs/s_spike_mdl_00_00_metal.png
 #	texture_height materialDev/progs/s_spike_mdl_00_00_height.png
 
 progs/s_wrath_mdl_00_00:

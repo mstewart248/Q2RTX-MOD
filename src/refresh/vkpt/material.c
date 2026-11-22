@@ -479,6 +479,7 @@ enum AttributeIndex
 	MAT_STAINED_LIGHT_SIZE,
 	MAT_STAINED_SCATTER,
 	MAT_STAINED_SPREAD,
+	MAT_TEXTURE_STAINED_MASK,
 };
 enum AttributeType { ATTR_BOOL, ATTR_FLOAT, ATTR_STRING, ATTR_INT };
 
@@ -531,6 +532,9 @@ static struct MaterialAttribute {
 	{MAT_STAINED_LIGHT_SIZE, "stained_light_size", ATTR_FLOAT},
 	{MAT_STAINED_SCATTER, "stained_scatter", ATTR_FLOAT},
 	{MAT_STAINED_SPREAD, "stained_spread", ATTR_FLOAT},
+	// which texels of the stained glass are glass (white) and which are an
+	// ordinary surface (black) - material.h image_stained_mask (Matt, 2026-11-22)
+	{MAT_TEXTURE_STAINED_MASK, "texture_stained_mask", ATTR_STRING},
 };
 
 static int c_NumAttributes = sizeof(c_Attributes) / sizeof(struct MaterialAttribute);
@@ -565,6 +569,7 @@ static bool is_texture_attribute(enum AttributeIndex index)
 	{
 	case MAT_TEXTURE_BASE: case MAT_TEXTURE_NORMALS: case MAT_TEXTURE_EMISSIVE: case MAT_TEXTURE_MASK:
 	case MAT_TEXTURE_ROUGHNESS: case MAT_TEXTURE_METALLIC: case MAT_TEXTURE_HEIGHT:
+	case MAT_TEXTURE_STAINED_MASK:
 		return true;
 	default:
 		return false;
@@ -880,6 +885,14 @@ static int set_material_attribute(pbr_material_t* mat, const char* attribute, co
 	case MAT_TEXTURE_HEIGHT:
 		set_material_texture(mat, svalue, mat->filename_height, &mat->image_height, IF_NONE, !sourceFile);
 		break;
+	case MAT_TEXTURE_STAINED_MASK:
+		// data (0 or 1 per texel), never sRGB. The look and the light through
+		// the glass follow it live (the material table, every frame); the fill
+		// colour and the window light's box are measured through it when the
+		// map loads (bsp_mesh.c). No RELOAD_MAP: `mat author` sets this on its
+		// first stroke, and a map reload there would be a long hitch mid-paint.
+		set_material_texture(mat, svalue, mat->filename_stained_mask, &mat->image_stained_mask, IF_NONE, !sourceFile);
+		break;
 	case MAT_LIGHT_STYLES:
 		mat->light_styles = bvalue;
 		if (reload_flags) *reload_flags |= RELOAD_MAP;
@@ -1154,6 +1167,7 @@ static void save_materials(const char* file_name, bool save_all, bool force)
 		WRITE_TEXTURE(MAT_TEXTURE_ROUGHNESS, filename_roughness, "texture_roughness");
 		WRITE_TEXTURE(MAT_TEXTURE_METALLIC, filename_metallic, "texture_metallic");
 		WRITE_TEXTURE(MAT_TEXTURE_HEIGHT, filename_height, "texture_height");
+		WRITE_TEXTURE(MAT_TEXTURE_STAINED_MASK, filename_stained_mask, "texture_stained_mask");
 
 #undef WRITE_TEXTURE
 		
@@ -1400,6 +1414,7 @@ static bool format_attribute_value(const pbr_material_t* mat, enum AttributeInde
 	case MAT_TEXTURE_ROUGHNESS:  TEXTURE_VALUE(filename_roughness);
 	case MAT_TEXTURE_METALLIC:   TEXTURE_VALUE(filename_metallic);
 	case MAT_TEXTURE_HEIGHT:     TEXTURE_VALUE(filename_height);
+	case MAT_TEXTURE_STAINED_MASK: TEXTURE_VALUE(filename_stained_mask);
 	case MAT_KIND: {
 		const char* kind = getMaterialKindName(mat->flags);
 		if (!kind)
@@ -2528,6 +2543,7 @@ static void material_inherit_instance(pbr_material_t* mat, const pbr_material_t*
 	INHERIT_TEXTURE(MAT_TEXTURE_METALLIC,  image_metallic,  filename_metallic);
 	INHERIT_TEXTURE(MAT_TEXTURE_HEIGHT,    image_height,    filename_height);
 	INHERIT_TEXTURE(MAT_TEXTURE_MASK,      image_mask,      filename_mask);
+	INHERIT_TEXTURE(MAT_TEXTURE_STAINED_MASK, image_stained_mask, filename_stained_mask);
 
 	INHERIT(MAT_SYNTH_EMISSIVE, synth_emissive);
 	INHERIT(MAT_EMISSIVE_THRESHOLD, emissive_threshold);
@@ -3384,6 +3400,14 @@ pbr_material_t* MAT_Find(const char* name, imagetype_t type, imageflags_t flags)
 			}
 		}
 
+		if (mat->filename_stained_mask[0] && !mat->image_stained_mask) {
+			load_material_image(&mat->image_stained_mask, mat->filename_stained_mask, mat, type, flags);
+			if (mat->image_stained_mask == R_NOTEXTURE) {
+				Com_DPrintf("Texture '%s' specified in material '%s' could not be found.\n", mat->filename_stained_mask, mat_name_no_ext);
+				mat->image_stained_mask = NULL;
+			}
+		}
+
 		if (mat->filename_emissive[0] && !mat->image_emissive) {
 			load_material_image(&mat->image_emissive, mat->filename_emissive, mat, type, flags | IF_SRGB);
 			if (mat->image_emissive == R_NOTEXTURE) {
@@ -3665,6 +3689,7 @@ void MAT_UpdateRegistration(pbr_material_t * mat)
 	if (mat->image_metallic) mat->image_metallic->registration_sequence = registration_sequence;
 	if (mat->image_height) mat->image_height->registration_sequence = registration_sequence;
 	if (mat->image_mask) mat->image_mask->registration_sequence = registration_sequence;
+	if (mat->image_stained_mask) mat->image_stained_mask->registration_sequence = registration_sequence;
 	vkpt_q3_touch_program(mat);
 }
 
@@ -3792,6 +3817,8 @@ void MAT_Print(pbr_material_t const * mat)
 	PRINT_TEXTURE("texture_roughness", filename_roughness, image_roughness);
 	PRINT_TEXTURE("texture_metallic", filename_metallic, image_metallic);
 	PRINT_TEXTURE("texture_height", filename_height, image_height);
+	if (mat->stained_glass || mat->filename_stained_mask[0])
+		PRINT_TEXTURE("texture_stained_mask", filename_stained_mask, image_stained_mask);
 #undef PRINT_TEXTURE
 	Com_Printf("    bump_scale %f\n", mat->bump_scale);
 	Com_Printf("    displace_in %f\n", mat->displace_in);
@@ -4083,6 +4110,7 @@ static void material_reapply_definition(pbr_material_t* mat, const pbr_material_
 	RELOAD_SKIN_TEXTURE(MAT_TEXTURE_HEIGHT,    image_height,    filename_height,    "_height",   IF_NONE);
 	RELOAD_SKIN_TEXTURE(MAT_TEXTURE_EMISSIVE,  image_emissive,  filename_emissive,  "_light",    IF_SRGB);
 	RELOAD_TEXTURE(MAT_TEXTURE_MASK,           image_mask,      filename_mask,                   IF_NONE);
+	RELOAD_TEXTURE(MAT_TEXTURE_STAINED_MASK,   image_stained_mask, filename_stained_mask,        IF_NONE);
 
 #undef RELOAD_SKIN_TEXTURE
 #undef RELOAD_TEXTURE
@@ -4144,7 +4172,7 @@ static void material_refresh_images(pbr_material_t* mat)
 {
 	image_t* images[] = {
 		mat->image_base, mat->image_normals, mat->image_roughness, mat->image_metallic,
-		mat->image_height, mat->image_emissive, mat->image_mask,
+		mat->image_height, mat->image_emissive, mat->image_mask, mat->image_stained_mask,
 	};
 
 	for (int i = 0; i < q_countof(images); i++)
@@ -4168,10 +4196,11 @@ static void material_refresh_images(pbr_material_t* mat)
    the file that was edited, not a material that is drawn, or not seen as
    changed. */
 static const char* const map_slot_names[] = {
-	"base", "normals", "roughness", "metallic", "height", "emissive", "mask",
+	"base", "normals", "roughness", "metallic", "height", "emissive", "mask", "glassmask",
 };
+#define NUM_MAP_SLOTS ((int)q_countof(map_slot_names))
 
-static void material_map_images(const pbr_material_t* mat, image_t* out[7], const char* names[7])
+static void material_map_images(const pbr_material_t* mat, image_t* out[NUM_MAP_SLOTS], const char* names[NUM_MAP_SLOTS])
 {
 	out[0] = mat->image_base;      names[0] = mat->filename_base;
 	out[1] = mat->image_normals;   names[1] = mat->filename_normals;
@@ -4180,6 +4209,7 @@ static void material_map_images(const pbr_material_t* mat, image_t* out[7], cons
 	out[4] = mat->image_height;    names[4] = mat->filename_height;
 	out[5] = mat->image_emissive;  names[5] = mat->filename_emissive;
 	out[6] = mat->image_mask;      names[6] = mat->filename_mask;
+	out[7] = mat->image_stained_mask; names[7] = mat->filename_stained_mask;
 }
 
 int MAT_ImageUsers(const image_t* image, char* out, size_t size)
@@ -4193,10 +4223,10 @@ int MAT_ImageUsers(const image_t* image, char* out, size_t size)
 		if (!mat->registration_sequence)
 			continue;
 
-		image_t* images[7];
-		const char* names[7];
+		image_t* images[NUM_MAP_SLOTS];
+		const char* names[NUM_MAP_SLOTS];
 		material_map_images(mat, images, names);
-		for (int k = 0; k < 7; k++)
+		for (int k = 0; k < NUM_MAP_SLOTS; k++)
 		{
 			if (images[k] != image)
 				continue;
@@ -4232,10 +4262,10 @@ void MAT_ReportImages(const char* filter)
 		Com_Printf("  %s (material %u%s)\n", mat->name, i,
 		           mat->registration_sequence == registration_sequence ? "" : ", NOT registered for this level");
 
-		image_t* images[7];
-		const char* names[7];
+		image_t* images[NUM_MAP_SLOTS];
+		const char* names[NUM_MAP_SLOTS];
 		material_map_images(mat, images, names);
-		for (int k = 0; k < 7; k++)
+		for (int k = 0; k < NUM_MAP_SLOTS; k++)
 		{
 			const image_t* img = images[k];
 			if (!img && !names[k][0])
@@ -4412,6 +4442,7 @@ static void write_instance_stub_values(qhandle_t file, const pbr_material_t* mat
 	if (!synthesized)
 		STUB_TEXTURE("texture_emissive", filename_emissive);
 	STUB_TEXTURE("texture_mask", filename_mask);
+	STUB_TEXTURE("texture_stained_mask", filename_stained_mask);
 
 #undef STUB_TEXTURE
 
@@ -4587,7 +4618,7 @@ static void material_create_instance(const pbr_material_t* mat)
 #define MAT_PREVIEW_MS 8000
 
 enum { PREVIEW_ALBEDO, PREVIEW_NORMALS, PREVIEW_EMISSIVE, PREVIEW_MASK,
-	PREVIEW_ROUGHNESS, PREVIEW_METALLIC, PREVIEW_HEIGHT };
+	PREVIEW_ROUGHNESS, PREVIEW_METALLIC, PREVIEW_HEIGHT, PREVIEW_STAINED_MASK };
 
 static const struct {
 	const char *word;
@@ -4598,10 +4629,11 @@ static const struct {
 	{ "emissive", PREVIEW_EMISSIVE }, { "mask", PREVIEW_MASK },
 	{ "roughness", PREVIEW_ROUGHNESS }, { "metallic", PREVIEW_METALLIC },
 	{ "metalness", PREVIEW_METALLIC }, { "height", PREVIEW_HEIGHT },
+	{ "glassmask", PREVIEW_STAINED_MASK }, { "stained_mask", PREVIEW_STAINED_MASK },
 };
 
 static const char *const mat_preview_names[] = {
-	"albedo", "normals", "emissive", "mask", "roughness", "metallic", "height"
+	"albedo", "normals", "emissive", "mask", "roughness", "metallic", "height", "glassmask"
 };
 
 static struct {
@@ -4636,6 +4668,7 @@ static void mat_preview_set(pbr_material_t const *mat, int map)
 	case PREVIEW_ROUGHNESS: image = mat->image_roughness; file = mat->filename_roughness; break;
 	case PREVIEW_METALLIC:  image = mat->image_metallic;  file = mat->filename_metallic; break;
 	case PREVIEW_HEIGHT:    image = mat->image_height;    file = mat->filename_height; break;
+	case PREVIEW_STAINED_MASK: image = mat->image_stained_mask; file = mat->filename_stained_mask; break;
 	}
 
 	memset(&mat_preview, 0, sizeof(mat_preview));
@@ -5491,10 +5524,12 @@ static void material_complete_from(genctx_t* ctx, int argnum, int first)
 			Prompt_AddMatch(ctx, "normals");
 			Prompt_AddMatch(ctx, "emissive");
 			Prompt_AddMatch(ctx, "height");
+			Prompt_AddMatch(ctx, "glass");
 			Prompt_AddMatch(ctx, "stage");
 			Prompt_AddMatch(ctx, "free");
 			Prompt_AddMatch(ctx, "line");
 			Prompt_AddMatch(ctx, "rect");
+			Prompt_AddMatch(ctx, "light");
 		}
 		else if (strcmp(sub, "print") == 0 || strcmp(sub, "view") == 0)
 		{

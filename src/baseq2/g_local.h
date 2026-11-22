@@ -583,6 +583,7 @@ typedef struct {
     bool        q1map;              // a Quake 1 map (sv_map_q1) - see g_q1.c
     int         q3_weapons;         // bot match: 0 Quake II's guns, 1 Quake III's, 2 by player model (g_q3weap.c)
     bool        q1_weapons;         // bot match: Quake's guns for everyone (g_q1weap.c, g_q3_weapons 3)
+    bool        q1_by_model;        // bot match by player model: Quake's guns for Quake's Ranger ("quake1/...")
     bool        q3_physics;         // bot match: Quake III's movement and knockback (CS_Q3RULES)
     char        *goals;             // rerelease N64: worldspawn "goals", tab-separated objectives
     int         goal_num;           // index of the current one, advanced by target_goal
@@ -2091,6 +2092,9 @@ const char *Q3W_Obituary(int mod, bool self_kill, const char **message2, edict_t
 // g_q1weap.c - Quake's weapons in the bot match (level.q1_weapons)
 //
 bool Q1W_Available(void);
+bool Q1W_ClientQ1(const gclient_t *client);
+bool Q1W_PlayerQ1(const edict_t *ent);
+gitem_t *Q1W_ItemFor(gitem_t *item, const edict_t *player);
 gitem_t *Q1W_FindItem(const char *name);
 const char *Q1W_SpawnClassname(const char *classname);
 void Q1W_ItemModel(edict_t *ent);

@@ -679,6 +679,9 @@ static void check_player(const char *name)
     // server to download, and asking for it would only fail, slowly
     if (CL_Q3PlayersEnabled() && Q3P_ModelExists(model))
         return;
+    // nor of Quake's Ranger (q1player.c), from the Quake paks
+    if (Q1P_ModelExists(model))
+        return;
 
     // model
     len = Q_concat(fn, sizeof(fn), "players/", model, "/tris.md2");

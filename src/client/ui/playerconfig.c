@@ -45,6 +45,8 @@ typedef struct {
     qhandle_t   q3weapon;
     bool        q3gesture;
 
+    bool        q1;             // Quake's Ranger (q1player.c): entities[0], his frames
+
     // An invisible bounce card above and in front of the model (path tracer
     // only): a white quad drawn as a viewer model, so the camera never sees it
     // but bounce and shadow rays do. It sends some of the footlight back down
@@ -145,9 +147,22 @@ static void Preview_Load(playerPreview_t *pv, const char *model, const char *ski
     q3player_t *was_q3 = pv->q3.q3;
 
     pv->num_actors = 0;
+    pv->q1 = false;
 
     pv->card.model = CL_PathTraced()
         ? R_RegisterModel("models/rtx/bounce_card/tris.md2") : 0;
+
+    // Quake's Ranger: one model in its own skin, his gun in his hands
+    if (Q1P_ModelExists(model)) {
+        memset(&pv->q3, 0, sizeof(pv->q3));
+        pv->entities[0].model = R_RegisterModel(Q1P_MODEL_PATH);
+        pv->entities[0].skin = 0;
+        if (pv->entities[0].model) {
+            pv->num_actors = 1;
+            pv->q1 = true;
+        }
+        return;
+    }
 
     // a Quake III model, which holds the Quake II male's gun
     memset(&pv->q3, 0, sizeof(pv->q3));
@@ -197,6 +212,9 @@ static void Preview_RunFrame(playerPreview_t *pv)
         }
 
         frame = (pv->time / 120) % 40;
+        // Quake's Ranger stands in his own frames (q1player.c)
+        if (pv->q1)
+            frame = Q1P_Frame(frame, Q1P_GUN_SHOTGUN);
 
         for (i = 0; i < pv->num_actors; i++) {
             pv->entities[i].oldframe = pv->entities[i].frame;
@@ -450,27 +468,29 @@ static void Grid_AddRow(playerGrid_t *g, int first, int count, const char *headi
 // there are both
 static void Grid_BuildRows(playerGrid_t *g)
 {
-    int n = uis.numPmCells, q3 = uis.pmQ3First, i;
-    bool both = q3 > 0 && q3 < n;
+    static const char *const headings[3] = { "QUAKE", "QUAKE II", "QUAKE III ARENA" };
+    const int n = uis.numPmCells;
+    // each game's cells: Quake's, Quake II's, Quake III's (playermodels.c)
+    const int start[4] = { 0, uis.pmQ2First, uis.pmQ3First, n };
+    int i, k, games = 0;
 
-    if (g->maxrows < n / g->cols + 6) {
+    for (k = 0; k < 3; k++)
+        games += start[k + 1] > start[k];
+
+    if (g->maxrows < n / g->cols + 8) {
         Z_Free(g->rows);
-        g->maxrows = n / g->cols + 6;
+        g->maxrows = n / g->cols + 8;
         g->rows = UI_Malloc(sizeof(g->rows[0]) * g->maxrows);
     }
     g->numrows = 0;
 
-    if (q3 > 0) {
-        if (both)
-            Grid_AddRow(g, 0, 0, "QUAKE II");
-        for (i = 0; i < q3; i += g->cols)
-            Grid_AddRow(g, i, min(g->cols, q3 - i), NULL);
-    }
-    if (q3 < n) {
-        if (both)
-            Grid_AddRow(g, q3, 0, "QUAKE III ARENA");
-        for (i = q3; i < n; i += g->cols)
-            Grid_AddRow(g, i, min(g->cols, n - i), NULL);
+    for (k = 0; k < 3; k++) {
+        if (start[k + 1] <= start[k])
+            continue;
+        if (games > 1)
+            Grid_AddRow(g, start[k], 0, headings[k]);
+        for (i = start[k]; i < start[k + 1]; i += g->cols)
+            Grid_AddRow(g, i, min(g->cols, start[k + 1] - i), NULL);
     }
 }
 

@@ -88,6 +88,7 @@ static const float c_black[4]   = { 0, 0, 0, 1 };
 static const float c_red[4]     = { 1, 0, 0, 1 };
 static const float c_orange[4]  = { 1, 0.43f, 0, 1 };
 static const float c_yellow[4]  = { 1, 1, 0, 1 };
+static const float c_md_grey[4] = { 0.5f, 0.5f, 0.5f, 1 };   // Quake III's colorMdGrey
 
 static const char *const sp_skill_names[SP_NUM_SKILLS] = {
     "I Can Win", "Bring It On", "Hurt Me Plenty", "Hardcore", "NIGHTMARE!"
@@ -1313,7 +1314,11 @@ static void SP_Level_Draw(menuFrameWork_t *self)
     if (sp_level.set < SP_MaxTier())
         SP_Button(p, ID_RIGHTARROW, 640 - 18, 64, -16, 114, "menu/art/narrow_0.tga", "menu/art/narrow_1.tga");
 
-    // the levelshots
+    /* the levelshots. A tier not open yet has them darkened, so they read as
+       not selectable (Matt, 11-21) - Quake III greyed them the same way
+       (ui_splevel.c: QMF_GRAYED, drawn in colorMdGrey). */
+    if (denied)
+        SP_SetColor(c_md_grey, 1);
     for (n = 0; n < numMaps; n++) {
         sp_arena_t *a = SP_ArenaInSet(sp_level.set, n);
 
@@ -1323,6 +1328,8 @@ static void SP_Level_Draw(menuFrameWork_t *self)
         if (!denied && a)
             SP_AddHot(p, ID_MAP0 + n, x, y, 128, 96);
     }
+    if (denied)
+        R_ClearColor();
 
     // the player's medals, either side of the head, and their counts
     y = 340;

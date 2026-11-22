@@ -786,6 +786,44 @@ void G_PlayerNotifyGoal(edict_t *player)
     }
 }
 
+/*
+===============
+G_SetQ3ScoreStats
+
+Quake III's HUD (the client's hud_q3.c) has two score boxes at the lower right
+in a free-for-all: the leader's score and the second place's, the player's own
+highlighted in whichever it is (cg_draw.c CG_DrawScores). The player's own is
+STAT_FRAGS; this adds the best of everyone else's, and the fraglimit. Not in
+team games - and never in CTF, whose stats these slots are.
+===============
+*/
+static void G_SetQ3ScoreStats(edict_t *ent)
+{
+    short   *stats = ent->client->ps.stats;
+    int     i, best = 0;
+    bool    any = false;
+
+    // nothing written outside a free-for-all: CTF fills these slots itself
+    if (!deathmatch->value || G_TeamPlay() || ((int)dmflags->value & (DF_MODELTEAMS | DF_SKINTEAMS)))
+        return;
+
+    for (i = 0; i < game.maxclients; i++) {
+        const edict_t *e = g_edicts + 1 + i;
+
+        if (e == ent || !e->inuse || !e->client || !e->client->pers.connected)
+            continue;
+        if (e->client->pers.spectator)
+            continue;
+        if (!any || e->client->resp.score > best)
+            best = e->client->resp.score;
+        any = true;
+    }
+
+    stats[STAT_Q3_SCORES] = STAT_Q3_SCORES_TAG | (any ? STAT_Q3_SCORES_OTHER : 0);
+    stats[STAT_Q3_OTHER_SCORE] = best;
+    stats[STAT_Q3_FRAGLIMIT] = fraglimit->value > 0 ? (int)fraglimit->value : 0;
+}
+
 void G_SetStats(edict_t *ent)
 {
     gitem_t     *item;
@@ -913,6 +951,7 @@ void G_SetStats(edict_t *ent)
     // frags
     //
     ent->client->ps.stats[STAT_FRAGS] = ent->client->resp.score;
+    G_SetQ3ScoreStats(ent);
 
     //
     // help icon / current weapon if not shown

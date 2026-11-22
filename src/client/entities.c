@@ -640,6 +640,8 @@ static void CL_AddPacketEntities(void)
         // a Quake III player model (q3player.c): drawn as its parts and the
         // gun in its hand instead of the main model and modelindex2
         const clientinfo_t  *q3ci = NULL;
+        // Quake's Ranger (q1player.c): his own frames, and his gun is in the model
+        const clientinfo_t  *q1ci = NULL;
         entity_t            q3parts[Q3P_NUM_PARTS];
         int                 q3n = 0, q3gun = -1;
 
@@ -880,12 +882,25 @@ static void CL_AddPacketEntities(void)
                     // its skin is a skinnum on each part (Q3P_PatchMD3);
                     // there is no disguise skin to wear
                     q3ci = ci;
+                } else if (ci->q1 && ci->model) {
+                    // the Ranger in his own skin, Quake II's frames as Quake's,
+                    // his attack by the gun the server says he holds
+                    q1pgun_t gun = Q1P_GUN_SHOTGUN;
+
+                    if (s1->modelindex2 == 255) {
+                        i = (s1->skinnum >> 8) & 0xff;
+                        if (i < cl.numWeaponModels)
+                            gun = Q1P_GunOfVWep(cl.weaponModels[i]);
+                    }
+                    q1ci = ci;
+                    ent.frame = Q1P_Frame(ent.frame, gun);
+                    ent.oldframe = Q1P_Frame(ent.oldframe, gun);
                 } else if (!ent.skin || !ent.model) {
                     ent.skin = cl.baseclientinfo.skin;
                     ent.model = cl.baseclientinfo.model;
                     ci = &cl.baseclientinfo;
                 }
-                if ((renderfx & RF_USE_DISGUISE) && !q3ci) {
+                if ((renderfx & RF_USE_DISGUISE) && !q3ci && !q1ci) {
                     char buffer[MAX_QPATH];
 
                     Q_concat(buffer, sizeof(buffer), "players/", ci->model_name, "/disguise.pcx");
@@ -1130,6 +1145,9 @@ static void CL_AddPacketEntities(void)
             // player's flash comes off it (CL_ClientGunMuzzle)
             if (q3gun >= 0)
                 CL_RecordClientGun(s1->number, &q3parts[q3gun]);
+        } else if (s1->modelindex2 == 255 && q1ci) {
+            // the Ranger's gun is part of his model: nothing to add, and his
+            // flash stays at the fixed point (no barrel to find)
         } else if (s1->modelindex2 && !q3item) {
             if (s1->modelindex2 == 255) {
                 // custom weapon

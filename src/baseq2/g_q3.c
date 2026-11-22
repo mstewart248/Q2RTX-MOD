@@ -95,6 +95,7 @@ void Q3_LevelRules(void)
 {
     level.q3_weapons = 0;
     level.q1_weapons = false;
+    level.q1_by_model = false;
     level.q3_physics = false;
 
     if (!deathmatch->value)
@@ -113,6 +114,10 @@ void Q3_LevelRules(void)
 
     // a campaign arena is Quake III's game whatever the bot match says (g_sp.c)
     SP_LevelRules();
+
+    // 2, by player model: Quake's Ranger plays with Quake's guns (g_q1weap.c
+    // Q1W_ClientQ1), with Quake's data
+    level.q1_by_model = level.q3_weapons == 2 && !level.q1_weapons && Q1W_Available();
 }
 
 // Quake III's health and armor amounts and its Battle Suit: the bot match's

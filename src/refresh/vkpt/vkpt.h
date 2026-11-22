@@ -1822,6 +1822,7 @@ void IMG_PixelsEdited(image_t *image);
 // 'mat author' (mat_author.c): painting a material's maps in photo mode
 bool MAT_AuthorActive(void);
 float MAT_AuthorSparseRate(void);                          // photo mode's fraction of pixels lit a frame, 0 = all
+bool MAT_AuthorCameraLight(const refdef_t *fd, dlight_t *light); // the flashlight at the free camera, if on
 bool MAT_AuthorKey(unsigned key, bool down);              // R_InterceptKey_RTX first
 void MAT_AuthorCursorMove(float dx, float dy);             // the mouse, when it isn't looking
 bool MAT_AuthorMouseOverPanel(void);                       // the right button is panning the map view

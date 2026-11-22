@@ -277,7 +277,7 @@ gitem_t *Q3W_FindItem(edict_t *ent, const char *name)
     bool        q3 = Q3W_PlayerQ3(ent);
     int         i;
 
-    if (level.q1_weapons)
+    if (Q1W_PlayerQ1(ent))
         return Q1W_FindItem(name);     // Quake's guns (g_q1weap.c)
     if (!level.q3_weapons)
         return FindItem((char *)name);
@@ -311,6 +311,10 @@ a gun of the other game is its counterpart.
 gitem_t *Q3W_ItemFor(const edict_t *item_ent, const edict_t *player)
 {
     gitem_t *item = item_ent->item;
+
+    // Quake's Ranger, or a Quake gun one dropped (g_q1weap.c)
+    if (level.q1_by_model && item && (Q1W_PlayerQ1(player) || (item->flags & IT_Q1)))
+        return Q1W_ItemFor(item, player);
 
     if (item_ent->q3_alt_item && item &&
         !!(item->flags & IT_Q3) != Q3W_PlayerQ3(player))

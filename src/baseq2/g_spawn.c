@@ -1761,7 +1761,8 @@ void SP_worldspawn(edict_t *ent)
     // the bot match's Quake III weapons and physics: the engine's pmove and
     // the clients' prediction, view weapons and effects all read this
     // ('3': Quake's guns, g_q1weap.c)
-    gi.configstring(CS_Q3RULES, va("%d%d", level.q1_weapons ? 3 : level.q3_weapons, level.q3_physics ? 1 : 0));
+    gi.configstring(CS_Q3RULES, va("%d%d%d", level.q1_weapons ? 3 : level.q3_weapons, level.q3_physics ? 1 : 0,
+                                   level.q1_by_model ? 1 : 0));
 
     // status bar program
     if (G_CTF())

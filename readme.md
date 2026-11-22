@@ -14,7 +14,9 @@ Q2RTX cannot load at all. Overdrive does both: it is a modern DLSS integration,
 and it plays the remaster's campaigns with real path-traced lighting instead of
 the remaster's raster renderer. With your own copy of **Quake III Arena**, it
 plays that too: [its campaign, arenas, weapons and bots](#quake-iii-arena-support),
-path traced in the same engine.
+path traced in the same engine. And with the **Quake** rerelease's paks, it
+plays [Quake's campaigns and its expansions](#quake-support), each running its
+own QuakeC.
 
 Lineage: **Quake II RTX** builds on [Q2VKPT](http://brechpunkt.de/q2vkpt), which
 builds on [Q2PRO](https://skuller.net/q2pro/), which is a modernised *Quake II*.
@@ -97,6 +99,12 @@ existing Quake II RTX install.
   path traced: its campaign with the podium and medals, its arenas and CTF
   maps in bot match, its weapons, movement, player models and bots (Quake
   III's own bot AI), and its shaders, curved surfaces, skies and fog.
+* **[Quake](#quake-support)** from the rerelease's paks, path traced: the
+  original campaign and all its expansions, each running its own `progs.dat`
+  in a QuakeC virtual machine, with Quake's status bar, demos and saves; its
+  deathmatch and CTF maps in bot match; its guns, and its Ranger as a player
+  model; and its skies, sun, fog, teleporter gates you can see through, and
+  [stained glass](#stained-glass) windows that throw their colours into the room.
 * **[Physical blood and gore](#gore-and-physical-blood)**: droplets are real,
   lit geometry that splats, runs down walls and pools.
 * **[Simulated fire and smoke](#simulated-fire-and-smoke-nvidia-flow)** with
@@ -110,7 +118,8 @@ existing Quake II RTX install.
   depth of field, during play or demo playback.
 * **[A CPU path tracer benchmark](#cpu-path-tracer-benchmark)** (`cpu_bench`).
 * **Tools for modders**: [in-game light placement](#the-light-placement-system),
-  an [expanded material system](#the-material-system) with an
+  an [expanded material system](#the-material-system) (with
+  [stained glass](#stained-glass) lit from behind) and an
   [in-game material painter](#painting-material-maps-mat-author) that paints
   roughness, metallic, normal, emissive and height maps straight onto the 3D surfaces,
   [per-map settings](#per-map-settings-mapcvar), and
@@ -979,6 +988,97 @@ Quake III maps use the same tools as Quake II's, from `baseq3`:
   and `baseq3/maps/lights/<map>.cfg` for
   [placed lights](#the-light-placement-system).
 
+## Quake support
+
+![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/Q1.png)
+
+Quake's campaigns and maps run inside the Quake II engine, path traced like
+everything else. Nothing from Quake ships with this project. Copy the episode
+folders from your own install of the Quake rerelease into a folder named `id1`
+next to the exe: `id1`, and any of `hipnotic`, `rogue`, `dopa`, `mg1`, `mg3`
+and `ctf`, each with its `pak0.pak` (so the first is `id1/id1/pak0.pak`). The
+game finds them at start-up (`fs_quake1` counts the episodes and the console
+prints *Quake 1 data: N episode(s)*), and the Quake options below appear in the
+menus. Without them, none of them show, and the project's own `id1` files stay
+out of Quake II's way.
+
+Quake's maps are renamed so they never collide with Quake II's: `q1/<map>` for
+the original game (`map q1/e1m1`) and `q1/<episode>/<map>` for an add-on
+(`map q1/mg1/hub`).
+
+### Single player
+
+**Single player** → **quake** lists the campaigns you have: *Quake*, *Scourge
+of Armagon*, *Dissolution of Eternity*, *Dimension of the Past*, *Dimension of
+the Machine* and *Dawn of the Machine*. Each starts on its own start map on
+Normal, and the start map's skill halls pick the difficulty for the rest, as in
+Quake.
+
+Each campaign runs **its own `progs.dat`** in a QuakeC virtual machine
+(`g_q1_progs 1`, the default), so its monsters, weapons, items, doors, lifts,
+secrets, intermissions and end text are Quake's own code rather than a copy of
+it. The add-ons' new monsters, weapons and entities come with them, and so does
+*Dimension of the Machine*'s fog, which changes room by room. The status bar is
+Quake's own, drawn from its own graphics; **Tab** shows Quake's scoreboard; and
+saving and loading work. Quake has no crouch, so the crouch key does nothing.
+
+Quake's demos join the [attract loop](#demo-playback) at the main menu, and
+`q1demo id1/id1/demo1.dem` plays one by hand.
+
+### Bot match and multiplayer
+
+With Quake's paks, **map set** on the bot match and **start server** pages
+offers **quake**: its eight deathmatch maps, the add-ons' arenas and every level
+of the first game, and in capture the flag the Threewave CTF maps. Their items,
+doors, lifts, buttons, teleporters and exploding boxes become Quake II's, and
+their monsters are left out.
+
+**Weapons** → **quake** (`g_q3_weapons 3`, and it needs no Quake III) deals
+Quake's guns, on Quake II maps too: the axe, the shotgun and super shotgun, the
+nailgun and super nailgun, the grenade and rocket launchers and the
+Thunderbolt, with Quake's damage, ammo, pickups and obituaries. **Player setup**
+lists Quake's Ranger first (`quake1/ranger`), with Quake's own animations and
+sounds; under **weapons** → **by player model**, the Ranger plays with Quake's
+guns while everyone else keeps their own.
+
+### Rendering
+
+* **Lights**: Quake's lamps, torches and glowing textures light the room, and
+  flicker and switch with the map's light styles. The light entities Quake's
+  compiler baked into the map are [map lights](#standing-in-for-the-maps-own-lights),
+  ready to be stood in for with `light replace`.
+* **Skies**: each map's two-layer scrolling sky, or its skybox, in Quake's own
+  colours, under **sky type** → **rerelease**. On a Quake map the environment
+  menu sets how bright it looks (`pt_q1_sky_brightness`), the light it casts and
+  its colour (`pt_q1_sky_light`, `_r`, `_g`, `_b`), and how much it lights the
+  fog (`pt_q1_sky_fog`).
+* **Sun**: the maps that ask for one with `_sunlight` (*Dimension of the Past*,
+  *Dimension of the Machine*, *Dawn of the Machine*) get the path tracer's sun,
+  from the direction in their `_sun_mangle` (`pt_q1_sun`, `pt_q1_sun_scale`).
+* **Fog**: a map's own `fog` becomes [volumetric fog](#volumetric-fog-and-atmosphere).
+* **Teleporters**: a slipgate shows the place it leads to, with a ripple
+  (`pt_q1_teleport_portals`, `pt_q1_teleport_warp`), and the light on the far
+  side comes through it (`pt_portal_light`).
+* **Materials**: `id1/materials/quake1.mat` gives Quake's textures normal,
+  roughness, metal and emissive maps, shaded the way Quake II RTX shades its
+  own. Its windows are [stained glass](#stained-glass): the light behind them
+  comes into the room, and into the fog, in the glass's colours.
+* **Fire and blood**: rockets, grenades, lava balls and exploding boxes use the
+  [simulated fire and smoke](#simulated-fire-and-smoke-nvidia-flow), and gibs
+  leave three times Quake II's blood trail (`cl_q1_gib_drops`, on the blood
+  menu as **quake gib trail**).
+
+### Modding
+
+Quake maps use the same tools as Quake II's, from `id1`:
+
+* `id1/materials/quake1.mat`, plus `id1/maps/q1/<map>.mat` per map, and the
+  source images in `id1/materialDev`.
+* `id1/maps/quake1.cfg` for every Quake map, then `id1/maps/q1/<map>.cfg`
+  (`id1/maps/q1/<episode>/<map>.cfg` for an add-on's) for
+  [per-map settings](#per-map-settings-mapcvar), and
+  `id1/maps/lights/q1/<map>.cfg` for [placed lights](#the-light-placement-system).
+
 ## Gore and physical blood
 
 Blood droplets are **real, shaded sphere geometry**, not particles
@@ -1759,10 +1859,12 @@ Attributes marked **(new)** do not exist in upstream Quake II RTX.
 | `texture_roughness` | path | **(new)** roughness map. Linear data, never sRGB |
 | `texture_metallic` | path | **(new)** metallic map. Linear data, never sRGB |
 | `texture_height` | path | **(new)** height map for parallax occlusion mapping. Greyscale, white raised, black sunken; red channel read |
+| `texture_stained_mask` | path | **(new)** for a stained glass material (`stained_glass 1`, `kind STAINEDGLASS`): which texels are glass (white) and which are an ordinary surface round it (black), cut at 50%; red channel read. Without one, every texel is glass. Black texels get the material's normal shading with no glow, and only white ones let the window light through. Painted with `mat author`'s **glass** map. Not auto-discovered: name it in the `.mat` |
 | `displace_in` | float | **(new)** how far black in the height map sinks below the surface, in texture-repeat units (`0.05` = 5% of one tile). Default `0.05`, as in RTX Remix |
 | `displace_out` | float | **(new)** how far white rises above the surface, same units. Default `0` |
 | `displace_clamp` | bool | **(new)** the texture is drawn once on its face, not tiled: parallax occlusion treats everything outside the tile the hit lands in as flat and never samples the next copy. Default `0` |
-| `kind` | name | `REGULAR`, `CHROME`, `GLASS`, `WATER`, `SLIME`, `LAVA`, `SKY`, `INVISIBLE`, `SCREEN`, `CAMERA`, and — newly namable from a `.mat` — `TRANSPARENT`, `TRANSP_MODEL`, `CHROME_MODEL` |
+| `kind` | name | `REGULAR`, `CHROME`, `GLASS`, `WATER`, `SLIME`, `LAVA`, `SKY`, `INVISIBLE`, `SCREEN`, `CAMERA`, and — newly namable from a `.mat` — `TRANSPARENT`, `TRANSP_MODEL`, `CHROME_MODEL`, and `STAINEDGLASS` (see [Stained glass](#stained-glass)) |
+| `stained_glass` | bool | **(new)** the texture is thick coloured glass with a light behind it, which comes into the room in its colours. `kind STAINEDGLASS` sets it, with `is_light 1`. Its own settings are in [Stained glass](#stained-glass) |
 | `is_light` | bool | this surface emits |
 | `light_styles` | bool | honour lightstyles |
 | `bsp_radiance` | bool | take radiance from the BSP lightmap |
@@ -1846,6 +1948,70 @@ Two important exceptions:
   maps in the tree — the image loaded, bound, sampled, and the result was thrown
   away.
 
+## Stained glass
+
+`kind STAINEDGLASS` turns a texture into a pane of thick coloured glass with a
+light behind it, a lamp or the sun, and lets that light into the room. It was
+made for Quake's windows (the one behind the ogre in the
+[Quake screenshot](#quake-support)), which are only a picture on a solid wall.
+Nothing behind the wall is ever traced: the surface stays opaque, and the light
+behind it is described by a few lines in the `.mat`.
+
+* **The glass** glows with the light coming through it, the lead between the
+  pieces stays dark, and where the eye, the glass and the light line up, the
+  light itself shows through. The normal map bends the light's way through, and
+  the colour deepens when the glass is seen at a slant.
+* **The room** gets the light in the glass's colours, in two parts. The light
+  that goes straight through throws a sharp image of the window onto the floor
+  and walls, sharper the smaller the light. The light the glass spreads becomes
+  a soft glow in the window's average colour. Both light the
+  [volumetric fog](#volumetric-fog-and-atmosphere) too, so the shafts through a
+  window take its colours.
+
+One texture tile is one window, with its light behind the middle of the tile.
+A window on a door or another moving brush gives only the soft glow. The shader
+code is only built into the path tracer while a map has stained glass, so other
+maps don't pay for it.
+
+`kind STAINEDGLASS` is `kind REGULAR` with `stained_glass 1` and `is_light 1`.
+The base texture is the glass's colour (what it lets through), and the
+`texture_emissive` is not used. These set the light:
+
+| Attribute | Default | Meaning |
+|---|---|---|
+| `emissive_factor` | `1` | how bright the light behind the glass is. With `stained_scatter 1`, the glass glows as bright as an ordinary emissive texture with the same factor |
+| `light_factor` | `1` | scales the light cast into the room only, not how bright the glass looks |
+| `stained_light_height` | `0.5` | where the light sits up the tile: `1` is level with the top of the picture, `0` its bottom |
+| `stained_light_distance` | `1` | how far behind the glass, in tile heights |
+| `stained_light_sun` | `0` | `1` makes it a sun: parallel light, from where the lamp would be as seen from the middle of the tile. A lamp lights the glass less towards its edges; a sun lights it evenly |
+| `stained_light_size` | `2` | the light's radius in degrees, seen from the middle of the tile: how soft the window's image is. The sun is `0.27` |
+| `stained_scatter` | `0.6` | how much of the light the glass spreads, like old hand-made glass. `0` is clear: all of it goes straight through, for a sharp image and the light seen as a spot. `1` spreads it all, into the soft glow only |
+| `stained_spread` | `25` | how wide the bright bloom round the light's way through the glass is, in degrees |
+| `texture_stained_mask` | | which texels are glass (white) and which are the frame or wall round it (black). See [Attributes](#attributes) |
+
+Quake's `window01_2`, `window01_3` and `window02_1` are stained glass in
+`id1/materials/quake1.mat`:
+
+```
+textures/q1/window02_1:
+	kind STAINEDGLASS
+	texture_base materialDev/remix/TextureDev/window02_1.png
+	texture_normals materialDev/remix/TextureDev/window02_1_normal.png
+	metalness_factor 0
+	emissive_factor 0.5
+	light_factor 4
+	stained_light_height 1
+	stained_light_distance 1
+	stained_light_sun 1
+	stained_light_size 2
+	stained_scatter 0.6
+	stained_spread 25
+```
+
+`mat print` on a stained glass surface explains each value, and the `mat`
+command changes them like any other attribute.
+[`mat author`](#painting-material-maps-mat-author) paints the glass mask.
+
 ## The `mat` command
 
 Materials can be examined and modified at run time.
@@ -1873,12 +2039,13 @@ lists.
 ## Painting material maps: `mat author`
 
 `mat author` paints a material's **roughness**, **metallic**, **normal**,
-**emissive** and **height** maps with a mouse brush, straight onto the surfaces
+**emissive** and **height** maps (and a stained glass texture's **glass** mask)
+with a mouse brush, straight onto the surfaces
 in the running game, or onto a flat view of the map. It works in both path
 tracers (Direct3D 12 and Vulkan).
 
 Aim the crosshair at the surface and type `mat author`, or
-`mat author roughness` (`metallic`, `normals`, `emissive`, `height`) to start on that map.
+`mat author roughness` (`metallic`, `normals`, `emissive`, `height`, `glass`) to start on that map.
 The game pauses into [photo mode](#photo-mode) and a panel opens in the top-left
 corner.
 If photo mode accumulates, it keeps accumulating, and every change restarts the
@@ -1891,12 +2058,15 @@ controls when it starts.
 |---|---|
 | hold **right mouse** | look around; **WASD** / **Q E** fly (**Shift** fast, **Ctrl** slow); **Ctrl + right mouse** zooms |
 | **H**, or the panel's **home** | the camera back where it started: the player's eye, unzoomed |
+| **C**, or the panel's **flashlight** | a light at the camera, pointing where it looks, on or off (`mat author light [on\|off]`). The slider beside the button sets its brightness, where 100% is the game's flashlight (`mat_author_light_scale`); `mat_author_light_cone` sets its cone, 90 degrees across by default. It doesn't light the fog |
 | **left mouse** | paint (or press a panel control) |
 | **Alt + left mouse** | switch to the material under the brush |
 | **mouse wheel**, **[ ]** | brush size; in rectangle mode, the rectangle's corner radius |
 | **Shift + wheel** | the value being painted |
 | **Ctrl + wheel** | falloff |
 | **1**–**5** | the map: roughness, metallic, normals, emissive, height |
+| **6** | the glass mask, on a stained glass material only |
+| **X** | on the glass mask: paint glass, or paint wall |
 | **L** | line mode on or off |
 | **R** | rectangle mode on or off: press at one corner, let go at the other |
 | click a slider's **number box** | type a value; **Enter** takes it, **Esc** leaves it as it was |
@@ -1935,6 +2105,18 @@ controls when it starts.
   relief updates as you paint. The brush follows the flat surface rather than
   the relief, so at a grazing angle the outline sits a little off what you see;
   the map view paints exactly.
+* **Glass** (stained glass only) paints which texels of the texture are the
+  glass and which are the surface round it: a frame, or the wall the window is
+  set in. The button and the **6** key only show up on a stained glass
+  material. Each texel is glass (white) or wall (black), with nothing in
+  between, so a soft brush edge, the blur, noise and brightness range all cut
+  at 50%. Pick what to paint with the panel's **glass** / **wall** buttons,
+  **X**, or **Shift + wheel**. A new mask starts all glass, which looks the same
+  as having no mask. Glass glows and lets the window light through. Wall is an
+  ordinary surface with the material's own maps and no glow. The look and the
+  light through the glass update as you paint. The soft fill light and the
+  window light's bounding box are measured when the map loads, so they catch up
+  the next time it loads. The mask is the material's `texture_stained_mask`.
 * **A material with no map in that slot** gets one on the first stroke. It
   starts out looking exactly as the surface did — roughness as the shader works
   it out without a map, a flat normal map, black emission, a height map flat at
@@ -1959,7 +2141,11 @@ controls when it starts.
   first.
 * **Line**: press where the line starts and let go where it ends. Until then the
   brush is shown swept along it; on release the whole line is painted as one
-  stroke, with any tool but fill.
+  stroke, with any tool but fill. On a model, a line stays on the part of the
+  map it starts on (its UV island). It stops at that part's edge rather than
+  crossing the map into other parts, which would land pieces of it elsewhere on
+  the model. If the cursor leaves that part, the end stays where it last was on
+  it. Lines on the world and in the map view go wherever you draw them.
 * **Rectangle**: press on the texel at one corner and let go on the one at the
   other. Until then the rectangle is outlined; on release every texel in it is
   painted as one stroke, with any tool but fill. Its corners are rounded by the

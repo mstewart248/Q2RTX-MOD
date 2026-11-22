@@ -2990,9 +2990,28 @@ static void CL_Q1TeleportSplash(const vec3_t org)
     }
 }
 
+/*
+A Quake blast at te.pos1, as a rocket's: the explosion and its light, Flow's
+fire, the particles. No sound - TE_EXPLOSION's is the client's own, and a
+barrel's is the progs' (misc.qc barrel_explode plays r_exp3 itself).
+*/
+static void CL_Q1Blast(void)
+{
+    explosion_t *ex = CL_PlainExplosion(false);
+
+    if (cl_disable_explosions->integer & NOEXP_ROCKET)
+        ex->type = ex_light;
+    CL_FlowExplosion(ex, 1.0f, R_FLOW_FIRE);
+    if (!ex->underwater)
+        CL_FlowGibEvent(false, te.pos1, te.pos1);
+    if (!(cl_disable_particles->integer & NOPART_ROCKET_EXPLOSION))
+        CL_ExplosionParticles(te.pos1);
+    if (cl_dlight_hacks->integer & DLHACK_SMALLER_EXPLOSION)
+        ex->light = 200;
+}
+
 static void CL_Q1TempEntity(void)
 {
-    explosion_t *ex;
     cdlight_t   *dl;
     int         i;
 
@@ -3023,16 +3042,7 @@ static void CL_Q1TempEntity(void)
         break;
 
     case TE_Q1_EXPLOSION:       // rocket and grenade explosion
-        ex = CL_PlainExplosion(false);
-        if (cl_disable_explosions->integer & NOEXP_ROCKET)
-            ex->type = ex_light;
-        CL_FlowExplosion(ex, 1.0f, R_FLOW_FIRE);
-        if (!ex->underwater)
-            CL_FlowGibEvent(false, te.pos1, te.pos1);
-        if (!(cl_disable_particles->integer & NOPART_ROCKET_EXPLOSION))
-            CL_ExplosionParticles(te.pos1);
-        if (cl_dlight_hacks->integer & DLHACK_SMALLER_EXPLOSION)
-            ex->light = 200;
+        CL_Q1Blast();
         S_StartSound(te.pos1, 0, 0, cl_q1_sfx_r_exp3, 1, ATTN_NORM, 0);
         break;
 
@@ -3088,8 +3098,11 @@ static void CL_Q1TempEntity(void)
             clamp(count, 8, 60);
             CL_BloodParticleEffect(te.pos1, dir, 0xe8, count);
         } else if (te.count == 255) {
-            // Quake's R_RunParticleEffect read 255 as 1024: its rocket blast
-            CL_ExplosionParticles(te.pos1);
+            // Quake's R_RunParticleEffect read 255 as 1024, R_ParticleExplosion:
+            // an exploding barrel, which sends no TE_EXPLOSION (Matt, 11-21:
+            // "the explosive barrels in quake 1 should spawn a flow
+            // explosion"). The rocket's whole blast, Flow's fire with it.
+            CL_Q1Blast();
         } else {
             CL_Q1RunParticleEffect(te.pos1, te.dir, te.color, te.count);
         }

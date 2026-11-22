@@ -7254,6 +7254,11 @@ vkpt_prepare_frame(refdef_t *fd, int waterLevel, vkpt_frame_prep_t *prep)
 		// before Flow's own lights, so the smoke's probes see them
 		vkpt_flow_beam_lights(model_lights, &num_model_lights, MAX_MODEL_LIGHTS, bsp_world_model, light_entity_ids[entity_frame_num]);
 		add_dlights(vkpt_refdef.fd->dlights, vkpt_refdef.fd->num_dlights, model_lights, &num_model_lights, MAX_MODEL_LIGHTS, bsp_world_model, light_entity_ids[entity_frame_num]);
+		// 'mat author''s flashlight, at the free camera (moved there above, by
+		// vkpt_freecam_update); before Flow's, which must stay the last lights
+		dlight_t author_light;
+		if (MAT_AuthorCameraLight(vkpt_refdef.fd, &author_light))
+			add_dlights(&author_light, 1, model_lights, &num_model_lights, MAX_MODEL_LIGHTS, bsp_world_model, light_entity_ids[entity_frame_num]);
 
 		// What NVIDIA Flow's fire and plasma give off (pt_flow_lighting), from
 		// the glow two frames ago - see flow_lights_collect.

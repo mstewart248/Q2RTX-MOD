@@ -795,6 +795,7 @@ void InitClientPersistant(gclient_t *client)
 	// Quake III's guns for this player? (g_q3weap.c) Asked of the userinfo
 	// before it goes: PutClientInServer puts it back after.
 	bool        q3_weapons = Q3W_ClientQ3(client);
+	bool        q1_weapons = Q1W_ClientQ1(client);     // Quake's, likewise (g_q1weap.c)
 
 	memset(&client->pers, 0, sizeof(client->pers));
 
@@ -856,7 +857,7 @@ void InitClientPersistant(gclient_t *client)
     // Quake III map, the spawn weapons the bot match menu chose (g_q3.c)
     if (q3_weapons)
         Q3W_GiveSpawnKit(client);
-    else if (level.q1_weapons)
+    else if (q1_weapons)
         Q1W_GiveSpawnKit(client);   // Quake's axe and shotgun (g_q1weap.c)
     else
         Q3_GiveSpawnKit(client);

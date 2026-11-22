@@ -63,6 +63,12 @@ static cvar_t   *scr_showitemname;
 static cvar_t   *scr_health_bars;
 static cvar_t   *cl_rerelease_hud;
 
+// Quake III's HUD (hud_q3.c): Q3HUD_* bits while it is up, for the status bar
+// program to leave out what it drew; the top of its status bar, for the
+// weapon bar to sit above, 0 when it is not up
+static int      scr_q3_hud;
+static int      scr_q3_bar_top;
+
 static cvar_t   *cl_weaponbar;
 static cvar_t   *cl_weaponbar_time;
 static cvar_t   *cl_weaponbar_hold;
@@ -1619,8 +1625,10 @@ void SCR_RegisterMedia(void)
     rhud.damage_pic = R_RegisterPic("damage_indicator");
     scr.font_pic = R_RegisterFont(scr_font->string);
 
-    // Quake 1's status bar registers its own again on its next frame
+    // Quake 1's status bar registers its own again on its next frame, and
+    // Quake III's HUD
     SCR_Q1ClearMedia();
+    SCR_Q3HudClearMedia();
 
     scr_crosshair_changed(scr_crosshair);
 }
@@ -1722,6 +1730,7 @@ void SCR_Init(void)
     // userinfo too: the game reads it to decide on the key icons, the low
     // ammo warning and the powerup timer, and to send the other two at all
     cl_rerelease_hud = Cvar_Get("cl_rerelease_hud", "1", CVAR_ARCHIVE | CVAR_USERINFO);
+    SCR_Q3HudInit();
     cl_weaponbar = Cvar_Get("cl_weaponbar", "1", CVAR_ARCHIVE);
     cl_weaponbar_time = Cvar_Get("cl_weaponbar_time", "0.4", CVAR_ARCHIVE);
     cl_weaponbar_hold = Cvar_Get("cl_weaponbar_hold", "0.8", CVAR_ARCHIVE);
@@ -2310,6 +2319,9 @@ static void SCR_DrawWeaponBar(void)
     digit_h = max(icon_sz * 9 / 16, 6);
 
     icon_y = scr.hud_height - 84;
+    // over Quake III's taller status bar (hud_q3.c), with room for its head
+    if (scr_q3_bar_top)
+        icon_y = min(icon_y, scr_q3_bar_top - icon_sz - 8);
     name_y = icon_y - digit_h - CHAR_HEIGHT - 6;
     x = (scr.hud_width - count * slot_w) / 2;
 
@@ -3637,6 +3649,8 @@ static void SCR_ExecuteLayoutString(const char *s)
             // STAT_SELECTED_ICON test below
             token = COM_Parse(&s);
             value = atoi(token);
+            if (scr_q3_hud && SCR_Q3HudDrawsStat(value))
+                continue;   // Quake III's HUD has it (hud_q3.c)
             index = SCR_LayoutStat(value);
             if (index < 0 || index >= MAX_IMAGES) {
                 if (!cl.kex_protocol)
@@ -3692,8 +3706,9 @@ static void SCR_ExecuteLayoutString(const char *s)
             if (!ci->icon) {
                 ci = &cl.baseclientinfo;
             }
-            // a Quake III icon is 64x64: in the Quake II one's 32x32
-            if (ci->q3.q3)
+            // a Quake III icon is 64x64, Quake's face 24x24: in the Quake
+            // II one's 32x32
+            if (ci->q3.q3 || ci->q1)
                 R_DrawStretchPic(x, y, 32, 32, ci->icon);
             else
                 R_DrawPic(x, y, ci->icon);
@@ -3746,10 +3761,19 @@ static void SCR_ExecuteLayoutString(const char *s)
             token = COM_Parse(&s);
             width = atoi(token);
             token = COM_Parse(&s);
-            value = SCR_LayoutStat(atoi(token));
+            index = atoi(token);
+            // Quake III's HUD: the powerup timer, and the frags when its
+            // score boxes are up
+            if (scr_q3_hud && (index == STAT_TIMER || (index == STAT_FRAGS && (scr_q3_hud & Q3HUD_SCORES))))
+                continue;
+            value = SCR_LayoutStat(index);
             HUD_DrawNumber(x, y, 0, width, value);
             continue;
         }
+
+        // Quake III's HUD draws health, ammo and armor its own way
+        if (scr_q3_hud && (!strcmp(token, "hnum") || !strcmp(token, "anum") || !strcmp(token, "rnum")))
+            continue;
 
         if (!strcmp(token, "hnum")) {
             // health number
@@ -3811,6 +3835,8 @@ static void SCR_ExecuteLayoutString(const char *s)
 
         if (!strcmp(token, "stat_string")) {
             token = COM_Parse(&s);
+            if (scr_q3_hud && atoi(token) == STAT_PICKUP_STRING)
+                continue;   // Quake III's HUD has the pickup
             index = SCR_LayoutStat(atoi(token));
             // the stat holds a configstring index in the sender's own layout
             // (CS_PLAYERSKINS + n for "Chasing <name>"), which for a stock
@@ -3852,7 +3878,11 @@ static void SCR_ExecuteLayoutString(const char *s)
 
         if (!strcmp(token, "if")) {
             token = COM_Parse(&s);
-            value = SCR_LayoutStat(atoi(token));
+            index = atoi(token);
+            value = SCR_LayoutStat(index);
+            // Quake III's HUD says whom a spectator follows its own way
+            if (scr_q3_hud && index == STAT_CHASE)
+                value = 0;
             if (!value) {   // skip to endif
                 while (strcmp(token, "endif")) {
                     token = COM_Parse(&s);
@@ -4079,6 +4109,9 @@ void SCR_AddDamageIndicator(const vec3_t dir, int bits)
     vec3_t  from;
     int     i, best = 0;
 
+    // which way Quake III's head kicks (hud_q3.c)
+    SCR_Q3HudDamage(dir);
+
     if (!cl_rerelease_hud->integer)
         return;
 
@@ -4241,6 +4274,8 @@ static void SCR_DrawCrosshair(void)
 // The status bar is a small layout program that is based on the stats array
 static void SCR_DrawStats(void)
 {
+    scr_q3_bar_top = 0;
+
     if (scr_draw2d->integer <= 1)
         return;
 
@@ -4250,7 +4285,12 @@ static void SCR_DrawStats(void)
         return;
     }
 
+    // a Quake III character: Quake III's HUD (hud_q3.c), and the program for
+    // the rest - the spectator line, CTF's - with its own pieces left out
+    scr_q3_hud = SCR_Q3DrawHud(scr.hud_width, scr.hud_height,
+                               Cvar_ClampValue(scr_alpha, 0, 1), &scr_q3_bar_top);
     SCR_ExecuteLayoutString(cl.configstrings[CS_STATUSBAR]);
+    scr_q3_hud = 0;
 }
 
 /*

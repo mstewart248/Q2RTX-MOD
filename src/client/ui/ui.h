@@ -30,6 +30,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "client/ui.h"
 #include "refresh/refresh.h"
 #include "../q3player.h"
+#include "../q1player.h"
 
 #define UI_Malloc(s)        Z_TagMalloc(s, TAG_UI)
 #define UI_Mallocz(s)       Z_TagMallocz(s, TAG_UI)
@@ -328,6 +329,7 @@ typedef struct playerModelInfo_s {
     char **skindisplaynames;
     char *directory;
     bool q3;        // a Quake III model: models/players/<directory>/ (q3player.c)
+    bool q1;        // Quake's Ranger, from the Quake paks (q1player.c)
 } playerModelInfo_t;
 
 /*
@@ -377,9 +379,10 @@ typedef struct uiStatic_s {
     char weaponModel[32];
 
     // the model grid (see playerModelCell_t)
-    bool pmGrid;                    // Quake III models are installed: use it
+    bool pmGrid;                    // Quake III or Quake's models are installed: use it
     int numPmCells;
-    int pmQ3First;                  // the first Quake III cell
+    int pmQ2First;                  // the first Quake II cell, after Quake's
+    int pmQ3First;                  // the first Quake III cell, after Quake II's
     playerModelCell_t *pmCells;
     char **pmCellNames;             // "model / skin", NULL-terminated
 

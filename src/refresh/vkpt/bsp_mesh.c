@@ -2041,7 +2041,64 @@ typedef struct {
 	vec3_t centre;      // the biggest face's middle
 } stained_window_t;
 
-// The glass's average colour: what the texture lets through, linear
+/* Is the texel (x, y) of a w x h image glass, by the material's stained glass
+   mask (texture_stained_mask)? Read at the same place on the mask, whatever
+   its size; white is glass, the cut is half way. No mask (or one whose pixels
+   are not here) = all glass. */
+static bool
+stained_mask_texel(const image_t *mask, int x, int y, int w, int h)
+{
+	if (!mask || !mask->pix_data || mask->upload_width <= 0 || mask->upload_height <= 0)
+		return true;
+	const int mx = min(mask->upload_width - 1, (int)(((int64_t)x * mask->upload_width) / w));
+	const int my = min(mask->upload_height - 1, (int)(((int64_t)y * mask->upload_height) / h));
+	const size_t i = (size_t)my * mask->upload_width + mx;
+	if (mask->pixel_format == PF_R16_UNORM)
+		return ((const uint16_t *)mask->pix_data)[i] >= 32768;
+	if (mask->pixel_format == PF_R8G8B8A8_UNORM)
+		return mask->pix_data[i * 4] >= 128;
+	return true;
+}
+
+/* The part of the tile a stained glass mask says is glass: the box round its
+   white texels, in tile coordinates (u0, v0, u1, v1; v down the picture, as
+   the texture runs). False with no mask (or none readable here) - the whole
+   tile then - and with a mask that has no glass at all, *empty set. */
+static bool
+stained_mask_bounds(const pbr_material_t *material, float out[4], bool *empty)
+{
+	*empty = false;
+	const image_t *mask = material->image_stained_mask;
+	if (!mask || !mask->pix_data || mask->upload_width <= 0 || mask->upload_height <= 0)
+		return false;
+	if (mask->pixel_format != PF_R16_UNORM && mask->pixel_format != PF_R8G8B8A8_UNORM)
+		return false;
+
+	const int w = mask->upload_width, h = mask->upload_height;
+	int x0 = w, y0 = h, x1 = -1, y1 = -1;
+	for (int y = 0; y < h; y++)
+		for (int x = 0; x < w; x++)
+			if (stained_mask_texel(mask, x, y, w, h))
+			{
+				x0 = min(x0, x); x1 = max(x1, x);
+				y0 = min(y0, y); y1 = max(y1, y);
+			}
+
+	if (x1 < 0)
+	{
+		*empty = true;
+		return false;
+	}
+	out[0] = (float)x0 / (float)w;
+	out[1] = (float)y0 / (float)h;
+	out[2] = (float)(x1 + 1) / (float)w;
+	out[3] = (float)(y1 + 1) / (float)h;
+	return true;
+}
+
+// The glass's average colour: what the texture lets through, linear - over
+// the whole tile, so a stained glass mask's wall texels count as letting
+// nothing through (the fill is the glass's colour times its share of the tile)
 static void
 stained_average_transmission(const pbr_material_t *material, vec3_t out)
 {
@@ -2050,15 +2107,19 @@ stained_average_transmission(const pbr_material_t *material, vec3_t out)
 	if (!image || !image->pix_data || image->pixel_format != PF_R8G8B8A8_UNORM)
 		return;
 
-	const int count = image->upload_width * image->upload_height;
+	const int w = image->upload_width, h = image->upload_height;
+	const int count = w * h;
 	if (count <= 0)
 		return;
 
+	const image_t *mask = material->image_stained_mask;
 	const float f = material->base_factor;
 	double sum[3] = { 0, 0, 0 };
 	const byte *p = image->pix_data;
 	for (int i = 0; i < count; i++, p += 4)
 	{
+		if (mask && !stained_mask_texel(mask, i % w, i / w, w, h))
+			continue;
 		for (int c = 0; c < 3; c++)
 		{
 			float x = image->is_srgb ? decode_srgb(p[c]) : (float)p[c] * (1.f / 255.f);
@@ -2215,16 +2276,42 @@ static void
 stained_emit_windows(bsp_t *bsp, const stained_window_t *windows, int num_windows,
                      int *num_lights, int *allocated_lights, light_poly_t **lights)
 {
+	const pbr_material_t *bounds_of = NULL;
+	float glass[4] = { 0, 0, 1, 1 };
+	bool has_bounds = false, no_glass = false;
+
 	for (int k = 0; k < num_windows; k++)
 	{
 		const stained_window_t *w = windows + k;
+
+		// with a glass mask (texture_stained_mask), only its glass lets the
+		// light through: the window shrinks to the box round it, so the light
+		// is not picked for a floor that would see it through the wall part
+		float rect[4] = { w->rect[0], w->rect[1], w->rect[2], w->rect[3] };
+		// one pass over the mask per material, not per window
+		if (w->material != bounds_of)
+		{
+			bounds_of = w->material;
+			has_bounds = stained_mask_bounds(w->material, glass, &no_glass);
+		}
+		if (has_bounds)
+		{
+			rect[0] = max(rect[0], glass[0]);
+			rect[1] = max(rect[1], glass[1]);
+			rect[2] = min(rect[2], glass[2]);
+			rect[3] = min(rect[3], glass[3]);
+			if (!(rect[2] > rect[0]) || !(rect[3] > rect[1]))
+				continue;
+		}
+		else if (no_glass)
+			continue;
 
 		light_poly_t light;
 		memset(&light, 0, sizeof(light));
 		VectorCopy(w->S, light.positions + 0);
 		VectorCopy(w->T, light.positions + 3);
-		light.positions[6] = stained_pack_extent(w->rect[0], w->rect[2]);
-		light.positions[7] = stained_pack_extent(w->rect[1], w->rect[3]);
+		light.positions[6] = stained_pack_extent(rect[0], rect[2]);
+		light.positions[7] = stained_pack_extent(rect[1], rect[3]);
 		light.positions[8] = 0.f;
 		light.window[0] = w->off[0];
 		light.window[1] = w->off[1];

@@ -136,6 +136,12 @@ void CL_LoadClientinfo(clientinfo_t *ci, const char *s)
     CL_ParsePlayerSkin(ci->name, model_name, skin_name, s);
 
     memset(&ci->q3, 0, sizeof(ci->q3));
+    ci->q1 = false;
+
+    // Quake's Ranger ("quake1/<skin>", from the Quake paks - q1player.c): his
+    // own skin and frames, the gun in his hands
+    if (ci != &cl.baseclientinfo && Q1P_Register(ci, model_name, skin_name))
+        return;
 
     // A Quake III model (baseq3's models/players/<model>/, when Quake II has
     // no model of that name): its three parts in the skin asked for, and the
@@ -668,6 +674,8 @@ void CL_PrepRefresh(void)
     }
     // Quake 1's status bar (sbar_q1.c), when its own game runs the level
     SCR_Q1RegisterMedia();
+    // Quake III's HUD (hud_q3.c), when anyone can wear a Quake III model
+    SCR_Q3HudRegisterMedia();
     Com_LoadMark("pics");
 
     CL_LoadState(LOAD_CLIENTS);
@@ -726,7 +734,9 @@ void CL_UpdateConfigstring(int index)
     // same with the physics for the server's pmove)
     if (index == CS_Q3RULES) {
         cl.q3_weapons = Q3RULES_WEAPONS(s);
-        cl.q1_weapons = Q3RULES_Q1WEAPONS(s);
+        // Quake's guns for everyone, or for Quake's Ranger in a match by
+        // player model: their weapon bar slots and TE_Q1 effects either way
+        cl.q1_weapons = Q3RULES_Q1WEAPONS(s) || Q3RULES_Q1BYMODEL(s);
         cl.pmp.q3move = Q3RULES_PHYSICS(s);
         return;
     }

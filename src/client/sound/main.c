@@ -499,6 +499,10 @@ static sfx_t *S_RegisterSexedSound(int entnum, const char *base)
     if (CL_Q3PlayersEnabled() && Q3P_SexedSound(model, base, buffer, sizeof(buffer)))
         return S_FindName(buffer, FS_NormalizePath(buffer));
 
+    // Quake's Ranger: Quake's player sounds (q1player.c)
+    if (Q1P_SexedSound(model, base, buffer, sizeof(buffer)))
+        return S_FindName(buffer, FS_NormalizePath(buffer));
+
     // see if we already know of the model specific sound
     if (Q_concat(buffer, MAX_QPATH, "players/", model, "/", base + 1) >= MAX_QPATH
         && Q_concat(buffer, MAX_QPATH, "players/", "male", "/", base + 1) >= MAX_QPATH)

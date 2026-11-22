@@ -1492,6 +1492,18 @@ typedef enum {
 #define STAT_Q1_ROCKETS         30
 #define STAT_Q1_CELLS           31
 
+// Quake III's HUD (client hud_q3.c), in a free-for-all deathmatch: the score
+// boxes at the lower right are the leader's and the second place's, yours in
+// whichever it is (cg_draw.c CG_DrawScores). Your own is STAT_FRAGS; the game
+// adds the best of everyone else's. CTF's slots, which a free-for-all leaves
+// free: STAT_Q3_SCORES carries STAT_Q3_SCORES_TAG so a CTF picture index
+// (< MAX_IMAGES) there is never taken for it.
+#define STAT_Q3_SCORES          29      // STAT_Q3_SCORES_TAG, | STAT_Q3_SCORES_OTHER if anyone else plays
+#define STAT_Q3_OTHER_SCORE     30      // the best score of anyone else
+#define STAT_Q3_FRAGLIMIT       31      // 0 = none
+#define STAT_Q3_SCORES_TAG      0x5100
+#define STAT_Q3_SCORES_OTHER    1
+
 #define MAX_STATS               32
 
 
@@ -1610,15 +1622,18 @@ typedef enum {
 #define CS_TRIGGER_HEIGHTFOG    (CS_GENERAL + 4)
 
 // Set by this tree's baseq2 game at every map start: the bot match's weapon set
-// and player physics, as two digits "<weapons><physics>". Weapons: 0 Quake II,
-// 1 Quake III, 2 by player model (Quake III bodies Quake III guns); physics: 0
-// Quake II, 1 Quake III. The physics digit is pmoveParams_t.q3move on both the
-// server (PF_configstring / SV_SpawnServer) and the client (CL_ParseConfigstring),
-// so prediction and the server move the player alike. Empty = "00".
+// and player physics, as digits "<weapons><physics>[<q1 by model>]". Weapons: 0
+// Quake II, 1 Quake III, 2 by player model (Quake III bodies Quake III guns),
+// 3 Quake's for everyone; physics: 0 Quake II, 1 Quake III; the third, with
+// weapons 2, 1 when Quake's Ranger gets Quake's guns too. The physics digit is
+// pmoveParams_t.q3move on both the server (PF_configstring / SV_SpawnServer)
+// and the client (CL_ParseConfigstring), so prediction and the server move the
+// player alike. Empty = "00".
 #define CS_Q3RULES              (CS_GENERAL + 5)
 #define Q3RULES_WEAPONS(s)      (((s)[0] >= '0' && (s)[0] <= '2') ? (s)[0] - '0' : 0)
 #define Q3RULES_Q1WEAPONS(s)    ((s)[0] == '3')     // Quake's guns (baseq2 g_q1weap.c)
 #define Q3RULES_PHYSICS(s)      ((s)[0] && (s)[1] == '1')
+#define Q3RULES_Q1BYMODEL(s)    ((s)[0] && (s)[1] && (s)[2] == '1')    // ... for the Ranger
 
 // Set by this tree's baseq2 game while Quake 1's own game code (its progs.dat,
 // g_q1vm*.c) runs the level: the episode's name, "id1", "hipnotic"... - whose

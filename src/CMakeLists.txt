@@ -186,6 +186,7 @@ SET(SRC_CLIENT
 	client/entities.c
 	client/footsteps.c
 	client/gtv.c
+	client/hud_q3.c
 	client/input.c
 	client/kexdemo.c
 	client/keys.c
@@ -196,6 +197,7 @@ SET(SRC_CLIENT
 	client/parse.c
 	client/precache.c
 	client/predict.c
+	client/q1player.c
 	client/q3player.c
 	client/q3weapons.c
 	client/refresh.c

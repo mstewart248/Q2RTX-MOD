@@ -42,6 +42,7 @@ typedef struct pbr_material_s {
 	char filename_roughness[MAX_IMAGE_PATH];
 	char filename_metallic[MAX_IMAGE_PATH];
 	char filename_height[MAX_IMAGE_PATH];
+	char filename_stained_mask[MAX_IMAGE_PATH];
 	char source_matfile[MAX_QPATH];
 	uint32_t source_line;
 	int original_width;
@@ -104,6 +105,14 @@ typedef struct pbr_material_s {
 	// bright it all is. The surface itself is opaque: nothing behind the wall
 	// is ever traced. See stained_glass.h.
 	bool stained_glass;
+	// texture_stained_mask: which texels of a stained_glass texture are the
+	// glass (white) and which are an ordinary surface - a stone frame round
+	// the window, a wall the window is only part of (black). Read as 1 or 0
+	// (half way is the cut). Without one, every texel is glass. The mask lets
+	// the window light through only where it is white, and the fill light is
+	// the glass's own average colour times the share of the tile that is glass.
+	// Painted in `mat author` (the "glass" map, shown only for stained glass).
+	image_t * image_stained_mask;
 	// where the light sits behind the glass, up the texture tile: 1 = level
 	// with the tile's top edge, 0 = its bottom, 0.5 = straight behind the middle
 	float stained_light_height;

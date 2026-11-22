@@ -1325,6 +1325,10 @@ vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp
 			mat_data[11] |= (uint32_t)floatToHalf(material->stained_light_distance) << 16;
 			mat_data[12] = floatToHalf(material->stained_light_size);
 			mat_data[12] |= (uint32_t)floatToHalf(material->stained_scatter) << 16;
+			// the glass mask's image in the low half of word 10 - caustic_ripple's
+			// place, which is GLASS only, so free here. 0 = no mask, all glass.
+			if (material->image_stained_mask)
+				mat_data[10] |= (uint32_t)(material->image_stained_mask - r_images) & 0xffffu;
 		}
 	}
 
