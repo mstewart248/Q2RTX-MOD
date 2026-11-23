@@ -166,7 +166,8 @@ id1's - but Dissolution of Eternity has its OWN ogre.mdl, with a second skin
 (the multi-grenade ogre), and its own zombie.mdl, with ten more frames (the
 zombie getting up). id1's md5 drawn for those would lose the skin and stop
 the animation dead. So when the episode replaced the .mdl, the md5 must be
-the episode's too: one that is byte for byte id1's is refused.
+the episode's too: one that is byte for byte id1's is refused - unless the
+episode's .mdl is id1's with skins added (q1_mdl_id1_skins).
 (ours) is the episode's model, (md5) the md5 beside it, each compared with
 the same name in id1 - "id1/id1/<path>".
 */
@@ -1116,31 +1117,107 @@ static int q1_bsp_to_md3(const char *name, const byte *data, size_t length, void
 =================================================================
 */
 
-// the md5 to draw instead of .mdl (name), "" for none
-static void q1_mdl_md5(const char *name, const q1mdl_t *m, char *md5, size_t size)
+/*
+Dissolution of Eternity's ogre, knight, hell knight, tarbaby and player are
+id1's models with skins added after id1's (the multi-grenade ogre, the red
+team Ranger...): the same vertices, texture coordinates, triangles and poses,
+id1's skins first. So on every rogue map the base game's ogre and the player
+were the 1996 .mdl (Matt, 2026-11-22). id1's md5 draws such a model in id1's
+skins exactly as it draws id1's own; only the added skins need the .mdl, and
+the client picks between the two per entity (model_t q1_md5_skins and
+q1_skin_model, MOD_LoadQuake1). Returns id1's skin count when the episode's
+.mdl (m), named (name), is id1's with skins added; else 0. Only each pose's
+vertices are compared. Its bounding box and name are not drawn and differ:
+rogue's copies carry other junk bytes after the names and in the boxes'
+normal bytes, and its knight renames standing2-5 to standing1-4. Frames are
+played by number (QuakeC's $frame, the md5anim), never by name.
+*/
+static int q1_mdl_id1_skins(const char *name, const q1mdl_t *m)
+{
+    char theirs[MAX_QPATH];
+    bool is_id1;
+    const char *rest = q1_rest(name, &is_id1);
+    byte *raw = NULL;
+    q1mdl_t t;
+    int len, skins = 0;
+
+    if (is_id1 || Q_concat(theirs, sizeof(theirs), "id1/id1/", rest) >= sizeof(theirs))
+        return 0;
+    len = FS_LoadFile(theirs, (void **)&raw);
+    if (!raw)
+        return 0;
+
+    if (q1_mdl_parse(raw, len, &t)
+        && t.numskins >= 1 && t.numskinposes == t.numskins     // no groups: skinnum n is skin n
+        && m->numskins > t.numskins && m->ofs_st > t.ofs_st
+        && m->skinwidth == t.skinwidth && m->skinheight == t.skinheight
+        && m->numverts == t.numverts && m->numtris == t.numtris
+        && m->numframes == t.numframes && m->numposes == t.numposes
+        && VectorCompare(m->scale, t.scale) && VectorCompare(m->origin, t.origin)
+        // id1's skins are where the episode's start
+        && !memcmp(m->data + Q1MDL_HEADER, t.data + Q1MDL_HEADER, t.ofs_st - Q1MDL_HEADER)
+        // texture coordinates and triangles
+        && !memcmp(m->data + m->ofs_st, t.data + t.ofs_st, t.ofs_frames - t.ofs_st)) {
+        const size_t verts = 4 * (size_t)t.numverts;
+        int i;
+
+        // pose: bounding box (8), name (16), vertices
+        for (i = 0; i < t.numposes; i++) {
+            const byte *a = q1_mdl_pose(m, i, true), *b = q1_mdl_pose(&t, i, true);
+            if (!a || !b || memcmp(a + 24, b + 24, verts))
+                break;
+        }
+        if (i == t.numposes)
+            skins = t.numskins;
+    }
+
+    FS_FreeFile(raw);
+    return skins;
+}
+
+// the md5 to draw instead of .mdl (name), "" for none; (*md5_skins) is how
+// many of the .mdl's skins it draws when not all of them (q1_mdl_id1_skins),
+// else 0
+static void q1_mdl_md5(const char *name, const q1mdl_t *m, char *md5, size_t size, int *md5_skins)
 {
     char stem[MAX_QPATH];
+    int id1_skins = 0;
 
     md5[0] = 0;
+    *md5_skins = 0;
     COM_StripExtension(stem, name, sizeof(stem));
     if (Q_concat(md5, size, stem, ".md5mesh") >= size || !FS_FileExists(md5)) {
         md5[0] = 0;
         return;
     }
 
-    // an add-on's own .mdl takes no md5 of id1's (q1_md5_from_episode)
+    // an add-on's own .mdl takes no md5 of id1's (q1_md5_from_episode) -
+    // unless it is id1's with skins added: id1's md5 then draws id1's skins
     if (!q1_md5_from_episode(name, md5)) {
-        Com_DPrintf("%s: the episode's own model, not id1's md5\n", name);
+        id1_skins = q1_mdl_id1_skins(name, m);
+        if (!id1_skins) {
+            Com_DPrintf("%s: the episode's own model, not id1's md5\n", name);
+            md5[0] = 0;
+            return;
+        }
+    }
+
+    // the md5 must animate every frame QuakeC can ask for, and have every skin
+    // it is to draw
+    int frames = q1_md5anim_frames(md5);
+    int skins = q1_md5_skins(md5);
+    int need = id1_skins ? id1_skins : m->numskins;
+    if ((m->numframes > 1 && frames < m->numframes) || skins < need) {
+        Com_DPrintf("%s: md5 has %d frames and %d skins for %d and %d; using the .mdl\n",
+                    name, frames, skins, m->numframes, need);
         md5[0] = 0;
         return;
     }
 
-    // the md5 must animate every frame QuakeC can ask for, and have every skin
-    int frames = q1_md5anim_frames(md5);
-    if ((m->numframes > 1 && frames < m->numframes) || q1_md5_skins(md5) < m->numskins) {
-        Com_DPrintf("%s: md5 has %d frames and %d skins for %d and %d; using the .mdl\n",
-                    name, frames, q1_md5_skins(md5), m->numframes, m->numskins);
-        md5[0] = 0;
+    if (id1_skins) {
+        *md5_skins = id1_skins;
+        Com_DPrintf("%s: id1's model with %d skins added: id1's md5 in skins below %d, the .mdl in the rest\n",
+                    name, m->numskins - id1_skins, id1_skins);
     }
 }
 
@@ -1154,10 +1231,13 @@ one. (*data) is Z_Free'd by the caller; (load_name) is the name to load it
 under (the md5's own path, so its .md5anim and skins are found from it);
 (*md5_scale) sizes an md5 and (md5_offset) then moves its vertices,
 (*sprite_type) is a sprite's Quake orientation type, -1 otherwise.
+(*md5_skins) is nonzero when the md5 handed back draws only that many of the
+.mdl's skins (q1_mdl_id1_skins); the caller draws the rest from the .mdl.
 =================
 */
 int MOD_Q1Build(const char *name, bool md5, void **data, size_t *length,
-                char *load_name, size_t size, vec3_t md5_offset, float *md5_scale, int *sprite_type)
+                char *load_name, size_t size, vec3_t md5_offset, float *md5_scale, int *sprite_type,
+                int *md5_skins)
 {
     byte *raw = NULL;
     int len, ret;
@@ -1165,6 +1245,7 @@ int MOD_Q1Build(const char *name, bool md5, void **data, size_t *length,
     *data = NULL;
     *length = 0;
     *sprite_type = -1;
+    *md5_skins = 0;
     VectorClear(md5_offset);
     *md5_scale = 1.0f;
     Q_strlcpy(load_name, name, size);
@@ -1210,7 +1291,7 @@ int MOD_Q1Build(const char *name, bool md5, void **data, size_t *length,
             int md5_len = 0;
 
             if (md5) {
-                q1_mdl_md5(name, &m, md5_path, sizeof(md5_path));
+                q1_mdl_md5(name, &m, md5_path, sizeof(md5_path), md5_skins);
                 if (md5_path[0])
                     md5_len = FS_LoadFile(md5_path, (void **)&md5_raw);
             }
@@ -1220,6 +1301,7 @@ int MOD_Q1Build(const char *name, bool md5, void **data, size_t *length,
                 Q_strlcpy(load_name, md5_path, size);
                 ret = Q_ERR_SUCCESS;
             } else {
+                *md5_skins = 0;
                 ret = q1_mdl_to_md2(name, &m, data, length);
             }
         }

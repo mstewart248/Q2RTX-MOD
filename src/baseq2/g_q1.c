@@ -1078,6 +1078,14 @@ void Q1_SpawnEntity(edict_t *ent)
         // Quake 1 hurts once a second: Quake II's SLOW (16)
         ent->spawnflags = 16;
     }
+    if (!Q_stricmp(cn, "trigger_push")) {
+        /* Quake 1's one flag is PUSH_ONCE (1), Quake II's too. Its SILENT (4)
+           and START_OFF (8) are other things to a Quake 1 map: mg3/map2's two
+           wind pushes carry 10, and a START_OFF push with no targetname is
+           Quake II's inert solid brush - drawn, trigger texture and all
+           (q1gamehost HOST_TRIGGERS, 11-22). */
+        ent->spawnflags &= 1;
+    }
 
     ED_CallSpawn(ent);
 }

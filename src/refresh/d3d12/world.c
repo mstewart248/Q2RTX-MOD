@@ -198,6 +198,7 @@ static struct {
 
     ID3D12Resource      *light_buffer;      // LightBuffer
     ID3D12Resource      *instance_buffer;   // InstanceBuffer
+    bool                instance_full_pending;  // made since its last copy: the next one is whole
     ID3D12Resource      *blood_skin;        // cl_blood_skin's masks, BLOOD_SKIN_POOL_BYTES
     ID3D12Resource      *readback_buffer;   // ReadbackBuffer, written by the shaders
     ID3D12Resource      *tonemap_buffer;    // ToneMappingBuffer: the histogram, the curve
@@ -1890,6 +1891,8 @@ bool d3d12_world_init(void)
                                          D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, "light buffer");
     w.instance_buffer = d3d12_create_buffer(sizeof(InstanceBuffer), D3D12_HEAP_TYPE_DEFAULT,
                                             D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, "instance buffer");
+    // a new buffer holds nothing of the host's struct yet: its first copy is whole
+    w.instance_full_pending = true;
     w.readback_buffer = d3d12_create_buffer(sizeof(ReadbackBuffer), D3D12_HEAP_TYPE_DEFAULT,
                                             D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, "readback buffer");
     w.tonemap_buffer = d3d12_create_buffer(sizeof(ToneMappingBuffer), D3D12_HEAP_TYPE_DEFAULT,
@@ -2531,10 +2534,12 @@ bool d3d12_world_transparency_init(const uint64_t capacity[D3D12_TR_NUM_STREAMS 
 
 void d3d12_world_plan_dynamic(const uint32_t first[D3D12_NUM_DYN_RUNS], const uint32_t count[D3D12_NUM_DYN_RUNS],
                               const d3d12_world_transparency_t *tr, bool fast_trace, bool blood_reuse,
-                              uint64_t address[D3D12_NUM_DYN], bool *blood_built)
+                              bool blood_updatable, bool blood_refit,
+                              uint64_t address[D3D12_NUM_DYN], bool *blood_built, bool *blood_refitted)
 {
     world_frame_t *fr = &w.frame[d3d.frame_index];
     *blood_built = false;
+    *blood_refitted = false;
     fr->dyn_flags = fast_trace ? D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE
                                : D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD;
     memset(fr->dyn_blases, 0, sizeof(fr->dyn_blases));
@@ -2598,6 +2603,10 @@ void d3d12_world_plan_dynamic(const uint32_t first[D3D12_NUM_DYN_RUNS], const ui
     // is unchanged since this slot built it
     fr->dyn_blases[D3D12_DYN_BLOOD].persistent = true;
     fr->dyn_blases[D3D12_DYN_BLOOD].reuse = blood_reuse;
+    // pt_blood_blas_refit (blood.c's BLAS REFIT): or refitted in place, when blood.c
+    // says the section has not drifted far from what this slot last built
+    fr->dyn_blases[D3D12_DYN_BLOOD].updatable = blood_updatable;
+    fr->dyn_blases[D3D12_DYN_BLOOD].refit = blood_refit;
 
     // R_BeginFrame waited for this slot's last frame: its memory is free
     if (!w.initialized ||
@@ -2612,7 +2621,11 @@ void d3d12_world_plan_dynamic(const uint32_t first[D3D12_NUM_DYN_RUNS], const ui
     }
     for (int i = 0; i < D3D12_NUM_DYN; i++)
         address[i] = fr->dyn_blases[i].address;
-    *blood_built = fr->dyn_blases[D3D12_DYN_BLOOD].address && !fr->dyn_blases[D3D12_DYN_BLOOD].reused;
+    {
+        const d3d12_dynamic_blas_t *b = &fr->dyn_blases[D3D12_DYN_BLOOD];
+        *blood_built = b->address && !b->reused && !b->refitted;
+        *blood_refitted = b->address && b->refitted;
+    }
 
     // the plan clears the flag where NVAPI would not size the clusters
     if (clustered) {
@@ -2864,7 +2877,30 @@ bool d3d12_world_render(ID3D12GraphicsCommandList4 *cmd, const d3d12_world_frame
         LightBuffer *lights = (LightBuffer *)fr->staging_map[D3D12_WORLD_STAGING_LIGHTS];
         memset(&lights->caustic_header, 0, sizeof(lights->caustic_header));
     }
-    memcpy(fr->upload_map + UPLOAD_INSTANCE_OFFSET, frame->instance_buffer, sizeof(InstanceBuffer));
+    /* THE INSTANCE BUFFER IN TWO PIECES (11-22), as Vulkan uploads it (uniform_buffer.c,
+       THE INSTANCE BUFFER IS UPLOADED IN TWO PIECES; pt_upload_ranges 0 = whole): the
+       maps in front and the model_instances rows this frame wrote, then everything
+       from mlight_prev_to_current on. It was the whole ~2 MB, memcpy'd into the
+       upload heap and copied over PCIe at the head of "frame setup" every frame, for
+       a few hundred 224-byte rows. No row past the count is written on the host, so
+       after the first, whole copy the device stays row-for-row equal to it. Here the
+       tlas_* tail is final already: frontend.c built the instance list before this. */
+    size_t ib_head = sizeof(InstanceBuffer), ib_tail = sizeof(InstanceBuffer);
+    {
+        static cvar_t *pt_upload_ranges;
+        if (!pt_upload_ranges)
+            pt_upload_ranges = Cvar_Get("pt_upload_ranges", "1", 0);
+        if (!w.instance_full_pending && frame->instance_rows >= 0 && pt_upload_ranges->integer) {
+            ib_head = offsetof(InstanceBuffer, model_instances) +
+                      (size_t)min((uint32_t)frame->instance_rows, (uint32_t)MAX_MODEL_INSTANCES) * sizeof(ModelInstance);
+            ib_tail = offsetof(InstanceBuffer, mlight_prev_to_current);
+        }
+        w.instance_full_pending = false;
+    }
+    memcpy(fr->upload_map + UPLOAD_INSTANCE_OFFSET, frame->instance_buffer, ib_head);
+    if (ib_tail < sizeof(InstanceBuffer))
+        memcpy(fr->upload_map + UPLOAD_INSTANCE_OFFSET + ib_tail, (const byte *)frame->instance_buffer + ib_tail,
+               sizeof(InstanceBuffer) - ib_tail);
     memcpy(fr->upload_map + UPLOAD_TLAS_OFFSET, frame->instances,
            (size_t)num_instances * sizeof(D3D12_RAYTRACING_INSTANCE_DESC));
 
@@ -2885,7 +2921,10 @@ bool d3d12_world_render(ID3D12GraphicsCommandList4 *cmd, const d3d12_world_frame
             lights_copied = true;
         }
     ID3D12GraphicsCommandList4_CopyBufferRegion(cmd, w.instance_buffer, 0, fr->upload, UPLOAD_INSTANCE_OFFSET,
-                                                sizeof(InstanceBuffer));
+                                                ib_head);
+    if (ib_tail < sizeof(InstanceBuffer))
+        ID3D12GraphicsCommandList4_CopyBufferRegion(cmd, w.instance_buffer, ib_tail, fr->upload,
+                                                    UPLOAD_INSTANCE_OFFSET + ib_tail, sizeof(InstanceBuffer) - ib_tail);
     // the skeletal models' bones, as far as vkpt says they were ever written
     const uint64_t iqm_size = min(frame->iqm_upload_size, (uint64_t)sizeof(IqmMatrixBuffer));
     if (iqm_size)

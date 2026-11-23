@@ -43,7 +43,7 @@ layout(location = 0) in vec4 color;
 layout(location = 1) in flat uint tex_id;
 layout(location = 2) in vec2 tex_coord;
 layout(location = 3) in flat vec4 tex_rect;
-layout(location = 4) in flat uint pic_flags;  // bit 0: video frame; bit 1: ignore alpha; bit 2: nearest; bit 3: red as grey; bit 4: layer over base_id; bits 5-6: its glow view
+layout(location = 4) in flat uint pic_flags;  // bit 0: video frame; bit 1: ignore alpha; bit 2: nearest; bit 3: red as grey; bit 4: layer over base_id; bits 5-6: its glow view; bit 7: a triangle
 layout(location = 5) in flat uint base_id;    // bit 4's base texture
 
 layout(location = 0) out vec4 outColor;
@@ -52,6 +52,9 @@ void
 main()
 {
 	vec4 c = color;
+	// a triangle's own mip level (bit 7, R_DrawModel2D's skins shrunk to an icon);
+	// taken here, where every pixel of the quad still runs
+	const vec2 tc_dx = dFdx(tex_coord), tc_dy = dFdy(tex_coord);
 	if(tex_id != ~0u) {
 		/* Keep the bilinear footprint inside the quad's own rectangle.
 
@@ -91,7 +94,10 @@ main()
 		// 'mat author's map view: each texel a sharp square (sampled at its centre)
 		if ((pic_flags & 4u) != 0u)
 			tc = (min(floor(clamp(tex_coord, vec2(0), vec2(1)) * tex_size), tex_size - 1) + 0.5) / tex_size;
-		vec4 t = global_textureLod(tex_id, tc, 0);
+		// a triangle: the skin as the model wraps it - no rectangle to keep to
+		vec4 t = ((pic_flags & 128u) != 0u)
+			? global_textureGrad(tex_id, tex_coord, tc_dx, tc_dy)
+			: global_textureLod(tex_id, tc, 0);
 		const float stored_alpha = t.a;     // a painted emissive map's brightness (the glow view)
 
 		// 'mat print' showing a map as stored, whatever its alpha holds

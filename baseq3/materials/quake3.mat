@@ -71,6 +71,8 @@ models/powerups/health/yellow:
 	texture_emissive materialDev/textures/effects/envmapyel.jpg
 	emissive_factor 1
 	is_light 1
+	texture_roughness materialDev/textures/effects/envmapyel_rough.png
+	texture_metallic materialDev/textures/effects/envmapyel_metal.png
 
 # red and mega2 also have an electric layer (kenelectric) turning over them;
 # that stage draws the glow image here, so the glow keeps the motion
@@ -854,8 +856,9 @@ models/mapobjects/gratelamp/gratetorch2b:
 #	stage0: map models/mapobjects/gratelamp/gratetorch2b.tga; alphaFunc GE128; depthWrite; rgbGen vertex
 	stage0_map materialDev/models/mapobjects/gratelamp/gratetorch2b.tga
 #	texture_normals materialDev/models/mapobjects/gratelamp/gratetorch2b_n.png
-#	texture_roughness materialDev/models/mapobjects/gratelamp/gratetorch2b_rough.png
-#	texture_metallic materialDev/models/mapobjects/gratelamp/gratetorch2b_metal.png
+	texture_roughness materialDev/models/mapobjects/gratelamp/gratetorch2b_rough.png
+	texture_metallic materialDev/models/mapobjects/gratelamp/gratetorch2b_metal.png
+	base_factor 2.5
 #	texture_height materialDev/models/mapobjects/gratelamp/gratetorch2b_height.png
 #	texture_emissive materialDev/models/mapobjects/gratelamp/gratetorch2b_light.png
 
@@ -1044,8 +1047,8 @@ models/mapobjects/lamps/bot_lamp2b:
 #	stage0: map models/mapobjects/lamps/bot_lamp2b.tga; alphaFunc GE128; depthWrite; rgbGen vertex
 	stage0_map materialDev/models/mapobjects/lamps/bot_lamp2b.tga
 #	texture_normals materialDev/models/mapobjects/lamps/bot_lamp2b_n.png
-#	texture_roughness materialDev/models/mapobjects/lamps/bot_lamp2b_rough.png
-#	texture_metallic materialDev/models/mapobjects/lamps/bot_lamp2b_metal.png
+	texture_roughness materialDev/models/mapobjects/lamps/bot_lamp2b_rough.png
+	texture_metallic materialDev/models/mapobjects/lamps/bot_lamp2b_metal.png
 #	texture_height materialDev/models/mapobjects/lamps/bot_lamp2b_height.png
 #	texture_emissive materialDev/models/mapobjects/lamps/bot_lamp2b_light.png
 
@@ -1053,11 +1056,14 @@ models/mapobjects/lamps/bot_light:
 # scripts/models.shader
 #	stage0: map models/mapobjects/lamps/bot_light.tga; rgbGen identity
 	stage0_map materialDev/models/mapobjects/lamps/bot_light.jpg
+	emissive_factor 2
+	synth_emissive 0
 #	texture_normals materialDev/models/mapobjects/lamps/bot_light_n.png
 #	texture_roughness materialDev/models/mapobjects/lamps/bot_light_rough.png
 #	texture_metallic materialDev/models/mapobjects/lamps/bot_light_metal.png
 #	texture_height materialDev/models/mapobjects/lamps/bot_light_height.png
-#	texture_emissive materialDev/models/mapobjects/lamps/bot_light_light.png
+	texture_emissive materialDev/models/mapobjects/lamps/bot_light_emit.png
+	default_radiance 2
 
 models/mapobjects/lamps/bot_wing:
 # scripts/models.shader
@@ -1074,8 +1080,9 @@ models/mapobjects/lamps/bot_wing2:
 #	stage0: map models/mapobjects/lamps/bot_wing2.tga; alphaFunc GE128; depthWrite; rgbGen vertex
 	stage0_map materialDev/models/mapobjects/lamps/bot_wing2.tga
 #	texture_normals materialDev/models/mapobjects/lamps/bot_wing2_n.png
-#	texture_roughness materialDev/models/mapobjects/lamps/bot_wing2_rough.png
-#	texture_metallic materialDev/models/mapobjects/lamps/bot_wing2_metal.png
+	texture_roughness materialDev/models/mapobjects/lamps/bot_wing2_rough.png
+	texture_metallic materialDev/models/mapobjects/lamps/bot_wing2_metal.png
+	base_factor 2.5
 #	texture_height materialDev/models/mapobjects/lamps/bot_wing2_height.png
 #	texture_emissive materialDev/models/mapobjects/lamps/bot_wing2_light.png
 
@@ -1409,9 +1416,19 @@ models/mapobjects/skull/monkeyhead2:
 # scripts/models.shader
 #	stage0: map models/mapobjects/skull/monkeyhead2.tga; blendfunc blend; depthWrite; rgbGen vertex
 	stage0_map materialDev/models/mapobjects/skull/monkeyhead2.tga
+# The skull's spectacles (q3dm15): one square quad per lens. Quake III blended
+# the whole square by the image's alpha; here the lens is alpha glass and the
+# wire frame solid metal, and the square round them is cut away. Generated from
+# monkeyhead2.tga's alpha (2026-11-22): _mask = what Quake III showed at all,
+# _glass = the frame's colour with alpha 255 on the frame (and outside) and 0
+# on the lens; frame metal 1 / roughness 0.35, lens 0 / 0. The lens is clear
+# glass - a pane's base colour is not drawn.
+	kind ALPHA_GLASS
+	texture_base materialDev/models/mapobjects/skull/monkeyhead2_glass.png
+	texture_mask materialDev/models/mapobjects/skull/monkeyhead2_mask.png
 #	texture_normals materialDev/models/mapobjects/skull/monkeyhead2_n.png
-#	texture_roughness materialDev/models/mapobjects/skull/monkeyhead2_rough.png
-#	texture_metallic materialDev/models/mapobjects/skull/monkeyhead2_metal.png
+	texture_roughness materialDev/models/mapobjects/skull/monkeyhead2_rough.png
+	texture_metallic materialDev/models/mapobjects/skull/monkeyhead2_metal.png
 #	texture_height materialDev/models/mapobjects/skull/monkeyhead2_height.png
 #	texture_emissive materialDev/models/mapobjects/skull/monkeyhead2_light.png
 
@@ -4224,6 +4241,7 @@ models/powerups/holdable/teleport_sphere:
 # (medkit_sphere above) and wrong the same way.
 	kind GLASS
 	stage0_map materialDev/textures/effects/envmapdim.jpg
+	caustic 1
 #	texture_normals materialDev/models/powerups/holdable/teleport_sphere_n.png
 #	texture_roughness materialDev/models/powerups/holdable/teleport_sphere_rough.png
 #	texture_metallic materialDev/models/powerups/holdable/teleport_sphere_metal.png
@@ -4899,8 +4917,8 @@ models/weapons2/rocketl/rocketl14:
 models/weapons2/rocketl/rocketl2:
 	texture_base materialDev/models/weapons2/rocketl/rocketl2.jpg
 #	texture_normals materialDev/models/weapons2/rocketl/rocketl2_n.png
-#	texture_roughness materialDev/models/weapons2/rocketl/rocketl2_rough.png
-#	texture_metallic materialDev/models/weapons2/rocketl/rocketl2_metal.png
+	texture_roughness materialDev/models/weapons2/rocketl/rocketl2_rough.png
+	texture_metallic materialDev/models/weapons2/rocketl/rocketl2_metal.png
 #	texture_height materialDev/models/weapons2/rocketl/rocketl2_height.png
 #	texture_emissive materialDev/models/weapons2/rocketl/rocketl2_light.png
 
@@ -12146,6 +12164,7 @@ textures/gothic_block/jesus:
 
 textures/gothic_block/killblock:
 	texture_base materialDev/textures/gothic_block/killblock.jpg
+	base_factor 1
 #	texture_normals materialDev/textures/gothic_block/killblock_n.png
 #	texture_roughness materialDev/textures/gothic_block/killblock_rough.png
 #	texture_metallic materialDev/textures/gothic_block/killblock_metal.png
@@ -16773,6 +16792,7 @@ textures/gothic_wall/xpipecolumn_gray_shiny:
 	stage0_map materialDev/textures/effects/tinfx.jpg
 #	stage1: map textures/gothic_wall/xpipecolumn_gray_shiny.tga; blendFunc blend; rgbGen identity
 	stage1_map materialDev/textures/gothic_wall/xpipecolumn_gray_shiny.tga
+	emissive_factor 0
 #	stage2: map $lightmap; blendFunc GL_DST_COLOR GL_ONE_MINUS_DST_ALPHA; rgbGen identity
 #	texture_normals materialDev/textures/gothic_wall/xpipecolumn_gray_shiny_n.png
 #	texture_roughness materialDev/textures/gothic_wall/xpipecolumn_gray_shiny_rough.png

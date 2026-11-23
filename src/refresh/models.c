@@ -417,21 +417,24 @@ static bool MOD_MergedModel(const char *name, char *source, size_t size, int *sk
 
 /*
 =================
-MOD_LoadQuake1
+MOD_LoadQuake1Model
 
 A Quake 1 model - the QuakeC game's "id1/<episode>/progs/ogre.mdl" - as the
 file model_q1.c makes of it: the rerelease's .md5mesh when cl_md5_models is
 on and one fits, else an .md2, .sp2 or .md3 built from the Quake one, which
 every renderer's own loader then takes. An md5 that does not load costs the
 model its skeletal version and nothing else, as for Quake II's.
+(store_name) is the name the model goes in the list under; (*md5_skins) is
+MOD_Q1Build's for the md5 that loaded, 0 when an md5 did not.
 =================
 */
-static int MOD_LoadQuake1(const char *name, size_t namelen, model_t **model_p)
+static int MOD_LoadQuake1Model(const char *name, const char *store_name, bool md5,
+                               model_t **model_p, int *md5_skins)
 {
-    bool md5 = MOD_LoadMD5 && cl_md5_models->integer;
     model_t *model = MOD_Alloc();
     int ret = Q_ERR_UNKNOWN_FORMAT;
 
+    *md5_skins = 0;
     if (!model)
         return Q_ERR_OUT_OF_SLOTS;
 
@@ -445,13 +448,14 @@ static int MOD_LoadQuake1(const char *name, size_t namelen, model_t **model_p)
         uint32_t ident;
         mod_load_t load = NULL;
 
-        ret = MOD_Q1Build(name, md5, &data, &length, load_name, sizeof(load_name), offset, &scale, &sprite_type);
+        ret = MOD_Q1Build(name, md5, &data, &length, load_name, sizeof(load_name), offset, &scale, &sprite_type,
+                          md5_skins);
         if (ret == Q_ERR_TOO_MANY && !Q_stricmp(COM_FileExtension(name), ".bsp")) {
             // a whole map, precached as a model the way Quake listed its
             // world: nothing draws it, so it is nothing
             Com_DPrintf("%s: %s is a map, not a box; drawn as nothing\n", __func__, name);
             memset(model, 0, sizeof(*model));
-            memcpy(model->name, name, namelen + 1);
+            Q_strlcpy(model->name, store_name, sizeof(model->name));
             model->registration_sequence = registration_sequence;
             model->type = MOD_EMPTY;
             ret = Q_ERR_SUCCESS;
@@ -479,7 +483,7 @@ static int MOD_LoadQuake1(const char *name, size_t namelen, model_t **model_p)
         }
 
         memset(model, 0, sizeof(*model));
-        memcpy(model->name, name, namelen + 1);
+        Q_strlcpy(model->name, store_name, sizeof(model->name));
         model->registration_sequence = registration_sequence;
 
         // a box's md5 is sized and moved to stand where the box did (model_q1.c)
@@ -511,11 +515,43 @@ static int MOD_LoadQuake1(const char *name, size_t namelen, model_t **model_p)
 
     if (ret) {
         memset(model, 0, sizeof(*model));
+        *md5_skins = 0;
         return ret;
     }
 
-    model->model_class = get_model_class(model->name);
+    model->model_class = get_model_class(name);
     *model_p = model;
+    return Q_ERR_SUCCESS;
+}
+
+// the name of the .mdl that draws an md5's missing skins (MOD_LoadQuake1):
+// no configstring asks for it, MOD_Q1IsModel does not take it
+#define Q1_SKIN_MODEL_SUFFIX    "#mdl"
+
+static int MOD_LoadQuake1(const char *name, size_t namelen, model_t **model_p)
+{
+    char alt_name[MAX_QPATH];
+    model_t *alt = NULL;
+    int md5_skins = 0, alt_skins = 0;
+    int ret;
+
+    (void)namelen;
+    ret = MOD_LoadQuake1Model(name, name, MOD_LoadMD5 && cl_md5_models->integer, model_p, &md5_skins);
+    if (ret || md5_skins <= 0)
+        return ret;
+
+    /* id1's md5 standing in for an add-on's .mdl that is id1's with skins
+       added (model_q1.c q1_mdl_id1_skins): an entity in one of the added
+       skins is drawn from the .mdl, a second model the client swaps in by
+       skinnum (entities.c). Referenced with this one (R_RegisterModel). */
+    if (Q_concat(alt_name, sizeof(alt_name), name, Q1_SKIN_MODEL_SUFFIX) < sizeof(alt_name)
+        && !MOD_LoadQuake1Model(name, alt_name, false, &alt, &alt_skins)) {
+        (*model_p)->q1_md5_skins = md5_skins;
+        (*model_p)->q1_skin_model = (qhandle_t)(alt - r_models) + 1;
+    } else {
+        Com_WPrintf("%s: %s's own skins from %d up did not load as its .mdl; the md5 draws them\n",
+                    __func__, name, md5_skins);
+    }
     return Q_ERR_SUCCESS;
 }
 
@@ -564,6 +600,12 @@ qhandle_t R_RegisterModel(const char *name)
     model = MOD_Find(normalized);
     if (model) {
         MOD_Reference(model);
+        // and the .mdl drawing the skins its md5 lacks (MOD_LoadQuake1)
+        if (model->q1_skin_model) {
+            model_t *alt = MOD_ForHandle(model->q1_skin_model);
+            if (alt)
+                MOD_Reference(alt);
+        }
         goto done;
     }
 

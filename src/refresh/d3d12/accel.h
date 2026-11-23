@@ -119,16 +119,29 @@ void d3d12_as_barrier(ID3D12GraphicsCommandList4 *cmd, const d3d12_as_pool_t *po
    `reuse` it may stand unbuilt - when that memory holds a BLAS built from this
    very geometry (vertex address, counts) with these flags. The caller vouches
    that the vertices are unchanged since (blood.c's BLAS REUSE); accel.c only
-   that the BLAS is there. */
+   that the BLAS is there.
+
+   REFIT (the persistent one, pt_blood_blas_refit, 11-22 - measured a loss, off by
+   default: see blood.c's BLAS REFIT): `updatable` builds it
+   with ALLOW_UPDATE, and `refit` may then update it in place from its new
+   vertices (PERFORM_UPDATE, source = dest) instead of building it - when its
+   memory holds a BLAS built updatable from this geometry (vertex address,
+   counts) with these flags. A refit keeps the tree the build made and only
+   refits its boxes, so it is always correct; how far the tree may drift from
+   the vertices before it is built again is the caller's (blood.c). */
 typedef struct {
     d3d12_as_triangles_t        geometry;       // nothing in it (no vertices, indices or boxes) = no BLAS
     bool                        clustered;      // in/out: from CLASes (pt_clusters)
     bool                        persistent;     // in: in the slot's persistent memory (the first one marked)
     bool                        reuse;          // in: may stand unbuilt (see PERSISTENT)
+    bool                        updatable;      // in: (persistent) built with ALLOW_UPDATE (see REFIT)
+    bool                        refit;          // in: (persistent) may be refitted instead of built
     bool                        reused;         // out: it did - nothing recorded for it
+    bool                        refitted;       // out: it is refitted, not built
     D3D12_GPU_VIRTUAL_ADDRESS   address;        // out: the plan's, 0 = none
     uint64_t                    result_size;    // out
     uint64_t                    scratch_offset; // out
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS build_flags; // out: the plan's flags, ALLOW_UPDATE added
 } d3d12_dynamic_blas_t;
 
 typedef struct {

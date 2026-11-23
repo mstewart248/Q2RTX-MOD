@@ -532,8 +532,39 @@ nothing reallocated it: only a build can.
 
 There is one BLAS per frame in flight and one shared section, so the version is
 global and each BLAS is rebuilt once, on its own frame, after a change.
+
+BLAS REFIT - pt_blood_blas_refit, default 0: MEASURED A LOSS (D3D12; 11-22). Reuse only helps a
+frame that wrote nothing, and a settled floor still writes most frames: a splat
+crossing a LOD band as the camera moves is rebuilt in its slot, and that was a
+build of the WHOLE section - 1.25M triangles for demo1's 3200 droplets, BVH
+update 0.3 -> 1.5 ms, "blas 75 built / 0 reused" every second (Matt: "frame
+setup taking over 1.5ms"). A refit keeps the tree the last build made and only
+recomputes its boxes from the new positions, several times cheaper, and always
+correct - a ray finds every triangle where it now is. What it costs is tree
+quality: triangles that moved since the build drag their nodes' boxes after
+them, and the blanked ones are zeros AT THE WORLD ORIGIN (see pt_clusters in
+d3d12_world_plan_dynamic), so a slot that grew or shrank stretches a branch from
+its droplet to (0,0,0). So the drift is bounded, per BLAS (one per frame in
+flight), since its last full build:
+  - pt_blood_blas_refit_frames: refits in a row before the next build;
+  - pt_blood_blas_refit_drift: the primitives written since (regions, GPU moves
+    and clears), as a fraction of the section. An epoch is all of them.
+Vulkan's BLAS is built as before.
+
+THE MEASUREMENT (rerelease/fsetup5*.cfg: the attract loop's first five demos,
+~13.5k frames an arm, 5070 Ti, 4K at 50%): refit off - bvh 1.43 ms, gpu frame
+14.71; refit at 8 frames / 2% - bvh 1.56, frame 14.88 (only 30% of frames
+qualified, and an ALLOW_UPDATE build is slower than a plain one); at 30 / 50% -
+bvh 0.74, but tracing 1.18 ms slower, frame 15.20. The stretched branches cost
+more than the builds they save, so it stays off. NaN padding would not rescue it
+(an inactive triangle cannot become active in an update) and does not speed the
+build either: d3d12_blood_pad_bench.c - the driver already drops the zeros (the
+same compacted size), and leaving the padding out entirely saved only 14%.
 */
 static cvar_t* cvar_pt_blood_blas_reuse = NULL;
+static cvar_t* cvar_pt_blood_blas_refit = NULL;
+static cvar_t* cvar_pt_blood_blas_refit_frames = NULL;
+static cvar_t* cvar_pt_blood_blas_refit_drift = NULL;
 
 typedef struct {
 	bool     valid;
@@ -541,16 +572,53 @@ typedef struct {
 	uint32_t prim_offset;
 	uint32_t prim_count;
 	bool     fast_build;
+	uint64_t written_at_build;  // blood_blas.written when it was last BUILT (REFIT)
+	int      refits;            // refits since
 } blood_blas_record_t;
 
 static struct {
 	uint32_t            version;          // bumped on every frame that writes the section
+	uint64_t            written;          // primitives written, ever (BLAS REFIT's drift)
 	uint64_t            reported_frame;   // qvk.frame_counter of the last vkpt_blood_update
 	uint32_t            reported_offset;  // and the section it reported
 	uint32_t            reported_count;
 	blood_blas_record_t built[MAX_FRAMES_IN_FLIGHT];
-	int                 builds, reuses;   // since the last pt_blood_stats line
+	int                 builds, reuses, refits;   // since the last pt_blood_stats line
 } blood_blas;
+
+/* WHY THE SECTION IS WRITTEN (pt_blood_stats, 11-22): this frame's droplet
+   changes by kind (vkpt_blood_update's droplet loop), and over the stats line's
+   second the frames that wrote, by the most telling change they held: new, gone
+   or airborne droplets (combat) > a settled splat's shape or fade > a settled
+   splat only changing LOD band > nothing a droplet did (film, close-ups, epoch). */
+typedef struct { int fresh, gone, air, shape, radius, level, held_lod, held_fade; } blood_why_t;
+static blood_why_t why_frame, why_second;
+static int why_frames[4];   // combat, settled shape/fade, LOD only, other
+
+static void blood_why_frame_done(bool wrote)
+{
+	const blood_why_t* w = &why_frame;
+	if (wrote)
+	{
+		if (w->fresh || w->gone || w->air)
+			why_frames[0]++;
+		else if (w->shape || w->radius)
+			why_frames[1]++;
+		else if (w->level)
+			why_frames[2]++;
+		else
+			why_frames[3]++;
+	}
+	why_second.fresh += w->fresh;
+	why_second.gone += w->gone;
+	why_second.air += w->air;
+	why_second.shape += w->shape;
+	why_second.radius += w->radius;
+	why_second.level += w->level;
+	why_second.held_lod += w->held_lod;
+	why_second.held_fade += w->held_fade;
+	memset(&why_frame, 0, sizeof(why_frame));
+}
 
 static void blood_blas_reset(void)
 {
@@ -559,11 +627,13 @@ static void blood_blas_reset(void)
 }
 
 // What vkpt_blood_update leaves for the BLAS build this frame. `wrote` is true
-// whenever the device's copy of the section may have changed.
-static void blood_blas_report(uint32_t prim_offset, uint32_t prim_count, bool wrote)
+// whenever the device's copy of the section may have changed; `written` is how
+// many primitives (BLAS REFIT), the whole section's worth for an epoch.
+static void blood_blas_report(uint32_t prim_offset, uint32_t prim_count, bool wrote, uint64_t written)
 {
 	if (wrote)
 		blood_blas.version++;
+	blood_blas.written += written;
 
 	blood_blas.reported_frame = qvk.frame_counter;
 	blood_blas.reported_offset = prim_offset;
@@ -616,9 +686,59 @@ void vkpt_blood_blas_built(int frame_idx, uint32_t prim_offset, uint32_t prim_co
 	b->prim_offset = prim_offset;
 	b->prim_count = prim_count;
 	b->fast_build = fast_build;
+	b->written_at_build = blood_blas.written;
+	b->refits = 0;
 
 	if (prim_count > 0)
 		blood_blas.builds++;
+}
+
+bool vkpt_blood_blas_refit_on(void)
+{
+	return cvar_pt_blood_blas_refit && cvar_pt_blood_blas_refit->integer != 0;
+}
+
+/* BLAS REFIT: the BLAS on this index was built from this very section (offset,
+   count, flags) and the section has drifted from it by less than the limits. The
+   renderer still checks the BLAS was built updatable, and builds it if not. */
+bool vkpt_blood_blas_may_refit(int frame_idx, uint32_t prim_offset, uint32_t prim_count, bool fast_build)
+{
+	if (!vkpt_blood_blas_refit_on() || frame_idx < 0 || frame_idx >= MAX_FRAMES_IN_FLIGHT || prim_count == 0)
+		return false;
+
+	if (!blood_blas_matches_report(prim_offset, prim_count))
+		return false;
+
+	const blood_blas_record_t* b = blood_blas.built + frame_idx;
+
+	if (!b->valid || b->prim_offset != prim_offset || b->prim_count != prim_count || b->fast_build != fast_build)
+		return false;
+
+	if (b->refits >= cvar_pt_blood_blas_refit_frames->integer)
+		return false;
+
+	const double drift = (double)(blood_blas.written - b->written_at_build);
+	return drift <= (double)cvar_pt_blood_blas_refit_drift->value * (double)prim_count;
+}
+
+// ...and after a refit: it holds this version now, its tree still the build's
+void vkpt_blood_blas_refitted(int frame_idx, uint32_t prim_offset, uint32_t prim_count)
+{
+	if (frame_idx < 0 || frame_idx >= MAX_FRAMES_IN_FLIGHT)
+		return;
+
+	blood_blas_record_t* b = blood_blas.built + frame_idx;
+
+	if (!b->valid || b->prim_offset != prim_offset || b->prim_count != prim_count
+		|| !blood_blas_matches_report(prim_offset, prim_count))
+	{
+		b->valid = false;
+		return;
+	}
+
+	b->version = blood_blas.version;
+	b->refits++;
+	blood_blas.refits++;
 }
 
 // Inside the close-up pool: `big` regions of the close-up level, then the rest
@@ -761,6 +881,7 @@ static cvar_t* cvar_pt_blood_tess = NULL;
 static cvar_t* cvar_pt_blood_stats = NULL;
 static cvar_t* cvar_pt_blood_lod_near = NULL;
 static cvar_t* cvar_pt_blood_lod_far = NULL;
+static cvar_t* cvar_pt_blood_lod_beat = NULL;
 static cvar_t* cvar_pt_blood_lod_air = NULL;
 static cvar_t* cvar_pt_blood_puddle_sink = NULL;
 static cvar_t* cvar_pt_blood_wobble = NULL;
@@ -1302,6 +1423,12 @@ void vkpt_blood_init_cvars(void)
 	// Keep the blood BLAS while the section is unchanged - see BLAS REUSE. Not
 	// archived: an A/B switch should come back on by itself.
 	cvar_pt_blood_blas_reuse = Cvar_Get("pt_blood_blas_reuse", "1", 0);
+
+	// Refit it after a small change instead of building it - see BLAS REFIT
+	// (measured a loss: off). Not archived either.
+	cvar_pt_blood_blas_refit = Cvar_Get("pt_blood_blas_refit", "0", 0);
+	cvar_pt_blood_blas_refit_frames = Cvar_Get("pt_blood_blas_refit_frames", "8", 0);
+	cvar_pt_blood_blas_refit_drift = Cvar_Get("pt_blood_blas_refit_drift", "0.02", 0);
 }
 
 VkResult vkpt_blood_initialize(void)
@@ -1334,6 +1461,9 @@ VkResult vkpt_blood_initialize(void)
 	// disable the LOD and tessellate everything at full rate.
 	cvar_pt_blood_lod_near = Cvar_Get("pt_blood_lod_near", "160", CVAR_ARCHIVE);
 	cvar_pt_blood_lod_far = Cvar_Get("pt_blood_lod_far", "500", CVAR_ARCHIVE);
+	// ms between settled splats' LOD and fade steps - see LOD STEPS ON A BEAT in
+	// choose_lods; 0 = every frame. Not archived: an A/B switch.
+	cvar_pt_blood_lod_beat = Cvar_Get("pt_blood_lod_beat", "200", 0);
 
 	// Tessellation levels to drop for a droplet still in FLIGHT. 0 restores the
 	// old behaviour exactly - see the note in choose_lods.
@@ -1697,6 +1827,22 @@ typedef struct {
 static blood_closeup_t closeups[MAX_BLOOD_SPHERES];
 static int             num_closeups;
 
+// LOD STEPS ON A BEAT: this frame is between beats (choose_lods sets it, the
+// droplet loop reads it)
+static bool blood_hold_settled;
+
+// The splat this mesh was built from, or it after a fade step (a smaller radius
+// and nothing else) - LOD STEPS ON A BEAT. Growing is not a fade: a pool grows by
+// absorbing a droplet that vanishes at once, and the pool must not lag it.
+static bool same_splat_but_fade(const blood_sphere_t* built, const blood_sphere_t* now)
+{
+	if (now->radius > built->radius)
+		return false;
+	blood_sphere_t a = *built;
+	a.radius = now->radius;
+	return memcmp(&a, now, sizeof(a)) == 0;
+}
+
 static uint32_t choose_lods(const blood_sphere_t* spheres, int num_spheres, const vec3_t cam_pos,
                             float fov_y, int view_height)
 {
@@ -1760,6 +1906,34 @@ static uint32_t choose_lods(const blood_sphere_t* spheres, int num_spheres, cons
 	everything here is.
 	*/
 	const float hyst_sq = 1.25f * 1.25f;
+
+	/*
+	LOD STEPS ON A BEAT (pt_blood_lod_beat, 11-22). Hysteresis stops ONE splat
+	flickering on a threshold; it does nothing for a camera on the move, which
+	walks thousands of settled splats through their bands - and the blood BLAS is
+	one build over the whole section, so a single splat re-meshed costs as much
+	as all of them. On base1 with 4457 settled splats (rerelease/fsquiet.cfg)
+	standing still reused the BLAS every frame, bvh update 0.33 ms; dollying the
+	camera through them rebuilt it on 69-80 frames a second for nothing but LOD
+	steps - up to 2878 of them a second - bvh 1.4-1.8 ms. Matt's "frame setup
+	taking over 1.5ms", with "0 moved, 1 rebuilt, 3486 still" on his HUD.
+
+	So a settled splat that changed nothing but its band - or shrank a fade step,
+	in the droplet loop - keeps the mesh it has until the beat, every
+	pt_blood_lod_beat milliseconds, and the steps owed by then all go in one
+	build (one per frame in flight). A step is at most that late, and only ever
+	one band: a jump of two (a teleport, a respawn) goes at once, as does any
+	splat whose shape changed (a slide, pooling), a new one and one in the air.
+	0 = every frame, as before.
+	*/
+	{
+		static unsigned last_beat;
+		const unsigned now = Sys_Milliseconds();
+		const int beat_ms = cvar_pt_blood_lod_beat->integer;
+		blood_hold_settled = beat_ms > 0 && now - last_beat < (unsigned)beat_ms;
+		if (!blood_hold_settled)
+			last_beat = now;
+	}
 
 	uint32_t total = 0;
 
@@ -1879,6 +2053,15 @@ static uint32_t choose_lods(const blood_sphere_t* spheres, int num_spheres, cons
 		close-up LOD below, by size on screen rather than by distance.
 		*/
 		level = max(0, min(level, min(max_level, slot_top)));
+
+		// LOD STEPS ON A BEAT: an unchanged splat one band off keeps the level it
+		// was built at until the beat (or a jump of two bands - a teleport)
+		if (blood_hold_settled && is_splat && prev && prev->valid && abs(prev->level - level) == 1
+			&& same_splat_but_fade(&prev->sphere, spheres + s))
+		{
+			level = prev->level;
+			why_frame.held_lod++;
+		}
 
 		/*
 		THE CLOSE-UP LOD: is this droplet's outline visibly faceted?
@@ -3047,6 +3230,36 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 			continue;
 		}
 
+		// LOD STEPS ON A BEAT (choose_lods): a settled splat's fade step waits for
+		// the beat as its band does - the mesh it has stays, as a hit
+		if (blood_hold_settled && is_splat && cache->valid && cache->level == level
+			&& same_splat_but_fade(&cache->sphere, sphere))
+		{
+			blood.cache_hits++;
+			why_frame.held_fade++;
+			continue;
+		}
+
+		// WHY THE SECTION IS WRITTEN (pt_blood_stats, 11-22): every write is a whole
+		// BLAS build, so which kind of change it was - a settled splat only crossing
+		// a LOD band, a settled splat whose shape or fade changed, one in the air, or
+		// a new one in the slot
+		if (!cache->valid)
+			why_frame.fresh++;
+		else if (memcmp(&cache->sphere, sphere, sizeof(blood_sphere_t)) == 0)
+			why_frame.level++;
+		else if (!is_splat)
+			why_frame.air++;
+		else
+		{
+			blood_sphere_t a = cache->sphere;
+			a.radius = sphere->radius;
+			if (memcmp(&a, sphere, sizeof(blood_sphere_t)) == 0)
+				why_frame.radius++;
+			else
+				why_frame.shape++;
+		}
+
 		// the rest is the droplet's job (drop_job): moved, or made again
 		drop_job_t* j = drop_jobs + num_drop_jobs++;
 		j->sphere = sphere;
@@ -3100,6 +3313,7 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 		blood_cache[i].faces = 0;
 
 		blood.dirty_slot[i] = true;
+		why_frame.gone++;
 	}
 
 	// Everything past the used range is simply not covered by the build.
@@ -3160,7 +3374,7 @@ void vkpt_blood_prepare(
 	if ((num_spheres <= 0 && num_films <= 0) || model_instance_index < 0 || !cvar_pt_blood_spheres->integer)
 	{
 		blood.have_last_offset = false;
-		blood_blas_report(prim_offset, 0, true);
+		blood_blas_report(prim_offset, 0, true, 0);
 		return;
 	}
 
@@ -3191,7 +3405,7 @@ void vkpt_blood_prepare(
 	if (needed == 0)
 	{
 		blood.have_last_offset = false;
-		blood_blas_report(prim_offset, 0, true);
+		blood_blas_report(prim_offset, 0, true, 0);
 		return;
 	}
 
@@ -3202,7 +3416,7 @@ void vkpt_blood_prepare(
 	if (!buffers_ok)
 	{
 		blood.have_last_offset = false;
-		blood_blas_report(prim_offset, 0, true);
+		blood_blas_report(prim_offset, 0, true, 0);
 		return;
 	}
 
@@ -3228,7 +3442,7 @@ void vkpt_blood_prepare(
 	if (prim_count == 0)
 	{
 		blood.have_last_offset = false;
-		blood_blas_report(prim_offset, 0, true);
+		blood_blas_report(prim_offset, 0, true, 0);
 		return;
 	}
 
@@ -3489,8 +3703,20 @@ void vkpt_blood_prepare(
 	CPUPROF_COUNT_SET(BLOOD_GPU_MOVES, num_moves - num_clears);
 
 	// The fill, the copies and the moves are the only writes this section gets -
-	// see BLAS REUSE. None of them means the device holds what it held.
-	blood_blas_report(prim_offset, prim_count, epoch_reset || num_regions > 0 || num_moves > 0);
+	// see BLAS REUSE. None of them means the device holds what it held. How many
+	// primitives they touch is BLAS REFIT's drift.
+	uint64_t written = 0;
+	if (epoch_reset)
+		written = prim_count;
+	else
+	{
+		for (uint32_t r = 0; r < num_regions; r++)
+			written += regions[r].count;
+		for (uint32_t m = 0; m < num_moves; m++)
+			written += move_list[m].count;
+	}
+	blood_blas_report(prim_offset, prim_count, epoch_reset || num_regions > 0 || num_moves > 0, written);
+	blood_why_frame_done(epoch_reset || num_regions > 0 || num_moves > 0);
 
 	/* A SLOW BLOOD FRAME SAYS WHERE (11-14): the profiler's "blood meshes" is this
 	   whole function; over 4 ms, its parts go to the log beside the PROFCAPTURE
@@ -3574,8 +3800,9 @@ void vkpt_blood_print_stats(uint64_t copy_usec)
 	{
 		last_report = now;
 		char reuse[64] = "";
-		if (blood_blas.builds || blood_blas.reuses)
-			Q_snprintf(reuse, sizeof(reuse), ", blas %d built / %d reused", blood_blas.builds, blood_blas.reuses);
+		if (blood_blas.builds || blood_blas.reuses || blood_blas.refits)
+			Q_snprintf(reuse, sizeof(reuse), ", blas %d built / %d reused / %d refitted", blood_blas.builds,
+				blood_blas.reuses, blood_blas.refits);
 		Com_Printf("blood gpu-side: %d droplets (%d splats, %d cached, %d moved), %d tris (%.0f avg), gen %.2f ms + copy %.2f ms%s, %.2f MB in %d regions + %u moves + %u clears%s%s\n",
 			blood.sphere_count, blood.splat_count, blood.cache_hits, blood.cache_moves, blood.prim_count,
 			blood.sphere_count ? (float)blood.prim_count / blood.sphere_count : 0.f,
@@ -3589,6 +3816,15 @@ void vkpt_blood_print_stats(uint64_t copy_usec)
 			Com_Printf("blood film: %d tiles, %d tris in %d / %d chunks%s\n",
 				blood.film_tiles, blood.film_tris, blood.film_chunks_used, blood.film_count,
 				blood.film_truncated ? va(", %d tiles TRUNCATED", blood.film_truncated) : "");
+		if (why_frames[0] || why_frames[1] || why_frames[2] || why_frames[3] || why_second.held_lod ||
+			why_second.held_fade)
+			Com_Printf("blood writes: %d frames combat, %d settled shape/fade, %d LOD only, %d other; "
+				"droplets %d new, %d gone, %d air, %d shape, %d fade, %d LOD; held to the beat %d LOD, %d fade\n",
+				why_frames[0], why_frames[1], why_frames[2], why_frames[3], why_second.fresh, why_second.gone,
+				why_second.air, why_second.shape, why_second.radius, why_second.level, why_second.held_lod,
+				why_second.held_fade);
+		memset(why_frames, 0, sizeof(why_frames));
+		memset(&why_second, 0, sizeof(why_second));
 		if (samples)
 			Com_Printf("blood gpu times: bvh update %.2f ms (worst %.2f), gpu frame %.2f ms (worst %.2f), %d frames\n",
 				bvh_sum / samples, bvh_max, frame_sum / samples, frame_max, samples);
@@ -3596,6 +3832,7 @@ void vkpt_blood_print_stats(uint64_t copy_usec)
 			Com_Printf("blood gpu times: none - profiler 1 for the GPU's side\n");
 		blood_blas.builds = 0;
 		blood_blas.reuses = 0;
+		blood_blas.refits = 0;
 		bvh_sum = bvh_max = frame_sum = frame_max = 0.0;
 		samples = 0;
 	}
@@ -3662,7 +3899,7 @@ void vkpt_blood_update(
 		// Nothing reached the device: the next frame starts the section afresh.
 		vkpt_blood_invalidate();
 		blood.prim_count = 0;
-		blood_blas_report(prim_offset, 0, true);
+		blood_blas_report(prim_offset, 0, true, 0);
 		return;
 	}
 

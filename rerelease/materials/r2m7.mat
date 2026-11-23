@@ -1,0 +1,22 @@
+
+# instance of id1/rogue/progs/flame_mdl_00_00
+# r2m7, created at (-449 -711 66)
+# the model standing at (-478 -730 60) - keyed on that spot
+# Inherits everything from id1/rogue/progs/flame_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/rogue/progs/flame_mdl_00_00#31799c3a:
+#	texture_base materialDev/progs/flame_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_torch_emissive2_crop296x140.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 3
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1

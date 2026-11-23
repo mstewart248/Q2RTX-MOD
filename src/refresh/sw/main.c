@@ -1104,6 +1104,9 @@ void R_RegisterFunctionsSW(void)
     R_DrawStretchPic = R_DrawStretchPic_SW;
     R_DrawRotatedPic = R_DrawRotatedPic_SW;
     R_DrawStretchSubPic = R_DrawStretchSubPic_SW;
+    // none here: the 2D icons (and a switch from RTX must not keep its hooks)
+    R_DrawModel2D = NULL;
+    R_ModelBounds = NULL;
     R_TileClear = R_TileClear_SW;
     R_DrawFill8 = R_DrawFill8_SW;
     R_DrawFill32 = R_DrawFill32_SW;

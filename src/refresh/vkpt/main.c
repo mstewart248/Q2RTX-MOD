@@ -4718,13 +4718,20 @@ prepare_entities(EntityUploadInfo* upload_info)
 				const bool is_viewer_weapon = (entity->flags & RF_WEAPONMODEL) != 0;
 				create_entity_matrix(transform, (entity_t*)entity, is_viewer_weapon);
 
+				/* A moving Quake III surface's lights (q3deform.c: q3dm16's ceiling
+				   lamp tiles) were the world's and still are in all but place: the
+				   same identity every frame - its entity comes after the client's, so
+				   its index moves whenever theirs come and go - and the fog's long
+				   history, as they had. They bob a few units, slowly. */
+				const bool deform = vkpt_q3_deform_model(model);
+
 				entity_hash_t hash;
-				hash.entity = i + 1;
+				hash.entity = deform ? entity->id : i + 1;
 				hash.model = ~entity->model;
 				hash.mesh = 0;
 				// a torch, a brazier: the fog's long history (model_light_is_fixture)
 				hash.bsp = (!is_viewer_weapon && model->model_class != MCLASS_FLASH &&
-					model_light_is_fixture(entity)) ? 1 : 0;
+					(deform || model_light_is_fixture(entity))) ? 1 : 0;
 
 				instance_model_lights(model->num_light_polys, model_light_polys(model, entity), transform, hash, entity);
 			}
@@ -11536,6 +11543,12 @@ vkpt_begin_registration(const char *name)
 	// would otherwise leave the gap open for the rest of the session.
 	blood_prim_base = 0;
 
+	// The light and bone uploads' high-water marks, likewise (WHAT THE LIGHT AND
+	// IQM UPLOADS COPY, vertex_buffer.c): kept for the session, a Quake 1 or III
+	// map's light lists went on being copied every frame of every map after it.
+	// Both renderers; the next upload is whole, then this map's own marks.
+	vkpt_upload_ranges_new_map();
+
 	// New level - DLSS must not reproject from the previous one.
 	vkpt_dlss_request_history_reset();
 
@@ -11959,6 +11972,8 @@ void R_RegisterFunctionsRTX()
 	R_DrawStretchPic = R_DrawStretchPic_RTX;
 	R_DrawRotatedPic = R_DrawRotatedPic_RTX;
 	R_DrawStretchSubPic = R_DrawStretchSubPic_RTX;
+	R_DrawModel2D = R_DrawModel2D_RTX;
+	R_ModelBounds = R_ModelBounds_RTX;
 	R_TileClear = R_TileClear_RTX;
 	R_DrawFill8 = R_DrawFill8_RTX;
 	R_DrawFill32 = R_DrawFill32_RTX;

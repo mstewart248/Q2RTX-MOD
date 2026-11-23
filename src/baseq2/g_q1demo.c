@@ -169,7 +169,20 @@ typedef struct {
 typedef struct {
     int     num;
     int     modelindex, frame, skin;
+    int     demo_model;         // the demo's model index (an inline one may be renumbered)
 } q1d_static_t;
+
+#define Q1D_MAX_INLINE      1024    // the map's inline models looked at (q1d_renumber)
+
+// what the demo's signon gave an inline model to
+#define Q1D_USE_ENTITY      1       // an entity's baseline
+#define Q1D_USE_STATIC      2       // a static entity (func_illusionary's makestatic)
+
+// what the map's entity holding an inline model is
+#define Q1D_KIND_NONE       0       // no entity holds it
+#define Q1D_KIND_ENTITY     1       // drawn: a door, a button, a func_wall...
+#define Q1D_KIND_STATIC     2       // drawn, made static: func_illusionary
+#define Q1D_KIND_TRIGGER    3       // never drawn: trigger_*
 
 static struct {
     bool        active;         // this level plays a demo
@@ -201,6 +214,12 @@ static struct {
     int         model_map[Q1D_MAX_MODELS];
     int         sound_map[Q1D_MAX_SOUNDS];
     int         num_models, num_sounds;
+
+    // the inline models, the demo's against the map's (q1d_renumber)
+    int         model_inline[Q1D_MAX_MODELS];   // "*k": k, else 0
+    byte        model_use[Q1D_MAX_MODELS];      // Q1D_USE_*: what the signon gave it to
+    byte        map_kind[Q1D_MAX_INLINE];       // Q1D_KIND_*, by the map's k
+    int         map_inline;                     // the map's highest k
 
     q1d_ent_t   *ents;          // Q1D_MAX_ENTS of them (TAG_LEVEL)
     int         max_ent;        // the highest number used
@@ -405,6 +424,13 @@ static void q1d_parse_serverinfo(void)
             COM_StripExtension(map, COM_SkipPath(s), sizeof(map));
             Q_strlcpy(q1d.mapname, map, sizeof(q1d.mapname));
             q1d.model_map[i] = 1;
+        } else if (s[0] == '*') {
+            // the map's own inline model of that number - unless the map has
+            // fewer (its setmodel would be an error), or the demo was recorded
+            // on another build of the map (q1d_renumber, after the signon)
+            int k = atoi(s + 1);
+            q1d.model_inline[i] = k;
+            q1d.model_map[i] = (k > 0 && k <= q1d.map_inline) ? Q1_ModelIndex(s) : 0;
         } else {
             q1d.model_map[i] = Q1_ModelIndex(s);
         }
@@ -491,7 +517,11 @@ static void q1d_parse_static(void)
         return;
 
     int mi = q1d_model(model);
-    if (!mi || q1d.num_statics >= Q1D_MAX_STATICS)
+    bool inline_model = model > 0 && model < q1d.num_models && q1d.model_inline[model];
+    if (inline_model)
+        q1d.model_use[model] |= Q1D_USE_STATIC;
+    // an inline model past the map's own is kept for q1d_renumber
+    if ((!mi && !inline_model) || q1d.num_statics >= Q1D_MAX_STATICS)
         return;
 
     edict_t *e = q1d_new_static();
@@ -501,6 +531,11 @@ static void q1d_parse_static(void)
     q1d_static_t *st = &q1d.statics[q1d.num_statics++];
     st->num = e->s.number;
     st->modelindex = mi;
+    st->demo_model = model;
+    if (!mi) {
+        e->inuse = false;   // nothing to draw unless it's renumbered
+        return;
+    }
     st->frame = frame;
     st->skin = skin;
 
@@ -964,6 +999,8 @@ static bool q1d_parse_message(void)
             q1d_parse_baseline(&e->b_model, &e->b_frame, &e->b_skin, e->b_origin, e->b_angles);
             if (n > 0)
                 q1d_note_entity(n);
+            if (n > 0 && e->b_model > 0 && e->b_model < q1d.num_models && q1d.model_inline[e->b_model])
+                q1d.model_use[e->b_model] |= Q1D_USE_ENTITY;
             break;
         }
 
@@ -1050,6 +1087,264 @@ static bool q1d_episode(const char *path, char *episode, size_t size)
     return true;
 }
 
+/*
+==============================================================================
+
+A DEMO RECORDED ON ANOTHER BUILD OF ITS MAP
+
+A brush entity's model is the map's "*k", numbered in the order the .map lists
+its brush entities - so a build of the map that adds, drops or moves one
+renumbers every one after it. dopa's demo1-3 were recorded on the 2016 maps
+and the rerelease ships later builds (e5m2 65 -> 71 inline models, e5m3
+52 -> 52 reordered, e5m6 76 -> 95). Played by number, the demo's doors came up
+as the map's trigger brushes (Matt, 11-22: "rendering this trigger brushes that
+should be hidden"), and a door the wrong one.
+
+The order holds, so the demo's drawn inline models are lined up against the
+map's in that order - an order-keeping alignment (dynamic programming) of
+  - the demo's inline models its signon gave to an entity or a static, with
+  - the map's whose entity is drawn (not trigger_*), func_illusionary as a static,
+costing a demo model left out Q1D_RN_SKIP_DEMO, a map model left out
+Q1D_RN_SKIP_MAP, an entity paired with a static Q1D_RN_KIND, and a change in
+the numbering's offset (map k - demo k) from the last pair Q1D_RN_SHIFT.
+Checked offline against the edict numbers (the demo's baselines and this
+game's own spawn of the map, q1gamehost HOST_TRIGGERS 2): within each run of
+pairs the edict offset holds as well, e.g. e5m2's demo *55-*64 at edicts
+224-233 are the map's *54-*63 at 242-252. A demo model with no partner isn't
+drawn.
+
+Only done when a drawn demo model lands on a trigger, on no entity's model or
+past the map's models: id1's, hipnotic's and rogue's demos keep their numbers
+(the rerelease's id1 maps only added models at the end).
+
+==============================================================================
+*/
+
+#define Q1D_RN_SKIP_DEMO    3
+#define Q1D_RN_SKIP_MAP     1
+#define Q1D_RN_KIND         3
+#define Q1D_RN_SHIFT        4
+
+// what the map's entity holding each inline model is, from the entity string
+static void q1d_map_kinds(const char *entities)
+{
+    const char *data = entities;
+
+    q1d.map_inline = 0;
+    while (data) {
+        const char *tok = COM_Parse(&data);
+        if (!data || tok[0] != '{')
+            break;
+        char classname[MAX_QPATH] = "";
+        int k = 0;
+        while (data) {
+            char key[MAX_QPATH];
+            Q_strlcpy(key, COM_Parse(&data), sizeof(key));
+            if (!data || key[0] == '}')
+                break;
+            const char *value = COM_Parse(&data);
+            if (!data)
+                break;
+            if (!Q_stricmp(key, "classname"))
+                Q_strlcpy(classname, value, sizeof(classname));
+            else if (!Q_stricmp(key, "model") && value[0] == '*')
+                k = atoi(value + 1);
+        }
+        if (k <= 0 || k >= Q1D_MAX_INLINE)
+            continue;
+        if (!Q_strncasecmp(classname, "trigger_", 8))
+            q1d.map_kind[k] = Q1D_KIND_TRIGGER;
+        else if (!Q_stricmp(classname, "func_illusionary"))
+            q1d.map_kind[k] = Q1D_KIND_STATIC;
+        else
+            q1d.map_kind[k] = Q1D_KIND_ENTITY;
+        if (k > q1d.map_inline)
+            q1d.map_inline = k;
+    }
+}
+
+static bool q1d_map_drawn(int k)
+{
+    return k > 0 && k < Q1D_MAX_INLINE &&
+           (q1d.map_kind[k] == Q1D_KIND_ENTITY || q1d.map_kind[k] == Q1D_KIND_STATIC);
+}
+
+static void q1d_renumber(void)
+{
+    int a[Q1D_MAX_MODELS], na = 0;      // the demo's drawn inline models (model indices)
+    int b[Q1D_MAX_INLINE], nb = 0;      // the map's drawn ones (k)
+    bool needed = false;
+
+    for (int i = 2; i < q1d.num_models; i++) {
+        if (!q1d.model_inline[i] || !q1d.model_use[i])
+            continue;
+        // in k order (the signon lists them so; kept so if not)
+        int at = na++;
+        while (at > 0 && q1d.model_inline[a[at - 1]] > q1d.model_inline[i]) {
+            a[at] = a[at - 1];
+            at--;
+        }
+        a[at] = i;
+        if (!q1d_map_drawn(q1d.model_inline[i]) || q1d.model_inline[i] > q1d.map_inline)
+            needed = true;
+    }
+    if (!needed)
+        return;
+    for (int k = 1; k <= q1d.map_inline; k++)
+        if (q1d_map_drawn(k))
+            b[nb++] = k;
+
+    int new_k[Q1D_MAX_MODELS] = { 0 };
+    int renumbered = 0, kept = 0, left_out = 0;
+
+    if (na && nb) {
+        // cost[i * nb + j]: the least an alignment ending with demo a[i] paired
+        // with map b[j] costs; back: the pair before it, -1 for none. Through
+        // G = cost - (i + 1) * SKIP_DEMO - (j + 1) * SKIP_MAP, a pair's cost is
+        // G(before) + i * SKIP_DEMO + j * SKIP_MAP + its own, the best G
+        // before it kept two ways: by offset (same_g, any earlier row - the
+        // k's both rising, an earlier row with the same offset is an earlier
+        // column too) and overall (prefix minimum over earlier rows and
+        // columns, prev_g/cur_g, plus Q1D_RN_SHIFT).
+        const int offsets = 2 * Q1D_MAX_INLINE + 1;
+        int *cost = gi.TagMalloc(sizeof(int) * na * nb, TAG_LEVEL);
+        int *back = gi.TagMalloc(sizeof(int) * na * nb, TAG_LEVEL);
+        int *rows = gi.TagMalloc(sizeof(int) * (nb + 1) * 4, TAG_LEVEL);
+        int *prev_g = rows, *prev_arg = rows + (nb + 1), *cur_g = rows + 2 * (nb + 1), *cur_arg = rows + 3 * (nb + 1);
+        int *same_g = gi.TagMalloc(sizeof(int) * offsets * 2, TAG_LEVEL);
+        int *same_arg = same_g + offsets;
+
+        for (int d = 0; d < offsets; d++) {
+            same_g[d] = INT_MAX;
+            same_arg[d] = -1;
+        }
+        same_g[Q1D_MAX_INLINE] = 0;    // the start: offset 0, nothing left out
+        for (int j = 0; j <= nb; j++) {
+            prev_g[j] = 0;
+            prev_arg[j] = -1;
+        }
+
+        for (int i = 0; i < na; i++) {
+            const int ka = q1d.model_inline[a[i]];
+            const bool demo_static = !(q1d.model_use[a[i]] & Q1D_USE_ENTITY);
+
+            // cur_g[j]: the best G over rows < i and columns < j
+            cur_g[0] = 0;
+            cur_arg[0] = -1;
+            if (i > 0) {
+                for (int j = 1; j <= nb; j++) {
+                    int g = prev_g[j], arg = prev_arg[j];
+                    if (cur_g[j - 1] < g) {
+                        g = cur_g[j - 1];
+                        arg = cur_arg[j - 1];
+                    }
+                    int s = (i - 1) * nb + (j - 1);
+                    int gs = cost[s] - i * Q1D_RN_SKIP_DEMO - j * Q1D_RN_SKIP_MAP;
+                    if (gs < g) {
+                        g = gs;
+                        arg = s;
+                    }
+                    cur_g[j] = g;
+                    cur_arg[j] = arg;
+                }
+            } else {
+                for (int j = 1; j <= nb; j++) {
+                    cur_g[j] = 0;
+                    cur_arg[j] = -1;
+                }
+            }
+
+            for (int j = 0; j < nb; j++) {
+                const int d = b[j] - ka + Q1D_MAX_INLINE;
+                const bool map_static = q1d.map_kind[b[j]] == Q1D_KIND_STATIC;
+                int g = cur_g[j] + Q1D_RN_SHIFT, arg = cur_arg[j];
+                if (d >= 0 && d < offsets && same_g[d] != INT_MAX && same_g[d] <= g) {
+                    g = same_g[d];
+                    arg = same_arg[d];
+                }
+                cost[i * nb + j] = g + i * Q1D_RN_SKIP_DEMO + j * Q1D_RN_SKIP_MAP +
+                                   (demo_static != map_static ? Q1D_RN_KIND : 0);
+                back[i * nb + j] = arg;
+            }
+
+            // this row's pairs, for the rows after it
+            for (int j = 0; j < nb; j++) {
+                const int d = b[j] - ka + Q1D_MAX_INLINE;
+                int gs = cost[i * nb + j] - (i + 1) * Q1D_RN_SKIP_DEMO - (j + 1) * Q1D_RN_SKIP_MAP;
+                if (d >= 0 && d < offsets && gs < same_g[d]) {
+                    same_g[d] = gs;
+                    same_arg[d] = i * nb + j;
+                }
+            }
+            int *t = prev_g; prev_g = cur_g; cur_g = t;
+            t = prev_arg; prev_arg = cur_arg; cur_arg = t;
+        }
+
+        // the best end: everything after the last pair left out
+        int best = na * Q1D_RN_SKIP_DEMO + nb * Q1D_RN_SKIP_MAP, end = -1;
+        for (int s = 0; s < na * nb; s++) {
+            int i = s / nb, j = s % nb;
+            int c = cost[s] + (na - 1 - i) * Q1D_RN_SKIP_DEMO + (nb - 1 - j) * Q1D_RN_SKIP_MAP;
+            if (c < best) {
+                best = c;
+                end = s;
+            }
+        }
+        for (int s = end; s >= 0; s = back[s])
+            new_k[a[s / nb]] = b[s % nb];
+
+        gi.TagFree(cost);
+        gi.TagFree(back);
+        gi.TagFree(rows);
+        gi.TagFree(same_g);
+    }
+
+    // every inline model the demo names goes by the alignment: one its signon
+    // didn't draw has no partner either
+    char list[1024] = "";
+    for (int i = 2; i < q1d.num_models; i++) {
+        if (!q1d.model_inline[i])
+            continue;
+        int k = new_k[i];
+        q1d.model_map[i] = k ? Q1_ModelIndex(va("*%d", k)) : 0;
+        if (!q1d.model_use[i])
+            continue;
+        if (k == q1d.model_inline[i]) {
+            kept++;
+        } else {
+            renumbered++;
+            if (!k)
+                left_out++;
+            Q_strlcat(list, va(" *%d>%s", q1d.model_inline[i], k ? va("*%d", k) : "-"), sizeof(list));
+        }
+    }
+
+    // the statics went out with the old numbers
+    for (int n = 0; n < q1d.num_statics; n++) {
+        q1d_static_t *st = &q1d.statics[n];
+        if (st->demo_model <= 0 || st->demo_model >= q1d.num_models || !q1d.model_inline[st->demo_model])
+            continue;
+        edict_t *e = &g_edicts[st->num];
+        int mi = q1d.model_map[st->demo_model];
+        if (!mi) {
+            if (e->inuse)
+                gi.unlinkentity(e);
+            e->inuse = false;
+            e->s.modelindex = 0;
+            st->modelindex = 0;
+        } else if (mi != st->modelindex || !e->inuse) {
+            e->inuse = true;
+            q1d_set_box(e, mi);
+            st->modelindex = mi;
+            gi.linkentity(e);
+        }
+    }
+
+    gi.dprintf("Quake 1 demo %s: recorded on another build of %s - %d of its %d drawn inline models "
+               "renumbered to the map's (%d of them left out), %d kept:%s\n", q1d.path, q1d.mapname,
+               renumbered, na, left_out, kept, list);
+}
+
 static bool q1d_load(const char *mapname)
 {
     char episode[16];
@@ -1116,6 +1411,7 @@ static bool q1d_load(const char *mapname)
         gi.dprintf("Quake 1 demo %s: recorded on %s, not %s\n", q1d.path, q1d.mapname, mapname);
         return false;
     }
+    q1d_renumber();
     return true;
 }
 
@@ -1124,7 +1420,7 @@ A Quake 1 map started for a demo (g_q1_demo): the demo's signon read and the
 level set up for it, in place of the map's own entities. Returns false for
 any other level.
 */
-bool Q1Demo_SpawnEntities(const char *mapname)
+bool Q1Demo_SpawnEntities(const char *mapname, const char *entities)
 {
     memset(&q1d, 0, sizeof(q1d));
     gi.cvar_forceset("sv_q1demo", "0");
@@ -1154,6 +1450,7 @@ bool Q1Demo_SpawnEntities(const char *mapname)
         globals.num_edicts = game.maxclients + 1;
 
     q1d.active = true;
+    q1d_map_kinds(entities);    // before the signon: its inline models are checked against them
     if (!q1d_load(mapname))
         q1d.broken = true;  // over at the first frame: the attract loop goes on
 

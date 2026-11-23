@@ -4,7 +4,9 @@
 
 **Quake II RTX Overdrive** is a fork of NVIDIA's **Quake II RTX** that takes the
 path tracer forward and pairs it with the content and the game logic of the 2023
-*Quake II* remaster.
+*Quake II* remaster. It plays **Quake** too, with everything its 2021 remaster
+ships (the original campaign, all five expansions and Threewave CTF), and
+**Quake III Arena**, all path traced in the same engine.
 
 Two things happened to the original project that this fork is built around.
 NVIDIA's DLSS grew a denoiser (Ray Reconstruction), a frame generator and a
@@ -15,8 +17,10 @@ and it plays the remaster's campaigns with real path-traced lighting instead of
 the remaster's raster renderer. With your own copy of **Quake III Arena**, it
 plays that too: [its campaign, arenas, weapons and bots](#quake-iii-arena-support),
 path traced in the same engine. And with the **Quake** rerelease's paks, it
-plays [Quake's campaigns and its expansions](#quake-support), each running its
-own QuakeC.
+plays [all of that remaster's content](#quake-support): *Quake* and its
+expansions *Scourge of Armagon*, *Dissolution of Eternity*, *Dimension of the
+Past*, *Dimension of the Machine* and *Dawn of the Machine*, each running its
+own QuakeC, plus the deathmatch and Threewave CTF maps in bot match.
 
 Lineage: **Quake II RTX** builds on [Q2VKPT](http://brechpunkt.de/q2vkpt), which
 builds on [Q2PRO](https://skuller.net/q2pro/), which is a modernised *Quake II*.
@@ -99,10 +103,12 @@ existing Quake II RTX install.
   path traced: its campaign with the podium and medals, its arenas and CTF
   maps in bot match, its weapons, movement, player models and bots (Quake
   III's own bot AI), and its shaders, curved surfaces, skies and fog.
-* **[Quake](#quake-support)** from the rerelease's paks, path traced: the
-  original campaign and all its expansions, each running its own `progs.dat`
-  in a QuakeC virtual machine, with Quake's status bar, demos and saves; its
-  deathmatch and CTF maps in bot match; its guns, and its Ranger as a player
+* **[Quake](#quake-support)**, all of its 2021 remaster's content, from your
+  own paks and path traced: the original campaign and all five expansions
+  (*Scourge of Armagon*, *Dissolution of Eternity*, *Dimension of the Past*,
+  *Dimension of the Machine* and *Dawn of the Machine*), each running its own
+  `progs.dat` in a QuakeC virtual machine, with Quake's status bar, demos and
+  saves; its deathmatch and Threewave CTF maps in bot match; its guns, and its Ranger as a player
   model; and its skies, sun, fog, teleporter gates you can see through, and
   [stained glass](#stained-glass) windows that throw their colours into the room.
 * **[Physical blood and gore](#gore-and-physical-blood)**: droplets are real,
@@ -2075,7 +2081,7 @@ controls when it starts.
 | **T** (**Shift + T** back) | next tool: brush, spray, hatch, noise, blur, fill |
 | **G** | fill on or off |
 | **F** / **P** | lock painting to the face / the piece under the brush. **Shift** adds or removes one; **F** or **P** over the lock, or **U**, unlocks |
-| **M** (**Shift + M** back) | selection shape: rectangle, ellipse, lasso, then back to painting. Left-drag selects; **Shift** + drag adds, **Ctrl** + drag takes away, a click drops it |
+| **M** (**Shift + M** back) | selection shape: rectangle, ellipse, lasso, then back to painting. Left-drag selects; **Shift** + drag adds, **Ctrl** + drag takes away, a click drops it. Drag on the selection to move it, or on a side of the last rectangle or ellipse to resize it |
 | **Ctrl + A** / **Ctrl + D** / **Ctrl + I** | select all / drop the selection (**Ctrl + Shift + D** brings it back) / invert it |
 | **Tab** | the map view (a flat view of the map, paintable) |
 | **O** | the base texture under the map in the map view, or the map alone |
@@ -2191,6 +2197,21 @@ it takes every texel along them. The part past an edge is cut off; it doesn't
 wrap round to the other side.
 The same from the console: `mat author select rect|ellipse|lasso|off|all|none|invert|back`.
 
+**Moving and resizing a selection.** While a select shape is picked, the last
+rectangle or ellipse you made keeps handles, as GIMP's tools do. Hover just
+inside one of its sides and that side's band lights up: orange in the map view
+(where the ellipse's box is drawn too), a cyan-edged box on the surface. Drag
+it to move that side, so the shape gets wider or narrower, or taller or
+shorter. A corner moves two sides at once, and a side pulled past the opposite
+one flips the shape. Drag anywhere else inside that box, or on any selected
+texel, and the **whole selection** moves with the cursor, every shape of it, a
+texel at a time. On a tiled surface it goes to the place on the map the cursor
+is over, so one selection can be used in place after place. The cursor says
+what a press will do (**width**, **height**, **size** or **move**). A click
+that moves nothing still drops the selection. To draw a new shape that starts
+inside the old selection, hold **Shift** or **Ctrl**, or drop it first with
+**Ctrl + D**.
+
 A selection is kept in the map's own coordinates, so it lies on every map of
 the material (roughness, metallic and the rest) whatever their sizes. It shows
 the way a lock does, darkened outside with a cyan edge, and in the map view
@@ -2212,6 +2233,20 @@ spread, and the panel shows that spread (`base 12-48%`). Works on roughness,
 metallic, height and emissive brightness (0–200%), not normals. With nothing
 selected it applies to the whole map. Each apply is one undo step. From the
 console: `mat author range <dark%> <bright%>`.
+
+**Normals out / in.** On the normal map, with a selection, the panel shows a
+**bevel** slider and **out** / **in** buttons in place of the brightness range.
+With a lock on as well, only the part of the selection inside the lock leans. **Out** leans every selected texel's normal away from the
+nearest edge of the selection, so it stands up: an ellipse becomes a dome, a
+rectangle a raised plate. **In** leans them towards the edge, so the selection
+sinks into a dish or a recess. The lean at the edge is the panel's
+**intensity**, and it falls to none at **bevel** texels in from the edge, with a
+flat top past that. Bevel **0** takes it all the way to the selection's middle:
+a round dome. A small bevel gives a plate with rounded edges. The edge is
+measured over the texture's tiling, so a selection running off one side of the
+map carries on from the other. The selected texels' normals are replaced, not
+added to, and each press is one undo step. From the console:
+`mat author lean out|in [bevel]`.
 
 ### Photo mode at half the rays
 

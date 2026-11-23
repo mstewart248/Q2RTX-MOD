@@ -539,6 +539,9 @@ typedef struct {
     uint32_t            num_model_instances;
     bool                animate_world;
     uint64_t            iqm_upload_size;
+    // of instance_buffer, the model_instances rows prepare_entities wrote this frame
+    // (the blood row among them), -1 = not known: world.c copies it whole
+    int32_t             instance_rows;
     uint32_t            num_geometry_instances;
     bool                tlas_fast_trace;
     // THE PARTITIONED TLAS (vkpt/ptlas.h, accel.h): pt_ptlas; of the list, the
@@ -737,9 +740,14 @@ void d3d12_world_set_primbuf_size(uint32_t prims);
 // build flags. blood_reuse: blood.c vouches the blood section is what this slot's
 // blood BLAS was built from (vkpt_blood_blas_needs_build false), so it may stand;
 // blood_built: it was (re)built this frame (for vkpt_blood_blas_built).
+// blood_updatable: built so it can be refitted (pt_blood_blas_refit); blood_refit:
+// blood.c allows a refit (vkpt_blood_blas_may_refit), and blood_refitted says it was
+// (for vkpt_blood_blas_refitted) - accel.c falls back to a build when the BLAS standing
+// there was not built updatable from this geometry.
 void d3d12_world_plan_dynamic(const uint32_t first[D3D12_NUM_DYN_RUNS], const uint32_t count[D3D12_NUM_DYN_RUNS],
                               const d3d12_world_transparency_t *tr, bool fast_trace, bool blood_reuse,
-                              uint64_t address[D3D12_NUM_DYN], bool *blood_built);
+                              bool blood_updatable, bool blood_refit,
+                              uint64_t address[D3D12_NUM_DYN], bool *blood_built, bool *blood_refitted);
 
 // The transparency buffers (transparency.c's create_buffers): each stream's
 // capacity in bytes, D3D12_TR_INDICES' too, the CPU frame's (for the staging

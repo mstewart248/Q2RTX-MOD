@@ -604,6 +604,8 @@ bool d3d12_dynamic_blas_plan(ID3D12Device5 *device, d3d12_dynamic_as_t *mem, d3d
         blases[i].result_size = 0;
         blases[i].scratch_offset = 0;
         blases[i].reused = false;
+        blases[i].refitted = false;
+        blases[i].build_flags = flags;
     }
     uint64_t clas_size = 0;
     const uint64_t cluster_scratch = cluster_plan(device, mem, blases, count, flags, &clas_size);
@@ -621,15 +623,28 @@ bool d3d12_dynamic_blas_plan(ID3D12Device5 *device, d3d12_dynamic_as_t *mem, d3d
             continue;
         if (b->persistent && persistent < 0) {
             persistent = i;
-            if (b->reuse && mem->persist.buffer && mem->persist_size && mem->persist_flags == flags &&
-                same_geometry(&mem->persist_geometry, &b->geometry)) {
+            if (b->updatable)
+                b->build_flags = flags | D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE;
+            const bool same = mem->persist.buffer && mem->persist_size && mem->persist_flags == b->build_flags &&
+                              same_geometry(&mem->persist_geometry, &b->geometry);
+            if (b->reuse && same) {
                 b->reused = true;   // no scratch, no build: where it already is
                 b->result_size = mem->persist_size;
                 continue;
             }
+            // REFIT: in place, with the update's scratch (built updatable: persist_flags says so)
+            d3d12_as_sizes_t s;
+            if (b->refit && b->updatable && same && d3d12_blas_sizes(device, &b->geometry, 1, b->build_flags, &s) &&
+                s.update_scratch) {
+                b->refitted = true;
+                b->result_size = mem->persist_size;
+                b->scratch_offset = scratch_size;
+                scratch_size += AS_ALIGN(s.update_scratch);
+                continue;
+            }
         }
         d3d12_as_sizes_t s;
-        if (!d3d12_blas_sizes(device, &b->geometry, 1, flags, &s))
+        if (!d3d12_blas_sizes(device, &b->geometry, 1, b->build_flags, &s))
             continue;
         b->result_size = s.result;
         b->scratch_offset = scratch_size;
@@ -642,7 +657,8 @@ bool d3d12_dynamic_blas_plan(ID3D12Device5 *device, d3d12_dynamic_as_t *mem, d3d
     // the clustered steps' scratch past every classic build's: no barrier between them
     mem->cluster_scratch_offset = scratch_size;
     scratch_size += cluster_scratch;
-    if (!pool_size && !persist_needed && !(persistent >= 0 && blases[persistent].reused))
+    if (!pool_size && !persist_needed &&
+        !(persistent >= 0 && (blases[persistent].reused || blases[persistent].refitted)))
         return true;
 
     // every scratch region apart: the builds need no barriers between them
@@ -686,12 +702,12 @@ bool d3d12_dynamic_blas_plan(ID3D12Device5 *device, d3d12_dynamic_as_t *mem, d3d
             b->address = d3d12_as_pool_alloc(&mem->pool, b->result_size);
             continue;
         }
-        // alone in its memory, at its start - where a reused one already stands
+        // alone in its memory, at its start - where a reused or refitted one already stands
         d3d12_as_pool_reset(&mem->persist);
         b->address = d3d12_as_pool_alloc(&mem->persist, b->result_size);
-        if (b->address && !b->reused) {
+        if (b->address && !b->reused && !b->refitted) {
             mem->persist_geometry = b->geometry;
-            mem->persist_flags = flags;
+            mem->persist_flags = b->build_flags;
             mem->persist_size = b->result_size;
         }
     }
@@ -771,6 +787,7 @@ bool d3d12_dynamic_blas_build(ID3D12GraphicsCommandList4 *cmd, const d3d12_dynam
                               const d3d12_dynamic_blas_t *blases, int count,
                               D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS flags)
 {
+    (void)flags;    // the plan's, per BLAS since REFIT (build_flags)
     if (!mem->scratch)
         return true;
     const D3D12_GPU_VIRTUAL_ADDRESS scratch = ID3D12Resource_GetGPUVirtualAddress(mem->scratch);
@@ -779,7 +796,12 @@ bool d3d12_dynamic_blas_build(ID3D12GraphicsCommandList4 *cmd, const d3d12_dynam
         const d3d12_dynamic_blas_t *b = &blases[i];
         if (!b->address || b->clustered || b->reused)
             continue;
-        d3d12_blas_build(cmd, &b->geometry, 1, flags, b->address, scratch + b->scratch_offset, 0);
+        if (b->refitted)    // REFIT: in place, from the BLAS that stands there
+            d3d12_blas_build(cmd, &b->geometry, 1,
+                             b->build_flags | D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE,
+                             b->address, scratch + b->scratch_offset, b->address);
+        else
+            d3d12_blas_build(cmd, &b->geometry, 1, b->build_flags, b->address, scratch + b->scratch_offset, 0);
         any = true;
         persist_built |= b->persistent;
     }

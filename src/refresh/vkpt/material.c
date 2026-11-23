@@ -3169,8 +3169,9 @@ static void apply_q3_shader(pbr_material_t* mat, const q3shader_t* q3, imagetype
 
 	/* Not a glow that travels with its lamp (Q3Shader_IsTravellingGlow: the
 	   flying skull lamp's jets, bot_flare2). It is drawn as a q3deform model,
-	   which a light material cannot be, and its light polys would hang where
-	   the map put it while the jets bob away. The lamp's light is the spot the
+	   which a light material can be only when its shader just moves - the jets
+	   also wave - so its light polys would hang where the map put it while the
+	   jets bob away. The lamp's light is the spot the
 	   client puts in place of its flare (client q3lamps.c). 'is_light 1' in the
 	   entry still makes it one - then it stays still in the world. */
 	const bool travelling_glow = Q3Shader_IsTravellingGlow(q3);

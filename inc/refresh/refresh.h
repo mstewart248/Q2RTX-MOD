@@ -705,6 +705,19 @@ extern void    (*R_DrawRotatedPic)(float cx, float cy, float w, float h, float a
 // with it (client/ui/q3sp.c).
 extern void    (*R_DrawStretchSubPic)(float x, float y, float w, float h,
                                       float s1, float t1, float s2, float t2, qhandle_t pic);
+// A MODEL DRAWN INTO THE 2D LAYER, as Quake III's CG_Draw3DModel drew its HUD
+// icons with cg_draw3dIcons (client/hud_q3.c): the head, the ammo box, the
+// armor. (ent) stands in a camera of its own at the origin looking down +X
+// (+Y left, +Z up) - its origin, angles, model, skinnum and frame; (fov_x,
+// fov_y) in degrees across the box x, y, w, h, which it is not clipped to. Lit
+// by Quake III's fixed light for a scene with no world, its skins' colour only.
+// false: not drawn - draw the 2D icon. NULL where the renderer has none (GL,
+// software).
+extern bool    (*R_DrawModel2D)(float x, float y, float w, float h,
+                                float fov_x, float fov_y, const entity_t *ent);
+// the box frame 0 of a model fits in, for framing it in R_DrawModel2D; false
+// for a model it can't measure. NULL with R_DrawModel2D.
+extern bool    (*R_ModelBounds)(qhandle_t model, vec3_t mins, vec3_t maxs);
 extern void    (*R_TileClear)(int x, int y, int w, int h, qhandle_t pic);
 extern void    (*R_DrawFill8)(int x, int y, int w, int h, int c);
 extern void    (*R_DrawFill32)(int x, int y, int w, int h, uint32_t color);

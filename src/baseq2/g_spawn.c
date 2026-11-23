@@ -1355,7 +1355,7 @@ void SpawnEntities(const char *mapname, const char *entities, const char *spawnp
 
     // a Quake 1 map started for one of Quake's demos (the attract loop's
     // q1demo): the demo plays on it instead of its entities (g_q1demo.c)
-    if (Q1Demo_SpawnEntities(mapname))
+    if (Q1Demo_SpawnEntities(mapname, entities))
         return;
 
     // a Quake 1 map out of deathmatch: the episode's own progs.dat runs it

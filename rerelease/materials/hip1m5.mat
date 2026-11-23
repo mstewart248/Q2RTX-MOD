@@ -1,0 +1,84 @@
+
+# instance of textures/q1/switch_1
+# hip1m5, created at (1350 -708 -209)
+# Inherits everything from textures/q1/switch_1; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/switch_1#836cb311:
+#	texture_base materialDev/textures/q1/switch_1.png
+#	texture_emissive materialDev/remix/TextureDev/RedChevron_Emissive.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1.25
+	light_factor 16
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/q1/switch_1
+# hip1m5, created at (1420 -734 -195)
+# Inherits everything from textures/q1/switch_1; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/switch_1#0c6e46d9:
+#	texture_base materialDev/textures/q1/switch_1.png
+#	texture_emissive materialDev/remix/TextureDev/RedChevron_Emissive.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1.25
+	light_factor 16
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/q1/tlight02
+# hip1m5, created at (134 -8 45)
+# Inherits everything from textures/q1/tlight02; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/tlight02#f2b610c5:
+#	texture_base materialDev/textures/q1/tlight02.png
+#	texture_emissive materialDev/remix/TextureDev/Panel_Orange_Lights_emissive.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 0.75
+#	light_factor 1
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/q1/tlight02
+# hip1m5, created at (1518 -757 60)
+# Inherits everything from textures/q1/tlight02; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/tlight02#81b8cd8c:
+#	texture_base materialDev/textures/q1/tlight02.png
+#	texture_emissive materialDev/remix/TextureDev/Panel_Orange_Lights_emissive.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 0.75
+	light_factor 2
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1

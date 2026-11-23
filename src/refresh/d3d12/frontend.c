@@ -1529,11 +1529,17 @@ bool d3d12_frontend_prepare_frame(refdef_t *fd, int waterLevel, d3d12_world_fram
     const bool dyn_fast_build = cvar_pt_blas_fast_trace->integer == 0;
     const bool blood_reuse = !vkpt_blood_blas_needs_build(d3d.frame_index, u->blood_prim_offset,
                                                           u->blood_prim_count, dyn_fast_build);
-    bool blood_built = false;
+    // pt_blood_blas_refit (blood.c's BLAS REFIT): or refitted, not rebuilt, after a small change
+    const bool blood_refit = !blood_reuse && vkpt_blood_blas_may_refit(d3d.frame_index, u->blood_prim_offset,
+                                                                       u->blood_prim_count, dyn_fast_build);
+    bool blood_built = false, blood_refitted = false;
     CPUPROF_DETAIL_BEGIN(BLAS);
-    d3d12_world_plan_dynamic(first, count, tr, !dyn_fast_build, blood_reuse, blas, &blood_built);
+    d3d12_world_plan_dynamic(first, count, tr, !dyn_fast_build, blood_reuse, vkpt_blood_blas_refit_on(), blood_refit,
+                             blas, &blood_built, &blood_refitted);
     if (blood_built)
         vkpt_blood_blas_built(d3d.frame_index, u->blood_prim_offset, u->blood_prim_count, dyn_fast_build);
+    else if (blood_refitted)
+        vkpt_blood_blas_refitted(d3d.frame_index, u->blood_prim_offset, u->blood_prim_count);
     vkpt_pt_instance_list(&frame->first_dynamic_instance);
     frame->num_geometry_instances = vkpt_pt_append_dynamic_instances(blas, u, u->weapon_left_handed);
     CPUPROF_DETAIL_END(BLAS);
@@ -1547,6 +1553,11 @@ bool d3d12_frontend_prepare_frame(refdef_t *fd, int waterLevel, d3d12_world_fram
     frame->num_model_instances = u->num_instances;
     frame->animate_world = prep->update_world_animations;
     frame->iqm_upload_size = vkpt_iqm_upload_size();
+    // how much of the instance buffer changed (uniform_buffer.c's TWO PIECES)
+    {
+        uint32_t rows = 0;
+        frame->instance_rows = vkpt_uniform_buffer_model_instance_rows(qvk.frame_counter, &rows) ? (int32_t)rows : -1;
+    }
     frame->tlas_fast_trace = cvar_pt_tlas_fast_trace->integer != 0;
     frame->extents.screen_width = qvk.extent_screen_images.width;
     frame->extents.screen_height = qvk.extent_screen_images.height;
@@ -1752,6 +1763,9 @@ void d3d12_frontend_register_functions(void)
     R_DrawStretchPic = R_DrawStretchPic_RTX;
     R_DrawRotatedPic = R_DrawRotatedPic_RTX;
     R_DrawStretchSubPic = R_DrawStretchSubPic_RTX;
+    // vkpt's models and its 2D queue (draw.c)
+    R_DrawModel2D = R_DrawModel2D_RTX;
+    R_ModelBounds = R_ModelBounds_RTX;
     R_TileClear = R_TileClear_RTX;
     R_DrawFill8 = R_DrawFill8_RTX;
     R_DrawFill32 = R_DrawFill32_RTX;

@@ -134,6 +134,7 @@ bool        Q3P_ModelExists(const char *model);
 q3player_t  *Q3P_Get(const char *model);
 const char  *Q3P_ModelName(const q3player_t *q3);
 char        Q3P_Sex(const q3player_t *q3);      // 'm', 'f' or 'n'
+void        Q3P_HeadOffset(const q3player_t *q3, vec3_t out);
 int         Q3P_SkinIndex(const q3player_t *q3, const char *skin);
 int         Q3P_NumSkins(const q3player_t *q3);
 const char  *Q3P_SkinName(const q3player_t *q3, int index);

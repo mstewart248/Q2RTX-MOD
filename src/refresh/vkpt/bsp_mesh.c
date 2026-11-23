@@ -478,6 +478,20 @@ static int filter_static_masked(int flags, int surf_flags)
 	
 	const pbr_material_t* mat = MAT_ForIndex(flags & MATERIAL_INDEX_MASK);
 
+	/* MASKED GLASS: glass with its outside cut away - the Quake III skull's
+	   spectacles (models/mapobjects/skull/monkeyhead2, q3dm15), one square quad
+	   per lens, round glass on it with a solid frame (alpha glass) and nothing
+	   round that. Here it was written twice: cut out in this BLAS, whose
+	   AS_FLAG_OPAQUE made the lenses solid to shadow and bounce rays, and whole
+	   in the transparent one (filter_static_transparent), whose forced-opaque
+	   hits never asked the mask - so the square showed as a glass pane. It goes
+	   to the transparent BLAS only, which then runs the masked hit
+	   (transparent_masked, vkpt_bsp_mesh_set_instance_flags), as a brush model
+	   holding masked glass always did. Glass only: a masked water or kind
+	   TRANSPARENT face keeps its copy here, and the shadow it casts. */
+	if (mat && mat->image_mask && MAT_IsKind(flags, MATERIAL_KIND_GLASS))
+		return 0;
+
 	if (mat && mat->image_mask)
 		return 1;
 
@@ -1135,6 +1149,11 @@ build_face_instance_hashes(bsp_t *bsp)
    collect_surfaces as it emits each face's primitives. */
 static uint32_t *s_face_instance_hash = NULL;
 
+/* The world faces q3deform.c draws moving (collect_surfaces), one byte per
+   face, while the mesh is built: their light polys move with them
+   (give_lights_to_deform) instead of staying in the world's list. */
+static byte *s_deform_faces = NULL;
+
 /* THE MATERIAL A FACE ACTUALLY DRAWS WITH.
 
    Every path that asks "what material is on this surface?" has to come through
@@ -1484,6 +1503,8 @@ collect_surfaces(uint32_t *prim_ctr, bsp_mesh_t *wm, bsp_t *bsp, int model_idx, 
 		{
 			const uint32_t front = face_has_back(bsp, surf_material, material_id) ? prims_in_surface / 2 : prims_in_surface;
 			vkpt_q3_deform_collect(surf_material, surface_prims, (int)front);
+			if (s_deform_faces && surf >= bsp->faces && surf - bsp->faces < bsp->numfaces)
+				s_deform_faces[surf - bsp->faces] = 1;
 			continue;
 		}
 
@@ -2342,6 +2363,24 @@ stained_emit_windows(bsp_t *bsp, const stained_window_t *windows, int num_window
 	}
 }
 
+/* A face that moves (s_deform_faces): the light polys just made for it, from
+   first_light on, go to its q3deform model, which carries them with it each
+   frame as a model's lights - q3dm16's ceiling lamps, whose tile
+   (bot_light, q3map_surfacelight) bobs with the fixture. Left here if no model
+   took them. */
+static void
+give_lights_to_deform(bsp_t *bsp, const mface_t *surf, const pbr_material_t *material, int model_idx,
+                      int first_light, int *num_lights, const light_poly_t *lights)
+{
+	if (model_idx >= 0 || !s_deform_faces || *num_lights <= first_light)
+		return;
+	const ptrdiff_t f = surf - bsp->faces;
+	if (f < 0 || f >= bsp->numfaces || !s_deform_faces[f])
+		return;
+	if (vkpt_q3_deform_take_lights(material, lights + first_light, *num_lights - first_light))
+		*num_lights = first_light;
+}
+
 static void
 collect_light_polys(bsp_mesh_t *wm, bsp_t *bsp, int model_idx, int* num_lights, int* allocated_lights, light_poly_t** lights)
 {
@@ -2463,6 +2502,7 @@ collect_light_polys(bsp_mesh_t *wm, bsp_t *bsp, int model_idx, int* num_lights, 
 												  q3_glow, num_lights, allocated_lights, lights);
 			if (both_faces)
 				add_back_faces(bsp, model_idx, first_light, num_lights, allocated_lights, lights);
+			give_lights_to_deform(bsp, surf, material, model_idx, first_light, num_lights, *lights);
 			continue;
 		}
 
@@ -2481,6 +2521,7 @@ collect_light_polys(bsp_mesh_t *wm, bsp_t *bsp, int model_idx, int* num_lights, 
 							   num_lights, allocated_lights, lights);
 		if (both_faces)
 			add_back_faces(bsp, model_idx, first_light, num_lights, allocated_lights, lights);
+		give_lights_to_deform(bsp, surf, material, model_idx, first_light, num_lights, *lights);
 	}
 
 	if (num_windows > 0)
@@ -3282,6 +3323,8 @@ bsp_mesh_create_from_bsp(bsp_mesh_t *wm, bsp_t *bsp, const char* map_name)
 
 	// the faces that move go to q3deform.c instead (collect_surfaces)
 	vkpt_q3_deform_begin(bsp);
+	Z_Free(s_deform_faces);
+	s_deform_faces = bsp->numfaces > 0 ? Z_Mallocz(bsp->numfaces) : NULL;
 
 	uint32_t first_prim = prim_ctr;
 	collect_surfaces(&prim_ctr, wm, bsp, -1, filter_static_opaque);
@@ -3290,6 +3333,16 @@ bsp_mesh_create_from_bsp(bsp_mesh_t *wm, bsp_t *bsp, const char* map_name)
 	first_prim = prim_ctr;
 	collect_surfaces(&prim_ctr, wm, bsp, -1, filter_static_transparent);
 	vkpt_append_model_geometry(&wm->geom_transparent, prim_ctr - first_prim, first_prim, "bsp");
+
+	// masked glass among them (filter_static_masked): the masked hit for all of it
+	wm->transparent_masked = false;
+	for (uint32_t prim = first_prim; prim < prim_ctr && !wm->transparent_masked; prim++)
+	{
+		const uint32_t material = wm->primitives[prim].material_id;
+		const pbr_material_t* mat = MAT_ForIndex((int)(material & MATERIAL_INDEX_MASK));
+		if (mat && mat->image_mask && MAT_IsKind(material, MATERIAL_KIND_GLASS))
+			wm->transparent_masked = true;
+	}
 
 	first_prim = prim_ctr;
 	collect_surfaces(&prim_ctr, wm, bsp, -1, filter_static_masked);
@@ -3388,6 +3441,8 @@ bsp_mesh_create_from_bsp(bsp_mesh_t *wm, bsp_t *bsp, const char* map_name)
 		Z_Free(s_face_instance_hash);
 		s_face_instance_hash = NULL;
 	}
+	Z_Free(s_deform_faces);
+	s_deform_faces = NULL;
 
 	free_styled_lights();
 }

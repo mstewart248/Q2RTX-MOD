@@ -603,6 +603,9 @@ typedef struct bsp_mesh_s {
 	model_geometry_t geom_masked;
 	model_geometry_t geom_sky;
 	model_geometry_t geom_custom_sky;
+	// geom_transparent holds a face with a cut-out mask (a masked glass face,
+	// filter_static_masked): it runs the masked hit (vkpt_bsp_mesh_set_instance_flags)
+	bool transparent_masked;
 
 	int num_clusters;
 
@@ -898,6 +901,7 @@ const void *vkpt_pt_instance_list(uint32_t *count);
 uint32_t vkpt_light_upload_regions(uint64_t offsets[2], uint64_t sizes[2]);
 /* The light and IQM staging buffers were (re)created: the next uploads are whole. */
 void vkpt_upload_ranges_reset(void);
+void vkpt_upload_ranges_new_map(void);
 /* How many bytes from the start of the IQM staging buffer this frame's upload
    copies (0: nothing the device does not hold). Call once per upload. */
 uint64_t vkpt_iqm_upload_size(void);
@@ -1126,6 +1130,7 @@ VkResult vkpt_uniform_buffer_destroy(void);
 VkResult vkpt_uniform_buffer_upload_to_staging(void);
 void vkpt_uniform_buffer_copy_from_staging(VkCommandBuffer command_buffer);
 void vkpt_uniform_buffer_set_model_instance_count(uint32_t count);
+bool vkpt_uniform_buffer_model_instance_rows(uint64_t frame, uint32_t *rows);
 
 void vkpt_init_model_geometry(model_geometry_t* info, uint32_t max_geometries);
 void vkpt_destroy_model_geometry(model_geometry_t* info);
@@ -1545,6 +1550,12 @@ void vkpt_blood_update(
 	uint32_t* prim_count_out);
 bool vkpt_blood_blas_needs_build(int frame_idx, uint32_t prim_offset, uint32_t prim_count, bool fast_build);
 void vkpt_blood_blas_built(int frame_idx, uint32_t prim_offset, uint32_t prim_count, bool fast_build);
+// pt_blood_blas_refit (blood.c's BLAS REFIT, D3D12 only): build the blood BLAS
+// updatable; whether this slot's may be refitted rather than built (asked when it
+// cannot be reused); and that it was
+bool vkpt_blood_blas_refit_on(void);
+bool vkpt_blood_blas_may_refit(int frame_idx, uint32_t prim_offset, uint32_t prim_count, bool fast_build);
+void vkpt_blood_blas_refitted(int frame_idx, uint32_t prim_offset, uint32_t prim_count);
 void vkpt_build_beam_lights(light_poly_t* light_list, int* num_lights, int max_lights, bsp_t* bsp, entity_t* entities, int num_entites, float adapted_luminance, int* light_entity_ids, int* num_light_entities);
 bool vkpt_build_cylinder_light(light_poly_t* light_list, int* num_lights, int max_lights, bsp_t* bsp, vec3_t begin, vec3_t end, vec3_t color, float radius, entity_hash_t hash, int* light_entity_ids);
 bool get_triangle_off_center(const float* positions, float* center, float* anti_center, float offset);
@@ -1767,6 +1778,9 @@ void R_DrawStretchPic_RTX(int x, int y, int w, int h, qhandle_t pic);
 void R_DrawRotatedPic_RTX(float cx, float cy, float w, float h, float angle, qhandle_t pic);
 void R_DrawStretchSubPic_RTX(float x, float y, float w, float h,
 	float s1, float t1, float s2, float t2, qhandle_t pic);
+bool R_DrawModel2D_RTX(float x, float y, float w, float h,
+	float fov_x, float fov_y, const entity_t *ent);
+bool R_ModelBounds_RTX(qhandle_t model, vec3_t mins, vec3_t maxs);
 void R_DrawPic_RTX(int x, int y, qhandle_t pic);
 void R_TileClear_RTX(int x, int y, int w, int h, qhandle_t pic);
 void R_DrawFill8_RTX(int x, int y, int w, int h, int c);

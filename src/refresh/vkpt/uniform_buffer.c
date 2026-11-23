@@ -83,6 +83,19 @@ vkpt_uniform_buffer_set_model_instance_count(uint32_t count)
 	instance_upload.model_instances = max(instance_upload.model_instances, min(count, (uint32_t)MAX_MODEL_INSTANCES));
 }
 
+/* The D3D12 renderer's copy (d3d12/world.c) uploads in the same two pieces and
+   asks for the same count: the rows main.c reported for `frame`, false when it
+   reported none - the whole buffer, then. */
+bool
+vkpt_uniform_buffer_model_instance_rows(uint64_t frame, uint32_t *rows)
+{
+	if (instance_upload.count_frame != frame)
+		return false;
+
+	*rows = instance_upload.model_instances;
+	return true;
+}
+
 VkResult
 vkpt_uniform_buffer_create()
 {

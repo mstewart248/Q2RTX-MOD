@@ -44,6 +44,7 @@ layout(location = 3) out flat vec4 tex_rect;
 // in draw.c - keep in sync); bit 27, the map view's layer, is bit 4 here. Bit 0 here: the image is a video frame. Bit 1:
 // draw it opaque, its alpha ignored. Bit 2: nearest texel, no filtering. Bit 3:
 // its red channel as grey (a roughness/metallic map as the shader reads it).
+// Bit 7 (bit 26 in tex_handle): a triangle, sampled at its own mip level.
 layout(location = 4) out flat uint pic_flags;
 // Bit 4 of pic_flags ('mat author's map view, the map as a layer over the base
 // texture - vkpt_draw_stretch_subpic_layer): the base's handle; ~0 otherwise.
@@ -57,8 +58,13 @@ struct StretchPic {
 	float s, t, w_s, h_t;
 	uint color, tex_handle;
 	// the quad's edges are (w, skew_y) and (skew_x, h): 0 for every upright
-	// pic, set only by R_DrawRotatedPic
+	// pic, set by R_DrawRotatedPic and draw.c's enqueue_triangle
 	float skew_x, skew_y;
+	// the texture along them is (w_s, uv_skew_t) and (uv_skew_s, h_t); and a
+	// triangle's colours at corners (0,0) and (1,1) - color is (0,1)'s. 0 for
+	// everything but a triangle (draw.c StretchPic_t - keep in sync)
+	float uv_skew_s, uv_skew_t;
+	uint color1, color2;
 };
 
 layout(set = 0, binding = 0) readonly buffer SBO {
@@ -76,21 +82,32 @@ void
 main()
 {
 	StretchPic sp = stretch_pics[gl_InstanceIndex];
+	// a TRIANGLE (bit 26, STRETCH_PIC_FLAG_TRIANGLE - R_DrawModel2D's): the strip's
+	// last corner folds onto (1,1), so its second triangle has no area and the
+	// first is the whole of it - corners (0,1), (0,0), (1,1)
+	const bool tri = sp.tex_handle != ~0u && (sp.tex_handle & (1u << 26)) != 0u;
 	vec2 corner   = positions[gl_VertexIndex];
+	if (tri && gl_VertexIndex == 3)
+		corner = vec2(1.0, 1.0);
 	vec2 pos      = corner.x * vec2(sp.w, sp.skew_y) + corner.y * vec2(sp.skew_x, sp.h) + vec2(sp.x, sp.y);
-	color         = unpackUnorm4x8(sp.color);
-	
+	uint packed   = sp.color;
+	if (tri)
+		packed = (corner.y == 0.0) ? sp.color1 : (corner.x == 1.0) ? sp.color2 : sp.color;
+	color         = unpackUnorm4x8(packed);
+
 	color = pow(color, vec4(2.4));
 
-	tex_coord     = vec2(sp.s, sp.t) + positions[gl_VertexIndex] * vec2(sp.w_s, sp.h_t);
+	tex_coord     = vec2(sp.s, sp.t) + corner.x * vec2(sp.w_s, sp.uv_skew_t) + corner.y * vec2(sp.uv_skew_s, sp.h_t);
 	tex_id        = sp.tex_handle;
 	pic_flags     = 0u;
 	base_id       = ~0u;
 	// ~0 is TEXNUM_WHITE, "no texture", and has every bit set - not flags
 	if (sp.tex_handle != ~0u) {
-		tex_id    = sp.tex_handle & 0x07ffffffu;
-		// bits 30-31 -> 1, 2; bits 28-29 ('mat author's map view) -> 4, 8; bit 27 (its layer) -> 16
-		pic_flags = (sp.tex_handle >> 30) | (((sp.tex_handle >> 28) & 3u) << 2) | (((sp.tex_handle >> 27) & 1u) << 4);
+		tex_id    = sp.tex_handle & 0x03ffffffu;
+		// bits 30-31 -> 1, 2; bits 28-29 ('mat author's map view) -> 4, 8; bit 27 (its layer) -> 16;
+		// bit 26 (a triangle) -> 128
+		pic_flags = (sp.tex_handle >> 30) | (((sp.tex_handle >> 28) & 3u) << 2) | (((sp.tex_handle >> 27) & 1u) << 4)
+		          | (((sp.tex_handle >> 26) & 1u) << 7);
 		if ((pic_flags & 16u) != 0u) {
 			// no tint: the base's handle, and the opacity as given (not raised to 2.4)
 			base_id = sp.color & 0xffffu;

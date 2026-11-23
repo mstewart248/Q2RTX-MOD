@@ -519,6 +519,9 @@ void(*R_DrawStretchPic)(int x, int y, int w, int h, qhandle_t pic) = NULL;
 void(*R_DrawRotatedPic)(float cx, float cy, float w, float h, float angle, qhandle_t pic) = NULL;
 void(*R_DrawStretchSubPic)(float x, float y, float w, float h,
 	float s1, float t1, float s2, float t2, qhandle_t pic) = NULL;
+bool(*R_DrawModel2D)(float x, float y, float w, float h,
+	float fov_x, float fov_y, const entity_t *ent) = NULL;
+bool(*R_ModelBounds)(qhandle_t model, vec3_t mins, vec3_t maxs) = NULL;
 void(*R_TileClear)(int x, int y, int w, int h, qhandle_t pic) = NULL;
 void(*R_DrawFill8)(int x, int y, int w, int h, int c) = NULL;
 void(*R_DrawFill32)(int x, int y, int w, int h, uint32_t color) = NULL;

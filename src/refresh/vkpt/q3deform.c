@@ -57,9 +57,17 @@ with this program; if not, write to the Free Software Foundation, Inc.,
    normal now minus the same at rest - which Quake III never did: its lightmap
    could not move.
 
+   A light moves along when its shader only moves (one still frame): q3dm16's
+   ceiling lamps (bot_lampx) have their tile, bot_light (q3map_surfacelight
+   200), on the same bob as the brackets round it, and with the tile left in
+   the world the fixture swam away from its light (Matt, 2026-11-22). The
+   world's light polys for its faces are made as ever, then handed to the model
+   (vkpt_q3_deform_take_lights) and carried by the origin as a model's lights.
+   A light whose surface also bends would need its polys per frame: it stays.
+
    Collision is untouched; as in Quake III the deformation is only drawn. Not
-   moved: liquids, lights, see-through surfaces other than pure additive glows
-   (the bot lamps' jets), brush models. pt_q3_deform 0
+   moved: liquids, lights that bend, see-through surfaces other than pure
+   additive glows (the bot lamps' jets), brush models. pt_q3_deform 0
    (read at map load) leaves them all in the world, still, as before. */
 
 #ifndef Vector2Copy
@@ -99,10 +107,17 @@ typedef struct {
 	int                     *clusters;  // per mesh, in the model's hunk
 	int                     num_deforms;
 	q3deform_t              deforms[Q3S_MAX_DEFORMS];  // the shader's, for its move (the origin)
+	const q3shader_t        *shader;
+	// its faces' light polys at rest (vkpt_q3_deform_take_lights), Z memory the
+	// model's light_polys points at
+	light_poly_t            *lights;
+	int                     num_lights;
 } deform_model_t;
 
 static deform_model_t s_models[DEFORM_MAX_MODELS];
 static int s_num_models = 0;
+
+static bool model_alive(const deform_model_t *dm);
 
 static void register_cvars(void)
 {
@@ -120,7 +135,18 @@ static void register_cvars(void)
 
 void vkpt_q3_deform_reset(void)
 {
-	// the models themselves go with the map, through MOD_FreeUnused
+	// the models themselves go with the map, through MOD_FreeUnused; their
+	// light polys are ours, so a model still about lets go of them first
+	for (int i = 0; i < s_num_models; i++)
+	{
+		deform_model_t *dm = s_models + i;
+		if (dm->lights && model_alive(dm) && dm->model->light_polys == dm->lights)
+		{
+			dm->model->light_polys = NULL;
+			dm->model->num_light_polys = 0;
+		}
+		Z_Free(dm->lights);
+	}
 	memset(s_models, 0, sizeof(s_models));
 	s_num_models = 0;
 
@@ -266,10 +292,7 @@ bool vkpt_q3_deform_wants(const pbr_material_t *material, uint32_t material_id, 
 	if (!s_collecting || !material)
 		return false;
 
-	// a light would leave its light polys behind; a liquid, glass or see-through
-	// face is drawn by paths a model does not take
-	if (material_id & MATERIAL_FLAG_LIGHT)
-		return false;
+	// a liquid, glass or see-through face is drawn by paths a model does not take
 	if (surf_flags & (SURF_WARP | SURF_FLOWING | SURF_SKY | SURF_NODRAW))
 		return false;
 	/* A see-through glow (q3_additive, alpha 0 on a model too: main.c
@@ -285,7 +308,20 @@ bool vkpt_q3_deform_wants(const pbr_material_t *material, uint32_t material_id, 
 		return false;
 
 	const q3shader_t *q3 = MAT_Q3Shader(material);
-	return q3 && shader_moves(q3);
+	if (!q3 || !shader_moves(q3))
+		return false;
+
+	/* A light comes only if the shader just moves: one still frame, so its
+	   light polys (vkpt_q3_deform_take_lights) need nothing but the origin. One
+	   that bends as well would leave them behind; a light style the model would
+	   not draw. */
+	if (material_id & MATERIAL_FLAG_LIGHT)
+	{
+		float fastest = 0.f;
+		if (shader_period(q3, &fastest) > 0.f || (material_id & MATERIAL_LIGHT_STYLE_MASK))
+			return false;
+	}
+	return true;
 }
 
 // shader/utils.glsl decode_normal, the other half of bsp_mesh.c encode_normal
@@ -724,6 +760,9 @@ static void build_model(const q3shader_t *q3, const int *tri_index, int num_tris
 	dm->clusters = clusters;
 	dm->num_deforms = min(q3->num_deforms, Q3S_MAX_DEFORMS);
 	memcpy(dm->deforms, q3->deforms, sizeof(dm->deforms));
+	dm->shader = q3;
+	dm->lights = NULL;
+	dm->num_lights = 0;
 
 	Com_DPrintf("q3deform: %s: %d triangles, %d meshes, %d frames over %.2f s, %.1f MB\n",
 		q3->name, num_tris, num_meshes, frames, period, per_frame * frames / (1024.0 * 1024.0));
@@ -794,6 +833,49 @@ EVERY FRAME
 static bool model_alive(const deform_model_t *dm)
 {
 	return dm->model && dm->model->type == MOD_ALIAS && dm->model->meshes == dm->meshes;
+}
+
+bool vkpt_q3_deform_take_lights(const pbr_material_t *material, const light_poly_t *lights, int count)
+{
+	const q3shader_t *q3 = material ? MAT_Q3Shader(material) : NULL;
+	if (!q3 || !lights || count <= 0)
+		return false;
+
+	for (int i = 0; i < s_num_models; i++)
+	{
+		deform_model_t *dm = s_models + i;
+		// one still frame (vkpt_q3_deform_wants): main.c model_light_polys then
+		// reads the one set for every frame
+		if (dm->shader != q3 || !model_alive(dm) || dm->model->numframes != 1)
+			continue;
+
+		dm->lights = Z_Realloc(dm->lights, sizeof(light_poly_t) * (dm->num_lights + count));
+		memcpy(dm->lights + dm->num_lights, lights, sizeof(light_poly_t) * count);
+		for (int k = 0; k < count; k++)
+		{
+			light_poly_t *light = dm->lights + dm->num_lights + k;
+			light->cluster = -1;        // instance_model_lights finds it where the lamp is
+			light->q3_glow_key = 0;
+		}
+		dm->num_lights += count;
+
+		// at rest in world space, as the model's frame is: the entity's
+		// matrix is the move alone
+		dm->model->light_polys = dm->lights;
+		dm->model->num_light_polys = dm->num_lights;
+		return true;
+	}
+	return false;
+}
+
+bool vkpt_q3_deform_model(const model_t *model)
+{
+	if (!model)
+		return false;
+	for (int i = 0; i < s_num_models; i++)
+		if (s_models[i].model == model && model_alive(s_models + i))
+			return true;
+	return false;
 }
 
 const entity_t *vkpt_q3_deform_entities(const entity_t *entities, int *num_entities, float time)

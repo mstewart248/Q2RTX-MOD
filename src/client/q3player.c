@@ -79,6 +79,7 @@ struct q3player_s {
     char        name[MAX_QPATH];
     char        sex;                // 'm', 'f', 'n'
     bool        fixedlegs, fixedtorso;
+    vec3_t      headoffset;         // the HUD head's nudge (cg_draw.c CG_DrawHead)
     q3panim_t   anims[Q3A_COUNT];
 
     int         numskins;
@@ -210,9 +211,8 @@ static bool q3p_parse_anims(q3player_t *q3, const char *path, const char *text)
             continue;
         }
         if (!Q_stricmp(tok, "headoffset")) {
-            COM_Parse(&p);
-            COM_Parse(&p);
-            COM_Parse(&p);
+            for (i = 0; i < 3; i++)
+                q3->headoffset[i] = (float)atof(COM_Parse(&p));
             continue;
         }
         if (!Q_stricmp(tok, "sex")) {
@@ -443,6 +443,13 @@ q3player_t *Q3P_Get(const char *model)
 const char *Q3P_ModelName(const q3player_t *q3)
 {
     return q3->name;
+}
+
+// animation.cfg's headoffset: where the HUD's 3D head sits in its box, on top
+// of the framing (hud_q3.c, as cg_draw.c CG_DrawHead)
+void Q3P_HeadOffset(const q3player_t *q3, vec3_t out)
+{
+    VectorCopy(q3->headoffset, out);
 }
 
 char Q3P_Sex(const q3player_t *q3)

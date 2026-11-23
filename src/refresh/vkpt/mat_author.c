@@ -188,7 +188,8 @@ metallic"; and "the default roughness should be 1 and the default metalness 0")
   row): the left button drags one out on the surface or the map view instead
   of painting - Shift + drag adds to it, Ctrl + drag takes away, a click that
   drags nothing drops it. Ctrl+A all, Ctrl+D none, Ctrl+Shift+D the last one
-  dropped back, Ctrl+I invert. A selection is the steps that made it (sl), in
+  dropped back, Ctrl+I invert. Dragged on, it moves, and the last rectangle or
+  ellipse keeps GIMP's side handles (11-22: THE SELECTION MOVED AND RESHAPED). A selection is the steps that made it (sl), in
   the map's own coordinates, so one lies on every map of the material whatever
   its size - each map's texels are made from it as it is painted
   (sel_rasterize): a rectangle the texels corner to corner inclusive (as the
@@ -209,6 +210,11 @@ metallic"; and "the default roughness should be 1 and the default metalness 0")
   'bright', a straight line between. 30 / 50 on the metallic map is "30 to 50%
   metallic"; bright below dark gives brighter texels less. Roughness, metallic,
   height, or emissive's brightness (0..200%); not normals. One undo step.
+- NORMALS OUT / IN (11-22; the panel's bevel + out / in on the normal map with
+  a selection, or 'mat author lean out|in [bevel]'): the region's normals lean
+  away from its edge or towards it, from the intensity at the edge to none at
+  the bevel's width in (0: at the region's deepest texel - a dome). See
+  lean_apply.
 - DEFAULTS: the value painted starts at roughness 100%, metallic 0% - a
   texture with no maps - not 50% and 100%.
 */
@@ -275,6 +281,16 @@ static const char *const sel_label[NUM_SEL] = { "off", "rect", "ellipse", "lasso
 // a selection is the steps that made it, replayed onto each map's texels (sel_rasterize)
 enum { SELSTEP_ADD, SELSTEP_SUB, SELSTEP_ALL, SELSTEP_INVERT };
 
+// what a press grabs of the selection (sel_hit): the last rectangle's or ellipse's
+// sides - a corner is two of them - or the whole selection, to move it
+#define SELH_NONE           0
+#define SELH_LEFT           1
+#define SELH_RIGHT          2
+#define SELH_TOP            4
+#define SELH_BOTTOM         8
+#define SELH_EDGES          15
+#define SELH_MOVE           16
+
 #define SEL_MAX_POINTS      32768       // a lasso's
 #define SEL_MAX_TILES       8           // a shape on a tiled surface: no wider than this many maps (as a line)
 #define SEL_PREVIEW_MS      50          // a shape being dragged out is shown this often
@@ -324,7 +340,9 @@ enum {
 	W_LIGHT_ON,                     // the flashlight at the camera, on or off (C)
 	W_LIGHT,                        // ... and its brightness
 	W_GLASS_PAINT, W_WALL_PAINT,    // the glass mask: paint glass, or the wall round it (X swaps)
-	W_SEL0,                        // ... W_SEL0 + SEL_*: the selection's shapes
+	W_BEVEL,                        // normals out of / into the selection: how far in from its edge they lean
+	W_LEAN_OUT, W_LEAN_IN,          // ... and doing it
+	W_SEL0,                      // ... W_SEL0 + SEL_*: the selection's shapes
 	W_STROKE0 = W_SEL0 + 4,         // ... W_STROKE0 + STROKE_*
 	W_STAGE_MAT = W_STROKE0 + NUM_STROKES,  // the material's own maps
 	W_STAGE0,                       // ... W_STAGE0 + N: stage N's
@@ -422,6 +440,8 @@ static struct {
 	int select;                 // SEL_*: the shape the left button drags out instead of painting, SEL_OFF paints
 	float range[NUM_SLOTS][2];  // the brightness range: the value the darkest albedo gets, the brightest's (value[]'s units)
 	bool range_request;         // the panel's 'apply': done at the next tick
+	int bevel;                  // normals out of / into the selection: texels in from its edge they lean, 0 = to its middle
+	int lean_request;           // the panel's 'out' (1) or 'in' (-1): done at the next tick
 
 	bool show_2d;
 	bool show_base;             // the map view: the base texture under the map
@@ -565,6 +585,27 @@ static struct {
 	int drag_shape;             // ... SEL_*
 	float *dpts;                // ... its points, as pts
 	int num_dpts, cap_dpts;
+
+	/* MOVED AND RESHAPED (Matt, 11-22: "select a selection and move it to another
+	   place on the texture", and an ellipse's "length and width after the selection
+	   is made like in GIMP"). The cursor over the selection, while a select tool is
+	   on: over a band along a side of the last rectangle or ellipse - a corner is
+	   two of them - a press drags that side; anywhere else on the selection, or
+	   inside that shape's box, it drags the whole selection. */
+	int hover;                  // SELH_* a press here grabs
+	bool hover_2d;              // ... in the map view
+	int hover_cut[4];           // ... a side's band, texels x0, y0, x1, y1 inclusive, in the shape's copy: shown on the surface
+	bool hover_cut_wrap;        // ... repeated with the map (the surface of a tiled one)
+	bool moving;                // a side or the whole selection being dragged
+	bool move_2d;               // ... in the map view
+	bool move_commit;           // ... let go of: finished at the next tick
+	bool move_any;              // ... it has moved a texel: a press that moves nothing is a click
+	int move_grab;              // ... SELH_* grabbed
+	int move_step;              // ... the shape whose sides those are; -1 the whole selection
+	float move_u, move_v;       // ... the cursor where the press was, texels
+	int move_dx, move_dy;       // ... how far it has gone, texels
+	float *move_pts;            // ... every step's points at the press
+	int move_num_pts;
 
 	bool dirty;                 // the steps changed: rasterise again
 	byte *mask;                 // 1 = selected, mask_w x mask_h
@@ -3278,6 +3319,26 @@ static void lock_rasterize(int W, int H)
 /* The region (the lock and the selection) as a texture, for the shader and the
    map view (see rg). Remade in place while its size holds; a new size is a new
    image. */
+/* The band along a side of the selection's last shape that the cursor is over on
+   a surface (sel_hover): shown the other way round - what is outside the
+   selection lit, what is inside dark - so the band has the shader's cyan edge
+   all the way round, even where it lies outside an ellipse, as an image editor
+   lights the handle under the cursor. On the texture only: painting goes by
+   region_allows, and the map view draws its own (sel_outline_2d). */
+static bool sel_cut_shown(int x, int y, int W, int H)
+{
+	if (!(sl.hover & SELH_EDGES) || sl.hover_2d || sl.moving)
+		return false;
+	int dx = x - sl.hover_cut[0], dy = y - sl.hover_cut[1];
+	const int w = sl.hover_cut[2] - sl.hover_cut[0] + 1, h = sl.hover_cut[3] - sl.hover_cut[1] + 1;
+	if (sl.hover_cut_wrap)
+	{
+		dx = ((dx % W) + W) % W;
+		dy = ((dy % H) + H) % H;
+	}
+	return dx >= 0 && dx < w && dy >= 0 && dy < h;
+}
+
 static void region_upload(int W, int H)
 {
 	if (W <= 0 || H <= 0)
@@ -3292,9 +3353,10 @@ static void region_upload(int W, int H)
 		{
 			byte *p = px + ((size_t)y * W + x) * 4;
 			const bool in = region_allows(x, y, W, H);
-			p[0] = in ? 255 : 0;
+			const bool shown = in != sel_cut_shown(x, y, W, H);
+			p[0] = shown ? 255 : 0;
 			p[1] = p[2] = 0;
-			p[3] = in ? 0 : 150;
+			p[3] = shown ? 0 : 150;
 			texels += in;
 		}
 	}
@@ -3349,8 +3411,8 @@ static void region_sync(void)
 	if (sel_on() && (sl.dirty || !sl.mask || sl.mask_w != W || sl.mask_h != H))
 	{
 		const unsigned now = Sys_Milliseconds();
-		const bool wait = sl.dragging && !sl.drag_commit && sl.mask && sl.mask_w == W && sl.mask_h == H
-			&& now - sl.raster_ms < SEL_PREVIEW_MS;
+		const bool wait = (sl.dragging || sl.moving) && !sl.drag_commit && !sl.move_commit
+			&& sl.mask && sl.mask_w == W && sl.mask_h == H && now - sl.raster_ms < SEL_PREVIEW_MS;
 		if (!wait)
 		{
 			sel_rasterize(W, H);
@@ -3656,6 +3718,11 @@ static void sel_clear(const char *why)
 	sl.pts = NULL;
 	sl.num_steps = sl.cap_steps = sl.num_pts = sl.cap_pts = 0;
 	sl.dragging = sl.drag_commit = false;
+	sl.moving = sl.move_commit = false;
+	Z_Free(sl.move_pts);
+	sl.move_pts = NULL;
+	sl.move_num_pts = 0;
+	sl.hover = SELH_NONE;
 	Z_Free(sl.mask);
 	sl.mask = NULL;
 	sl.mask_w = sl.mask_h = sl.texels = 0;
@@ -3936,6 +4003,12 @@ static void sel_reselect(void)
 	sl.prev_material = material;
 	sl.prev_stage = stage;
 	sl.dragging = sl.drag_commit = false;
+	// a move under way belonged to the other selection: let go of where it got to
+	sl.moving = sl.move_commit = false;
+	Z_Free(sl.move_pts);
+	sl.move_pts = NULL;
+	sl.move_num_pts = 0;
+	sl.hover = SELH_NONE;
 	sl.dirty = true;
 	sl.stats_have = false;
 	rg.dirty = true;
@@ -3958,7 +4031,8 @@ static void set_select(int mode)
 	au.select = mode;
 	au.line_active = au.line_have = au.line_commit = false;
 	if (mode != SEL_OFF)
-		author_status("%s select: drag on the surface or the map view - Shift adds, Ctrl takes away, a click drops it",
+		author_status("%s select: drag on the surface or the map view - Shift adds, Ctrl takes away, a click drops it;"
+			" drag on the selection to move it, or a side of the last shape to resize it",
 			sel_label[mode]);
 	else if (sel_on())
 		author_status("painting - only inside the selection (Ctrl+D drops it)");
@@ -4220,6 +4294,333 @@ static void range_spread_text(char *buf, size_t size)
 }
 
 /* ------------------------------------------------------------------------- */
+/* NORMALS OUT OF OR INTO THE SELECTION                                      */
+/* ------------------------------------------------------------------------- */
+
+/* Matt, 11-22: "when you make a selection in the normal map editor you can
+   point the normal map for the pixel inward or outward of the selection. Like
+   ellipse select normals going outward or inward." Each texel of the region
+   (the selection, the lock, both) leans away from the nearest point of its
+   edge (out: the region stands up, a dome or a bevelled plate) or towards it
+   (in: sunk, a dish or a recess). The lean is the panel's intensity at the
+   edge, falling in a straight line to none at the bevel's width from it - or,
+   with the bevel 0, at the region's deepest texel: a round selection becomes a
+   dome. A rectangle gets a roof, its sides meeting along the middle. Distance
+   is straight-line (an exact distance transform), over the tiles of a map that
+   repeats, so a region running off one side carries on from the other; the
+   direction is its slope, smoothed over the texels round each one. The texels'
+   normals are replaced, not added to. One undo step. */
+
+#define LEAN_FAR    1e20
+
+/* Felzenszwalb and Huttenlocher's one-dimensional squared distance transform:
+   d[q] = the least (q - p)^2 + f[p]. (v) holds n ints, (z) n + 1 doubles. */
+static void lean_edt_1d(const double *f, int n, double *d, int *v, double *z)
+{
+	int k = 0;
+	v[0] = 0;
+	z[0] = -LEAN_FAR;
+	z[1] = LEAN_FAR;
+	for (int q = 1; q < n; q++)
+	{
+		double s;
+		for (;;)
+		{
+			const int p = v[k];
+			s = ((f[q] + (double)q * q) - (f[p] + (double)p * p)) / (2.0 * (double)(q - p));
+			if (s > z[k] || k == 0)
+				break;
+			k--;
+		}
+		k++;
+		v[k] = q;
+		z[k] = s;
+		z[k + 1] = LEAN_FAR;
+	}
+	k = 0;
+	for (int q = 0; q < n; q++)
+	{
+		while (z[k + 1] < (double)q)
+			k++;
+		const double dq = (double)(q - v[k]);
+		d[q] = dq * dq + f[v[k]];
+	}
+}
+
+/* Squared distance from each texel of a W x H map to the nearest one where
+   (from) is (want), into (g): exact, straight-line; over the next tiles on a
+   map that repeats (wrap). Floats hold them exactly (a 4096-texel map's are
+   under 2^24). The scratch lines hold 3 x the longest side (+ 1 for z). */
+static void lean_edt(const byte *from, byte want, int W, int H, bool wrap, float *g,
+	double *f, double *d, int *v, double *z)
+{
+	// a line three times as long holds the tiles either side of a repeating map's
+	const int lh = wrap ? 3 * H : H;
+	for (int x = 0; x < W; x++)
+	{
+		for (int i = 0; i < lh; i++)
+			f[i] = from[(size_t)(i % H) * W + x] == want ? 0.0 : LEAN_FAR;
+		lean_edt_1d(f, lh, d, v, z);
+		for (int y = 0; y < H; y++)
+			g[(size_t)y * W + x] = (float)min(d[wrap ? y + H : y], LEAN_FAR);
+	}
+	const int lw = wrap ? 3 * W : W;
+	for (int y = 0; y < H; y++)
+	{
+		float *row = g + (size_t)y * W;
+		for (int i = 0; i < lw; i++)
+			f[i] = row[i % W];
+		lean_edt_1d(f, lw, d, v, z);
+		for (int x = 0; x < W; x++)
+			row[x] = (float)min(d[wrap ? x + W : x], LEAN_FAR);
+	}
+}
+
+/* (g) blurred by a box (r) texels either side, along rows (dx 1) or columns:
+   three of these each way are near enough a Gaussian. Wraps on a repeating
+   map, else holds the edge texel. (tmp) holds the longest side. */
+static void lean_box(float *g, int W, int H, bool wrap, int r, bool rows, float *tmp)
+{
+	const int lines = rows ? H : W, len = rows ? W : H;
+	const size_t step = rows ? 1 : (size_t)W;
+	const float inv = 1.f / (float)(2 * r + 1);
+	for (int l = 0; l < lines; l++)
+	{
+		float *p = rows ? g + (size_t)l * W : g + l;
+		for (int i = 0; i < len; i++)
+			tmp[i] = p[(size_t)i * step];
+		double sum = 0.0;
+		for (int k = -r; k <= r; k++)
+		{
+			const int j = wrap ? ((k % len) + len) % len : Q_clip(k, 0, len - 1);
+			sum += tmp[j];
+		}
+		for (int i = 0; i < len; i++)
+		{
+			p[(size_t)i * step] = (float)(sum * inv);
+			const int add = i + r + 1, drop = i - r;
+			const int ja = wrap ? add % len : min(add, len - 1);
+			const int jd = wrap ? ((drop % len) + len) % len : max(drop, 0);
+			sum += tmp[ja] - tmp[jd];
+		}
+	}
+}
+
+/* How far each texel of a W x H map is in from the edge of the region (in, 1 =
+   in it), in texels - signed: the distance to the nearest texel centre on the
+   other side, less a half, so the outer ring is half a texel in and the ring
+   just outside half a texel out. On a map that repeats (wrap) the nearest may
+   be over its side, on the next tile; on one that doesn't, the image's edge is
+   no edge. Then blurred over (blur) texels: a staircase edge leans as the line
+   it stands for, and where slopes from two sides meet - a long ellipse's
+   middle - they round into each other instead of making a crease. A signed
+   distance stays a straight slope through the blur next to a straight edge,
+   so a bevel keeps its lean. (*deepest) is the region's deepest texel before
+   the blur. Z_Free it; NULL when nothing lies outside the region. */
+static float *lean_distance(const byte *in, int W, int H, bool wrap, float bevel, float *deepest)
+{
+	const size_t n = (size_t)W * H;
+	bool outside = false;
+	for (size_t i = 0; i < n && !outside; i++)
+		outside = !in[i];
+	*deepest = 0.f;
+	if (!outside)
+		return NULL;
+
+	const int longest = max(W, H), len_max = wrap ? 3 * longest : longest;
+	double *f = Z_Malloc(sizeof(double) * len_max);
+	double *d = Z_Malloc(sizeof(double) * len_max);
+	double *z = Z_Malloc(sizeof(double) * (len_max + 1));
+	int *v = Z_Malloc(sizeof(int) * len_max);
+	float *g = Z_Malloc(sizeof(float) * n);
+	float *go = Z_Malloc(sizeof(float) * n);
+
+	lean_edt(in, 0, W, H, wrap, g, f, d, v, z);     // inside: to the nearest outside texel
+	lean_edt(in, 1, W, H, wrap, go, f, d, v, z);    // outside: to the nearest inside one
+	for (size_t i = 0; i < n; i++)
+	{
+		g[i] = in[i] ? sqrtf(g[i]) - 0.5f : 0.5f - sqrtf(go[i]);
+		if (in[i])
+			*deepest = max(*deepest, g[i]);
+	}
+
+	/* the blur: a fifth of the way in the lean reaches, or (bevel 0, all the
+	   way in) a third of the region's depth, so its middle rounds into a dome */
+	const float reach = bevel > 0.f ? bevel : *deepest;
+	const int r = Q_clip((int)(reach * (bevel > 0.f ? 0.2f : 0.33f) + 0.5f), 1, 64);
+	for (int pass = 0; pass < 3; pass++)
+	{
+		lean_box(g, W, H, wrap, r, true, go);
+		lean_box(g, W, H, wrap, r, false, go);
+	}
+
+	Z_Free(f);
+	Z_Free(d);
+	Z_Free(z);
+	Z_Free(v);
+	Z_Free(go);
+	return g;
+}
+
+/* The lean of texel (x, y) of the region, as the normal map stores it (texel_put):
+   its x, y along the image (x = +u, y = +v, down) and z. The region is a height
+   field: rising from its edge with the slope falling in a straight line to none
+   at (reach) texels in - a round top when that is its middle - and level past
+   it. (dist) is lean_distance's, (dir) 1 out of the region (standing up), -1
+   into it (sunk), (tilt) the lean at the edge, radians. */
+static void lean_normal(const float *dist, int W, int H, bool wrap, int x, int y, int dir,
+	float reach, float tilt, float out[3])
+{
+	out[0] = out[1] = 0.f;
+	out[2] = 1.f;
+	const float rise = 1.f - max(dist[(size_t)y * W + x], 0.f) / max(reach, 0.5f);
+	if (rise <= 0.f)
+		return;
+
+	// the distance's slope, Sobel's (a straight edge's is 1)
+	float k[3][3];
+	for (int j = -1; j <= 1; j++)
+	{
+		int yy = y + j;
+		if (wrap)
+			yy = (yy + H) % H;
+		else
+			yy = Q_clip(yy, 0, H - 1);
+		for (int i = -1; i <= 1; i++)
+		{
+			int xx = x + i;
+			if (wrap)
+				xx = (xx + W) % W;
+			else
+				xx = Q_clip(xx, 0, W - 1);
+			k[j + 1][i + 1] = dist[(size_t)yy * W + xx];
+		}
+	}
+	const float gx = ((k[0][2] + 2.f * k[1][2] + k[2][2]) - (k[0][0] + 2.f * k[1][0] + k[2][0])) * 0.125f;
+	const float gy = ((k[2][0] + 2.f * k[2][1] + k[2][2]) - (k[0][0] + 2.f * k[0][1] + k[0][2])) * 0.125f;
+	const float glen = sqrtf(gx * gx + gy * gy);
+	if (glen < 1e-4f)
+		return;
+
+	// the height's slope, (tilt) where it is steepest; the distance grows
+	// inwards, so out leans down it, towards the edge
+	const float slope = tanf(tilt) * rise * min(glen, 1.f);
+	const float theta = atanf(slope);
+	const float s = sinf(theta) * (float)-dir / glen;
+	out[0] = gx * s;
+	out[1] = gy * s;
+	out[2] = cosf(theta);
+}
+
+/* The region's normals leaning out of its edge (dir 1) or into it (-1), on the
+   normal map being painted. Between frames: it can make the map. */
+static void lean_apply(int dir)
+{
+	if (au.slot != SLOT_NORMAL)
+	{
+		author_status("out / in leans the normal map - press 3 for normals first");
+		return;
+	}
+	if (au.stage >= 0)
+	{
+		const char *why;
+		if (!stage_info(NULL, &why))
+		{
+			author_status("can't set stage%d's map: %s", au.stage, why);
+			return;
+		}
+	}
+	if (!region_on())
+	{
+		author_status("select a shape first (M): the normals lean out of its edge or into it");
+		return;
+	}
+	stroke_end();
+	image_t *img = author_image();
+	if (!img && !(img = create_map()))
+		return;
+	const char *why;
+	if (!image_paintable(img, &why))
+	{
+		author_status("can't set %s: %s", img->name, why);
+		return;
+	}
+
+	region_sync();
+	const int W = img->upload_width, H = img->upload_height;
+	if (!region_ready(W, H))
+	{
+		author_status("the %s isn't ready for this map yet - try again", region_name());
+		return;
+	}
+
+	const size_t n = (size_t)W * H;
+	byte *in = Z_Malloc(n);
+	int count = 0;
+	for (int y = 0; y < H; y++)
+		for (int x = 0; x < W; x++)
+			count += in[(size_t)y * W + x] = region_allows(x, y, W, H) ? 1 : 0;
+	if (!count)
+	{
+		Z_Free(in);
+		author_status("nothing to lean: the %s has no texels on this map", region_name());
+		return;
+	}
+	const bool wrap = map_wraps();
+	float deepest;
+	float *dist = lean_distance(in, W, H, wrap, (float)au.bevel, &deepest);
+	if (!dist)
+	{
+		Z_Free(in);
+		author_status("the %s covers the whole map: it has no edge to lean from", region_name());
+		return;
+	}
+
+	// how far in the lean reaches: the bevel, or the region's top as blurred
+	float reach = (float)au.bevel;
+	if (au.bevel <= 0)
+	{
+		reach = 0.5f;
+		for (size_t i = 0; i < n; i++)
+			if (in[i])
+				reach = max(reach, dist[i]);
+	}
+	const float tilt = au.normal_intensity * AUTHOR_MAX_TILT_DEG * (float)M_PI / 180.f;
+
+	stroke_touch(img);
+	dab_ctx_t c;
+	memset(&c, 0, sizeof(c));
+	c.img = img;
+	c.slot = SLOT_NORMAL;
+	for (int y = 0; y < H; y++)
+	{
+		for (int x = 0; x < W; x++)
+		{
+			if (!in[(size_t)y * W + x])
+				continue;
+			float nv[3];
+			lean_normal(dist, W, H, wrap, x, y, dir, reach, tilt, nv);
+			if (texel_put(img, x, y, SLOT_NORMAL, nv))
+				c.changed = true;
+		}
+	}
+	dab_done(&c);
+	stroke_end();
+	Z_Free(dist);
+	Z_Free(in);
+
+	const int deg = (int)(au.normal_intensity * AUTHOR_MAX_TILT_DEG + 0.5f);
+	if (au.bevel > 0)
+		author_status("normals lean %s the %s: %d deg at its edge to none %d texel%s in (it is %d deep) - %d texels",
+			dir > 0 ? "out of" : "into", region_name(), deg, au.bevel, au.bevel == 1 ? "" : "s",
+			(int)(deepest + 0.5f), count);
+	else
+		author_status("normals lean %s the %s: %d deg at its edge to none at its middle, %d texel%s in - %d texels",
+			dir > 0 ? "out of" : "into", region_name(), deg, (int)(deepest + 0.5f),
+			(int)(deepest + 0.5f) == 1 ? "" : "s", count);
+}
+
+/* ------------------------------------------------------------------------- */
 /* START, STOP                                                               */
 /* ------------------------------------------------------------------------- */
 
@@ -4235,6 +4636,7 @@ static void author_stop(const char *why)
 	au.right_pan = false;
 	au.hit.valid = false;
 	au.range_request = false;
+	au.lean_request = 0;
 	if (sl.dragging)
 	{
 		// a shape half dragged out is let go of; the selection stays
@@ -4369,9 +4771,12 @@ static void author_start(pbr_material_t *mat, int slot)
 			"  T = next tool (brush spray hatch noise blur fill), G = fill; Tab = map view, O = base under it;\n"
 			"  F = lock to the face under the brush, P = to the piece, Shift adds/removes, U unlocks;\n"
 			"  M = select (rect, ellipse, lasso): drag it out, Shift + drag adds, Ctrl + drag takes away,\n"
-			"  a click drops it; Ctrl+A all, Ctrl+D none (Ctrl+Shift+D back), Ctrl+I invert; painting\n"
+			"  a click drops it; drag on it to move it, or on a side of the last rect/ellipse to resize\n"
+			"  that; Ctrl+A all, Ctrl+D none (Ctrl+Shift+D back), Ctrl+I invert; painting\n"
 			"  stays inside it, and the panel's dark/bright + apply set the map over it by how bright\n"
-			"  the base texture is (also 'mat author range <dark%%> <bright%%>');\n"
+			"  the base texture is (also 'mat author range <dark%%> <bright%%>'); on the normal map\n"
+			"  out / in lean its normals out of the selection's edge or into it (a dome or a dish;\n"
+			"  also 'mat author lean out|in [bevel]');\n"
 			"  a Quake III shader drawn in stages: the panel's 'maps' row paints one stage's own maps;\n"
 			"  a slider: click its number to type one (Enter), the wheel or arrows step it by 1,\n"
 			"  Shift while dragging is finer (mat_author_slider_speed);\n"
@@ -4754,6 +5159,16 @@ static bool field_get(int id, field_t *f)
 		f->hi = au.slot == SLOT_EMISSIVE ? 200.f : 100.f;
 		f->v = au.range[au.slot][id - W_RANGE_LO] * f->hi;
 		return true;
+	case W_BEVEL:
+		// normals out of / into the selection: 0 = all the way to its middle
+		if (au.slot != SLOT_NORMAL)
+			return false;
+		f->name = "bevel";
+		f->unit = " texels";
+		f->hi = AUTHOR_MAX_RADIUS;
+		f->v = (float)au.bevel;
+		f->squared = true;
+		return true;
 	case W_TOOLOPT:
 		switch (au.tool)
 		{
@@ -4827,7 +5242,8 @@ static void field_set(int id, float v)
 	case W_RADIUS:    au.rect_radius = (int)v; break;
 	case W_FALLOFF:   au.falloff = v / 100.f; break;
 	case W_RANGE_LO: case W_RANGE_HI: au.range[au.slot][id - W_RANGE_LO] = v / f.hi; break;
-	case W_TOOLOPT:   au.tool_opt[au.tool] = au.tool == TOOL_HATCH ? (v - 2.f) / 30.f : v / 100.f; break;
+	case W_BEVEL:     au.bevel = (int)v; break;
+	case W_TOOLOPT:  au.tool_opt[au.tool] = au.tool == TOOL_HATCH ? (v - 2.f) / 30.f : v / 100.f; break;
 	case W_LAYER:     *(glow_view() ? &au.glow_veil : &au.layer_alpha) = v / 100.f; break;
 	case W_LIGHT:     Cvar_SetValue(mat_author_light_scale, v / 100.f, FROM_CONSOLE); break;
 	case W_DIAL:      au.normal_angle = v * (float)M_PI / 180.f; break;
@@ -5127,13 +5543,18 @@ static void panel_press(int id)
 	case W_WALL_PAINT:  glass_paint_set(false); break;
 	case W_VALUE: case W_DIAL: case W_INTENSITY: case W_RED: case W_GREEN: case W_BLUE: case W_SIZE:
 	case W_FALLOFF: case W_TOOLOPT: case W_LAYER: case W_RADIUS: case W_RANGE_LO: case W_RANGE_HI:
-	case W_LIGHT:
+	case W_LIGHT: case W_BEVEL:
 		au.drag = id;
 		drag_update(id);
 		break;
 	case W_RANGE_APPLY:
 		// it can make the map: between frames
 		au.range_request = true;
+		queue_tick();
+		break;
+	case W_LEAN_OUT:
+	case W_LEAN_IN:
+		au.lean_request = id == W_LEAN_OUT ? 1 : -1;
 		queue_tick();
 		break;
 	case W_SEL_ALL:     sel_all(); break;
@@ -5779,8 +6200,19 @@ static float panel_rows(float x0, float y0, const under_t *under, qhandle_t font
 		}
 		else
 		{
-			ui_text(x, y, UI_ALTCOLOR, "brightness range: not on normals", max_chars, font);
-			y += line + 2.f;
+			/* normals leaning out of the selection's edge (a dome, a bevelled
+			   plate) or into it (a dish): in to the bevel's width, or with it 0
+			   to the selection's middle; the intensity above is the edge's lean */
+			ui_text(x, y, 0, au.bevel > 0 ? va("lean %d texel%s in from the edge", au.bevel, au.bevel == 1 ? "" : "s")
+				: "lean to the middle (bevel 0)", max_chars, font);
+			y += line;
+			ui_slider_num(W_BEVEL, x + 3.f, y, iw - 3.f, font);
+			y += line + 4.f;
+			const float lbw = 5 * CHAR_WIDTH + 6.f;
+			ui_text(x, y + 2.f, UI_ALTCOLOR, "normals", (int)((iw - 2 * lbw - 8.f) / CHAR_WIDTH), font);
+			ui_button(W_LEAN_OUT, x + iw - 2 * lbw - 4.f, y, lbw, "out", false, font);
+			ui_button(W_LEAN_IN, x + iw - lbw, y, lbw, "in", false, font);
+			y += line + 4.f;
 		}
 	}
 
@@ -6043,13 +6475,15 @@ static void ants_line(ants_t *a, float x0, float y0, float x1, float y1)
 	a->s += len;
 }
 
-// one shape's outline (its points in map repeats) on a W x H map
-static void ants_shape(ants_t *a, int shape, const float *p, int count, int W, int H)
+// one shape's outline (its points in map repeats) on a W x H map; (clip) one drawn in
+// the map view, which lies where it was drawn - it may begin off the map, and is
+// clipped to it rather than repeated with it (sel_step_t.clip)
+static void ants_shape(ants_t *a, int shape, const float *p, int count, int W, int H, bool clip)
 {
 	if (count < 2)
 		return;
-	a->ox = -(float)W * floorf(p[0]);
-	a->oy = -(float)H * floorf(p[1]);
+	a->ox = clip ? 0.f : -(float)W * floorf(p[0]);
+	a->oy = clip ? 0.f : -(float)H * floorf(p[1]);
 	float pts[2 * 64];
 	float *poly = pts;
 	int n = 0;
@@ -6100,6 +6534,25 @@ static void ants_shape(ants_t *a, int shape, const float *p, int count, int W, i
 		Z_Free(poly);
 }
 
+static int sel_edit_step(void);
+static void sel_step_box(const float *p, int W, int H, int box[4]);
+static void sel_band_rect(const int box[4], int grab, bool in_2d, float r[4]);
+
+// a rectangle of the screen filled, as far as it lies inside (clip): x0, y0, x1, y1
+static void fill_clipped(const float clip[4], float x0, float y0, float x1, float y1, uint32_t color)
+{
+	x0 = max(x0, clip[0]);
+	y0 = max(y0, clip[1]);
+	x1 = min(x1, clip[2]);
+	y1 = min(y1, clip[3]);
+	const int ix0 = (int)floorf(x0), iy0 = (int)floorf(y0);
+	const int ix1 = (int)floorf(x1), iy1 = (int)floorf(y1);
+	if (ix1 > ix0 && iy1 > iy0)
+		R_DrawFill32_RTX(ix0, iy0, ix1 - ix0, iy1 - iy0, color);
+	else if (x1 > x0 && y1 > y0)
+		R_DrawFill32_RTX(ix0, iy0, max(1, ix1 - ix0), max(1, iy1 - iy0), color);
+}
+
 static void sel_outline_2d(float vx, float vy, float vs, int W, int H)
 {
 	if (!sl.num_steps && !sl.dragging)
@@ -6119,11 +6572,55 @@ static void sel_outline_2d(float vx, float vy, float vs, int W, int H)
 		{
 			const sel_step_t *s = &sl.steps[i];
 			if (s->step == SELSTEP_ADD || s->step == SELSTEP_SUB)
-				ants_shape(&a, s->shape, sl.pts + 2 * s->first, s->count, W, H);
+				ants_shape(&a, s->shape, sl.pts + 2 * s->first, s->count, W, H, s->clip);
 		}
 	}
 	if (sl.dragging)
-		ants_shape(&a, sl.drag_shape, sl.dpts, sl.num_dpts, W, H);
+		ants_shape(&a, sl.drag_shape, sl.dpts, sl.num_dpts, W, H, sl.drag_2d);
+
+	/* The last rectangle's or ellipse's box, and the band of the side under the
+	   cursor or being dragged - GIMP's handle, lit orange (sel_hit). Only while a
+	   select tool is on: painting has no handles. */
+	const int e = (au.select != SEL_OFF || sl.moving) && !sl.dragging ? sel_edit_step() : -1;
+	if (e < 0)
+		return;
+	const sel_step_t *s = &sl.steps[e];
+	const float *p = sl.pts + 2 * s->first;
+	int box[4];
+	sel_step_box(p, W, H, box);
+	if (!s->clip)
+	{
+		const int ox = -W * (int)floorf(p[0]), oy = -H * (int)floorf(p[1]);
+		box[0] += ox, box[2] += ox, box[1] += oy, box[3] += oy;
+	}
+	const float bx0 = a.cx + ((float)box[0] - au.v2_cu) * au.v2_ppt, bx1 = a.cx + ((float)box[2] + 1.f - au.v2_cu) * au.v2_ppt;
+	const float by0 = a.cy + ((float)box[1] - au.v2_cv) * au.v2_ppt, by1 = a.cy + ((float)box[3] + 1.f - au.v2_cv) * au.v2_ppt;
+	if (s->shape == SEL_ELLIPSE)
+	{
+		// a rectangle's own ants are its box already
+		const uint32_t frame = MakeColor(255, 255, 255, 140);
+		fill_clipped(a.clip, bx0, by0, bx1, by0 + 1.f, frame);
+		fill_clipped(a.clip, bx0, by1 - 1.f, bx1, by1, frame);
+		fill_clipped(a.clip, bx0, by0, bx0 + 1.f, by1, frame);
+		fill_clipped(a.clip, bx1 - 1.f, by0, bx1, by1, frame);
+	}
+	int grab = SELH_NONE;
+	if (sl.moving)
+		grab = sl.move_2d && sl.move_step == e ? (sl.move_grab & SELH_EDGES) : SELH_NONE;
+	else if (sl.hover_2d)
+		grab = sl.hover & SELH_EDGES;
+	if (!grab)
+		return;
+	float r[4];
+	sel_band_rect(box, grab, true, r);
+	const float hx0 = a.cx + (r[0] - au.v2_cu) * au.v2_ppt, hx1 = a.cx + (r[2] - au.v2_cu) * au.v2_ppt;
+	const float hy0 = a.cy + (r[1] - au.v2_cv) * au.v2_ppt, hy1 = a.cy + (r[3] - au.v2_cv) * au.v2_ppt;
+	const uint32_t edge = MakeColor(255, 170, 60, 255);
+	fill_clipped(a.clip, hx0, hy0, hx1, hy1, MakeColor(255, 170, 60, 50));
+	fill_clipped(a.clip, hx0, hy0, hx1, hy0 + 1.f, edge);
+	fill_clipped(a.clip, hx0, hy1 - 1.f, hx1, hy1, edge);
+	fill_clipped(a.clip, hx0, hy0, hx0 + 1.f, hy1, edge);
+	fill_clipped(a.clip, hx1 - 1.f, hy0, hx1, hy1, edge);
 }
 
 static bool hit_on_map(const author_hit_t *hit, const image_t *img);
@@ -6257,7 +6754,7 @@ static void draw_view2d(qhandle_t font)
 	ui_text(vx, vy + vs + 6.f, 0, caption, (int)(vs / CHAR_WIDTH), font);
 }
 
-static void draw_cursor(void)
+static void draw_cursor(qhandle_t font)
 {
 	float mx, my;
 	cursor_virtual(&mx, &my);
@@ -6267,8 +6764,21 @@ static void draw_cursor(void)
 	R_DrawFill32_RTX((int)mx - 4, (int)my, 9, 1, white);
 	R_DrawFill32_RTX((int)mx, (int)my - 4, 1, 9, white);
 
-	// selecting: the shape's mark beside the cross
 	const int sx = (int)mx + 6, sy = (int)my + 6;
+
+	// over the selection, or dragging it: what the button does there (sel_hit)
+	const int grab = sl.moving ? sl.move_grab : sl.hover;
+	if (grab)
+	{
+		const int edges = grab & SELH_EDGES;
+		const bool across = (edges & (SELH_LEFT | SELH_RIGHT)) != 0, down = (edges & (SELH_TOP | SELH_BOTTOM)) != 0;
+		const char *what = grab == SELH_MOVE ? "move" : across && down ? "size" : across ? "width" : "height";
+		R_DrawFill32_RTX(sx - 1, sy - 1, (int)strlen(what) * CHAR_WIDTH + 2, CHAR_HEIGHT + 2, MakeColor(0, 0, 0, 160));
+		ui_text((float)sx, (float)sy, UI_ALTCOLOR, what, 8, font);
+		return;
+	}
+
+	// selecting: the shape's mark beside the cross
 	switch (au.select)
 	{
 	case SEL_RECT:
@@ -6303,7 +6813,7 @@ void MAT_AuthorDraw(void)
 	if (au.show_2d)
 		draw_view2d(font);
 	draw_panel(font);
-	draw_cursor();
+	draw_cursor(font);
 	vkpt_draw_pop_state();
 }
 
@@ -6595,6 +7105,325 @@ static void select_step(void)
 		select_commit(W, H);
 }
 
+/* THE SELECTION MOVED AND RESHAPED (Matt, 2026-11-22: "select a selection and move
+   it to another place on the texture like if I want to keep using the same
+   selection in different places", and for an ellipse "adjust the length and width
+   after the selection is made like in GIMP ... the side and top and bottom anchors
+   when I hover over"). While a select tool is on, the last rectangle or ellipse
+   made keeps handles as GIMP's does: a band inside its box along each side - a
+   corner is two - that drags that side, the shape flipping if it is pulled past
+   the other one. Pressed anywhere else inside that box, or on any selected texel,
+   the button drags the whole selection, every shape of it, a texel at a time; on
+   a tiled surface it moves to the place on the map the cursor goes to. A press
+   that moves nothing is still a click, and drops the selection. Shift or Ctrl
+   still start a shape to add or take away, from anywhere. */
+
+// the step whose sides have handles: the last one, a rectangle or an ellipse; -1 none
+static int sel_edit_step(void)
+{
+	if (!sl.num_steps)
+		return -1;
+	const sel_step_t *s = &sl.steps[sl.num_steps - 1];
+	if ((s->step != SELSTEP_ADD && s->step != SELSTEP_SUB) || (s->shape != SEL_RECT && s->shape != SEL_ELLIPSE)
+		|| s->count < 2)
+		return -1;
+	return sl.num_steps - 1;
+}
+
+// a rectangle's or ellipse's texels on a W x H map, unwrapped: x0, y0, x1, y1 inclusive (as sel_shape)
+static void sel_step_box(const float *p, int W, int H, int box[4])
+{
+	box[0] = (int)floorf(min(p[0], p[2]) * (float)W);
+	box[1] = (int)floorf(min(p[1], p[3]) * (float)H);
+	box[2] = (int)floorf(max(p[0], p[2]) * (float)W);
+	box[3] = (int)floorf(max(p[1], p[3]) * (float)H);
+}
+
+/* How deep the side bands reach into a box (w x h texels), as GIMP sizes its
+   handles: a third of the side at most, a sixth at least - and in the map view
+   at least about 12 pixels on screen, so a small shape zoomed out still has some */
+static void sel_band(int w, int h, bool in_2d, float *bx, float *by)
+{
+	const float least = in_2d ? 12.f / max(au.v2_ppt, 1e-3f) : 1.f;
+	*bx = min((float)w / 3.f, max((float)w / 6.f, least));
+	*by = min((float)h / 3.f, max((float)h / 6.f, least));
+}
+
+// the band of (grab)'s sides in (box), texels: x0, y0, x1, y1, the far ends exclusive
+static void sel_band_rect(const int box[4], int grab, bool in_2d, float r[4])
+{
+	const float x0 = (float)box[0], x1 = (float)box[2] + 1.f, y0 = (float)box[1], y1 = (float)box[3] + 1.f;
+	float bx, by;
+	sel_band(box[2] - box[0] + 1, box[3] - box[1] + 1, in_2d, &bx, &by);
+	r[0] = (grab & SELH_LEFT) ? x0 : (grab & SELH_RIGHT) ? x1 - bx : x0 + bx;
+	r[2] = (grab & SELH_LEFT) ? x0 + bx : (grab & SELH_RIGHT) ? x1 : x1 - bx;
+	r[1] = (grab & SELH_TOP) ? y0 : (grab & SELH_BOTTOM) ? y1 - by : y0 + by;
+	r[3] = (grab & SELH_TOP) ? y0 + by : (grab & SELH_BOTTOM) ? y1 : y1 - by;
+}
+
+/* The cursor on the map in texels: in the map view (in_2d) anywhere over it - or,
+   while a move begun there goes on, anywhere at all, up to a map past each side -
+   else where it is on a surface showing the map, unwrapped. */
+static bool sel_cursor_texel(bool in_2d, float *tu, float *tv)
+{
+	int W, H;
+	map_size(&W, &H);
+	if (in_2d)
+	{
+		if (!sl.moving && !cursor_in_view2d())
+			return false;
+		float x, y, size, mx, my;
+		view2d_rect(&x, &y, &size);
+		cursor_virtual(&mx, &my);
+		*tu = Q_clipf(au.v2_cu + (mx - (x + size * 0.5f)) / au.v2_ppt, -(float)W, 2.f * (float)W);
+		*tv = Q_clipf(au.v2_cv + (my - (y + size * 0.5f)) / au.v2_ppt, -(float)H, 2.f * (float)H);
+		return true;
+	}
+	if (!hit_on_map(&au.hit, author_image()))
+		return false;
+	hit_texel(&au.hit, W, H, false, tu, tv);
+	return true;
+}
+
+/* What a press at texel (tu, tv) grabs, SELH_*; for a side, its band in (cut), in
+   the copy of the shape compared - (*wrap) true when that repeats with the map. The
+   map view shows a shape in the map's own copy, moved there by its first point
+   (ants_shape); on a tiled surface the cursor is taken to the copy of the map
+   nearest the shape. */
+static int sel_hit(bool in_2d, float tu, float tv, int W, int H, int cut[4], bool *wrap)
+{
+	const bool tiled = map_wraps();
+	*wrap = false;
+	const int e = sel_edit_step();
+	if (e >= 0)
+	{
+		const sel_step_t *s = &sl.steps[e];
+		const float *p = sl.pts + 2 * s->first;
+		int box[4];
+		sel_step_box(p, W, H, box);
+		float u = tu, v = tv;
+		if (in_2d)
+		{
+			if (!s->clip)
+			{
+				const int ox = -W * (int)floorf(p[0]), oy = -H * (int)floorf(p[1]);
+				box[0] += ox, box[2] += ox, box[1] += oy, box[3] += oy;
+			}
+		}
+		else if (tiled)
+		{
+			u += (float)W * floorf(((float)(box[0] + box[2] + 1) * 0.5f - u) / (float)W + 0.5f);
+			v += (float)H * floorf(((float)(box[1] + box[3] + 1) * 0.5f - v) / (float)H + 0.5f);
+			*wrap = true;
+		}
+		const float x0 = (float)box[0], x1 = (float)box[2] + 1.f, y0 = (float)box[1], y1 = (float)box[3] + 1.f;
+		if (u >= x0 && u < x1 && v >= y0 && v < y1)
+		{
+			float bx, by;
+			sel_band(box[2] - box[0] + 1, box[3] - box[1] + 1, in_2d, &bx, &by);
+			int grab = 0;
+			if (u < x0 + bx)
+				grab |= SELH_LEFT;
+			else if (u >= x1 - bx)
+				grab |= SELH_RIGHT;
+			if (v < y0 + by)
+				grab |= SELH_TOP;
+			else if (v >= y1 - by)
+				grab |= SELH_BOTTOM;
+			if (!grab)
+				return SELH_MOVE;
+			float r[4];
+			sel_band_rect(box, grab, in_2d, r);
+			cut[0] = (int)floorf(r[0]);
+			cut[1] = (int)floorf(r[1]);
+			cut[2] = max(cut[0], (int)ceilf(r[2]) - 1);
+			cut[3] = max(cut[1], (int)ceilf(r[3]) - 1);
+			return grab;
+		}
+	}
+
+	// a selected texel: the whole selection
+	int x = (int)floorf(tu), y = (int)floorf(tv);
+	if (!in_2d && tiled)
+	{
+		x = ((x % W) + W) % W;
+		y = ((y % H) + H) % H;
+	}
+	if (x < 0 || x >= W || y < 0 || y >= H || !sl.mask || sl.mask_w != W || sl.mask_h != H)
+		return SELH_NONE;
+	return sl.mask[(size_t)y * W + x] ? SELH_MOVE : SELH_NONE;
+}
+
+// each tick: what a press would grab where the cursor is now (and the surface shows a side's band)
+static void sel_hover_update(void)
+{
+	int hover = SELH_NONE, cut[4] = { 0, 0, 0, 0 };
+	bool in_2d = false, wrap = false;
+	if (au.select != SEL_OFF && sl.num_steps && !sl.dragging && !sl.moving && !au.painting)
+	{
+		float mx, my;
+		cursor_virtual(&mx, &my);
+		const int w = widget_at(mx, my);
+		float tu, tv;
+		in_2d = (w == W_VIEW2D);
+		if ((w == W_VIEW2D || w == W_NONE) && sel_cursor_texel(in_2d, &tu, &tv))
+		{
+			int W, H;
+			map_size(&W, &H);
+			hover = sel_hit(in_2d, tu, tv, W, H, cut, &wrap);
+		}
+	}
+	const bool was_cut = (sl.hover & SELH_EDGES) && !sl.hover_2d;
+	const bool is_cut = (hover & SELH_EDGES) && !in_2d;
+	if (was_cut != is_cut || (is_cut && (memcmp(cut, sl.hover_cut, sizeof(cut)) || wrap != sl.hover_cut_wrap)))
+		rg.dirty = true;    // the surface shows the band: upload the region again
+	sl.hover = hover;
+	sl.hover_2d = in_2d;
+	memcpy(sl.hover_cut, cut, sizeof(cut));
+	sl.hover_cut_wrap = wrap;
+}
+
+// the button goes down on what sel_hover found: a side, or the whole selection
+static bool move_begin(bool in_2d)
+{
+	if (!sl.hover || sl.hover_2d != in_2d)
+		return false;
+	float tu, tv;
+	if (!sel_cursor_texel(in_2d, &tu, &tv))
+		return false;
+	sl.moving = true;
+	sl.move_2d = in_2d;
+	sl.move_commit = sl.move_any = false;
+	sl.move_grab = sl.hover;
+	sl.move_step = (sl.hover & SELH_EDGES) ? sel_edit_step() : -1;
+	sl.move_u = tu;
+	sl.move_v = tv;
+	sl.move_dx = sl.move_dy = 0;
+	Z_Free(sl.move_pts);
+	sl.move_num_pts = sl.num_pts;
+	sl.move_pts = sl.num_pts ? Z_Malloc(sizeof(float) * 2 * sl.num_pts) : NULL;
+	if (sl.num_pts)
+		memcpy(sl.move_pts, sl.pts, sizeof(float) * 2 * sl.num_pts);
+	if ((sl.hover & SELH_EDGES) && !in_2d)
+		rg.dirty = true;    // the band goes from the surface while the shape changes
+	sl.hover = SELH_NONE;
+	queue_tick();
+	return true;
+}
+
+// the selection's points: as at the press, moved (dx, dy) texels - or the grabbed sides only
+static void sel_move_apply(int W, int H)
+{
+	if (!sl.move_pts || sl.num_pts != sl.move_num_pts)
+		return;
+	memcpy(sl.pts, sl.move_pts, sizeof(float) * 2 * sl.num_pts);
+	if (sl.move_step < 0 || sl.move_step >= sl.num_steps)
+	{
+		const float du = (float)sl.move_dx / (float)W, dv = (float)sl.move_dy / (float)H;
+		for (int i = 0; i < sl.num_pts; i++)
+		{
+			sl.pts[i * 2] += du;
+			sl.pts[i * 2 + 1] += dv;
+		}
+	}
+	else
+	{
+		const sel_step_t *s = &sl.steps[sl.move_step];
+		float *p = sl.pts + 2 * s->first;
+		int box[4];
+		sel_step_box(p, W, H, box);
+		if (sl.move_grab & SELH_LEFT)
+			box[0] += sl.move_dx;
+		if (sl.move_grab & SELH_RIGHT)
+			box[2] += sl.move_dx;
+		if (sl.move_grab & SELH_TOP)
+			box[1] += sl.move_dy;
+		if (sl.move_grab & SELH_BOTTOM)
+			box[3] += sl.move_dy;
+		// pulled past the other side: it flips, as GIMP's does
+		int x0 = min(box[0], box[2]), x1 = max(box[0], box[2]);
+		int y0 = min(box[1], box[3]), y1 = max(box[1], box[3]);
+		// no wider than a shape may be made (sel_shape draws nothing past it)
+		if (x1 - x0 > SEL_MAX_TILES * W)
+		{
+			if (sl.move_grab & SELH_LEFT)
+				x0 = x1 - SEL_MAX_TILES * W;
+			else
+				x1 = x0 + SEL_MAX_TILES * W;
+		}
+		if (y1 - y0 > SEL_MAX_TILES * H)
+		{
+			if (sl.move_grab & SELH_TOP)
+				y0 = y1 - SEL_MAX_TILES * H;
+			else
+				y1 = y0 + SEL_MAX_TILES * H;
+		}
+		// the texels' centres: sel_shape floors them back to these
+		p[0] = ((float)x0 + 0.5f) / (float)W;
+		p[1] = ((float)y0 + 0.5f) / (float)H;
+		p[2] = ((float)x1 + 0.5f) / (float)W;
+		p[3] = ((float)y1 + 0.5f) / (float)H;
+	}
+	sl.dirty = true;
+	sl.stats_have = false;
+}
+
+// each tick while the selection is dragged, and once more when the button comes up
+static void move_step(void)
+{
+	int W, H;
+	map_size(&W, &H);
+	float tu, tv;
+	if (sel_cursor_texel(sl.move_2d, &tu, &tv))
+	{
+		float du = tu - sl.move_u, dv = tv - sl.move_v;
+		// a tiled surface: the copy of the map nearest - the cursor met the map anywhere on it
+		if (!sl.move_2d && map_wraps())
+		{
+			du -= (float)W * floorf(du / (float)W + 0.5f);
+			dv -= (float)H * floorf(dv / (float)H + 0.5f);
+		}
+		const int dx = (int)floorf(du + 0.5f), dy = (int)floorf(dv + 0.5f);
+		if (dx != sl.move_dx || dy != sl.move_dy)
+		{
+			sl.move_dx = dx;
+			sl.move_dy = dy;
+			if (dx || dy)
+				sl.move_any = true;
+			sel_move_apply(W, H);
+		}
+	}
+	if (!sl.move_commit)
+		return;
+
+	sl.moving = sl.move_commit = false;
+	Z_Free(sl.move_pts);
+	sl.move_pts = NULL;
+	sl.move_num_pts = 0;
+	if (!sl.move_any)
+	{
+		// a click on the selection that moved nothing drops it, as one anywhere does
+		if (sl.move_grab == SELH_MOVE)
+			sel_clear("selection dropped - Ctrl+Shift+D brings it back");
+		return;
+	}
+	sl.dirty = true;
+	rg.dirty = true;
+	region_sync();
+	if (sl.move_step >= 0 && sl.move_step < sl.num_steps)
+	{
+		const sel_step_t *s = &sl.steps[sl.move_step];
+		int box[4];
+		sel_step_box(sl.pts + 2 * s->first, W, H, box);
+		author_status("%s now %d x %d: %d texels selected", sel_label[s->shape], box[2] - box[0] + 1,
+			box[3] - box[1] + 1, sl.texels);
+	}
+	else if (sl.texels)
+		author_status("selection moved %d, %d texels: %d texels selected", sl.move_dx, sl.move_dy, sl.texels);
+	else
+		author_status("the selection is off the map now - drag it back, or Ctrl+D drops it");
+}
+
 static void paint_step(void)
 {
 	// a Quake III stage's maps: only while the stage still has a surface to paint
@@ -6837,6 +7666,10 @@ static void author_tick(void)
 		sel_clear("the selection was on another material or stage: dropped");
 	if (sl.dragging)
 		select_step();
+	if (sl.moving)
+		move_step();
+	else
+		sel_hover_update();
 	region_sync();
 	emit_sync();
 	emit_retint();
@@ -6845,6 +7678,12 @@ static void author_tick(void)
 	{
 		au.range_request = false;
 		range_apply();
+	}
+	if (au.lean_request)
+	{
+		const int dir = au.lean_request;
+		au.lean_request = 0;
+		lean_apply(dir);
 	}
 
 	if (au.painting)
@@ -7175,6 +8014,12 @@ bool MAT_AuthorKey(unsigned key, bool down)
 				sl.drag_commit = true;
 				queue_tick();
 			}
+			if (sl.moving)
+			{
+				// the selection, or its side, stays where it was let go
+				sl.move_commit = true;
+				queue_tick();
+			}
 			if (au.painting && au.line_active)
 			{
 				// the line ends here: painted at the next tick, between frames
@@ -7207,8 +8052,10 @@ bool MAT_AuthorKey(unsigned key, bool down)
 			const int w = widget_at(mx, my);
 			if ((w == W_VIEW2D || w == W_NONE) && au.select != SEL_OFF)
 			{
-				// a selection: Shift adds to it, Ctrl takes away, neither replaces it
-				select_begin(w == W_VIEW2D, shift, ctrl);
+				// a selection: Shift adds to it, Ctrl takes away, neither replaces it - or,
+				// pressed on it or on the last shape's sides, it or they are dragged
+				if (shift || ctrl || !move_begin(w == W_VIEW2D))
+					select_begin(w == W_VIEW2D, shift, ctrl);
 			}
 			else if (w == W_VIEW2D || w == W_NONE)
 			{
@@ -7524,6 +8371,31 @@ void MAT_AuthorCommand(pbr_material_t *crosshair)
 		return;
 	}
 
+	/* mat author lean out|in [bevel]: the normal map's texels in the selection
+	   (and lock) leaning out of its edge or into it - in <bevel> texels from the
+	   edge, 0 or none to its middle - at the panel's intensity */
+	if (!Q_stricmp(word, "lean"))
+	{
+		const char *arg = Cmd_Argc() >= 4 ? Cmd_Argv(3) : "";
+		const int dir = !Q_stricmp(arg, "out") ? 1 : !Q_stricmp(arg, "in") ? -1 : 0;
+		if (!dir)
+		{
+			Com_Printf("usage: mat author lean out|in [bevel texels] - the normals in the selection lean out of "
+				"its edge (a dome) or into it (a dish), in that far from the edge (0 = to its middle)\n");
+			return;
+		}
+		if (!au.active)
+			author_start(crosshair, SLOT_NORMAL);
+		if (!au.active)
+			return;
+		if (au.slot != SLOT_NORMAL)
+			set_slot(SLOT_NORMAL);
+		if (Cmd_Argc() >= 5)
+			au.bevel = Q_clip((int)floorf((float)atof(Cmd_Argv(4)) + 0.5f), 0, AUTHOR_MAX_RADIUS);
+		lean_apply(dir);
+		return;
+	}
+
 	// mat author light [on|off]: the flashlight at the camera; no word toggles it
 	if (!Q_stricmp(word, "light") || !Q_stricmp(word, "flashlight"))
 	{
@@ -7566,7 +8438,7 @@ void MAT_AuthorCommand(pbr_material_t *crosshair)
 	{
 		Com_Printf("usage: mat author [roughness|metallic|normals|emissive|height|glass] | stage <N|mat> | "
 			"free | line | rect [corner radius] | select <shape|all|none|invert|back> | range <dark%%> <bright%%> | "
-			"light [on|off] | save | off\n");
+			"lean out|in [bevel] | light [on|off] | save | off\n");
 		return;
 	}
 

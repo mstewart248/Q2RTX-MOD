@@ -134,6 +134,7 @@ static cvar_t   *cl_q3_marks_time;
 static cvar_t   *cl_q3_marks_max;
 static cvar_t   *cl_q3_debug;
 static cvar_t   *cl_q3_plasma_from_gun;
+static cvar_t   *cl_q3_bolt_split;
 static cvar_t   *cl_q3_gibs_time;
 static cvar_t   *cl_q3_gibs_max;
 static cvar_t   *cl_q3_gib_drops;
@@ -1790,6 +1791,9 @@ typedef struct {
     // is inside it (CG_AddFallScaleFade)
     bool        blend, hold, near;
     float       roll, drop;
+    // plasma_boom: Quake III's plasma hit (q3w_add_plasma_boom), flat on the
+    // surface at angles; start is its shader clock's zero
+    bool        plasma_boom;
 } q3wfx_t;
 
 static q3wfx_t  q3w_fx[Q3W_MAX_FX];
@@ -1804,6 +1808,64 @@ static q3wfx_t *q3w_alloc_fx(void)
     fx->start = cl.time;
     VectorSet(fx->color, 1, 1, 1);
     return fx;
+}
+
+/*
+=================
+q3w_add_plasma_boom
+
+cg_weapons.c CG_MissileHitWall's plasma hit: CG_MakeExplosion's LE_EXPLOSION,
+600 ms of models/weaphits/ring02.md3 pointed down the surface's normal and
+turned a random amount about it, drawn with scripts/gfx.shader's
+
+    plasmaExplosion
+    {
+        cull disable
+        {
+            clampmap models/weaphits/plasmaboom.tga
+            blendfunc add
+            tcMod stretch triangle .6 0.1 0 8
+            tcmod rotate 999
+            rgbGen wave inversesawtooth 0 1 0 1.5
+        }
+    }
+
+on a clock that starts with it (refEntity.shaderTime = startTime).
+
+ring02 is a shallow bowl, 139 x 136 units across, its texture laid on flat
+from the front, so seen from the front it is a square of that size. The
+stretch's p = 1 / wave squeezes the picture into the middle 0.5 to 0.7 of it,
+pulsing 8 times a second, and clampmap leaves the black edge round it, which
+adds nothing. The rotate turns the picture -999 degrees a second in texture
+space, which on ring02's texture (s along -Y, t along -Z) is +999 about the
+normal: counter-clockwise seen from in front. So it is a flat additive square,
+turning as a decal's roll turns it, sized by the wave, its brightness falling
+1 - 1.5 t. The bowl lifts the picture's edge 2 to 8 units off the wall; the
+square sits 4 out.
+=================
+*/
+#define Q3W_RING02_HALF     68.7f   // ring02's texture: 139 x 136 units, halved
+
+static void q3w_add_plasma_boom(const q3wfx_t *fx, entity_t *e)
+{
+    float t = (cl.time - fx->start) * 0.001f;
+    float f = t * 8 - floorf(t * 8);
+    // Quake III's triangle table: 0 up to 1, down through 0 to -1, back to 0
+    float tri = f < 0.25f ? 4 * f : f < 0.75f ? 2 - 4 * f : 4 * f - 4;
+    float fade = q3w_clip01(1 - (t * 1.5f - floorf(t * 1.5f)));
+
+    e->frame = fx->image[0];
+    e->flags = RF_FLARE | RF_DECAL;
+    e->skinnum = DECAL_ADD;
+    e->scale = Q3W_RING02_HALF * (0.6f + 0.1f * tri);
+    // a path-traced sprite gives off alpha squared (pt_logic_sprite), and
+    // rgbGen scales Quake III's linearly
+    e->alpha = sqrtf(fade);
+    e->rgba.u32 = 0xffffffffu;
+    VectorCopy(fx->origin, e->origin);
+    VectorCopy(e->origin, e->oldorigin);
+    VectorCopy(fx->angles, e->angles);
+    e->angles[ROLL] = fx->angles[ROLL] + 999 * t;
 }
 
 static void q3w_add_fx(void)
@@ -1830,6 +1892,12 @@ static void q3w_add_fx(void)
         e.frame = fx->image[min((int)(frac * fx->images), fx->images - 1)];
         if (!e.frame)
             continue;
+        if (fx->plasma_boom) {
+            q3w_add_plasma_boom(fx, &e);
+            V_AddEntity(&e);
+            q3w_dbg.fx_drawn++;
+            continue;
+        }
         e.alpha = fx->hold ? 1.0f : 1.0f - frac;
         e.rgba.u32 = q3w_pack_rgb(fx->color);
         VectorCopy(fx->origin, e.origin);
@@ -1923,16 +1991,21 @@ void CL_Q3W_Impact(int type, const vec3_t origin, const vec3_t dir)
         break;
 
     case TE_Q3_PLASMA_EXPLOSION:
-        // plasmaExplosion: a ring that swells and fades
+        // plasmaExplosion on ring02 (q3w_add_plasma_boom). CG_MakeExplosion
+        // starts its clock up to 63 ms back so hits aren't in step, and
+        // turns it a random amount about the normal.
         fx = q3w_alloc_fx();
         fx->images = 1;
         fx->image[0] = q3w.plasma_boom;
-        VectorMA(origin, 2, dir, fx->origin);
-        fx->size0 = 8;
-        fx->size1 = 22;
-        fx->life = 400;
-        VectorSet(fx->color, 0.7f, 0.7f, 1.0f);
+        fx->plasma_boom = true;
+        VectorMA(origin, 4, dir, fx->origin);
+        vectoangles2(dir, fx->angles);
+        fx->angles[ROLL] = Q_rand() % 360;
+        fx->start = cl.time - (Q_rand() & 63);
+        fx->life = 600;
 
+        // not Quake III's (light 0 there): the hit lights the wall a moment,
+        // which an added sprite can't do in the path tracer
         dl = CL_AllocDlight(0);
         VectorMA(origin, 4, dir, dl->origin);
         VectorSet(dl->color, 0.6f, 0.6f, 1.0f);
@@ -2162,15 +2235,23 @@ static void q3w_add_bolts(void)
             VectorCopy(b->end, end);
         }
 
-        if (view) {
+        if (view && !cl_q3_bolt_split->integer) {
+            /* One bolt, from the view gun, an ordinary model - as it was drawn
+               before 11-19, and as it looked right. The split below put this one
+               in the view weapon's pass (RF_WEAPONMODEL), which is opaque and
+               shaded for the gun: the bolt came out as white slabs, off the
+               barrel (Matt, 11-22: "The lightning isn't connected to the gun").
+               A mirror shows this one too, leaving the view gun at eye level. */
+            q3w_draw_bolt(i, start, end, 0);
+        } else if (view) {
             vec3_t body_muzzle;
 
-            // Two bolts, as Quake II's beams (tent.c CL_AddPlayerBeams): this
-            // one from the view gun for the eye only, which a mirror leaves
-            // out as it does the view gun - it came out of your face there
-            // (Matt, 11-19: "doubling up or ghosting in the mirror") - and,
-            // for mirrors only, one from the gun your body holds there, to
-            // the same end.
+            // cl_q3_bolt_split 1: two bolts, as Quake II's beams (tent.c
+            // CL_AddPlayerBeams): this one from the view gun for the eye only,
+            // which a mirror leaves out as it does the view gun - it came out
+            // of your face there (Matt, 11-19: "doubling up or ghosting in the
+            // mirror") - and, for mirrors only, one from the gun your body
+            // holds there, to the same end.
             q3w_draw_bolt(i, start, end, RF_WEAPONMODEL);
             if (sh->muzzle_frame == cls.framecount)
                 q3w_draw_bolt(i, sh->muzzle, end, RF_VIEWERMODEL);
@@ -3024,6 +3105,10 @@ void CL_Q3W_Init(void)
     // 1: a plasma ball starts at its gun's muzzle and catches up with the
     // server's ball in 0.1 s; 0: first seen where Quake III has it, 100+ out
     cl_q3_plasma_from_gun = Cvar_Get("cl_q3_plasma_from_gun", "1", 0);
+    // your own Lightning Gun bolt in first person: 0 one ordinary bolt from the
+    // view gun (a mirror shows it too); 1 the view weapon's pass for the eye plus
+    // a mirror-only bolt from your body's gun (q3w_add_bolts) - not archived
+    cl_q3_bolt_split = Cvar_Get("cl_q3_bolt_split", "0", 0);
     // Quake III's gibs (GIBS): ms each piece lasts, as cl_brass_time - -1 for
     // ever except in a network game, where Quake III's 5-8 s - and how many
     // pieces there can be (eleven a gibbing); past that the oldest go

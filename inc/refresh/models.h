@@ -205,6 +205,13 @@ typedef struct model_s {
 	bool sprite_vertical;
 	bool sprite_oriented;	// Quake's SPR_ORIENTED: flat in the plane the entity's angles give (hipnotic's bullet holes)
 
+	// id1's md5 drawn for a Quake 1 add-on's .mdl that is id1's with skins
+	// added (model_q1.c q1_mdl_id1_skins - rogue's ogre, player...): an entity
+	// in skin q1_md5_skins or above wears one of the add-on's own skins and is
+	// drawn from q1_skin_model, the .mdl itself (client entities.c). 0: none.
+	int q1_md5_skins;
+	qhandle_t q1_skin_model;
+
 	iqm_model_t* iqmData;
 
 	int num_light_polys;
@@ -354,10 +361,12 @@ void MD5_SetLoadScale(float scale);
 // maps/b_*.bsp -> .md3 (or its .md5mesh). MOD_Q1Build's (*data) is Z_Free'd
 // by the caller and loaded under (load_name), an md5 scaled by (md5_scale)
 // and moved by (md5_offset); (*sprite_type) is a sprite's Quake orientation,
-// -1 for anything else.
+// -1 for anything else; (*md5_skins) nonzero: the md5 draws only the .mdl's
+// skins below it (model_t q1_md5_skins).
 bool MOD_Q1IsModel(const char *name);
 int MOD_Q1Build(const char *name, bool md5, void **data, size_t *length,
-                char *load_name, size_t size, vec3_t md5_offset, float *md5_scale, int *sprite_type);
+                char *load_name, size_t size, vec3_t md5_offset, float *md5_scale, int *sprite_type,
+                int *md5_skins);
 // the 8-bit pixels images.c turns into an .mdl's skins and a sprite's frames,
 // Z_Free'd by the caller; a box's wall texture, kept by model_q1.c
 byte *MOD_Q1ModelSkin(const char *path, int skin, int frame, int *width, int *height);

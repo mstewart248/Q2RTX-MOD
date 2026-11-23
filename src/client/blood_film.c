@@ -574,6 +574,23 @@ static void film_tile_free(int idx)
 }
 
 /*
+A point trace through the film's map, from the worker thread. A Quake 1 map has
+no brushes - it collides through its clip hulls (bsp_q1.c) - and the brush walk
+of CM_PointTraceReentrant went through it without touching anything: every
+cell came out OPEN, no blood ever went in, and cl_blood_film did nothing on a
+Quake 1 map (Matt, 11-22). Its hull 0 trace keeps to the stack, as this needs;
+taken straight from film_bsp, which the film holds a reference to, rather than
+looked up in the shared map cache (BSP_Q1ForHeadnode) under the main thread.
+*/
+static void film_trace(trace_t *tr, const vec3_t start, const vec3_t end)
+{
+    if (film_bsp->q1 && film_bsp->q1d)
+        BSP_Q1BoxTrace(tr, film_bsp, 0, start, end, vec3_origin, vec3_origin, MASK_SOLID);
+    else
+        CM_PointTraceReentrant(tr, start, end, film_bsp->nodes, MASK_SOLID);
+}
+
+/*
 Classifies one cell, the first time anything asks (film_kind). Two traces, so it
 used to be done for a whole new tile at once - 512 traces on the frame blood
 first reached it, and a shotgun blast reaches ~45 new tiles in a third of a
@@ -607,7 +624,7 @@ static void film_classify_cell(film_tile_t *t, int i)
 
     VectorMA(c, 0.6f, p->normal, start);
     VectorMA(c, -0.6f, p->normal, end);
-    CM_PointTraceReentrant(&tr, start, end, headnode, MASK_SOLID);
+    film_trace(&tr, start, end);
 
     if (tr.startsolid || tr.allsolid) {
         t->kind[i] = CELL_BLOCKED;
@@ -1110,7 +1127,7 @@ static bool film_corner(const film_plane_t *p, int gx, int gy, int dx, int dy, f
     VectorMA(c, 0.4f, p->normal, start);
     VectorMA(start, film_cell * 1.5f, dir, end);
 
-    CM_PointTraceReentrant(&tr, start, end, film_bsp->nodes, MASK_SOLID);
+    film_trace(&tr, start, end);
 
     if (tr.startsolid || tr.allsolid || tr.fraction >= 1.0f)
         return false;

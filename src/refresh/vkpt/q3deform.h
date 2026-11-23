@@ -41,6 +41,16 @@ void vkpt_q3_deform_collect(const pbr_material_t *material, const VboPrimitive *
 // Builds the models from what was collected. End of bsp_mesh_create_from_bsp.
 void vkpt_q3_deform_build(void);
 
+// A moving face's light polys (bsp_mesh.c collect_light_polys, after
+// vkpt_q3_deform_build), copied to the model of `material`'s shader to be
+// carried with it as a model's lights. False if no model took them: the world
+// keeps them.
+bool vkpt_q3_deform_take_lights(const pbr_material_t *material, const light_poly_t *lights, int count);
+
+// Whether `model` is one of these (its lights keep one identity a frame to the
+// next, and the fog's long history: main.c).
+bool vkpt_q3_deform_model(const model_t *model);
+
 // Drops everything (the world is unloaded).
 void vkpt_q3_deform_reset(void);
 

@@ -914,6 +914,15 @@ static void CL_AddPacketEntities(void)
                 if (ent.model == cl_mod_laser || ent.model == cl_mod_dmspot)
                     renderfx |= RF_NOSHADOW;
 
+                // a Quake 1 add-on's model drawn as id1's md5, in one of the
+                // skins only the add-on's .mdl has (rogue's multi-grenade ogre,
+                // its red team Ranger): that .mdl (refresh/models.c MOD_LoadQuake1)
+                if (ent.model && !(ent.model & 0x80000000)) {
+                    const model_t *q1m = MOD_ForHandle(ent.model);
+                    if (q1m && q1m->q1_skin_model && ent.skinnum >= q1m->q1_md5_skins)
+                        ent.model = q1m->q1_skin_model;
+                }
+
                 // a pickup with Quake II's gun in modelindex and Quake III's
                 // in modelindex2: our own game's, Quake III's half as big
                 // again as Quake III draws its guns on the ground

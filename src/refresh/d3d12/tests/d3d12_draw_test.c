@@ -4,6 +4,10 @@
 //   pic 0: untextured red, NDC x -1..0, y -1..0  -> must be the TOP-LEFT quadrant
 //   pic 1: 2x2 texture (G B / W R), nearest sampler via the sampler index
 //          buffer, NDC x 0..1, y 0..1            -> BOTTOM-RIGHT, texel (0,0) at its top-left
+//   pic 2: a TRIANGLE (bit 26, R_DrawModel2D's): the top-right quadrant's upper-left
+//          half, the texture transposed across it (the uv skew terms) - green at its
+//          top-left corner, white at its top-right, blue at its bottom-left; the
+//          quadrant's other half black (the strip's folded second triangle)
 // Then HDR (vid_hdr), as draw.c's second pipeline: stretch_pic.frag.spec_0_1 into an
 // R16G16B16A16_FLOAT target with the UBO { ui_hdr_nits 500, saturation 100,
 // ui_hdr_video_gamma 2.2 }, a 2x1 texture of sRGB codes 4 and 128 drawn twice:
@@ -36,6 +40,7 @@
 #define TEX_SLOT 5
 #define TEX_SLOT_DARK 6     // the HDR phase's 2x1 texture
 #define PIC_FLAG_VIDEO (1u << 30)
+#define PIC_FLAG_TRIANGLE (1u << 26)
 #define HEAP_SLOTS 16
 
 typedef struct {
@@ -43,6 +48,8 @@ typedef struct {
     float s, t, w_s, h_t;
     uint32_t color, tex_handle;
     float skew_x, skew_y;
+    float uv_skew_s, uv_skew_t;     // draw.c's, for a triangle
+    uint32_t color1, color2;
 } StretchPic_t;
 
 static ID3D12Device5 *dev;
@@ -228,12 +235,23 @@ int main(int argc, char **argv)
     memcpy(u + 256, texels[1], 8);              // row pitch 256
 
     // the queue: offset 1024
-    StretchPic_t pics[2] = { 0 };
+    StretchPic_t pics[3] = { 0 };
     pics[0].x = -1; pics[0].y = -1; pics[0].w = 1; pics[0].h = 1;
     pics[0].color = 0xff0000ffu; pics[0].tex_handle = ~0u;       // unpackUnorm4x8: x = low byte = red
     pics[1].x = 0; pics[1].y = 0; pics[1].w = 1; pics[1].h = 1;
     pics[1].s = 0; pics[1].t = 0; pics[1].w_s = 1; pics[1].h_t = 1;
     pics[1].color = 0xffffffffu; pics[1].tex_handle = TEX_SLOT;
+    // the triangle, as draw.c's enqueue_triangle lays one out: corner (0,0) = B, the
+    // quadrant's top-left (NDC 0,-1), uv (.25,.25); (0,1) = A, its bottom-left (0,0),
+    // uv (.75,.25); (1,1) = C, its top-right (1,-1), uv (.25,.75)
+    pics[2].x = 0; pics[2].y = -1;
+    pics[2].w = 1; pics[2].skew_y = -1;             // C - A
+    pics[2].skew_x = 0; pics[2].h = 1;              // A - B
+    pics[2].s = 0.25f; pics[2].t = 0.25f;           // uv B
+    pics[2].w_s = -0.5f; pics[2].uv_skew_t = 0.5f;  // uv C - uv A
+    pics[2].uv_skew_s = 0.5f; pics[2].h_t = 0;      // uv A - uv B
+    pics[2].color = pics[2].color1 = pics[2].color2 = 0xffffffffu;
+    pics[2].tex_handle = TEX_SLOT | PIC_FLAG_TRIANGLE;
     memcpy(u + 1024, pics, sizeof(pics));
     // sampler index table: offset 2048, slot TEX_SLOT -> NEAREST (1)
     uint8_t kinds[64] = { 0 }; kinds[TEX_SLOT] = 1; kinds[TEX_SLOT_DARK] = 1;
@@ -309,7 +327,7 @@ int main(int argc, char **argv)
     ID3D12GraphicsCommandList_RSSetScissorRects(cl, 1, &sc);
     ID3D12GraphicsCommandList_OMSetRenderTargets(cl, 1, &rtv, FALSE, NULL);
     ID3D12GraphicsCommandList_IASetPrimitiveTopology(cl, D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-    ID3D12GraphicsCommandList_DrawInstanced(cl, 4, 2, 0, 0);
+    ID3D12GraphicsCommandList_DrawInstanced(cl, 4, 3, 0, 0);
 
     // ---- read back
     barrier(cl, rt, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -336,7 +354,10 @@ int main(int argc, char **argv)
     struct { int x, y; uint8_t b, g, r; const char *what; } checks[] = {
         {  8,  8,   0,   0, 255, "top-left quadrant: red untextured pic" },
         { 24, 24,   0,   0, 255, "top-left quadrant (inner corner): red" },
-        { 56,  8,   0,   0,   0, "top-right: black" },
+        { 60, 28,   0,   0,   0, "top-right, past the triangle's long edge: black" },
+        { 36,  4,   0, 255,   0, "triangle, its top-left corner: texel (0,0) green" },
+        { 58,  2, 255, 255, 255, "triangle, its top-right corner: texel (0,1) white" },
+        { 34, 26, 255,   0,   0, "triangle, its bottom-left corner: texel (1,0) blue" },
         {  8, 56,   0,   0,   0, "bottom-left: black" },
         { 40, 40,   0, 255,   0, "bottom-right, its top-left: texel (0,0) green" },
         { 56, 40, 255,   0,   0, "bottom-right, its top-right: texel (1,0) blue" },

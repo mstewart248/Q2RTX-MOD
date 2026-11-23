@@ -3088,8 +3088,18 @@ static void CL_Q1TempEntity(void)
         break;
 
     case TE_Q1_PARTICLE:
-        // Quake's blood (SpawnBlood's 73, its red) is this tree's
-        if ((te.color & ~15) == 64 && !(cl_disable_particles->integer & NOPART_BLOOD)) {
+        if (te.count == 255) {
+            // Quake's R_RunParticleEffect read 255 as 1024, R_ParticleExplosion,
+            // whatever the colour: an exploding barrel, which sends no
+            // TE_EXPLOSION (Matt, 11-21: "the explosive barrels in quake 1 should
+            // spawn a flow explosion"). The rocket's whole blast, Flow's fire with
+            // it. FIRST, ahead of the blood test: barrel_explode's colour is 75,
+            // in blood's red row (64-79), so with blood tested first the barrel
+            // came out as a small blood spray (Matt, 11-22: "There was no
+            // explosion from the quake 1 explosive barrels").
+            CL_Q1Blast();
+        } else if ((te.color & ~15) == 64 && !(cl_disable_particles->integer & NOPART_BLOOD)) {
+            // Quake's blood (SpawnBlood's 73, its red) is this tree's
             vec3_t dir;
             int count = te.count * 2;
             VectorCopy(te.dir, dir);
@@ -3097,12 +3107,6 @@ static void CL_Q1TempEntity(void)
                 VectorSet(dir, 0, 0, 1);
             clamp(count, 8, 60);
             CL_BloodParticleEffect(te.pos1, dir, 0xe8, count);
-        } else if (te.count == 255) {
-            // Quake's R_RunParticleEffect read 255 as 1024, R_ParticleExplosion:
-            // an exploding barrel, which sends no TE_EXPLOSION (Matt, 11-21:
-            // "the explosive barrels in quake 1 should spawn a flow
-            // explosion"). The rocket's whole blast, Flow's fire with it.
-            CL_Q1Blast();
         } else {
             CL_Q1RunParticleEffect(te.pos1, te.dir, te.color, te.count);
         }

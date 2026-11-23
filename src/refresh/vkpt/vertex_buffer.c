@@ -380,6 +380,14 @@ void vkpt_bsp_mesh_set_instance_flags(bsp_mesh_t* bsp_mesh)
 	bsp_mesh->geom_transparent.instance_mask = AS_FLAG_TRANSPARENT;
 	bsp_mesh->geom_transparent.instance_flags = VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR;
 	bsp_mesh->geom_transparent.sbt_offset = SBTO_OPAQUE;
+	/* holding masked glass (bsp_mesh.c filter_static_masked): every hit asks
+	   pt_logic_masked, which takes any hit on a face with no mask - so only a
+	   map with such a face pays the candidate tests on its water and glass */
+	if (bsp_mesh->transparent_masked)
+	{
+		bsp_mesh->geom_transparent.instance_flags = VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR;
+		bsp_mesh->geom_transparent.sbt_offset = SBTO_MASKED;
+	}
 
 	bsp_mesh->geom_masked.instance_mask = AS_FLAG_OPAQUE;
 	bsp_mesh->geom_masked.instance_flags = VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR | VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
@@ -398,7 +406,9 @@ void vkpt_bsp_mesh_set_instance_flags(bsp_mesh_t* bsp_mesh)
 		bsp_model_t* model = bsp_mesh->models + i;
 
 		model->geometry.instance_mask = model->transparent ? bsp_mesh->geom_transparent.instance_mask : bsp_mesh->geom_opaque.instance_mask;
-		model->geometry.instance_flags = model->masked ? bsp_mesh->geom_masked.instance_flags : model->transparent ? bsp_mesh->geom_transparent.instance_flags : bsp_mesh->geom_opaque.instance_flags;
+		// not geom_transparent's flags: those are the masked hit's when the world
+		// holds masked glass, and this geometry keeps SBTO_OPAQUE unless masked
+		model->geometry.instance_flags = model->masked ? bsp_mesh->geom_masked.instance_flags : model->transparent ? VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR : bsp_mesh->geom_opaque.instance_flags;
 		model->geometry.sbt_offset = model->masked ? bsp_mesh->geom_masked.sbt_offset : bsp_mesh->geom_opaque.sbt_offset;
 	}
 }
@@ -672,6 +682,14 @@ Everything else in LightBuffer - the material table, light_polys (which is not a
 prefix: the fog-only lights sit at its top), both offset tables, the styles and
 the three cluster masks - is ~1.1 MB together and is still copied whole.
 
+THE MARKS START OVER WITH EVERY MAP (11-22, vkpt_begin_registration). They were
+kept from renderer start, so one map with big lists - a Quake 1 or III map, a
+rerelease map lit everywhere - left every later map copying that many bytes a
+frame, over PCIe from D3D12's upload heap, in the profiler's "frame setup"
+(UPLOAD_LIGHTS). The reset makes the next upload whole, as at creation, so the
+argument above still holds from there; and the lists are written again every
+frame, so no shader reads past this map's counts in any case.
+
 barrier_before_shared_upload still names the whole buffer; it orders against the
 previous frame's copy and reads, and a superset range is always correct.
 =================
@@ -702,6 +720,17 @@ static inline bool upload_ranges_enabled(void)
 void vkpt_upload_ranges_reset(void)
 {
 	reset_upload_ranges();
+}
+
+/* A new map (vkpt_begin_registration): the marks start over and the next uploads
+   are whole, as for new buffers - but iqm_tracked stays. It says main.c reports its
+   IQM writes at all, not that this map has any skeletal model; cleared, a map with
+   none would copy the whole IqmMatrixBuffer every frame until one appeared. */
+void vkpt_upload_ranges_new_map(void)
+{
+	const bool iqm_tracked = upload_ranges.iqm_tracked;
+	reset_upload_ranges();
+	upload_ranges.iqm_tracked = iqm_tracked;
 }
 
 uint32_t

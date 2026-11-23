@@ -2038,7 +2038,7 @@ void QC_FreeProgs(void);
 // q1demo command, for the attract loop)
 //
 bool Q1Demo_Active(void);
-bool Q1Demo_SpawnEntities(const char *mapname);
+bool Q1Demo_SpawnEntities(const char *mapname, const char *entities);
 void Q1Demo_RunFrame(void);
 void Q1Demo_ClientBegin(edict_t *ent);
 void Q1Demo_ClientDisconnect(edict_t *ent);

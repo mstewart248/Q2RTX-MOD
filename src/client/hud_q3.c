@@ -53,6 +53,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 static cvar_t   *cl_q3_hud;
 static cvar_t   *cl_q3_hud_scale;
+static cvar_t   *cl_q3_hud_3d;
 
 // cg_draw.c CG_DrawStatusBar's
 static const float q3_colors[4][4] = {
@@ -66,19 +67,21 @@ static const float q3_black[4] = { 0, 0, 0, 1 };
 static const float q3_powerup_red[4] = { 1.0f, 0.2f, 0.2f, 1.0f };
 
 // a Quake III gun by its view model (CS_MODELS, which ps.gunindex names), and
-// the ammo icon Quake III's bar shows for it
+// the ammo icon Quake III's bar shows for it - flat, or its ammo pickup's model
+// (bg_misc.c's ammo_* world_model, as cg_weapons.c CG_RegisterWeapon takes it)
 static const struct {
     const char  *dir;       // models/weapons2/<dir>/
     const char  *icon;
+    const char  *model;
 } q3_ammo_icons[] = {
-    { "machinegun", "/icons/icona_machinegun.tga" },
-    { "shotgun",    "/icons/icona_shotgun.tga" },
-    { "grenadel",   "/icons/icona_grenade.tga" },
-    { "rocketl",    "/icons/icona_rocket.tga" },
-    { "lightning",  "/icons/icona_lightning.tga" },
-    { "railgun",    "/icons/icona_railgun.tga" },
-    { "plasma",     "/icons/icona_plasma.tga" },
-    { "bfg",        "/icons/icona_bfg.tga" },
+    { "machinegun", "/icons/icona_machinegun.tga",  "models/powerups/ammo/machinegunam.md3" },
+    { "shotgun",    "/icons/icona_shotgun.tga",     "models/powerups/ammo/shotgunam.md3" },
+    { "grenadel",   "/icons/icona_grenade.tga",     "models/powerups/ammo/grenadeam.md3" },
+    { "rocketl",    "/icons/icona_rocket.tga",      "models/powerups/ammo/rocketam.md3" },
+    { "lightning",  "/icons/icona_lightning.tga",   "models/powerups/ammo/lightningam.md3" },
+    { "railgun",    "/icons/icona_railgun.tga",     "models/powerups/ammo/railgunam.md3" },
+    { "plasma",     "/icons/icona_plasma.tga",      "models/powerups/ammo/plasmaam.md3" },
+    { "bfg",        "/icons/icona_bfg.tga",         "models/powerups/ammo/bfgam.md3" },
 };
 
 static struct {
@@ -89,9 +92,16 @@ static struct {
     qhandle_t   armor;
     qhandle_t   quad;
     qhandle_t   ammo[q_countof(q3_ammo_icons)];
+    qhandle_t   ammo_model[q_countof(q3_ammo_icons)];
+    qhandle_t   armor_model;
 
     char        head_for[MAX_QPATH * 2];    // the model/skin the head is
     qhandle_t   head;
+
+    // the 3D head's idle turns, and its kick from a hit (CG_DrawStatusBarHead)
+    float       head_start_yaw, head_end_yaw;
+    float       head_start_pitch, head_end_pitch;
+    int         head_start_time, head_end_time;
 
     int         pickup_icon;        // STAT_PICKUP_ICON and _STRING as last seen
     int         pickup_string;
@@ -166,6 +176,11 @@ static void q3_register_media(void)
     for (i = 0; i < q_countof(q3_ammo_icons); i++)
         q3h.ammo[i] = q3_register(q3_ammo_icons[i].icon, IT_PIC);
 
+    // the 3D icons (cg_draw3dIcons): only for a renderer that draws them
+    for (i = 0; i < q_countof(q3_ammo_icons); i++)
+        q3h.ammo_model[i] = R_DrawModel2D ? R_RegisterModel(q3_ammo_icons[i].model) : 0;
+    q3h.armor_model = R_DrawModel2D ? R_RegisterModel("models/powerups/armor/armor_yel.md3") : 0;
+
     q3h.head_for[0] = 0;
     q3h.head = 0;
     q3h.registered = true;
@@ -228,6 +243,71 @@ static qhandle_t q3_head(const clientinfo_t *ci)
     return q3h.head;
 }
 
+static bool q3_model_icon(float x, float y, float w, float h, qhandle_t model, int skinnum,
+                          const vec3_t origin, const vec3_t angles);
+
+/*
+The 3D head (CG_DrawStatusBarHead, CG_DrawHead): the model's head.md3 in its
+skin, framed by its bounds so it nearly fills the box, nudged by its
+animation.cfg headoffset. It turns idly - a new angle every 0.1-2.1 s, eased
+there - and while the bar's head swells from a hit it is held turned away from
+the side the hit came from. false: the flat icon instead.
+*/
+static bool q3_head_model(const clientinfo_t *ci, float x, float y, float size)
+{
+    vec3_t  mins, maxs, origin, offset, angles;
+    float   len, frac;
+
+    if (!ci->q3.q3 || !ci->q3.head || !R_DrawModel2D || !R_ModelBounds || !cl_q3_hud_3d->integer)
+        return false;
+    if (!R_ModelBounds(ci->q3.head, mins, maxs))
+        return false;
+
+    if (q3h.damage_time && cl.time - q3h.damage_time < Q3_DAMAGE_TIME) {
+        q3h.head_start_yaw = 180 + q3h.damage_x * 45;
+        q3h.head_end_yaw = 180 + 20 * cosf(crand() * M_PI);
+        q3h.head_end_pitch = 5 * cosf(crand() * M_PI);
+        q3h.head_start_time = cl.time;
+        q3h.head_end_time = cl.time + 100 + (int)(frand() * 2000);
+    } else if (cl.time >= q3h.head_end_time) {
+        // a new angle to turn to; the first time, from facing straight out
+        if (!q3h.head_end_time) {
+            q3h.head_end_yaw = 180;
+            q3h.head_end_pitch = 0;
+            q3h.head_end_time = cl.time;
+        }
+        q3h.head_start_yaw = q3h.head_end_yaw;
+        q3h.head_start_pitch = q3h.head_end_pitch;
+        q3h.head_start_time = q3h.head_end_time;
+        q3h.head_end_time = cl.time + 100 + (int)(frand() * 2000);
+        q3h.head_end_yaw = 180 + 20 * cosf(crand() * M_PI);
+        q3h.head_end_pitch = 5 * cosf(crand() * M_PI);
+    }
+    // a map change or a demo seek put the clock behind it
+    if (q3h.head_start_time > cl.time)
+        q3h.head_start_time = cl.time;
+    if (q3h.head_end_time - q3h.head_start_time > 2200 || q3h.head_end_time - cl.time > 2200)
+        q3h.head_end_time = q3h.head_start_time = cl.time;
+
+    frac = q3h.head_end_time > q3h.head_start_time
+        ? (float)(cl.time - q3h.head_start_time) / (q3h.head_end_time - q3h.head_start_time) : 1;
+    frac = q3_clipf(frac, 0, 1);
+    frac = frac * frac * (3 - 2 * frac);
+    VectorSet(angles, q3h.head_start_pitch + (q3h.head_end_pitch - q3h.head_start_pitch) * frac,
+              q3h.head_start_yaw + (q3h.head_end_yaw - q3h.head_start_yaw) * frac, 0);
+
+    // y and z centre the head; x is far enough that it nearly fills the box -
+    // heads are taller than wide - at the 30 degree view (tan 15 = 0.268)
+    origin[2] = -0.5f * (mins[2] + maxs[2]);
+    origin[1] = 0.5f * (mins[1] + maxs[1]);
+    len = 0.7f * (maxs[2] - mins[2]);
+    origin[0] = len / 0.268f;
+    Q3P_HeadOffset(ci->q3.q3, offset);
+    VectorAdd(origin, offset, origin);
+
+    return q3_model_icon(x, y, size, size, ci->q3.head, ci->q3.skin, origin, angles);
+}
+
 static qhandle_t q3_stat_pic(int stat)
 {
     int index = cl.frame.ps.stats[stat];
@@ -246,25 +326,49 @@ static const char *q3_stat_pic_name(int stat)
     return cl.configstrings[CS_IMAGES + index];
 }
 
-// the Quake III gun in hand's ammo icon, or 0 for any other gun
-static qhandle_t q3_gun_ammo_icon(void)
+// the Quake III gun in hand's row of q3_ammo_icons, or -1 for any other gun
+static int q3_gun_ammo_index(void)
 {
     const char  *model, *dir;
     int         i;
     size_t      len;
 
     if (cl.frame.ps.gunindex <= 0 || cl.frame.ps.gunindex >= MAX_MODELS)
-        return 0;
+        return -1;
     model = cl.configstrings[CS_MODELS + cl.frame.ps.gunindex];
     if (Q_strncasecmp(model, "models/weapons2/", 16))
-        return 0;
+        return -1;
     dir = model + 16;
     for (i = 0; i < q_countof(q3_ammo_icons); i++) {
         len = strlen(q3_ammo_icons[i].dir);
         if (!Q_strncasecmp(dir, q3_ammo_icons[i].dir, len) && dir[len] == '/')
-            return q3h.ammo[i];
+            return i;
     }
-    return 0;
+    return -1;
+}
+
+/*
+A model as a HUD icon (cg_draw.c CG_Draw3DModel under cg_draw3dIcons): in a
+camera of its own looking down +X, 30 degrees each way across the box x, y,
+w, h (the HUD's units), drawn over the view by the renderer (R_DrawModel2D).
+false: not drawn - cl_q3_hud_3d 0, a renderer without it, no model - and the
+caller draws the flat icon.
+*/
+static bool q3_model_icon(float x, float y, float w, float h, qhandle_t model, int skinnum,
+                          const vec3_t origin, const vec3_t angles)
+{
+    entity_t ent;
+
+    if (!model || !R_DrawModel2D || !cl_q3_hud_3d->integer)
+        return false;
+
+    memset(&ent, 0, sizeof(ent));
+    ent.model = model;
+    ent.skinnum = skinnum;
+    VectorCopy(origin, ent.origin);
+    VectorCopy(origin, ent.oldorigin);
+    VectorCopy(angles, ent.angles);
+    return R_DrawModel2D(x, y, w, h, 30, 30, &ent);
 }
 
 /*
@@ -437,17 +541,24 @@ static void q3_status_bar(const clientinfo_t *ci)
     const float icon = Q3_ICON_SIZE * q3_s;
     int         value, color;
     float       size, x;
+    vec3_t      origin, angles;
 
-    // ammo, for a gun that uses it
+    // ammo, for a gun that uses it: its ammo box turning to and fro, else the icon
     if (stats[STAT_AMMO_ICON] && stats[STAT_AMMO] >= 0) {
-        qhandle_t pic = q3_gun_ammo_icon();
+        int         gun = q3_gun_ammo_index();
+        qhandle_t   pic = gun >= 0 ? q3h.ammo[gun] : 0;
+        const float ix = q3_mid(Q3_CHAR_WIDTH * 3 + Q3_TEXT_ICON_SPACE);
 
         q3_color(q3_colors[0], 1);
         q3_field(q3_mid(0), y, 3, stats[STAT_AMMO]);
-        if (!pic)
-            pic = q3_stat_pic(STAT_AMMO_ICON);
         q3_color(q3_white, 1);
-        q3_pic(q3_mid(Q3_CHAR_WIDTH * 3 + Q3_TEXT_ICON_SPACE), y, icon, icon, pic);
+        VectorSet(origin, 70, 0, 0);
+        VectorSet(angles, 0, 90 + 20 * sinf(cl.time / 1000.0f), 0);
+        if (gun < 0 || !q3_model_icon(ix, y, icon, icon, q3h.ammo_model[gun], 0, origin, angles)) {
+            if (!pic)
+                pic = q3_stat_pic(STAT_AMMO_ICON);
+            q3_pic(ix, y, icon, icon, pic);
+        }
     }
 
     // the head (CG_DrawStatusBarHead), which swells and kicks away from a hit
@@ -462,7 +573,8 @@ static void q3_status_bar(const clientinfo_t *ci)
         x -= stretch * 0.5f + q3h.damage_x * stretch * 0.5f;
     }
     q3_color(q3_white, 1);
-    q3_pic(q3_mid(x), q3_bottom(480 - size), size * q3_s, size * q3_s, q3_head(ci));
+    if (!q3_head_model(ci, q3_mid(x), q3_bottom(480 - size), size * q3_s))
+        q3_pic(q3_mid(x), q3_bottom(480 - size), size * q3_s, size * q3_s, q3_head(ci));
 
     // health
     value = stats[STAT_HEALTH];
@@ -483,12 +595,20 @@ static void q3_status_bar(const clientinfo_t *ci)
         const char  *name = q3_stat_pic_name(STAT_ARMOR_ICON);
         qhandle_t   pic = q3h.armor;
 
-        if (!Q_stricmp(name, "i_powershield") || !Q_stricmp(name, "i_powerscreen") || !pic)
+        const bool  power = !Q_stricmp(name, "i_powershield") || !Q_stricmp(name, "i_powerscreen");
+        const float ix = q3_mid(370 + Q3_CHAR_WIDTH * 3 + Q3_TEXT_ICON_SPACE);
+
+        if (power || !pic)
             pic = q3_stat_pic(STAT_ARMOR_ICON);
         q3_color(q3_colors[0], 1);
         q3_field(q3_mid(370), y, 3, value);
         q3_color(q3_white, 1);
-        q3_pic(q3_mid(370 + Q3_CHAR_WIDTH * 3 + Q3_TEXT_ICON_SPACE), y, icon, icon, pic);
+        // Quake III's yellow armor spinning, once round in 2048 ms; the power
+        // armor, Quake II's, keeps its icon
+        VectorSet(origin, 90, 0, -10);
+        VectorSet(angles, 0, (cl.time & 2047) * 360 / 2048.0f, 0);
+        if (power || !q3_model_icon(ix, y, icon, icon, q3h.armor_model, 0, origin, angles))
+            q3_pic(ix, y, icon, icon, pic);
     }
 }
 
@@ -815,4 +935,6 @@ void SCR_Q3HudInit(void)
 {
     cl_q3_hud = Cvar_Get("cl_q3_hud", "1", CVAR_ARCHIVE);
     cl_q3_hud_scale = Cvar_Get("cl_q3_hud_scale", "1", CVAR_ARCHIVE);
+    // cg_draw3dIcons: the head, ammo and armor as models (R_DrawModel2D); 0 = flat icons
+    cl_q3_hud_3d = Cvar_Get("cl_q3_hud_3d", "1", CVAR_ARCHIVE);
 }

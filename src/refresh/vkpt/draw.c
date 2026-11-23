@@ -25,6 +25,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include <assert.h>
 
 #include "vkpt.h"
+#include "material.h"
 #include "shader/global_textures.h"
 
 enum {
@@ -48,6 +49,10 @@ enum {
 // ... and the map as a layer over the base texture (vkpt_draw_stretch_subpic_layer):
 // then the quad's colour holds the base's handle and the layer's opacity, not a tint
 #define STRETCH_PIC_FLAG_LAYER (1u << 27)
+// a textured TRIANGLE, not a quad (enqueue_triangle, for R_DrawModel2D): its corners
+// are the quad's (0,1), (0,0) and (1,1), the texture skewed (uv_skew_*) and a colour
+// per corner (color, color1, color2); sampled with its own mip level, unclamped
+#define STRETCH_PIC_FLAG_TRIANGLE (1u << 26)
 
 static drawStatic_t draw = {
 	.scale = 1.0f,
@@ -60,8 +65,14 @@ typedef struct {
 	float s, t, w_s, h_t;
 	uint32_t color, tex_handle;
 	// The quad's edges are (w, skew_y) and (skew_x, h), so 0 is an upright
-	// rectangle; R_DrawRotatedPic is the only thing that sets them.
+	// rectangle; R_DrawRotatedPic and enqueue_triangle set them.
 	float skew_x, skew_y;
+	// The texture along those edges is (w_s, uv_skew_t) and (uv_skew_s, h_t): 0
+	// but for a triangle (STRETCH_PIC_FLAG_TRIANGLE), as are color1 and color2,
+	// its corners' (0,0) and (1,1) colours. stretch_pic.vert's StretchPic - keep
+	// in sync; the D3D12 2D layer reads the same queue (d3d12/draw.c).
+	float uv_skew_s, uv_skew_t;
+	uint32_t color1, color2;
 } StretchPic_t;
 
 // Not using global UBO b/c it's only filled when a world is drawn, but here we need it all the time
@@ -428,6 +439,9 @@ static inline void enqueue_stretch_pic(
 	sp->h = h;
 	sp->skew_x = 0.0f;
 	sp->skew_y = 0.0f;
+	sp->uv_skew_s = 0.0f;
+	sp->uv_skew_t = 0.0f;
+	sp->color1 = sp->color2 = 0;
 
 	sp->s   = s1;
 	sp->t   = t1;
@@ -1532,6 +1546,250 @@ R_DrawStretchSubPic_RTX(float x, float y, float w, float h,
 	float s1, float t1, float s2, float t2, qhandle_t pic)
 {
 	enqueue_stretch_pic(x, y, w, h, s1, t1, s2, t2, draw.colors[0].u32, pic);
+}
+
+/*
+=============================================================================
+
+MODELS IN THE 2D LAYER (R_DrawModel2D)
+
+Quake III's HUD drew its icons - the head, the ammo box, the armor - as models,
+each in a little scene of its own over the view (cg_draw.c CG_Draw3DModel,
+cg_draw3dIcons 1). The path tracer renders one scene a frame, and a second
+R_RenderFrame replaces the first rather than drawing over it. So the model is
+transformed, lit and sorted here on the CPU, and its triangles go in the 2D
+queue as textured triangles (STRETCH_PIC_FLAG_TRIANGLE): over the gun, as Quake
+III's were, and drawn by the D3D12 renderer from the same queue. A few hundred
+triangles a frame, painter's order, no depth buffer.
+
+=============================================================================
+*/
+
+#define MODEL2D_MAX_TRIS    4096
+#define MODEL2D_MAX_VERTS   8192
+
+typedef struct {
+	float       x[3], y[3];     // the 2D layer's units, as a pic's
+	float       s[3], t[3];
+	uint32_t    color[3];
+	uint32_t    tex_handle;
+	float       depth;          // how far ahead of the icon's camera
+} model2d_tri_t;
+
+static model2d_tri_t    model2d_tris[MODEL2D_MAX_TRIS];
+static int              model2d_order[MODEL2D_MAX_TRIS];
+static vec3_t           model2d_pos[MODEL2D_MAX_VERTS];     // the icon's camera space
+static vec3_t           model2d_norm[MODEL2D_MAX_VERTS];
+static float            model2d_sx[MODEL2D_MAX_VERTS], model2d_sy[MODEL2D_MAX_VERTS];
+static uint32_t         model2d_color[MODEL2D_MAX_VERTS];
+
+static inline int model2d_clip(int a, int lo, int hi)          { return a < lo ? lo : a > hi ? hi : a; }
+static inline float model2d_clipf(float a, float lo, float hi)  { return a < lo ? lo : a > hi ? hi : a; }
+
+// the farthest first
+static int model2d_cmp(const void *a, const void *b)
+{
+	const float da = model2d_tris[*(const int *)a].depth;
+	const float db = model2d_tris[*(const int *)b].depth;
+	return (da < db) - (da > db);
+}
+
+/* One triangle into the queue: corners (0,1), (0,0) and (1,1) of a skewed quad
+   (stretch_pic.vert folds the fourth onto the third), the texture skewed with it.
+   Turned to the winding an upright pic has - the Vulkan pipeline culls the other. */
+static void enqueue_triangle(const model2d_tri_t *tri)
+{
+	int a = 0, b = 1, c = 2;
+	const float cross = (tri->x[1] - tri->x[0]) * (tri->y[2] - tri->y[0])
+	                  - (tri->y[1] - tri->y[0]) * (tri->x[2] - tri->x[0]);
+	if (cross == 0.f || num_stretch_pics >= MAX_STRETCH_PICS)
+		return;
+	if (cross < 0.f) {
+		b = 2;
+		c = 1;
+	}
+
+	const float width = r_config.width * draw.scale;
+	const float height = r_config.height * draw.scale;
+	float nx[3], ny[3];
+	for (int i = 0; i < 3; i++) {
+		nx[i] = 2.0f * tri->x[i] / width - 1.0f;
+		ny[i] = 2.0f * tri->y[i] / height - 1.0f;
+	}
+
+	StretchPic_t *sp = stretch_pic_queue + num_stretch_pics++;
+	// corner (0,0) = b, (0,1) = a = b + edge 2, (1,1) = c = b + edge 1 + edge 2
+	sp->x = nx[b];
+	sp->y = ny[b];
+	sp->w = nx[c] - nx[a];
+	sp->skew_y = ny[c] - ny[a];
+	sp->skew_x = nx[a] - nx[b];
+	sp->h = ny[a] - ny[b];
+	sp->s = tri->s[b];
+	sp->t = tri->t[b];
+	sp->w_s = tri->s[c] - tri->s[a];
+	sp->uv_skew_t = tri->t[c] - tri->t[a];
+	sp->uv_skew_s = tri->s[a] - tri->s[b];
+	sp->h_t = tri->t[a] - tri->t[b];
+	sp->color = tri->color[a];
+	sp->color1 = tri->color[b];
+	sp->color2 = tri->color[c];
+	sp->tex_handle = tri->tex_handle;
+}
+
+// a mesh's skin for the entity, as main.c's get_mesh_skin_material picks it
+static const pbr_material_t *model2d_material(const entity_t *ent, const model_t *model, const maliasmesh_t *mesh)
+{
+	if (ent->skin)
+		return MAT_ForSkin(IMG_ForHandle(ent->skin));
+
+	int skinnum = 0;
+	const int wanted = ent->skinnum + model->skin_base;
+	if (ent->skinnum >= 0 && wanted < q_countof(mesh->materials) && mesh->materials[wanted])
+		skinnum = wanted;
+	return mesh->materials[skinnum];
+}
+
+bool
+R_ModelBounds_RTX(qhandle_t handle, vec3_t mins, vec3_t maxs)
+{
+	const model_t *model = MOD_ForHandle(handle);
+	bool any = false;
+
+	if (!model || model->type != MOD_ALIAS || !model->meshes || model->iqmData)
+		return false;
+
+	ClearBounds(mins, maxs);
+	for (int m = 0; m < model->nummeshes; m++) {
+		const maliasmesh_t *mesh = model->meshes + m;
+		for (int v = 0; v < mesh->numverts; v++) {
+			AddPointToBounds(mesh->positions[v], mins, maxs);
+			any = true;
+		}
+	}
+	return any;
+}
+
+bool
+R_DrawModel2D_RTX(float x, float y, float w, float h, float fov_x, float fov_y, const entity_t *ent)
+{
+	const model_t *model = MOD_ForHandle(ent->model);
+	if (!model || model->type != MOD_ALIAS || !model->meshes || model->iqmData || model->numframes < 1)
+		return false;
+	if (draw.alpha_scale == 0.f)
+		return true;
+
+	const int frame = model2d_clip(ent->frame, 0, model->numframes - 1);
+	const int oldframe = model2d_clip(ent->oldframe, 0, model->numframes - 1);
+	const float back = (frame == oldframe) ? 0.f : model2d_clipf(ent->backlerp, 0.f, 1.f);
+	const float front = 1.f - back;
+	const float scale = ent->scale ? ent->scale : 1.f;
+	const float tan_x = tanf(DEG2RAD(model2d_clipf(fov_x, 1.f, 170.f)) * 0.5f);
+	const float tan_y = tanf(DEG2RAD(model2d_clipf(fov_y, 1.f, 170.f)) * 0.5f);
+	const float cx = x + w * 0.5f, cy = y + h * 0.5f;
+	vec3_t axis[3];
+	AnglesToAxis(ent->angles, axis);
+
+	/* Quake III's light for a scene with no world (tr_light.c R_SetupEntityLighting):
+	   ambient 150 + the minimum 32, directed 150, both at identityLight 0.5, from the
+	   default sun (0.45, 0.3, 0.9) - here in the icon's camera space, as there - and
+	   rgbGen lightingDiffuse. The 2D layer's colours stop at 1, so the lit side is 1
+	   and the dark side keeps its share: 91 of 166. */
+	vec3_t sun = { 0.45f, 0.3f, 0.9f };
+	VectorNormalize(sun);
+	const float ambient = 91.f / 166.f;
+
+	const color_t tint = draw.colors[0];
+	float alpha = tint.u8[3] * draw.alpha_scale;
+	alpha = model2d_clipf(alpha, 0.f, 255.f);
+
+	int num_tris = 0;
+	for (int m = 0; m < model->nummeshes; m++) {
+		const maliasmesh_t *mesh = model->meshes + m;
+		const pbr_material_t *mat = model2d_material(ent, model, mesh);
+
+		if (!mat || !mat->image_base || mesh->numverts > MODEL2D_MAX_VERTS)
+			continue;
+		// nothing drawn of it, or only light added over what is behind
+		if (MAT_IsKind(mat->flags, MATERIAL_KIND_INVISIBLE) || MAT_IsKind(mat->flags, MATERIAL_KIND_SKY)
+			|| MAT_IsKind(mat->flags, MATERIAL_KIND_TRANSPARENT))
+			continue;
+		const int tex = (int)(mat->image_base - r_images);
+		if (tex <= 0 || tex >= MAX_RIMAGES || !r_images[tex].registration_sequence)
+			continue;
+
+		const vec3_t *p1 = mesh->positions + (size_t)frame * mesh->numverts;
+		const vec3_t *p0 = mesh->positions + (size_t)oldframe * mesh->numverts;
+		const vec3_t *n1 = mesh->normals + (size_t)frame * mesh->numverts;
+		const vec3_t *n0 = mesh->normals + (size_t)oldframe * mesh->numverts;
+
+		for (int v = 0; v < mesh->numverts; v++) {
+			vec3_t p, n, cam;
+			for (int k = 0; k < 3; k++) {
+				p[k] = (front * p1[v][k] + back * p0[v][k]) * scale;
+				n[k] = front * n1[v][k] + back * n0[v][k];
+			}
+			for (int k = 0; k < 3; k++) {
+				cam[k] = ent->origin[k] + axis[0][k] * p[0] + axis[1][k] * p[1] + axis[2][k] * p[2];
+				model2d_norm[v][k] = axis[0][k] * n[0] + axis[1][k] * n[1] + axis[2][k] * n[2];
+			}
+			VectorNormalize(model2d_norm[v]);
+			VectorCopy(cam, model2d_pos[v]);
+
+			// ahead of the camera: +X; left on the screen: +Y; up: +Z
+			const float depth = max(cam[0], 0.01f);
+			model2d_sx[v] = cx - (cam[1] / depth) / tan_x * (w * 0.5f);
+			model2d_sy[v] = cy - (cam[2] / depth) / tan_y * (h * 0.5f);
+
+			const float lit = ambient + (1.f - ambient) * max(DotProduct(model2d_norm[v], sun), 0.f);
+			model2d_color[v] = MakeColor((int)(tint.u8[0] * lit), (int)(tint.u8[1] * lit),
+			                             (int)(tint.u8[2] * lit), (int)alpha);
+		}
+
+		for (int i = 0; i + 2 < mesh->numindices && num_tris < MODEL2D_MAX_TRIS; i += 3) {
+			const int i0 = mesh->indices[i], i1 = mesh->indices[i + 1], i2 = mesh->indices[i + 2];
+			if (i0 < 0 || i1 < 0 || i2 < 0 || i0 >= mesh->numverts || i1 >= mesh->numverts || i2 >= mesh->numverts)
+				continue;
+			const float *a = model2d_pos[i0], *b = model2d_pos[i1], *c = model2d_pos[i2];
+			// behind the camera, or too near it
+			if (a[0] < 1.f || b[0] < 1.f || c[0] < 1.f)
+				continue;
+
+			/* Facing away: the face's normal, turned to agree with its vertices'
+			   (whichever winding the file has), pointing away from the camera */
+			vec3_t e1, e2, fn, vn;
+			VectorSubtract(b, a, e1);
+			VectorSubtract(c, a, e2);
+			CrossProduct(e1, e2, fn);
+			VectorAdd(model2d_norm[i0], model2d_norm[i1], vn);
+			VectorAdd(vn, model2d_norm[i2], vn);
+			if (DotProduct(fn, vn) < 0.f)
+				VectorInverse(fn);
+			if (DotProduct(fn, a) >= 0.f)
+				continue;
+
+			model2d_tri_t *tri = model2d_tris + num_tris;
+			const int idx[3] = { i0, i1, i2 };
+			for (int k = 0; k < 3; k++) {
+				tri->x[k] = model2d_sx[idx[k]];
+				tri->y[k] = model2d_sy[idx[k]];
+				tri->s[k] = mesh->tex_coords[idx[k]][0];
+				tri->t[k] = mesh->tex_coords[idx[k]][1];
+				tri->color[k] = model2d_color[idx[k]];
+			}
+			// the skin's colour alone: an alpha channel on a Quake III skin is more
+			// often a shine mask than a hole
+			tri->tex_handle = (uint32_t)tex | STRETCH_PIC_FLAG_TRIANGLE | STRETCH_PIC_FLAG_OPAQUE;
+			tri->depth = a[0] + b[0] + c[0];
+			model2d_order[num_tris] = num_tris;
+			num_tris++;
+		}
+	}
+
+	qsort(model2d_order, num_tris, sizeof(model2d_order[0]), model2d_cmp);
+	for (int i = 0; i < num_tris; i++)
+		enqueue_triangle(model2d_tris + model2d_order[i]);
+	return true;
 }
 
 void
