@@ -84,8 +84,8 @@ progs/bolt2_mdl_00_00:
 #	Remix's default roughness 0.5 - off (this material did not set one):
 #	texture_roughness 0
 #	roughness_override 0.5
-	texture_emissive materialDev/remix/solid/emissive_8c9ce9.png
-	emissive_factor 1.25
+	texture_emissive materialDev/progs/bolt2_mdl_00_00_emit.png
+	emissive_factor 2.5
 
 # Remix mat_0EF50340E28CB2D6: progs/bolt3.mdl skin 0
 progs/bolt3_mdl_00_00:
@@ -102,8 +102,9 @@ progs/bolt_mdl_00_00:
 #	Remix's default roughness 0.5 - off (this material did not set one):
 #	texture_roughness 0
 #	roughness_override 0.5
-	texture_emissive materialDev/remix/solid/emissive_8c9ce9.png
-	emissive_factor 1.25
+	texture_emissive materialDev/progs/bolt_mdl_00_00_emit.png
+	emissive_factor 2
+	default_radiance 2
 
 # Remix mat_B3F7D096ADC86CEC: progs/demon_00_00.lmp
 progs/demon_00_00:
@@ -354,8 +355,8 @@ progs/s_light_mdl_00_00:
 #	Remix's default roughness 0.5 - off (this material did not set one):
 #	texture_roughness 0
 #	roughness_override 0.5
-	texture_emissive materialDev/remix/solid/emissive_8c9ce9.png
-	emissive_factor 1.25
+	texture_emissive materialDev/progs/s_light_mdl_00_00_emit.png
+	emissive_factor 2.5
 
 # Remix mat_F006F67ABBA5AF77: progs/shambler_00_00.lmp
 progs/shambler_00_00:
@@ -400,6 +401,8 @@ progs/v_light_00_00:
 #	texture_metallic materialDev/remix/solid*M1.wal + metalness_factor 0.69
 	texture_emissive materialDev/remix/TextureDev3/LightningGun_emissive.png
 	emissive_factor 1.25
+	texture_metallic materialDev/progs/v_light_00_00_metal.png
+	texture_roughness materialDev/progs/v_light_00_00_rough.png
 
 # Remix mat_C8362DB5818DC18F: progs/v_nail2_00_00.lmp
 progs/v_nail2_00_00:
@@ -442,8 +445,8 @@ progs/v_rock_00_00:
 	texture_roughness materialDev/remix/TextureDev3/GrenadeLauncher_roughness2.png
 #	Remix metallic constant 1 - off, Q2RTX shades a metal map only:
 #	texture_metallic materialDev/remix/solid*M1.wal + metalness_factor 1
-	texture_emissive materialDev/remix/TextureDev3/GrenadeLauncher_emissive.png
-	emissive_factor 2.5
+	texture_emissive materialDev/progs/v_rock_00_00_emit.png
+	emissive_factor 5
 
 # Remix mat_D0212FC8899F856C: progs/v_shot2_00_00.lmp
 progs/v_shot2_00_00:
@@ -2939,8 +2942,9 @@ textures/q1/window03:
 	kind REGULAR
 	stained_glass 1
 	texture_stained_mask materialDev/textures/q1/window03_glassmask.png
-	stained_light_height 1.5
+	stained_light_height 1
 	stained_light_sun 1
+	volumetric_scale 2
 
 # Remix mat_4D3CCC8E0DE9C5EA: window1_3
 textures/q1/window1_3:
@@ -18976,7 +18980,7 @@ progs/h_grem_mdl_00_00:
 progs/h_guard_mdl_00_00:
 	texture_base materialDev/progs/h_guard_mdl_00_00.png
 #	texture_normals materialDev/progs/h_guard_mdl_00_00_n.png
-#	texture_roughness materialDev/progs/h_guard_mdl_00_00_rough.png
+	texture_roughness materialDev/progs/h_guard_mdl_00_00_rough.png
 #	texture_metallic materialDev/progs/h_guard_mdl_00_00_metal.png
 #	texture_height materialDev/progs/h_guard_mdl_00_00_height.png
 

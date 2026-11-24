@@ -766,11 +766,22 @@ static void MD5_ApplyOffset(iqm_model_t *iqmData, int num_joints, const vec3_t o
    those with one. Blended, v_nail2's slid between its barrels and up out of the
    gun's body (Matt, 2026-11-21: "it should be right barrel left barrel and it's
    moving the muzzle flashes in between"). Such a joint takes the nearer frame's
-   pose whole (R_ComputeIQMTransforms) - what Quake, which never blended, drew. */
+   pose whole (R_ComputeIQMTransforms) - what Quake, which never blended, drew.
+
+   v_light's arcs are the same kind of joint: "bolt_1".."bolt_4", one pair of
+   arcs (electrode to barrel to electrode) each, parked 20-37 units behind the
+   gun and out at the muzzle on firing frame 1..4 in turn (v_light.mdl did it
+   with 16 vertices hidden inside the gun on its idle frame). Blended, the one
+   going out and the one coming in both slid through the inside of the gun for
+   most of each 10 Hz frame - firing showed the bolt and no arcs (Matt,
+   2026-11-23: "there should be two small archs between the electrodes on the
+   gun when firing"). No other id1/add-on md5 has a "bolt_" joint. */
 static bool md5_snap_joint(const char *name)
 {
     const size_t len = strlen(name);
     if (!Q_stricmp(name, "flame") || !Q_stricmpn(name, "flame_", 6))
+        return true;
+    if (!Q_stricmpn(name, "bolt_", 5))
         return true;
     return len > 6 && !Q_stricmp(name + len - 6, "_flame");
 }
@@ -800,7 +811,8 @@ static bool md5_snap_joint(const char *name)
    nailgun, grenade launcher), and showed up in mirrors and water. So a frame
    where the flash sits more than MD5_FLASH_PARKED_BEHIND units behind its
    rider along +x is marked parked. Measured on every rerelease md5 with a flash
-   joint: parked 8..44 units behind, at the muzzle 11..52 in front. The player,
+   joint: parked 8..44 units behind, at the muzzle 11..52 in front (v_light's
+   arcs: 22..40 behind the "weapon" joint, 24 in front). The player,
    soldier and enforcer keep theirs inside the torso (within 2 units of
    Spine1 / chest along x), so they never count as parked. */
 #define MD5_FLASH_PARKED_BEHIND 4.0f

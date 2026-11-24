@@ -179,8 +179,9 @@ bounce_texture_lod(Triangle triangle, uint tex_index, float cone_width, vec3 ray
    Light is only added: what is behind the surface is not dimmed, and a translucent
    surface's own lit colour is not shaded (it was missing before as well).
    ray_payload_geometry is the solid hit's again on return. `cone_base` and
-   `cone_spread`: the ray cone's width at the ray's origin and its spread past the
-   pixel angle, as the solid hit's mip is chosen. */
+   `cone_spread`: the ray cone's width at the ray's origin and how fast it widens -
+   the pixel angle alone, as photo mode has it: a glow is not prefiltered by the
+   lobe (path_tracer_rgen.h get_material_emissive_lod). */
 vec3 bounce_transparent_glow(Ray ray, float cone_base, float cone_spread, out float hit_t, out bool is_light)
 {
 	hit_t = 0.0;
@@ -203,8 +204,10 @@ vec3 bounce_transparent_glow(Ray ray, float cone_base, float cone_spread, out fl
 			vec3 n = normalize(t.normals * bary);
 			MaterialInfo minfo = get_material_info(t.material_id);
 
+			// across the footprint, no 1/cos: a glow's mip (see the bounce hit's
+			// get_material_emissive_lod)
 			float lod = bounce_texture_lod(t, minfo.base_texture,
-				cone_base + cone_spread * hit_t, ray.direction, n);
+				cone_base + cone_spread * hit_t, n, n);
 
 			vec3 q3_albedo;
 			float q3_alpha;
@@ -779,12 +782,13 @@ indirect_lighting(
 		// light sampled gives only the share the sampling did not take.
 		if (global_ubo.pt_bounce_transparent != 0)
 		{
+			// the pixel footprint's mip, live as in photo mode: a glow is not
+			// prefiltered by the lobe (path_tracer_rgen.h get_material_emissive_lod)
 			float pixel_angle = 2.0 / (abs(global_ubo.P[1][1]) * float(global_ubo.height));
-			float glow_spread = global_ubo.temporal_blend_factor > 0.0 ? 0.0 : 2.0 * primary_roughness * primary_roughness;
 			float glow_t;
 			bool glow_is_light;
 			vec3 glow = bounce_transparent_glow(bounce_ray,
-				pixel_angle * length(position - global_ubo.cam_pos.xyz), pixel_angle + glow_spread,
+				pixel_angle * length(position - global_ubo.cam_pos.xyz), pixel_angle,
 				glow_t, glow_is_light);
 
 			float glow_weight = (glow_is_light && ray_origin_light_sampled())
@@ -1004,12 +1008,26 @@ indirect_lighting(
 
 			float lod = bounce_texture_lod(triangle, bounce_minfo.base_texture, cone_width, bounce_direction, bounce_geo_normal);
 
+			// The glow at the pixel footprint's mip only - photo mode's, live too
+			// (path_tracer_rgen.h get_material_emissive_lod): a glow map's small
+			// mips spread its glow over neighbours in the atlas. And across the
+			// footprint, not along it: the normal for the ray direction leaves out
+			// bounce_texture_lod's 1/cos, which at a grazing hit is 4 mips more,
+			// blurring BOTH ways by the footprint's long axis - an isotropic
+			// lookup's mistake that anisotropic filtering does not make. Took a
+			// Quake lamp's small map past its bright band, and the nailgun's
+			// (bleeding from mip 5) past what pt_bounce_lod_bias -2 could undo.
+			get_material_emissive_lod = bounce_texture_lod(triangle, bounce_minfo.emissive_texture,
+				pixel_angle * (length(position - global_ubo.cam_pos.xyz) + ray_payload_geometry.hit_distance),
+				bounce_geo_normal, bounce_geo_normal);
+
 			vec3 mapped_normal;
 			float metallic;
 			get_material_allow_pom = false;
 			get_material(triangle, bary, triangle.tex_coords * bary, vec2(0), vec2(0), lod,
 				bounce_geo_normal, bounce_direction,
 				bounce_base_color, mapped_normal, metallic, bounce_roughness, emissive, bounce_specular_factor);
+			get_material_emissive_lod = -1.0;
 
 			// A normal map may tip the normal past the horizon at grazing hits;
 			// shade those with the geometric normal instead.

@@ -2433,6 +2433,26 @@ vec2 parallax_occlusion(Triangle triangle, MaterialInfo minfo, vec3 geo_normal, 
 // height-field trace per pixel for detail the bounce light cannot show.
 bool get_material_allow_pom = true;
 
+/* EMISSION IS NOT PREFILTERED BY THE BOUNCE LOBE. Set by the indirect bounce
+   (pt_bounce_material 1) to the mip of the PIXEL footprint alone - what photo
+   mode uses for everything - and reset to -1 after; at -1 the emissive map
+   takes get_material's mip_level like the other maps.
+
+   The bounce picks its mip from a cone widened by the lobe's spread
+   (pt_bounce_cone_diffuse, 2 roughness^2 for a glossy ray) and 1/cos at a
+   grazing hit - up to mip 5 or 6 of a 256 map. That is a fine blur for
+   colour, but a glow map's small mips smear its bright islands over the
+   TEXTURE ATLAS, onto whatever sits next to them there, and those neighbours
+   are not neighbours in the world: the Quake rerelease guns' flash glow
+   reached their bodies at mip 5-6 (grenade launcher: 48 body triangles up to
+   118/255 at 4x4; nailgun and super nailgun alike, clean through mip 4), so
+   the glossy barrels reflected an orange glow off the gun's own body - live
+   only, as photo mode drops the lobe spread (Matt, 2026-11-23, "light
+   glowing on the grenade launcher, nail gun and super nail gun", also seen
+   on map surfaces at grazing angles). Light from a glow belongs where the
+   glow is. */
+float get_material_emissive_lod = -1.0;
+
 void
 get_material(
 	Triangle triangle,
@@ -2877,7 +2897,13 @@ get_material(
 		if (q3_program)
 			emissive = q3_emission;
 		else
-			emissive = sample_emissive_texture(triangle.material_id, minfo, tex_coord, tex_coord_x, tex_coord_y, mip_level);
+		{
+			// the bounce's pixel-footprint mip, never coarser than the rest
+			// (get_material_emissive_lod)
+			const float emissive_mip = (mip_level >= 0.0 && get_material_emissive_lod >= 0.0)
+				? min(mip_level, get_material_emissive_lod) : mip_level;
+			emissive = sample_emissive_texture(triangle.material_id, minfo, tex_coord, tex_coord_x, tex_coord_y, emissive_mip);
+		}
 		emissive *= triangle.emissive_factor;
 	}
 	else

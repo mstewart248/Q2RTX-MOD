@@ -565,6 +565,32 @@ static void CL_RecordClientGun(int entnum, const entity_t *gun)
     cl_client_gun_drawn[entnum - 1] = cls.framecount + 1;
 }
 
+// [Q2RTX] The same for a Quake player, whose gun is part of his body - the
+// Quake 1 campaign's player (progs/player.mdl) and the bot match's Ranger - so
+// his bolts start on its muzzle (CL_Q1BoltStart), not in his middle (Matt,
+// 11-23: "It needs to be a few units higher ... and a few to the side").
+static entity_t cl_q1_body_ent[MAX_CLIENTS];
+static int      cl_q1_body_drawn[MAX_CLIENTS];
+
+static bool CL_IsQ1PlayerModel(qhandle_t handle)
+{
+    const model_t *model;
+    size_t len;
+
+    if (!handle || (handle & 0x80000000) || !(model = MOD_ForHandle(handle)))
+        return false;
+    len = strlen(model->name);
+    return len >= 16 && !Q_stricmp(model->name + len - 16, "progs/player.mdl");
+}
+
+static void CL_RecordQ1Body(int entnum, const entity_t *body)
+{
+    if (entnum < 1 || entnum > cl.maxclients || entnum > MAX_CLIENTS)
+        return;
+    cl_q1_body_ent[entnum - 1] = *body;
+    cl_q1_body_drawn[entnum - 1] = cls.framecount + 1;
+}
+
 /*
 ===============
 CL_AddQ1EntityLights
@@ -1098,6 +1124,9 @@ static void CL_AddPacketEntities(void)
         } else if (!(flow_bfg & CL_FLOW_HIDE)) {
             V_AddEntity(&ent);
             CL_Q3W_AddGunParts(&ent, 0);    // on the ground: its barrel
+            // a Quake player: his gun is in this model (CL_Q1BoltStart)
+            if (s1->number <= cl.maxclients && (q1ci || CL_IsQ1PlayerModel(ent.model)))
+                CL_RecordQ1Body(s1->number, &ent);
         }
         ent.blood_key = 0;  // not the linked models, shells and the rest
 
@@ -1156,7 +1185,8 @@ static void CL_AddPacketEntities(void)
                 CL_RecordClientGun(s1->number, &q3parts[q3gun]);
         } else if (s1->modelindex2 == 255 && q1ci) {
             // the Ranger's gun is part of his model: nothing to add, and his
-            // flash stays at the fixed point (no barrel to find)
+            // flash stays at the fixed point (his bolts do start on its
+            // muzzle: CL_RecordQ1Body above, CL_Q1BoltStart)
         } else if (s1->modelindex2 && !q3item) {
             if (s1->modelindex2 == 255) {
                 // custom weapon
@@ -1884,6 +1914,54 @@ typedef struct {
 static player_gun_t cl_player_guns[MAX_PLAYER_GUNS];
 static int          cl_next_player_gun;
 
+/*
+QUAKE'S GUNS (CL_ModelTipLocal, for CL_Q1BoltStart): the view model in first
+person (progs/v_light), and the gun the Ranger holds, which is part of his
+body (progs/player.mdl - the Quake 1 campaign's player and the bot match's
+"quake1/ranger"; no vwep is added for him). Neither has a muzzle marker, and
+the Ranger's gun only points down his +X on his attack frames, so the barrel's
+end face is picked as a vwep's is - the vertices within
+PLAYER_GUN_MUZZLE_DEPTH of the forward-most point - on a REFERENCE frame
+(v_light: 0; the Ranger: $light1, Q1P_FRAME_LIGHT), and those same vertices
+are followed through every other frame.
+
+Unlike a vwep, the model drawn here is usually the rerelease's md5 and the
+Ranger's md5 gun is not where his .mdl's is (the muzzle on $light1: md5
+16.9 -6.4 12.3, .mdl 18.5 -9.8 11.5 - 3.4 units across), so the ring is picked
+on the model actually loaded: an md5 posed through R_ComputeIQMTransforms and
+skinned by MD5_SkinVertices exactly as the GL renderer draws it, or the frames
+of the .md2 that MOD_Q1Build makes of the .mdl. v_light's md5 and .mdl agree:
+27.6 0.1 -11.4, 27.1-27.6 forward through the firing frames' recoil.
+*/
+#define MODEL_TIP_RING_MAX      128
+#define MODEL_TIP_MAX_POSES     256
+#define MAX_MODEL_TIPS          16
+
+typedef struct {
+    char        name[MAX_QPATH];    // "" = a free slot
+    int         ref_frame;
+    bool        md5;                // the model was an md5 when this was picked
+    uint32_t    num_vertexes;       // ... of this many vertices
+    int         num_ring;           // 0 = no usable muzzle: don't look again
+    uint32_t    ring[MODEL_TIP_RING_MAX];   // md5: the end face's vertices
+    int         numframes;          // md2: the end face's middle, every frame
+    vec3_t      *points;
+} model_tip_t;
+
+static model_tip_t  cl_model_tips[MAX_MODEL_TIPS];
+static int          cl_next_model_tip;
+static float        cl_model_tip_pose[MODEL_TIP_MAX_POSES * 12];
+
+static void CL_ClearModelTips(void)
+{
+    int i;
+
+    for (i = 0; i < MAX_MODEL_TIPS; i++)
+        Z_Free(cl_model_tips[i].points);
+    memset(cl_model_tips, 0, sizeof(cl_model_tips));
+    cl_next_model_tip = 0;
+}
+
 // called at every map load, from CL_RegisterViewMuzzleFlashes: a model name can
 // mean a different file after a game directory change
 static void CL_ClearPlayerGuns(void)
@@ -1894,6 +1972,8 @@ static void CL_ClearPlayerGuns(void)
         Z_Free(cl_player_guns[i].muzzles);
     memset(cl_player_guns, 0, sizeof(cl_player_guns));
     cl_next_player_gun = 0;
+
+    CL_ClearModelTips();
 }
 
 static void CL_PlayerGunVertex(const dmd2frame_t *frame, int index, vec3_t out)
@@ -1905,46 +1985,49 @@ static void CL_PlayerGunVertex(const dmd2frame_t *frame, int index, vec3_t out)
                  LittleFloat(frame->translate[k]);
 }
 
-static void CL_LoadPlayerGun(player_gun_t *gun)
+// The middle of the barrel's end face on every frame of an .md2 (rawdata, len):
+// the vertices within PLAYER_GUN_MUZZLE_DEPTH of the forward-most point of
+// frame (ref_frame), followed through all the others. Z_Malloc'd into
+// (*points); returns the frame count, 0 (and no points) for a bad file or a
+// frame it does not have.
+static int CL_Md2TipPoints(const byte *rawdata, size_t len, int ref_frame, vec3_t **points)
 {
     static uint16_t ring[MD2_MAX_VERTS];
     dmd2header_t    header;
     const dmd2frame_t *frame;
-    byte            *rawdata;
-    vec3_t          v;
+    vec3_t          v, *out;
     float           front;
     size_t          framesize, ofs_frames;
-    int             len, numverts, numframes, num_ring, i, j;
+    int             numverts, numframes, num_ring, i, j;
 
-    len = FS_LoadFile(gun->name, (void **)&rawdata);
-    if (!rawdata)
-        return;
-
-    if (len < (int)sizeof(header))
-        goto done;
+    *points = NULL;
+    if (!rawdata || len < sizeof(header))
+        return 0;
 
     memcpy(&header, rawdata, sizeof(header));
     for (i = 0; i < (int)(sizeof(header) / 4); i++)
         ((uint32_t *)&header)[i] = LittleLong(((uint32_t *)&header)[i]);
 
     if (header.ident != MD2_IDENT || header.version != MD2_VERSION)
-        goto done;
+        return 0;
     if (header.num_xyz < 1 || header.num_xyz > MD2_MAX_VERTS)
-        goto done;
+        return 0;
     if (header.num_frames < 1 || header.num_frames > MD2_MAX_FRAMES)
-        goto done;
+        return 0;
 
     numverts   = header.num_xyz;
     numframes  = header.num_frames;
     framesize  = header.framesize;
     ofs_frames = header.ofs_frames;
     if (framesize < sizeof(dmd2frame_t) + (numverts - 1) * sizeof(dmd2trivertx_t))
-        goto done;
-    if (ofs_frames > (size_t)len || ((size_t)len - ofs_frames) / framesize < (size_t)numframes)
-        goto done;
+        return 0;
+    if (ofs_frames > len || (len - ofs_frames) / framesize < (size_t)numframes)
+        return 0;
+    if (ref_frame < 0 || ref_frame >= numframes)
+        return 0;
 
-    // the barrel's end face: the forward-most vertices of the first frame
-    frame = (const dmd2frame_t *)(rawdata + ofs_frames);
+    // the barrel's end face: the forward-most vertices of the reference frame
+    frame = (const dmd2frame_t *)(rawdata + ofs_frames + ref_frame * framesize);
     CL_PlayerGunVertex(frame, 0, v);
     front = v[0];
     for (j = 1; j < numverts; j++) {
@@ -1958,19 +2041,31 @@ static void CL_LoadPlayerGun(player_gun_t *gun)
             ring[num_ring++] = j;
     }
 
-    gun->muzzles = Z_Malloc(numframes * sizeof(gun->muzzles[0]));
+    out = Z_Malloc(numframes * sizeof(out[0]));
     for (i = 0; i < numframes; i++) {
         frame = (const dmd2frame_t *)(rawdata + ofs_frames + i * framesize);
-        VectorClear(gun->muzzles[i]);
+        VectorClear(out[i]);
         for (j = 0; j < num_ring; j++) {
             CL_PlayerGunVertex(frame, ring[j], v);
-            VectorAdd(gun->muzzles[i], v, gun->muzzles[i]);
+            VectorAdd(out[i], v, out[i]);
         }
-        VectorScale(gun->muzzles[i], 1.0f / num_ring, gun->muzzles[i]);
+        VectorScale(out[i], 1.0f / num_ring, out[i]);
     }
-    gun->numframes = numframes;
+    *points = out;
+    return numframes;
+}
 
-done:
+static void CL_LoadPlayerGun(player_gun_t *gun)
+{
+    byte    *rawdata;
+    int     len;
+
+    len = FS_LoadFile(gun->name, (void **)&rawdata);
+    if (!rawdata)
+        return;
+
+    // the first frame (stand01): a held weapon points down +X there
+    gun->numframes = CL_Md2TipPoints(rawdata, len > 0 ? (size_t)len : 0, 0, &gun->muzzles);
     FS_FreeFile(rawdata);
 }
 
@@ -2263,6 +2358,7 @@ static void CL_AddViewWeaponFlash(const entity_t *gun)
 static vec3_t   cl_view_gun_origin;
 static vec3_t   cl_view_gun_angles;
 static int      cl_view_gun_framecount = -1;
+static entity_t cl_view_gun_ent;    // the whole of it, frames too (CL_Q1BoltStart)
 
 bool CL_GetViewWeaponTransform(vec3_t origin, vec3_t angles)
 {
@@ -2272,6 +2368,204 @@ bool CL_GetViewWeaponTransform(vec3_t origin, vec3_t angles)
     VectorCopy(cl_view_gun_origin, origin);
     VectorCopy(cl_view_gun_angles, angles);
     return true;
+}
+
+// Pick (tip) on (model): the end face on frame tip->ref_frame - see
+// model_tip_t. Leaves num_ring 0 when the model has no such frame.
+static void CL_PickModelTip(model_tip_t *tip, const model_t *model)
+{
+    tip->md5 = model->iqmData != NULL;
+
+    if (tip->md5) {
+        const iqm_model_t *iqm = model->iqmData;
+        entity_t    e;
+        float       *pos, front = -1e30f;
+        uint32_t    v;
+
+        if (!iqm->num_vertexes || !iqm->positions || iqm->num_poses > MODEL_TIP_MAX_POSES)
+            return;
+        if (iqm->num_frames ? tip->ref_frame >= (int)iqm->num_frames : tip->ref_frame != 0)
+            return;
+
+        memset(&e, 0, sizeof(e));
+        e.frame = e.oldframe = tip->ref_frame;
+        R_ComputeIQMTransforms(iqm, &e, cl_model_tip_pose);
+
+        pos = Z_Malloc(sizeof(float) * 3 * iqm->num_vertexes);
+        MD5_SkinVertices(iqm, cl_model_tip_pose, 0, iqm->num_vertexes, pos, NULL);
+        for (v = 0; v < iqm->num_vertexes; v++)
+            front = max(front, pos[v * 3]);
+        for (v = 0; v < iqm->num_vertexes && tip->num_ring < MODEL_TIP_RING_MAX; v++)
+            if (pos[v * 3] > front - PLAYER_GUN_MUZZLE_DEPTH)
+                tip->ring[tip->num_ring++] = v;
+        Z_Free(pos);
+
+        tip->num_vertexes = iqm->num_vertexes;
+        return;
+    }
+
+    // an .md2, or the .md2 MOD_Q1Build makes of a Quake .mdl
+    void    *data = NULL;
+    size_t  length = 0;
+    bool    q1 = MOD_Q1IsModel(model->name);
+
+    if (q1) {
+        char    load_name[MAX_QPATH];
+        vec3_t  md5_offset;
+        float   md5_scale;
+        int     sprite_type, md5_skins;
+
+        if (MOD_Q1Build(model->name, false, &data, &length, load_name, sizeof(load_name),
+                        md5_offset, &md5_scale, &sprite_type, &md5_skins) < 0)
+            data = NULL;
+    } else {
+        int len = FS_LoadFile(model->name, &data);
+        length = len > 0 ? (size_t)len : 0;
+    }
+    if (!data)
+        return;
+
+    tip->numframes = CL_Md2TipPoints(data, length, tip->ref_frame, &tip->points);
+    tip->num_ring = tip->numframes ? 1 : 0;
+
+    if (q1)
+        Z_Free(data);
+    else
+        FS_FreeFile(data);
+}
+
+// (handle)'s muzzle as picked on (ref_frame), and the model it was picked on;
+// NULL when it has none
+static const model_tip_t *CL_ModelTip(qhandle_t handle, int ref_frame, const model_t **out_model)
+{
+    const model_t   *model;
+    model_tip_t     *tip;
+    int             i;
+
+    if (!handle || (handle & 0x80000000) || !(model = MOD_ForHandle(handle)))
+        return NULL;
+
+    for (i = 0; i < MAX_MODEL_TIPS; i++) {
+        tip = &cl_model_tips[i];
+        if (!tip->name[0] || tip->ref_frame != ref_frame || FS_pathcmp(tip->name, model->name))
+            continue;
+        // still the model it was picked on? (cl_md5_models swaps md5 and .mdl)
+        if (tip->md5 == (model->iqmData != NULL) &&
+            (!tip->md5 || tip->num_vertexes == model->iqmData->num_vertexes))
+            goto found;
+        break;      // pick it again, in this slot
+    }
+
+    if (i == MAX_MODEL_TIPS) {
+        tip = &cl_model_tips[cl_next_model_tip];
+        cl_next_model_tip = (cl_next_model_tip + 1) % MAX_MODEL_TIPS;
+    }
+    Z_Free(tip->points);
+    memset(tip, 0, sizeof(*tip));
+    Q_strlcpy(tip->name, model->name, sizeof(tip->name));
+    tip->ref_frame = ref_frame;
+    CL_PickModelTip(tip, model);
+
+found:
+    if (!tip->num_ring)
+        return NULL;
+    *out_model = model;
+    return tip;
+}
+
+// Where the end face picked on (ref_frame) is on (ent) as it was drawn - its
+// frame pair, lerp and scale - in the model's own space (X forward, Y left)
+static bool CL_ModelTipLocal(const entity_t *ent, int ref_frame, vec3_t local)
+{
+    const model_t       *model;
+    const model_tip_t   *tip = CL_ModelTip(ent->model, ref_frame, &model);
+    vec3_t              p;
+    int                 i, frame, oldframe;
+
+    if (!tip)
+        return false;
+
+    if (tip->md5) {
+        const iqm_model_t *iqm = model->iqmData;
+
+        R_ComputeIQMTransforms(iqm, ent, cl_model_tip_pose);
+        VectorClear(local);
+        for (i = 0; i < tip->num_ring; i++) {
+            MD5_SkinVertices(iqm, cl_model_tip_pose, tip->ring[i], 1, p, NULL);
+            VectorAdd(local, p, local);
+        }
+        VectorScale(local, 1.0f / tip->num_ring, local);
+    } else {
+        frame    = (ent->frame    >= 0 && ent->frame    < tip->numframes) ? ent->frame    : tip->ref_frame;
+        oldframe = (ent->oldframe >= 0 && ent->oldframe < tip->numframes) ? ent->oldframe : frame;
+        LerpVector2(tip->points[oldframe], tip->points[frame],
+                    ent->backlerp, 1.0f - ent->backlerp, local);
+    }
+
+    if (ent->scale)
+        VectorScale(local, ent->scale, local);
+    return true;
+}
+
+static void CL_ModelToWorld(const entity_t *ent, const vec3_t local, vec3_t out)
+{
+    vec3_t f, r, u;
+
+    // model space is X forward, Y LEFT, Z up - see CL_AddViewWeaponFlash
+    AngleVectors(ent->angles, f, r, u);
+    VectorCopy(ent->origin, out);
+    VectorMA(out,  local[0], f, out);
+    VectorMA(out, -local[1], r, out);
+    VectorMA(out,  local[2], u, out);
+}
+
+/*
+=================
+CL_Q1BoltStart
+
+Where a Quake bolt (tent.c, TE_Q1_LIGHTNING1-3 and TE_Q1_BEAM) fired by player
+(entnum) starts this frame. False: not a player's, or no gun drawn for it, and
+the caller keeps Quake's start.
+
+Quake started yours at your origin - 22 units under the eye, in your middle -
+and the gun drawn over the view hid it. Here the view gun is in the world:
+the bolt's first segments came up through its barrel (Matt, 11-23: "the
+lightning is overlapping with the gun"), and the body the mirrors and the photo
+camera see had it coming out of its belly. So:
+- yours, in first person with the view gun drawn: the view gun's muzzle, the
+  middle of v_light's barrel end where its arcs meet (frame 0's end face,
+  through the recoil). Mirrors see this one too - one bolt, as Quake III's
+  (cl_q3_bolt_split 0) - from up by the eye.
+- a Quake player's body (yours in third person and the photo camera, and
+  everyone else): the muzzle of the gun in his hands, on $light1's end face.
+- a Quake II player model holding a vwep (the bot match): its barrel.
+=================
+*/
+bool CL_Q1BoltStart(int entnum, vec3_t start)
+{
+    vec3_t  local;
+    int     drawn;
+
+    if (entnum < 1 || entnum > MAX_CLIENTS)
+        return false;
+
+    if (entnum == cl.frame.clientNum + 1 && !cl.thirdPersonView &&
+        cl_view_gun_framecount == cls.framecount &&
+        CL_ModelTipLocal(&cl_view_gun_ent, 0, local)) {
+        if (cl_view_gun_ent.flags & RF_LEFTHAND)
+            local[1] = -local[1];       // the left-handed gun is mirrored
+        CL_ModelToWorld(&cl_view_gun_ent, local, start);
+        return true;
+    }
+
+    drawn = cl_q1_body_drawn[entnum - 1] - 1;
+    if (drawn >= 0 && cls.framecount >= drawn && cls.framecount - drawn <= 1 &&
+        CL_ModelTipLocal(&cl_q1_body_ent[entnum - 1], Q1P_FRAME_LIGHT, local)) {
+        CL_ModelToWorld(&cl_q1_body_ent[entnum - 1], local, start);
+        return true;
+    }
+
+    return CL_ClientGunMuzzle(entnum, start, NULL, 1);
 }
 
 static void CL_AddViewWeapon(void)
@@ -2388,6 +2682,7 @@ static void CL_AddViewWeapon(void)
     // [Q2RTX] Publish it before drawing, so the beam can hang off the barrel.
     VectorCopy(gun.origin, cl_view_gun_origin);
     VectorCopy(gun.angles, cl_view_gun_angles);
+    cl_view_gun_ent = gun;
     cl_view_gun_framecount = cls.framecount;
 
     // the bot match's Quake III guns: the gun on its hand's tag, with its

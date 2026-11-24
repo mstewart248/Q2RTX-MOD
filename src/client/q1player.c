@@ -43,7 +43,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define Q1F_DEATHC      70      // 15
 #define Q1F_DEATHD      85      // 9
 #define Q1F_NAILATT     103     // 2
-#define Q1F_LIGHT       105     // 2
+#define Q1F_LIGHT       Q1P_FRAME_LIGHT     // 2
 #define Q1F_ROCKATT     107     // 6
 #define Q1F_SHOTATT     113     // 6
 #define Q1F_AXATT       119     // 6

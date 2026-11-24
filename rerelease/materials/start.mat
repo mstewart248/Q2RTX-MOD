@@ -15,7 +15,7 @@ id1/id1/progs/flame_mdl_00_00#03dface0:
 #	specular_factor 1
 #	base_factor 1
 #	emissive_factor 5
-	light_factor 3
+	light_factor 4
 #	kind REGULAR
 #	is_light 1
 #	light_styles 1
@@ -38,7 +38,7 @@ id1/id1/progs/flame_mdl_00_00#58a3e93d:
 #	specular_factor 1
 #	base_factor 1
 #	emissive_factor 5
-	light_factor 3
+	light_factor 4
 #	kind REGULAR
 #	is_light 1
 #	light_styles 1
@@ -61,7 +61,7 @@ id1/id1/progs/flame_mdl_00_00#f9884c0c:
 #	specular_factor 1
 #	base_factor 1
 #	emissive_factor 5
-	light_factor 3
+	light_factor 4
 #	kind REGULAR
 #	is_light 1
 #	light_styles 1
@@ -84,7 +84,7 @@ id1/id1/progs/flame_mdl_00_00#7ac81069:
 #	specular_factor 1
 #	base_factor 1
 #	emissive_factor 5
-	light_factor 3
+	light_factor 4
 #	kind REGULAR
 #	is_light 1
 #	light_styles 1
@@ -198,7 +198,7 @@ id1/id1/progs/flame_mdl_00_00#2b44ceb3:
 #	specular_factor 1
 #	base_factor 1
 #	emissive_factor 1
-	light_factor 3
+	light_factor 4
 #	kind REGULAR
 #	is_light 1
 #	light_styles 1

@@ -66,6 +66,19 @@ qhandle_t   cl_mod_explo4_big;
 
 // Quake 1's beams (TE_Q1: cl.q1vm, or cl.q1_weapons): bolt, bolt2, bolt3 and beam.mdl
 static qhandle_t    cl_q1_bolt[4];
+
+/* A BOLT IS ITS OWN LIGHT. Quake's lightning gun (player_light1) and the
+   shambler's lightning set EF_MUZZLEFLASH on every shot as well as drawing the
+   bolt, and TE_Q1_MUZZLEFLASH hung a 200-unit sphere light at the shooter for
+   it - a bright ball at the gun under the bolt's own glow (Matt, 2026-11-23:
+   "remove this muzzleflash point/sphere light when firing the lightning gun.
+   All light should come from the lightning bolt"). So an entity drawing a bolt
+   gets no muzzle-flash light: TE_Q1_MUZZLEFLASH skips it while the bolt lives
+   (CL_Q1EntityHasBolt), and a bolt that comes in after the flash's message in
+   the same frame puts out the light that flash just made - the one in this
+   table, if it is still that light. */
+static cdlight_t    *cl_q1_flash_dl[MAX_EDICTS];
+static float        cl_q1_flash_die[MAX_EDICTS];
 static void CL_Q1RegisterTEntSounds(void);
 static void CL_Q1RegisterTEntModels(void);
 
@@ -1321,6 +1334,22 @@ override:
     }
 }
 
+// Is (entnum) drawing a Quake bolt (TE_Q1_LIGHTNING1/2/3, TE_Q1_BEAM) now?
+// See cl_q1_flash_dl.
+static bool CL_Q1EntityHasBolt(int entnum)
+{
+    const beam_t *b = cl_beams;
+
+    for (int i = 0; i < MAX_BEAMS; i++, b++) {
+        if (!b->model || b->endtime < cl.time || b->entity != entnum)
+            continue;
+        for (int k = 0; k < q_countof(cl_q1_bolt); k++)
+            if (cl_q1_bolt[k] && b->model == cl_q1_bolt[k])
+                return true;
+    }
+    return false;
+}
+
 static void CL_ParsePlayerBeam(qhandle_t model)
 {
     beam_t  *b;
@@ -1379,11 +1408,18 @@ static void CL_AddBeams(void)
         if (!b->model || b->endtime < cl.time)
             continue;
 
-        // if coming from the player, update the start position
-        if (b->entity == cl.frame.clientNum + 1)
-            VectorAdd(cl.playerEntityOrigin, b->offset, org);
-        else
-            VectorAdd(b->start, b->offset, org);
+        const bool q1_bolt = b->model == cl_q1_bolt[0] || b->model == cl_q1_bolt[1] ||
+                             b->model == cl_q1_bolt[2] || b->model == cl_q1_bolt[3];
+
+        // a Quake player's bolt leaves the muzzle of the gun he is drawn with
+        // (entities.c CL_Q1BoltStart), not the middle of him
+        if (!q1_bolt || !CL_Q1BoltStart(b->entity, org)) {
+            // if coming from the player, update the start position
+            if (b->entity == cl.frame.clientNum + 1)
+                VectorAdd(cl.playerEntityOrigin, b->offset, org);
+            else
+                VectorAdd(b->start, b->offset, org);
+        }
 
         // calculate pitch and yaw
         VectorSubtract(b->end, org, dist);
@@ -1430,8 +1466,7 @@ static void CL_AddBeams(void)
                 ent.angles[1] = angles[1];
                 ent.angles[2] = CL_FrameRand((i << 10) + seg++) % 360;
                 // Quake 1's bolts are all light, as its palette's fullbrights drew them
-                if (b->model && (b->model == cl_q1_bolt[0] || b->model == cl_q1_bolt[1] ||
-                                               b->model == cl_q1_bolt[2] || b->model == cl_q1_bolt[3]))
+                if (q1_bolt)
                     ent.flags = RF_FULLBRIGHT;
             }
 
@@ -3074,8 +3109,21 @@ static void CL_Q1TempEntity(void)
     case TE_Q1_BEAM: {
         const int b = te.q1kind == TE_Q1_LIGHTNING1 ? 0 : te.q1kind == TE_Q1_LIGHTNING2 ? 1 :
                       te.q1kind == TE_Q1_LIGHTNING3 ? 2 : 3;
-        if (cl_q1_bolt[b])
+        if (cl_q1_bolt[b]) {
             CL_ParseBeam(cl_q1_bolt[b]);
+
+            // the bolt's light only: a muzzle-flash light this shooter's flash
+            // made just before (cl_q1_flash_dl) goes out
+            const int e = te.entity1;
+            if (e > 0 && e < MAX_EDICTS && cl_q1_flash_dl[e]) {
+                cdlight_t *fl = cl_q1_flash_dl[e];
+                if (fl->key == e && fl->die == cl_q1_flash_die[e] && fl->die >= cl.time) {
+                    fl->radius = 0;
+                    fl->die = 0;
+                }
+                cl_q1_flash_dl[e] = NULL;
+            }
+        }
         break;
     }
 
@@ -3114,7 +3162,9 @@ static void CL_Q1TempEntity(void)
 
     case TE_Q1_MUZZLEFLASH:
         // Quake's EF_MUZZLEFLASH: a light out in front, for a tenth of a second
-        if (te.entity1 > 0 && te.entity1 < MAX_EDICTS) {
+        // not while the shooter draws a bolt: that is all the light there is
+        // (cl_q1_flash_dl)
+        if (te.entity1 > 0 && te.entity1 < MAX_EDICTS && !CL_Q1EntityHasBolt(te.entity1)) {
             centity_t *pl = &cl_entities[te.entity1];
             vec3_t fv;
 
@@ -3129,6 +3179,8 @@ static void CL_Q1TempEntity(void)
             dl->radius = 200 + (Q_rand() & 31);
             dl->die = cl.time + 100;
             VectorSet(dl->color, 1.0f, 0.85f, 0.6f);
+            cl_q1_flash_dl[te.entity1] = dl;
+            cl_q1_flash_die[te.entity1] = dl->die;
         }
         break;
 
@@ -3863,6 +3915,7 @@ CL_ClearTEnts
 */
 void CL_ClearTEnts(void)
 {
+    memset(cl_q1_flash_dl, 0, sizeof(cl_q1_flash_dl));
     CL_ClearBeams();
     CL_ClearExplosions();
     CL_ClearLasers();

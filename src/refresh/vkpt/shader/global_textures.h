@@ -336,6 +336,9 @@ typedef char compile_time_check_num_images[(NUM_IMAGES == NUM_VKPT_IMAGES)*2-1];
    textures.c makes when it writes each image's descriptor. The bindings are
    D3D12-only; Vulkan never sees them. */
 #define D3D12_NUM_GLOBAL_SAMPLERS 4
+// D3D12_GLOBAL_SAMPLER_* (d3d12/bindings.h), the two global_textureGrad needs
+#define D3D12_SAMPLER_DEFAULT              0
+#define D3D12_SAMPLER_NEAREST_MIPMAP_ANISO 2
 #define BINDING_OFFSET_D3D12_SAMPLERS      900
 #define BINDING_OFFSET_D3D12_SAMPLER_INDEX 901
 layout(
@@ -502,6 +505,37 @@ global_textureGrad(uint idx, vec2 tex_coord, vec2 d_x, vec2 d_y)
 {
 	if(idx >= NUM_GLOBAL_TEXTUES)
 		return vec4(1, 1, 0, 0);
+#ifdef VKPT_D3D12
+	/* pt_nearest 1 / 3 - NEAREST MAGNIFICATION, ANISOTROPIC MINIFICATION - on
+	   D3D12. Vulkan has that sampler (textures.c tex_sampler_nearest_mipmap_aniso);
+	   D3D12 has no filter with point magnification and anisotropic minification,
+	   so its stand-in (d3d12/bindings.c) is point mag / trilinear min WITHOUT
+	   anisotropy - and a face seen edge-on then took the mip of its squashed
+	   axis in both: the Quake lamp's whole side read as its bright band (Matt,
+	   2026-11-23, "that whole side of the light is reading as emissive"), and the
+	   rerelease nailgun's barrel sides as the flash glow its emissive map's small
+	   mips smear over the gun.
+
+	   So here it is done as Vulkan's hardware does it: the footprint the 16x
+	   anisotropic filter resolves to (lambda = log2 of it) decides. At or under
+	   one texel the texture is magnified: the one texel under the point, read at
+	   its centre from mip 0. Over it: the anisotropic sampler with these
+	   gradients. Explicit-mip reads (global_textureLod) take no anisotropy on
+	   either renderer and keep the stand-in sampler. */
+	if (global_sampler_of_d3d12(idx) == D3D12_SAMPLER_NEAREST_MIPMAP_ANISO)
+	{
+		const vec2 size = vec2(textureSize(sampler2D(global_textures_d3d12[nonuniformEXT(idx)],
+			global_samplers_d3d12[D3D12_SAMPLER_DEFAULT]), 0));
+		const float rho_x = length(d_x * size);
+		const float rho_y = length(d_y * size);
+		const float footprint = max(min(rho_x, rho_y), max(rho_x, rho_y) * (1.0 / 16.0));
+		if (footprint <= 1.0)
+			return textureLod(sampler2D(global_textures_d3d12[nonuniformEXT(idx)],
+				global_samplers_d3d12[D3D12_SAMPLER_DEFAULT]), (floor(tex_coord * size) + 0.5) / size, 0.0);
+		return textureGrad(sampler2D(global_textures_d3d12[nonuniformEXT(idx)],
+			global_samplers_d3d12[D3D12_SAMPLER_DEFAULT]), tex_coord, d_x, d_y);
+	}
+#endif
 	return textureGrad(GLOBAL_TEX(idx), tex_coord, d_x, d_y);
 }
 

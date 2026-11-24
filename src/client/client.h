@@ -1197,6 +1197,9 @@ void CL_MuzzleFlashModel2(const vec3_t origin, const vec3_t angles,
                           int view_fx, qhandle_t model);
 void CL_RegisterViewMuzzleFlashes(void);
 bool CL_PlayerGunMuzzlePoint(vec3_t muzzle, int max_age);
+// where a Quake bolt fired by player (entnum) starts this frame: the view gun's
+// muzzle (yours, first person) or the gun in the body's hands (entities.c)
+bool CL_Q1BoltStart(int entnum, vec3_t start);
 void CL_SetupMuzzleFlashEntity(entity_t *ent, const vec3_t origin,
                                const vec3_t angles, float roll,
                                int view_fx, qhandle_t model);

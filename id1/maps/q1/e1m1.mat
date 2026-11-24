@@ -27,7 +27,7 @@ textures/q1/comp1_1:
 	roughness_override -1
 	texture_metallic materialDev/textures/q1/comp1_1_metal.png
 	metalness_factor 1
-	specular_factor 1
+	specular_factor 0
 	emissive_factor 2
 	texture_emissive materialDev/textures/q1/comp1_1_emit.png
 	light_styles 0

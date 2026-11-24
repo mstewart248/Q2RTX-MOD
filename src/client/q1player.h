@@ -37,6 +37,10 @@ typedef enum {
     Q1P_GUN_AXE
 } q1pgun_t;
 
+// player.qc's $light1: his Thunderbolt frame, gun held out level - where
+// entities.c finds the muzzle his bolts start at (CL_Q1BoltStart)
+#define Q1P_FRAME_LIGHT 105
+
 bool        Q1P_Available(void);
 bool        Q1P_ModelExists(const char *model);
 int         Q1P_Frame(int q2frame, q1pgun_t gun);

@@ -64,3 +64,24 @@ textures/q1/twall2_2#ac964c07:
 #	bsp_radiance 1
 #	default_radiance 1
 	volumetric_scale 0.25
+
+# instance of textures/q1/switch_1
+# e1m1, created at (1168 2138 -482)
+# Inherits everything from textures/q1/switch_1; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/switch_1#15298111:
+#	texture_base materialDev/textures/q1/switch_1.png
+#	texture_emissive materialDev/remix/TextureDev/RedChevron_Emissive.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+	emissive_factor 2
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+	default_radiance 2
