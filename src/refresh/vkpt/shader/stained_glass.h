@@ -60,8 +60,9 @@ longer, T^(1/cos)), and lose the Fresnel reflection at the two faces.
 
 WHAT LIGHTS THE ROOM.
   * The straight share, 1 - s: a WINDOW LIGHT (DYNLIGHT_WINDOW, one per window:
-    the faces on one tile of one plane, built in bsp_mesh.c; world faces only,
-    a door's or a train's get the fill alone). A point in the room is lit by the light
+    the faces on one tile of one plane, built in bsp_mesh.c; a door's or a
+    train's too, moved with it by main.c transform_window_light - e4m5's
+    windows are func_doors). A point in the room is lit by the light
     through the one spot on the glass on the line to the light, in that spot's
     colour - so the floor gets an image of the window, sharp for a small light.
     sample_window_light() picks a point on the light, finds where the line to

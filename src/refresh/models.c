@@ -45,6 +45,7 @@ int          r_numModels;
 
 cvar_t    *cl_md5_models;
 cvar_t    *cl_classic_railgun;
+cvar_t    *cl_md5_flash_hide;
 cvar_t    *cl_testmodel;
 cvar_t    *cl_testfps;
 cvar_t    *cl_testalpha;
@@ -948,6 +949,12 @@ void MOD_Init(void)
     // Keep the classic railgun rather than Q2RTX's redesigned one. The shape
     // then comes from the MD5 or the MD2 depending on cl_md5_models.
     cl_classic_railgun = Cvar_Get("cl_classic_railgun", "0", CVAR_ARCHIVE | CVAR_FILES);
+
+    // The Quake rerelease's md5 view weapons park the muzzle flash behind the
+    // gun on frames that have none (model_md5.c MD5_SnapRiders). 1 = shrink it
+    // to a point there, so its glow does not light the gun or show in
+    // reflections; 0 = draw it where the model puts it. Takes effect live.
+    cl_md5_flash_hide = Cvar_Get("cl_md5_flash_hide", "1", 0);
 
     // Path to the test model - can be an .md2, .md3 or .iqm file
     cl_testmodel = Cvar_Get("cl_testmodel", "", 0);

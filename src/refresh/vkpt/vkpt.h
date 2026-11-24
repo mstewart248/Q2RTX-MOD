@@ -1697,6 +1697,7 @@ void vkpt_freecam_reset(void);
 void vkpt_freecam_update(float frame_time);
 void vkpt_freecam_home(void);
 bool vkpt_freecam_detached(void);
+bool vkpt_freecam_moved(void);
 void vkpt_reset_accumulation(void);
 void vkpt_dlss_request_history_reset(void);
 uint32_t vkpt_pt_field_width(void);
@@ -1835,6 +1836,7 @@ void IMG_PixelsEdited(image_t *image);
 
 // 'mat author' (mat_author.c): painting a material's maps in photo mode
 bool MAT_AuthorActive(void);
+bool MAT_AuthorEditingGun(void);                            // painting the gun in hand: freecam keeps it, the body goes
 float MAT_AuthorSparseRate(void);                          // photo mode's fraction of pixels lit a frame, 0 = all
 bool MAT_AuthorCameraLight(const refdef_t *fd, dlight_t *light); // the flashlight at the free camera, if on
 bool MAT_AuthorKey(unsigned key, bool down);              // R_InterceptKey_RTX first

@@ -809,6 +809,8 @@ void SV_Physics_Toss(edict_t *ent)
         }
         VectorScale(ent->velocity, step, move);
         trace = SV_PushEntity(ent, move);
+        // this frame's message carries it now, if it is still about
+        ent->q3_unseen = false;
     }
 
     // Buried in solid and going nowhere.  SV_PushEntity has already refused the

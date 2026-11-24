@@ -2801,5 +2801,9 @@ struct edict_s {
     // a Quake III missile fired this many ms into the server's frame: its
     // first move (SV_Physics_Toss) takes only the rest of the frame
     int         q3_late_ms;
+    // a Quake III missile no frame has carried yet: set when fired, cleared
+    // after its first move (SV_Physics_Toss); a plasma ball that goes off
+    // before then is TE_Q3_PLASMA_UNSEEN. pos1 holds its muzzle.
+    bool        q3_unseen;
 };
 

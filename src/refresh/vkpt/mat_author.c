@@ -337,6 +337,7 @@ enum {
 	W_RANGE_APPLY,
 	W_SEL_ALL, W_SEL_INVERT, W_SEL_NONE,
 	W_CAM_HOME,                     // the camera back where it started (H)
+	W_HALF2D,                       // the map view at half size (Shift+Tab)
 	W_LIGHT_ON,                     // the flashlight at the camera, on or off (C)
 	W_LIGHT,                        // ... and its brightness
 	W_GLASS_PAINT, W_WALL_PAINT,    // the glass mask: paint glass, or the wall round it (X swaps)
@@ -454,6 +455,7 @@ static struct {
 	float v2_cu, v2_cv;
 	int v2_fit_image;
 	int v2_fit_w, v2_fit_h;
+	float v2_fit_size;          // ... and the view's size then (mat_author_map_half changes it)
 
 	int drag;                   // the panel control the left button is holding
 	bool right_pan;             // the right button went down on the map view: it pans
@@ -522,6 +524,31 @@ static void light_cvars(void)
 	mat_author_light = Cvar_Get("mat_author_light", "0", CVAR_ARCHIVE);
 	mat_author_light_scale = Cvar_Get("mat_author_light_scale", "1", CVAR_ARCHIVE);
 	mat_author_light_cone = Cvar_Get("mat_author_light_cone", "90", CVAR_ARCHIVE);
+}
+
+/* The map view at HALF its size (Matt, 2026-11-23: "make the 2d image ... half the
+   size it is now? It covers the weapon and I am try to edit the weapon"): the
+   panel's "[x] half size", Shift+Tab, 'mat author half'. Archived. */
+static cvar_t *mat_author_map_half;
+/* THE GUN STAYS WHILE IT IS BEING PAINTED (MAT_AuthorEditingGun): 1 = flying the
+   camera away keeps the gun in hand where it is and leaves your own body out,
+   instead of photo mode's third person (no gun, the body drawn). Archived. */
+static cvar_t *mat_author_keep_gun;
+
+// the gun in hand, as last seen in a frame (MAT_AuthorEditingGun)
+#define AUTHOR_GUN_ENTITIES 8
+static struct {
+	int num;
+	qhandle_t model[AUTHOR_GUN_ENTITIES];
+	qhandle_t skin[AUTHOR_GUN_ENTITIES];
+} author_gun;
+
+static void view_cvars(void)
+{
+	if (mat_author_map_half)
+		return;
+	mat_author_map_half = Cvar_Get("mat_author_map_half", "0", CVAR_ARCHIVE);
+	mat_author_keep_gun = Cvar_Get("mat_author_keep_gun", "1", CVAR_ARCHIVE);
 }
 
 // a locked triangle, by its UVs (normalised; the map's tiling wraps them)
@@ -4745,6 +4772,7 @@ static void author_start(pbr_material_t *mat, int slot)
 	if (!au.active)
 	{
 		au.active = true;
+		author_gun.num = 0;     // this map's gun, found again (MAT_AuthorEditingGun)
 		au.cx = r_config.width * 0.5f;
 		au.cy = r_config.height * 0.5f;
 		au.pause_frames = 0;
@@ -4768,7 +4796,9 @@ static void author_start(pbr_material_t *mat, int slot)
 			"  mask: glass or wall, X swaps);\n"
 			"  L = line (press where it starts, let go where it ends); R = rectangle (press at one\n"
 			"  corner, let go at the other; the wheel sets its corner radius);\n"
-			"  T = next tool (brush spray hatch noise blur fill), G = fill; Tab = map view, O = base under it;\n"
+			"  T = next tool (brush spray hatch noise blur fill), G = fill; Tab = map view (Shift+Tab: half\n"
+			"  size), O = base under it; painting the gun in hand keeps it when the camera flies off\n"
+			"  (your body is left out; mat_author_keep_gun 0 = third person as photo mode does);\n"
 			"  F = lock to the face under the brush, P = to the piece, Shift adds/removes, U unlocks;\n"
 			"  M = select (rect, ellipse, lasso): drag it out, Shift + drag adds, Ctrl + drag takes away,\n"
 			"  a click drops it; drag on it to move it, or on a side of the last rect/ellipse to resize\n"
@@ -4974,9 +5004,19 @@ static void view2d_rect(float *x, float *y, float *size)
 {
 	const float s = ui_scale();
 	const float vw = r_config.width * s, vh = r_config.height * s;
-	*size = floorf(min(vh - 40.f, vw * 0.45f));
+	view_cvars();
+	const float full = min(vh - 40.f, vw * 0.45f);
+	*size = floorf(mat_author_map_half->integer ? full * 0.5f : full);
 	*x = vw - 8.f - *size;
 	*y = 8.f;
+}
+
+static void view2d_half_toggle(void)
+{
+	view_cvars();
+	Cvar_SetInteger(mat_author_map_half, !mat_author_map_half->integer, FROM_CONSOLE);
+	au.show_2d = true;
+	author_status(mat_author_map_half->integer ? "map view: half size" : "map view: full size");
 }
 
 static void author_fit_view(void)
@@ -4991,6 +5031,7 @@ static void author_fit_view(void)
 	au.v2_fit_image = image_index(author_image());
 	au.v2_fit_w = W;
 	au.v2_fit_h = H;
+	au.v2_fit_size = size;
 }
 
 static void view2d_check_fit(void)
@@ -4998,7 +5039,19 @@ static void view2d_check_fit(void)
 	int W, H;
 	map_size(&W, &H);
 	if (au.v2_fit_image != image_index(author_image()) || au.v2_fit_w != W || au.v2_fit_h != H)
+	{
 		author_fit_view();
+		return;
+	}
+
+	// the view resized (half size, a new window): the same zoom and texel in the middle
+	float x, y, size;
+	view2d_rect(&x, &y, &size);
+	if (size != au.v2_fit_size && au.v2_fit_size > 0.f)
+	{
+		au.v2_ppt *= size / au.v2_fit_size;
+		au.v2_fit_size = size;
+	}
 }
 
 static bool cursor_in_view2d(void)
@@ -5574,6 +5627,7 @@ static void panel_press(int id)
 	case W_UNLOCK:      lock_clear("unlocked"); break;
 	case W_SHOWBASE:    au.show_base = !au.show_base; break;
 	case W_SHOW2D: au.show_2d = !au.show_2d; au.v2_fit_image = -2; break;
+	case W_HALF2D: view2d_half_toggle(); break;
 	case W_CAM_HOME: camera_home(); break;
 	case W_LIGHT_ON: light_toggle(); break;
 	case W_UNDO:  undo_apply(false); break;
@@ -6223,6 +6277,14 @@ static float panel_rows(float x0, float y0, const under_t *under, qhandle_t font
 	// the rest of the row (5 characters): the camera back where it started
 	ui_button(W_CAM_HOME, x + 2.f * (vbw + 4.f), y, iw - 2.f * (vbw + 4.f), "home", false, font);
 	y += line + 4.f;
+	if (au.show_2d)
+	{
+		// the map view at half its size, off the gun (Shift+Tab)
+		view_cvars();
+		const bool half = mat_author_map_half->integer != 0;
+		ui_button(W_HALF2D, x, y, vbw, half ? "[x] half size" : "[ ] half size", half, font);
+		y += line + 4.f;
+	}
 	if (au.show_2d && au.show_base)
 	{
 		if (glow_view())
@@ -7702,6 +7764,71 @@ bool MAT_AuthorActive(void)
 	return au.active;
 }
 
+/* PAINTING THE GUN IN HAND (Matt, 2026-11-23: "The first person weapon disappears
+   when I move the camera ... if you are editing the view_weapon it [shouldn't]
+   ... lets not render player model if the view weapon is being edited").
+
+   Photo mode turns to third person once its camera moves (freecam.c): the client
+   then draws no gun and draws your body. While the material being painted is one
+   of the gun's, freecam keeps first person instead - the game is paused, so the
+   gun stays put where the eye was and the camera flies round it - and the
+   renderer leaves out your own body (the first-person viewer model, seen only in
+   mirrors and shadows), so it can't shadow or reflect onto the gun.
+
+   The gun is found in the frame's entities (RF_WEAPONMODEL) and remembered: once
+   the camera has gone third person the client no longer sends it, and picking
+   the gun's material from the console must still bring it back. A material is
+   the gun's if any of the gun model's skins is it, or the entity's own skin. */
+static void author_gun_remember(void)
+{
+	const refdef_t *fd = vkpt_refdef.fd;
+	if (!fd || !fd->entities)
+		return;
+	int n = 0;
+	for (int i = 0; i < fd->num_entities && n < AUTHOR_GUN_ENTITIES; i++)
+	{
+		const entity_t *e = fd->entities + i;
+		if (!(e->flags & RF_WEAPONMODEL) || (e->model & 0x80000000) || !e->model)
+			continue;
+		author_gun.model[n] = e->model;
+		author_gun.skin[n] = e->skin;
+		n++;
+	}
+	if (n)
+		author_gun.num = n;
+}
+
+static bool model_has_material(const model_t *model, qhandle_t skin, const pbr_material_t *mat)
+{
+	if (skin && MAT_ForSkin(IMG_ForHandle(skin)) == mat)
+		return true;
+	if (!model || !model->meshes)
+		return false;
+	for (int m = 0; m < model->nummeshes; m++)
+	{
+		const maliasmesh_t *mesh = model->meshes + m;
+		for (int k = 0; k < (int)q_countof(mesh->materials); k++)
+			if (mesh->materials[k] == mat)
+				return true;
+	}
+	return false;
+}
+
+bool MAT_AuthorEditingGun(void)
+{
+	if (!au.active || !au.mat)
+		return false;
+	view_cvars();
+	if (!mat_author_keep_gun->integer)
+		return false;
+
+	author_gun_remember();
+	for (int i = 0; i < author_gun.num; i++)
+		if (model_has_material(MOD_ForHandle(author_gun.model[i]), author_gun.skin[i], au.mat))
+			return true;
+	return false;
+}
+
 /* PHOTO MODE AT HALF THE RAYS (Matt, 2026-11-21: "have the accumulation mode cast
    half the rays ... it should do half the samples per frame so it improves the
    responsiveness of the tool. And it should still complete a 4k image").
@@ -8206,7 +8333,9 @@ bool MAT_AuthorKey(unsigned key, bool down)
 		return true;
 
 	case K_TAB:
-		if (down)
+		if (down && shift)
+			view2d_half_toggle();   // the map view at half size
+		else if (down)
 		{
 			au.show_2d = !au.show_2d;
 			au.v2_fit_image = -2;
@@ -8410,6 +8539,21 @@ void MAT_AuthorCommand(pbr_material_t *crosshair)
 		else
 			Com_Printf("usage: mat author light [on|off] - brightness: mat_author_light_scale (1 = the game's "
 				"flashlight), cone: mat_author_light_cone (degrees across)\n");
+		return;
+	}
+
+	// mat author half [on|off]: the map view at half size; no word toggles it
+	if (!Q_stricmp(word, "half"))
+	{
+		const char *arg = Cmd_Argc() >= 4 ? Cmd_Argv(3) : "";
+		view_cvars();
+		const bool on = mat_author_map_half->integer != 0;
+		const bool want_on = !Q_stricmp(arg, "on") || !strcmp(arg, "1");
+		const bool want_off = !Q_stricmp(arg, "off") || !strcmp(arg, "0");
+		if (!arg[0] || (want_on && !on) || (want_off && on))
+			view2d_half_toggle();
+		else if (!want_on && !want_off)
+			Com_Printf("usage: mat author half [on|off] - the map view at half size (Shift+Tab)\n");
 		return;
 	}
 

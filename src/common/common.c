@@ -1168,10 +1168,12 @@ the shareware demo data had no .dm2 files: there "demo demo1.dm2" failed, the
 "popmenu" after it closed the menu anyway, and they were left at the console.
 
 ORDER (cl_attract_random, default 1). The loop always opens on the first demo
-in the list - demo1 - and after that picks at random, the way the remaster
-does. Random is a shuffle, not a dice roll: after demo X, every OTHER demo
-plays once in a random order before X can come round again, so nothing
-repeats back to back and nothing goes missing for a long stretch.
+in the list - demo1 - then, with Quake 1's data installed, Quake's own first
+demo (id1's demo1.dem, or the first Quake demo installed), and after that
+picks at random, the way the remaster does. Random is a shuffle, not a dice
+roll: after demo X, every OTHER demo plays once in a random order before X
+can come round again, so nothing repeats back to back and nothing goes
+missing for a long stretch; the first round leaves out the two openers too.
 cl_attract_random 0 plays them in list order instead. Each demo's nextserver
 is the attract_next command rather than a fixed alias chain, so the cvar is
 read every time a demo ends and flipping it takes effect on the next one.
@@ -1184,17 +1186,28 @@ static int          attract_count;
 static int          attract_last = -1;  // demo playing now, -1 = still the logo
 static int          attract_bag[q_countof(attract_demos)];
 static int          attract_bag_left;
+static int          attract_quake1;     // Quake 1's first demo, the second played; -1 = none
+static int          attract_played;     // demos started since the logo
 
 // Next pick of the shuffle: everything except the demo that just played, in
-// a random order. The first round therefore leaves out demo1, which opened it.
+// a random order. The first round leaves out the openers too: demo1, and the
+// Quake 1 demo that played just now.
 static int Com_AttractShuffle(void)
 {
     int i, j, t;
 
     if (!attract_bag_left) {
+        const bool first_round = attract_played <= (attract_quake1 > 0 ? 2 : 1);
+
         for (i = 0; i < attract_count; i++) {
-            if (i != attract_last)
+            if (i != attract_last && !(first_round && i == 0))
                 attract_bag[attract_bag_left++] = i;
+        }
+        if (!attract_bag_left) {    // just the two openers installed
+            for (i = 0; i < attract_count; i++) {
+                if (i != attract_last)
+                    attract_bag[attract_bag_left++] = i;
+            }
         }
         for (i = attract_bag_left - 1; i > 0; i--) {
             j = Q_rand_uniform(i + 1);
@@ -1218,6 +1231,8 @@ static void Com_AttractNext_f(void)
 
     if (attract_last < 0) {
         next = 0;   // always open on demo1
+    } else if (attract_played == 1 && attract_quake1 > 0) {
+        next = attract_quake1;  // then Quake's first demo
     } else if (cl_attract_random->integer && attract_count > 1) {
         next = Com_AttractShuffle();
     } else {
@@ -1226,6 +1241,7 @@ static void Com_AttractNext_f(void)
     }
 
     attract_last = next;
+    attract_played++;
     if (!Q_strncasecmp(attract_demos[next], "id1/", 4))
         Cbuf_InsertText(&cmd_buffer, va("q1demo %s; popmenu; set nextserver attract_next\n",
                                         attract_demos[next]));
@@ -1262,6 +1278,8 @@ static void Com_StartAttractLoop(void)
     attract_count = 0;
     attract_last = -1;
     attract_bag_left = 0;
+    attract_quake1 = -1;
+    attract_played = 0;
     for (i = 0; i < num_demos && attract_count < (int)q_countof(attract_demos); i++) {
         Q_snprintf(path, sizeof(path), "demos/%s.dm2", demos[i]);
         if (FS_FileExists(path))
@@ -1276,8 +1294,11 @@ static void Com_StartAttractLoop(void)
         size_t n = strchr(s, '/') - s;
         memcpy(episode, s, n);
         episode[n] = 0;
-        if (Cvar_VariableInteger(va("fs_quake1_%s", episode)) && FS_FileExists(quake1_demos[i]))
+        if (Cvar_VariableInteger(va("fs_quake1_%s", episode)) && FS_FileExists(quake1_demos[i])) {
+            if (attract_quake1 < 0)
+                attract_quake1 = attract_count;
             attract_demos[attract_count++] = quake1_demos[i];
+        }
     }
 
     if (!attract_count) {

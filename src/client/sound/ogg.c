@@ -53,6 +53,7 @@ static cvar_t *ogg_shuffle;        /* Shuffle playback */
 static cvar_t *ogg_ignoretrack0;  /* Toggle track 0 playing */
 static cvar_t *ogg_volume;        /* Music volume. */
 static cvar_t* ogg_enable;        /* Music enable flag to toggle from the menu. */
+static cvar_t *ogg_q1_loudness;   /* LUFS a Quake 1 track is brought to, 0 = as recorded */
 static int ogg_curfile;           /* Index of currently played file. */
 static int ogg_numbufs;           /* Number of buffers for OpenAL */
 static int ogg_numsamples;        /* Number of sambles read from the current file */
@@ -109,6 +110,7 @@ struct {
 static struct {
 	char    path[MAX_OSPATH];
 	int     track;
+	float   lufs;       // its loudness (Q1_Loudness), 0 when not known
 } q1_music;
 
 // --------
@@ -545,6 +547,318 @@ static bool Q1_FindTrack(const char *episode, int track, char *out, size_t size)
 	return false;
 }
 
+/*
+ * QUAKE 1 MUSIC LEVEL
+ *
+ * The rerelease's Quake 1 soundtrack is mastered far quieter than Quake II's.
+ * Measured as ITU BS.1770 loudness (K-weighted and gated, as EBU R128 and
+ * ReplayGain do), Quake II's tracks and Quake III's music sit near -12 LUFS,
+ * and the Quake sound effects as loud as Quake II's - but id1's tracks 2-5 are
+ * -19 to -20, hipnotic's and rogue's -16 to -21. On a Quake map the music was
+ * half as loud against the effects, and ogg_volume could not make up for it:
+ * at full volume it already is at the most S_GetLinearVolume gives. Nor would
+ * one fixed boost: the Quake tracks differ among themselves by up to 9 dB
+ * (id1's 6-9 are -12 to -15, mg3's -11 to -16).
+ *
+ * So each Quake 1 track is measured as it starts and raised or lowered to
+ * ogg_q1_loudness (LUFS; 0 plays it as recorded), by no more than 12 dB.
+ * Measured from 16 stretches of 2.5 s spread through the file, not the whole
+ * of it: within 0.7 dB of a full decode on every rerelease track, in 40-120 ms
+ * rather than up to 0.8 s, and once a session for each track.
+ *
+ * Raised to -12, the loudest hits go past full scale - under 1% of the
+ * samples, hardly ever by more than 3 dB. A 5 ms look-ahead limiter holds
+ * them at -1 dBFS instead of clipping them. Quake's loud passages have such a
+ * hit in nearly every 400 ms, though, so the limiter keeps those down and a
+ * track comes out a little under the target: id1's track 2 (-20 LUFS) at
+ * -14.9, most at -12 to -13.5. A higher target only squashes them harder
+ * (track 2 at -10 comes out at -14.1).
+ */
+#define Q1_LEVEL_STRETCHES      16
+#define Q1_LEVEL_STRETCH_SEC    2.5
+#define Q1_LEVEL_MAX_BLOCKS     512     // of 100 ms: 16 x 25, or all of a track up to 40 s
+#define Q1_LEVEL_MAX_DB         12.0f
+#define Q1_LEVEL_CEILING        (0.891f * 32767.0f)    // -1 dBFS
+#define Q1_LIMIT_MAX_FRAMES     512     // 5 ms of look-ahead at up to 102 kHz
+
+typedef struct {
+	double  b0, b1, b2, a1, a2;
+	double  z1[2], z2[2];
+} q1_biquad_t;
+
+static double Q1_Biquad(q1_biquad_t *f, int c, double x)
+{
+	double y = f->b0 * x + f->z1[c];
+
+	f->z1[c] = f->b1 * x - f->a1 * y + f->z2[c];
+	f->z2[c] = f->b2 * x - f->a2 * y;
+	return y;
+}
+
+// BS.1770's K-weighting at (rate): a 4 dB shelf above about 1.7 kHz, then a
+// high pass at 38 Hz (libebur128's design, which holds at any sample rate)
+static void Q1_KWeighting(q1_biquad_t *shelf, q1_biquad_t *hp, int rate)
+{
+	double K = tan(M_PI * 1681.974450955533 / rate);
+	double Q = 0.7071752369554196;
+	double Vh = pow(10.0, 3.999843853973347 / 20.0);
+	double Vb = pow(Vh, 0.4996667741545416);
+	double a0 = 1.0 + K / Q + K * K;
+
+	memset(shelf, 0, sizeof(*shelf));
+	shelf->b0 = (Vh + Vb * K / Q + K * K) / a0;
+	shelf->b1 = 2.0 * (K * K - Vh) / a0;
+	shelf->b2 = (Vh - Vb * K / Q + K * K) / a0;
+	shelf->a1 = 2.0 * (K * K - 1.0) / a0;
+	shelf->a2 = (1.0 - K / Q + K * K) / a0;
+
+	K = tan(M_PI * 38.13547087602444 / rate);
+	Q = 0.5003270373238773;
+	a0 = 1.0 + K / Q + K * K;
+	memset(hp, 0, sizeof(*hp));
+	hp->b0 = 1.0;
+	hp->b1 = -2.0;
+	hp->b2 = 1.0;
+	hp->a1 = 2.0 * (K * K - 1.0) / a0;
+	hp->a2 = (1.0 - K / Q + K * K) / a0;
+}
+
+// LUFS of the Ogg Vorbis file at (path); 0, which no music measures, when it
+// cannot be measured
+static float Q1_MeasureLoudness(const char *path)
+{
+	static double   sub[Q1_LEVEL_MAX_BLOCKS];      // mean square of each 100 ms
+	static bool     first[Q1_LEVEL_MAX_BLOCKS];    // the first of its stretch
+	short           buf[4096];
+	q1_biquad_t     shelf, hp;
+	stb_vorbis_info info;
+	stb_vorbis      *v;
+	unsigned        length, stretch;
+	double          scale, sum = 0, gate;
+	int             stretches = Q1_LEVEL_STRETCHES, step, n = 0, count = 0, res = 0;
+	FILE            *f = fopen(path, "rb");
+
+	if (!f)
+		return 0;
+	v = stb_vorbis_open_file(f, true, &res, NULL);    // closes (f) itself on failure
+	if (!v)
+		return 0;
+
+	info = stb_vorbis_get_info(v);
+	length = stb_vorbis_stream_length_in_samples(v);
+	step = info.sample_rate / 10;
+	stretch = (unsigned)(Q1_LEVEL_STRETCH_SEC * info.sample_rate);
+	if (step <= 0 || !length) {
+		stb_vorbis_close(v);
+		return 0;
+	}
+	if ((uint64_t)stretch * stretches >= length) {
+		stretches = 1;          // a short track: all of it
+		stretch = length;
+	}
+
+	for (int s = 0; s < stretches && n < Q1_LEVEL_MAX_BLOCKS; s++) {
+		unsigned    done = 0;
+		double      acc = 0;
+		int         accn = 0;
+		int         settle = info.sample_rate / 20;   // the filters, after a seek
+		bool        start = true;
+
+		if (stretches > 1 &&
+			!stb_vorbis_seek(v, (unsigned)((s + 0.5) / stretches * length) - stretch / 2))
+			break;
+		Q1_KWeighting(&shelf, &hp, info.sample_rate);
+
+		while (done < stretch && n < Q1_LEVEL_MAX_BLOCKS) {
+			// two channels whatever the file has: stb_vorbis puts a mono
+			// one in both
+			int want = (int)min(stretch - done, sizeof(buf) / sizeof(buf[0]) / 2);
+			int got = stb_vorbis_get_samples_short_interleaved(v, 2, buf, want * 2);
+
+			if (got <= 0)
+				break;
+			done += got;
+
+			for (int i = 0; i < got && n < Q1_LEVEL_MAX_BLOCKS; i++) {
+				double e = 0;
+
+				for (int c = 0; c < 2; c++) {
+					double y = Q1_Biquad(&hp, c, Q1_Biquad(&shelf, c, buf[i * 2 + c] * (1.0 / 32768.0)));
+					e += y * y;
+				}
+				if (settle > 0) {
+					settle--;
+					continue;
+				}
+				acc += e;
+				if (++accn == step) {
+					sub[n] = acc / step;
+					first[n] = start;
+					start = false;
+					n++;
+					acc = 0;
+					accn = 0;
+				}
+			}
+		}
+	}
+	stb_vorbis_close(v);
+
+	// BS.1770 counts a mono file's one channel once, not in both
+	scale = info.channels == 1 ? 0.5 : 1.0;
+
+	// 400 ms blocks overlapping by 300 ms, none across a seek. Gated at
+	// -70 LUFS, then at 10 LU under the mean of what passed that.
+	gate = pow(10.0, (-70.0 + 0.691) / 10.0);
+	for (int pass = 0; pass < 2; pass++) {
+		sum = 0;
+		count = 0;
+		for (int i = 3; i < n; i++) {
+			double z;
+
+			if (first[i] || first[i - 1] || first[i - 2])
+				continue;
+			z = (sub[i] + sub[i - 1] + sub[i - 2] + sub[i - 3]) * 0.25 * scale;
+			if (z > gate) {
+				sum += z;
+				count++;
+			}
+		}
+		if (!count)
+			return 0;       // silence, or too short to measure
+		gate = sum / count * 0.1;
+	}
+
+	return (float)(-0.691 + 10.0 * log10(sum / count));
+}
+
+// (path)'s loudness, measured the first time it is asked for this session
+static float Q1_Loudness(const char *path)
+{
+	static struct {
+		char    path[MAX_OSPATH];
+		float   lufs;
+	} known[64];
+	static int  numknown, next;
+	unsigned    start;
+	float       lufs;
+	int         i;
+
+	for (i = 0; i < numknown; i++)
+		if (!Q_stricmp(known[i].path, path))
+			return known[i].lufs;
+
+	start = Sys_Milliseconds();
+	lufs = Q1_MeasureLoudness(path);
+	Com_DPrintf("OGG: %s measures %.1f LUFS (%u ms).\n", path, lufs, Sys_Milliseconds() - start);
+
+	i = numknown < (int)q_countof(known) ? numknown++ : next++ % (int)q_countof(known);
+	Q_strlcpy(known[i].path, path, sizeof(known[i].path));
+	known[i].lufs = lufs;
+	return lufs;
+}
+
+// the gain, in dB, that brings the Quake 1 track playing to ogg_q1_loudness
+static float Q1_LevelDB(void)
+{
+	float db;
+
+	if (!ogg_q1_loudness->value || !q1_music.lufs)
+		return 0;
+	db = ogg_q1_loudness->value - q1_music.lufs;
+	return clamp(db, -Q1_LEVEL_MAX_DB, Q1_LEVEL_MAX_DB);
+}
+
+static struct {
+	int     len;            // look-ahead in frames; 0 starts afresh
+	int     pos;
+	float   delay[Q1_LIMIT_MAX_FRAMES][2];
+	float   gains[Q1_LIMIT_MAX_FRAMES];     // hold, over the last len frames
+	double  sum;            // of gains[]
+	float   hold;           // the gain the loudest frame ahead needs
+	int     count;          // frames left to keep hold
+	float   release;        // the share of the way back to 1 per frame
+} q1_limit;
+
+static short Q1_Clip16(float x)
+{
+	int i = Q_rint(x);
+
+	return (short)clamp(i, -32768, 32767);
+}
+
+/*
+ * Bring (frames) of the Quake 1 track playing to its level, in place.
+ *
+ * Gained frames go through a delay of len frames (5 ms). Each needs at most
+ * ceiling / peak of gain; hold takes that as each frame comes in, keeps it
+ * the len frames that frame takes to come out, then eases back up to 1 over
+ * about 150 ms. The gain a frame goes out at is the mean of hold over the
+ * len frames since it came in, which every peak in the delay keeps at or
+ * under its own need, so it glides down over 5 ms to the gain the peak
+ * needs as the peak comes out, without a click.
+ */
+static void Q1_Level(short *samples, int frames, int channels, int rate)
+{
+	const float db = Q1_LevelDB();
+	float gain;
+
+	if (!db || channels < 1 || channels > 2) {
+		q1_limit.len = 0;       // as recorded, the limiter not in the way
+		return;
+	}
+	gain = powf(10.0f, db / 20.0f);
+
+	if (!q1_limit.len) {
+		q1_limit.len = rate * 5 / 1000;
+		clamp(q1_limit.len, 1, Q1_LIMIT_MAX_FRAMES);
+		q1_limit.pos = 0;
+		for (int i = 0; i < q1_limit.len; i++) {
+			q1_limit.gains[i] = 1.0f;
+			q1_limit.delay[i][0] = q1_limit.delay[i][1] = 0.0f;
+		}
+		q1_limit.sum = q1_limit.len;
+		q1_limit.hold = 1.0f;
+		q1_limit.count = 0;
+		q1_limit.release = 1.0f - expf(-1.0f / (0.15f * rate));
+	}
+
+	for (int i = 0; i < frames; i++) {
+		short   *s = samples + i * channels;
+		float   l = s[0] * gain;
+		float   r = channels == 2 ? s[1] * gain : l;
+		float   peak = max(fabsf(l), fabsf(r));
+		float   need = peak > Q1_LEVEL_CEILING ? Q1_LEVEL_CEILING / peak : 1.0f;
+		int     p = q1_limit.pos;
+		float   g;
+
+		if (need <= q1_limit.hold) {
+			q1_limit.hold = need;
+			q1_limit.count = q1_limit.len;
+		} else if (q1_limit.count > 0) {
+			q1_limit.count--;
+		} else {
+			q1_limit.hold += (1.0f - q1_limit.hold) * q1_limit.release;
+			if (need < q1_limit.hold) {
+				q1_limit.hold = need;
+				q1_limit.count = q1_limit.len;
+			}
+		}
+
+		q1_limit.sum += q1_limit.hold - q1_limit.gains[p];
+		q1_limit.gains[p] = q1_limit.hold;
+		g = (float)(q1_limit.sum / q1_limit.len);
+
+		// out goes the frame from len frames ago; in goes this one
+		s[0] = Q1_Clip16(q1_limit.delay[p][0] * g);
+		if (channels == 2)
+			s[1] = Q1_Clip16(q1_limit.delay[p][1] * g);
+		q1_limit.delay[p][0] = l;
+		q1_limit.delay[p][1] = r;
+		q1_limit.pos = (p + 1) % q1_limit.len;
+	}
+}
+
 // (re)open q1_music.path from the start
 static bool Q1_OpenMusic(void)
 {
@@ -601,6 +915,8 @@ OGG_PlayQuake1Track(const char *episode, int track)
 
 	Q_strlcpy(q1_music.path, path, sizeof(q1_music.path));
 	q1_music.track = track;
+	q1_music.lufs = Q1_Loudness(path);
+	q1_limit.len = 0;
 	Q1_OpenMusic();
 }
 
@@ -628,6 +944,10 @@ static OGG_Read(void)
 	if (read_samples > 0)
 	{
 		ogg_numsamples += read_samples;
+
+		// a Quake 1 track at the loudness of Quake II's
+		if (ogg_curfile == OGG_Q1_MUSIC)
+			Q1_Level(samples, read_samples, ogg_file->channels, ogg_file->sample_rate);
 
 		S_RawSamples(read_samples, ogg_file->sample_rate, ogg_file->channels, ogg_file->channels,
 			(byte *)samples, S_GetLinearVolume(ogg_volume->value));
@@ -887,6 +1207,11 @@ OGG_Info(void)
 		Com_Printf("State: %s Quake 1 track %d (%s) at %i samples.\n",
 			ogg_status == PLAY ? "Playing" : "Paused", q1_music.track, q1_music.path,
 			ogg_file ? stb_vorbis_get_sample_offset(ogg_file) : 0);
+		if (q1_music.lufs)
+			Com_Printf("Loudness: %.1f LUFS, played %+.1f dB (ogg_q1_loudness %s).\n",
+				q1_music.lufs, Q1_LevelDB(), ogg_q1_loudness->string);
+		else
+			Com_Printf("Loudness: not measured, played as recorded.\n");
 		return;
 	}
 
@@ -1076,6 +1401,7 @@ OGG_RecoverState(void)
 	// a Quake 1 track: q1_music.path outlives the stop, so the same file
 	if (ogg_saved_state.curfile == OGG_Q1_MUSIC)
 	{
+		q1_limit.len = 0;
 		if (Q1_OpenMusic())
 		{
 			stb_vorbis_seek_frame(ogg_file, ogg_saved_state.numsamples);
@@ -1120,6 +1446,8 @@ OGG_Init(void)
 	ogg_volume = Cvar_Get("ogg_volume", "1.0", CVAR_ARCHIVE);
 	ogg_enable = Cvar_Get("ogg_enable", "1", CVAR_ARCHIVE);
 	ogg_enable->changed = ogg_enable_changed;
+	// Quake II's and Quake III's music measure about -12 (QUAKE 1 MUSIC LEVEL)
+	ogg_q1_loudness = Cvar_Get("ogg_q1_loudness", "-12", CVAR_ARCHIVE);
 
 	// Commands
 	Cmd_AddCommand("ogg", OGG_Cmd);

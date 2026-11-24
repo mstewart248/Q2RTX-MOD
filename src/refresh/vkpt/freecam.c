@@ -40,6 +40,7 @@ static vec3_t freecam_start_viewangles = { 0.f };  // where the player looked th
 static float freecam_zoom = 1.f;
 static bool freecam_keystate[6] = { 0 };
 static bool freecam_active = false;
+static bool freecam_moved = false;  // moved or turned since photo mode began (or since "home")
 
 extern float autosens_x;
 extern float autosens_y;
@@ -62,6 +63,7 @@ void vkpt_freecam_reset()
 
 	cl_photo_third_person = false;
 	freecam_active = false;
+	freecam_moved = false;
 }
 
 /* Photo mode's camera back where it began: the player's eye, looking the way
@@ -77,7 +79,16 @@ void vkpt_freecam_home(void)
 	VectorCopy(freecam_start_viewangles, freecam_viewangles);
 	freecam_zoom = 1.f;
 	cl_photo_third_person = false;
+	freecam_moved = false;
 	vkpt_reset_accumulation();
+}
+
+/* True once photo mode's camera has moved or turned (until "home"): the moment
+   it goes third person - or, painting the gun in hand ('mat author'), the
+   moment your own body is left out of the scene (main.c prepare_entities). */
+bool vkpt_freecam_moved(void)
+{
+	return freecam_active && freecam_moved;
 }
 
 /* True once photo mode's camera has moved away from the player's eye. From
@@ -185,6 +196,7 @@ void vkpt_freecam_update(float frame_time)
 		VectorCopy(vkpt_refdef.fd->viewangles, freecam_start_viewangles);
 		freecam_zoom = 1.f;
 		freecam_active = true;
+		freecam_moved = false;
 	}
 
 	vec3_t prev_vieworg;
@@ -222,10 +234,22 @@ void vkpt_freecam_update(float frame_time)
 
 	if (!VectorCompare(freecam_vieworg, prev_vieworg) || !VectorCompare(freecam_viewangles, prev_viewangles))
 	{
-		// "nothing" stays nothing: that player asked for no model at all
-		if (cl_player_model->integer != CL_PLAYER_MODEL_DISABLED)
-			cl_photo_third_person = true;
+		freecam_moved = true;
+		vkpt_reset_accumulation();
+	}
 
+	/* Third person once the camera has moved - "nothing" stays nothing: that
+	   player asked for no model at all. Not while 'mat author' paints the gun in
+	   hand (MAT_AuthorEditingGun): first person keeps the gun where the eye was,
+	   for the camera to fly round, and leaves the body to the viewer-model pass,
+	   which prepare_entities then skips. Decided every frame, so picking another
+	   material goes third person again, and picking the gun's brings it back. */
+	const bool third_person = freecam_moved
+		&& cl_player_model->integer != CL_PLAYER_MODEL_DISABLED
+		&& !MAT_AuthorEditingGun();
+	if (third_person != cl_photo_third_person)
+	{
+		cl_photo_third_person = third_person;
 		vkpt_reset_accumulation();
 	}
 

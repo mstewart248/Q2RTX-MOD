@@ -790,7 +790,21 @@ static bool md5_snap_joint(const char *name)
    model faces, the whole distance only a tie-break: v_nail2's aligned barrel is
    0.2 across (the body 3.6, the next barrel 4.8); v_nail's right barrel 0.4
    where the nearer "middlestick" is 4.1. A flash with joints below it only
-   snaps, as before. */
+   snaps, as before.
+
+   A PARKED FLASH. On the frames with no flash the joint is put away BEHIND the
+   gun - behind the eye or under the gun, out of the view: v_nail2 24 units
+   back, v_rock 35 back, v_nail's three flames 10 back. A rasterizer never
+   sees it there; the path tracer does - an emissive mesh lit the gun from
+   behind whenever it was not firing (Matt, 2026-11-23: nailgun, super
+   nailgun, grenade launcher), and showed up in mirrors and water. So a frame
+   where the flash sits more than MD5_FLASH_PARKED_BEHIND units behind its
+   rider along +x is marked parked. Measured on every rerelease md5 with a flash
+   joint: parked 8..44 units behind, at the muzzle 11..52 in front. The player,
+   soldier and enforcer keep theirs inside the torso (within 2 units of
+   Spine1 / chest along x), so they never count as parked. */
+#define MD5_FLASH_PARKED_BEHIND 4.0f
+
 static void MD5_SnapRiders(model_t *model, iqm_model_t *iqmData, int num_joints)
 {
     if (!iqmData->jointSnap || !iqmData->poses || !iqmData->num_frames)
@@ -799,11 +813,14 @@ static void MD5_SnapRiders(model_t *model, iqm_model_t *iqmData, int num_joints)
     const int num_frames = (int)iqmData->num_frames;
     short *rider = MOD_Malloc(sizeof(short) * num_frames * num_joints);
     float *offset = MOD_Malloc(sizeof(float) * 12 * num_frames * num_joints);
+    byte *parked = MOD_Malloc((size_t)num_frames * num_joints);
     float *abs_m = Z_Malloc(sizeof(float) * 12 * num_joints);
-    if (!rider || !offset) {
+    if (!rider || !offset || !parked) {
         Z_Free(abs_m);
         return;
     }
+    memset(parked, 0, (size_t)num_frames * num_joints);
+    bool any_parked = false;
 
     for (int f = 0; f < num_frames; f++) {
         const iqm_transform_t *pose = iqmData->poses + f * num_joints;
@@ -851,12 +868,18 @@ static void MD5_SnapRiders(model_t *model, iqm_model_t *iqmData, int num_joints)
             float inv_rider[12];
             MD5_Matrix34Invert(abs_m + *out * 12, inv_rider);
             MD5_Matrix34Multiply(inv_rider, ps, offset + ((size_t)f * num_joints + s) * 12);
+
+            if (ps[3] - abs_m[*out * 12 + 3] < -MD5_FLASH_PARKED_BEHIND) {
+                parked[(size_t)f * num_joints + s] = 1;
+                any_parked = true;
+            }
         }
     }
 
     Z_Free(abs_m);
     iqmData->jointSnapRider = rider;
     iqmData->jointSnapOffset = offset;
+    iqmData->jointSnapParked = any_parked ? parked : NULL;
 }
 
 int MOD_LoadMD5_Base(model_t *model, const void *rawdata, size_t length, const char *mod_name)

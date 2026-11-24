@@ -1,0 +1,115 @@
+
+# instance of textures/q1/window01_1
+# hip2m2, created at (108 743 -68)
+# Inherits everything from textures/q1/window01_1; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/window01_1#4a796460:
+#	texture_base materialDev/textures/q1/window01_1.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	light_factor 1
+	kind REGULAR
+	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+	stained_glass 1
+	stained_light_height 1
+	stained_light_sun 1
+
+# instance of textures/q1/window01_1
+# hip2m2, created at (290 539 7)
+# Inherits everything from textures/q1/window01_1; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/window01_1#a098280c:
+#	texture_base materialDev/textures/q1/window01_1.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	light_factor 1
+	kind REGULAR
+	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+	stained_glass 1
+	stained_light_height 1
+	stained_light_sun 1
+
+# instance of textures/q1/window01_1
+# hip2m2, created at (44 -336 16)
+# Inherits everything from textures/q1/window01_1; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/window01_1#f1947d08:
+#	texture_base materialDev/textures/q1/window01_1.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	light_factor 1
+	kind REGULAR
+	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+	stained_glass 1
+	stained_light_height 1
+	stained_light_sun 1
+
+# instance of textures/q1/window01_1
+# hip2m2, created at (213 -383 25)
+# Inherits everything from textures/q1/window01_1; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/window01_1#8463deec:
+#	texture_base materialDev/textures/q1/window01_1.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	light_factor 1
+	kind REGULAR
+	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+	stained_glass 1
+	stained_light_height 1
+	stained_light_sun 1
+
+# instance of textures/q1/window01_1
+# hip2m2, created at (-884 -0 6)
+# Inherits everything from textures/q1/window01_1; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/window01_1#1224720c:
+#	texture_base materialDev/textures/q1/window01_1.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	light_factor 1
+	kind REGULAR
+	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+	stained_glass 1
+	stained_light_height 1
+	stained_light_sun 1

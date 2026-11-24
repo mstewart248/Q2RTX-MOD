@@ -376,6 +376,8 @@ progs/soldier_00_00:
 # Remix mat_72D3E6665C2AE0E4: progs/spike.mdl skin 0
 progs/spike_mdl_00_00:
 	texture_base materialDev/progs/spike_mdl_00_00.png
+	texture_metallic materialDev/progs/spike_mdl_00_00_metal.png
+	texture_roughness materialDev/progs/spike_mdl_00_00_rough.png
 #	Remix roughness constant 0.07 - off, Q2RTX roughness = the maps: texture_roughness 0
 #	roughness_override 0.07
 #	Remix metallic constant 1 - off, Q2RTX shades a metal map only:
@@ -420,6 +422,7 @@ progs/v_nail_00_00:
 	texture_emissive materialDev/remix/TextureDev2/NailGun_emissive.png
 	emissive_factor 2.5
 	texture_metallic materialDev/progs/v_nail_00_00_metal.png
+	base_factor 1
 
 # Remix mat_3B9E76392EA29832: progs/v_rock2_00_00.lmp
 progs/v_rock2_00_00:
@@ -1268,8 +1271,10 @@ textures/q1/comp1_3:
 textures/q1/comp1_4:
 	texture_base materialDev/textures/q1/comp1_4.png
 	specular_factor 0
+	texture_metallic materialDev/textures/q1/comp1_4_metal.png
 #	Remix's default roughness 0.5 - off (this material did not set one):
-#	texture_roughness 0
+	texture_roughness materialDev/textures/q1/comp1_4_rough.png
+	texture_normals materialDev/textures/q1/comp1_4_n.png
 #	roughness_override 0.5
 #	Remix metallic constant 0.8 - off, Q2RTX shades a metal map only:
 #	texture_metallic materialDev/remix/solid*M1.wal + metalness_factor 0.8
@@ -1500,6 +1505,8 @@ textures/q1/dr07_1:
 # Remix mat_552270702F43519D: ecop1_1
 textures/q1/ecop1_1:
 	texture_base materialDev/textures/q1/ecop1_1.png
+	texture_metallic materialDev/textures/q1/ecop1_1_metal.png
+	texture_roughness materialDev/textures/q1/ecop1_1_rough.png
 #	Remix roughness constant 0.755 - off, Q2RTX roughness = the maps: texture_roughness 0
 #	roughness_override 0.755
 #	Remix metallic constant 1 - off, Q2RTX shades a metal map only:
@@ -1534,8 +1541,10 @@ textures/q1/ecop1_7:
 # Remix mat_3C4D8A776A7A77C5: edoor01_1
 textures/q1/edoor01_1:
 	texture_base materialDev/textures/q1/edoor01_1.png
+	texture_metallic materialDev/textures/q1/edoor01_1_metal.png
 #	Remix's default roughness 0.5 - off (this material did not set one):
-#	texture_roughness 0
+	texture_roughness materialDev/textures/q1/edoor01_1_rough.png
+	base_factor 2.5
 #	roughness_override 0.5
 #	Remix metallic constant 0.495 - off, Q2RTX shades a metal map only:
 #	texture_metallic materialDev/remix/solid*M1.wal + metalness_factor 0.495
@@ -2471,6 +2480,7 @@ textures/q1/tech02_7:
 # Remix mat_285E57F2D8454DE6: tech04_1
 textures/q1/tech04_1:
 	texture_base materialDev/textures/q1/tech04_1.png
+	texture_metallic materialDev/textures/q1/tech04_1_metal.png
 #	Remix's default roughness 0.5 - off (this material did not set one):
 #	texture_roughness 0
 #	roughness_override 0.5
@@ -2696,6 +2706,7 @@ textures/q1/twall2_1:
 	specular_factor 0
 	emissive_factor 2
 	texture_emissive materialDev/textures/q1/twall2_1_emit.png
+	is_light 0
 #	Remix's default roughness 0.5 - off (this material did not set one):
 #	texture_roughness 0
 #	roughness_override 0.5
@@ -2876,7 +2887,7 @@ textures/q1/window01_2:
 	roughness_override 0
 	texture_emissive 0
 	is_light 1
-	emissive_factor 0.5
+	emissive_factor 1
 	kind REGULAR
 	stained_glass 1
 	stained_light_height 1
@@ -3182,6 +3193,7 @@ textures/q1/wswamp2_1:
 #	texture_metallic materialDev/remix/solid*M1.wal + metalness_factor 0.435
 	texture_height materialDev/remix/TextureDev/BrownBricks_height.png
 	displace_in 0.06
+	base_factor 2.5
 
 # Remix mat_BF7B155D5B393070: wswamp2_2
 textures/q1/wswamp2_2:
@@ -19061,6 +19073,7 @@ progs/health100_00_00:
 #	texture_height materialDev/progs/health100_00_00_height.png
 	texture_emissive materialDev/progs/health100_00_00_emit.png
 	emissive_factor 2
+	base_factor 2.5
 
 progs/health100_00_01:
 	texture_base materialDev/progs/health100_00_01.png
@@ -19092,7 +19105,8 @@ progs/health15_00_00:
 #	texture_roughness materialDev/progs/health15_00_00_rough.png
 #	texture_metallic materialDev/progs/health15_00_00_metal.png
 #	texture_height materialDev/progs/health15_00_00_height.png
-	texture_emissive materialDev/progs/health15_00_00_light.png
+	texture_emissive materialDev/progs/health15_00_00_emit.png
+	emissive_factor 2
 
 progs/health25_00_00:
 	texture_base materialDev/progs/health25_00_00.png
@@ -19449,8 +19463,10 @@ progs/nailslarge_00_00:
 progs/nailssmall_00_00:
 	texture_base materialDev/progs/nailssmall_00_00.png
 #	texture_normals materialDev/progs/nailssmall_00_00_n.png
-#	texture_roughness materialDev/progs/nailssmall_00_00_rough.png
-#	texture_metallic materialDev/progs/nailssmall_00_00_metal.png
+	texture_roughness materialDev/progs/nailssmall_00_00_rough.png
+	texture_metallic materialDev/progs/nailssmall_00_00_metal.png
+	emissive_factor 2
+	texture_emissive materialDev/progs/nailssmall_00_00_emit.png
 #	texture_height materialDev/progs/nailssmall_00_00_height.png
 
 progs/ogre_mdl_00_00:
@@ -19830,8 +19846,8 @@ progs/shellslarge_00_00:
 progs/shellssmall_00_00:
 	texture_base materialDev/progs/shellssmall_00_00.png
 #	texture_normals materialDev/progs/shellssmall_00_00_n.png
-#	texture_roughness materialDev/progs/shellssmall_00_00_rough.png
-#	texture_metallic materialDev/progs/shellssmall_00_00_metal.png
+	texture_roughness materialDev/progs/shellssmall_00_00_rough.png
+	texture_metallic materialDev/progs/shellssmall_00_00_metal.png
 #	texture_height materialDev/progs/shellssmall_00_00_height.png
 
 progs/shield_mdl_00_00:

@@ -951,7 +951,22 @@ static void Q3W_MissileExplode(edict_t *self, edict_t *other, cplane_t *plane)
             VectorNormalize2(self->velocity, dir);
             VectorInverse(dir);
         }
-        Q3W_TempEntity(te, origin, dir);
+        if (self->q3_unseen && self->owner && self->owner->inuse) {
+            /* It went off before any frame carried it - a wall or a player
+               within the prestep's 100 units and the first move's up to 200
+               more (Matt, 11-22: "doesn't spawn projectiles if you are too
+               close to a wall"). Who fired it and from where, so the client
+               can show it flying there. */
+            gi.WriteByte(svc_temp_entity);
+            gi.WriteByte(TE_Q3_PLASMA_UNSEEN);
+            gi.WritePosition(origin);
+            gi.WriteDir(dir);
+            gi.WriteShort(self->owner - g_edicts);
+            gi.WritePosition(self->pos1);
+            gi.multicast(origin, MULTICAST_PVS);
+        } else {
+            Q3W_TempEntity(te, origin, dir);
+        }
     } else {
         gi.WriteByte(svc_temp_entity);
         gi.WriteByte(te);
@@ -1076,6 +1091,10 @@ static void Q3W_Missile(edict_t *ent, int weapon, const vec3_t muzzle, const vec
     // into one frame went out together and flew as a pair, then a gap - the
     // gun fired in spurts. A bot's one command a frame is at 0: unchanged.
     m->q3_late_ms = late_ms < 0 ? 0 : late_ms > 100 ? 100 : late_ms;
+
+    // no frame has carried it yet (Q3W_MissileExplode), and where it left
+    m->q3_unseen = true;
+    VectorCopy(muzzle, m->pos1);
 
     // the prestep
     VectorMA(muzzle, Q3_MISSILE_PRESTEP, m->velocity, end);

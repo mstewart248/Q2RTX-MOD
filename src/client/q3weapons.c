@@ -2308,13 +2308,14 @@ typedef struct {
 
 static q3wball_t q3w_balls[MAX_EDICTS];
 
-// the muzzle of the gun that has just fired `shooter`'s ball: the view gun's
-// if it is ours in first person. The flash comes in the same packet as the ball.
-static bool q3w_ball_muzzle(int shooter, vec3_t out)
+// the muzzle of the gun that has just fired `shooter`'s ball, its flash under
+// `window` ms old: the view gun's if it is ours in first person. The flash
+// comes in the same packet as the ball.
+static bool q3w_ball_muzzle(int shooter, int window, vec3_t out)
 {
     q3wshooter_t *sh = q3w_shooter(shooter);
 
-    if (!sh || sh->weapon != Q3W_PLASMA || !q3w_firing(sh, 200))
+    if (!sh || sh->weapon != Q3W_PLASMA || !q3w_firing(sh, window))
         return false;
     if (shooter == cl.frame.clientNum + 1 && CL_Q3W_ViewMuzzle(out))
         return true;
@@ -2338,7 +2339,7 @@ static void q3w_ball_origin(const entity_state_t *s1, const vec3_t origin, vec3_
         b->id = cent->id;
         b->time = cl.time;
         VectorClear(b->offset);
-        if (cl_q3_plasma_from_gun->integer && q3w_ball_muzzle(s1->skinnum, muzzle)) {
+        if (cl_q3_plasma_from_gun->integer && q3w_ball_muzzle(s1->skinnum, 200, muzzle)) {
             AngleVectors(s1->angles, dir, NULL, NULL);
             VectorMA(muzzle, Q3W_BALL_LEAD, dir, muzzle);
             VectorSubtract(muzzle, origin, b->offset);
@@ -2353,19 +2354,15 @@ static void q3w_ball_origin(const entity_state_t *s1, const vec3_t origin, vec3_
         VectorMA(out, min(frac, 1.0f), b->offset, out);
 }
 
-// entities.c: an RF_Q3_SPRITE entity (no model) at `origin`
-void CL_Q3W_AddSprite(const entity_state_t *s1, const vec3_t origin_in)
+// a plasma ball at `origin`: its light, and its sprite in the path tracer
+static void q3w_draw_plasma(const vec3_t origin)
 {
     entity_t e;
-    vec3_t   origin;
-
-    q3w_ball_origin(s1, origin_in, origin);
 
     // cg_weapons.c: the plasma's missileDlight, 200 in its blue
     V_AddLight(origin, 200, 0.6f, 0.6f, 1.0f);
 
-    q3w_dbg.balls++;
-    if (s1->frame != Q3_SPRITE_PLASMA || !q3w.plasma_sprite || !CL_PathTraced())
+    if (!q3w.plasma_sprite || !CL_PathTraced())
         return;
     q3w_dbg.balls_drawn++;
 
@@ -2383,6 +2380,124 @@ void CL_Q3W_AddSprite(const entity_state_t *s1, const vec3_t origin_in)
     // (transparency.c); 360 s is a whole number of turns, so the wrap is seamless.
     e.angles[ROLL] = -(float)(cl.time % 360000) * 0.931f;
     V_AddEntity(&e);
+}
+
+// entities.c: an RF_Q3_SPRITE entity (no model) at `origin`
+void CL_Q3W_AddSprite(const entity_state_t *s1, const vec3_t origin_in)
+{
+    vec3_t   origin;
+
+    q3w_ball_origin(s1, origin_in, origin);
+
+    q3w_dbg.balls++;
+    if (s1->frame != Q3_SPRITE_PLASMA) {
+        V_AddLight(origin, 200, 0.6f, 0.6f, 1.0f);
+        return;
+    }
+    q3w_draw_plasma(origin);
+}
+
+/*
+A BALL NO FRAME CARRIED (TE_Q3_PLASMA_UNSEEN). The server starts a ball 100
+units out (MISSILE_PRESTEP_TIME) and its first move takes it up to 200 more
+before any frame goes out, so a wall or a player within about 300 units was hit
+with no ball ever shown, only the ring on the wall (Matt, 11-22: "doesn't
+spawn projectiles if you are too close to a wall"). Quake III hid one inside
+100 to 200 units too, at 20 frames a second. Here it is flown there: from the
+shooter's gun and Q3W_BALL_LEAD out, as a seen ball starts (q3w_ball_origin),
+at the plasma's 2000 units a second, and it goes off (CL_Q3W_Impact) when it
+gets there - at most ~150 ms after the server's hit, as a seen ball too is
+drawn a little behind where the server has it. The hit itself, and its damage,
+stay the server's. cl_q3_plasma_from_gun 0: off at once, as before.
+*/
+#define Q3W_MAX_FLIGHTS     32
+#define Q3W_PLASMA_SPEED    2000.0f     // g_q3weap.c Q3W_Missile
+#define Q3W_FLIGHT_WINDOW   500         // ms since the shooter's flash: its gun
+
+typedef struct {
+    bool    active;
+    bool    started;    // drawn once: start and arrive are set
+    int     shooter;
+    vec3_t  start;      // the server's muzzle, till the first draw finds the gun
+    vec3_t  end, dir;   // where it went off, and the surface there
+    int     time;       // cl.time of its first draw
+    int     arrive;     // cl.time it gets there
+} q3wflight_t;
+
+static q3wflight_t  q3w_flights[Q3W_MAX_FLIGHTS];
+
+void CL_Q3W_PlasmaFlight(int shooter, const vec3_t start, const vec3_t end, const vec3_t dir)
+{
+    q3wflight_t *f = NULL;
+    int         i;
+
+    if (cl_q3_plasma_from_gun->integer) {
+        for (i = 0; i < Q3W_MAX_FLIGHTS; i++) {
+            if (!q3w_flights[i].active) {
+                f = &q3w_flights[i];
+                break;
+            }
+        }
+    }
+    if (!f) {
+        CL_Q3W_Impact(TE_Q3_PLASMA_EXPLOSION, end, dir);
+        return;
+    }
+
+    memset(f, 0, sizeof(*f));
+    f->active = true;
+    f->shooter = shooter;
+    VectorCopy(start, f->start);
+    VectorCopy(end, f->end);
+    VectorCopy(dir, f->dir);
+}
+
+// CL_Q3W_AddEntities, after the players and their guns are drawn
+static void q3w_add_flights(void)
+{
+    q3wflight_t *f;
+    vec3_t      pos, line, muzzle;
+    float       dist;
+    int         i;
+
+    for (i = 0, f = q3w_flights; i < Q3W_MAX_FLIGHTS; i++, f++) {
+        if (!f->active)
+            continue;
+
+        if (!f->started) {
+            f->started = true;
+            f->time = cl.time;
+            dist = 0;
+            if (q3w_ball_muzzle(f->shooter, Q3W_FLIGHT_WINDOW, muzzle)) {
+                VectorCopy(muzzle, f->start);
+                dist = 1;
+            } else if (f->shooter == cl.frame.clientNum + 1 && !cl.thirdPersonView) {
+                // our own, with no view gun drawn: the server's muzzle is 14
+                // units in front of the eye, and a ball there covers the screen
+                dist = -1;
+            }
+            if (dist >= 0) {
+                VectorSubtract(f->end, f->start, line);
+                dist = VectorNormalize(line);
+                if (dist > Q3W_BALL_LEAD * 2) {
+                    VectorMA(f->start, Q3W_BALL_LEAD, line, f->start);
+                    dist -= Q3W_BALL_LEAD;
+                } else {
+                    dist = 0;   // point blank: nothing to fly
+                }
+            }
+            f->arrive = cl.time + (dist > 0 ? (int)(dist * 1000.0f / Q3W_PLASMA_SPEED) : 0);
+        }
+
+        if (cl.time >= f->arrive || cl.time < f->time) {
+            f->active = false;
+            CL_Q3W_Impact(TE_Q3_PLASMA_EXPLOSION, f->end, f->dir);
+            continue;
+        }
+
+        LerpVector(f->start, f->end, (float)(cl.time - f->time) / (float)(f->arrive - f->time), pos);
+        q3w_draw_plasma(pos);
+    }
 }
 
 /*
@@ -3052,6 +3167,7 @@ void CL_Q3W_AddEntities(void)
 {
     q3w_add_brass();
     q3w_add_gibs();
+    q3w_add_flights();      // before the marks and flashes: one landing now shows now
     q3w_add_marks();
     q3w_add_fx();
     q3w_add_bolts();
@@ -3076,6 +3192,7 @@ void CL_Q3W_Clear(void)
     memset(q3w_fx, 0, sizeof(q3w_fx));
     memset(q3w_bolts, 0, sizeof(q3w_bolts));
     memset(q3w_balls, 0, sizeof(q3w_balls));
+    memset(q3w_flights, 0, sizeof(q3w_flights));
     memset(q3w_shooters, 0, sizeof(q3w_shooters));
     memset(&q3v, 0, sizeof(q3v));
     // a new server's commands start again from 0; the sounds stay registered

@@ -1356,6 +1356,13 @@ typedef enum {
 	//                        [byte count][byte palette colour]
 	//   TE_Q1_MUZZLEFLASH (65): an EF_MUZZLEFLASH, [short entity]
 	TE_Q1,
+	// A Quake III plasma ball that hit something before any frame carried it
+	// (g_q3weap.c: within its 100-unit prestep and first 100 ms, up to 300
+	// units off) - TE_Q3_PLASMA_EXPLOSION's [pos][dir], then [short shooter]
+	// [start], the server's muzzle. The client flies a ball there from the
+	// shooter's gun and goes off on arrival (q3weapons.c). Fork-local: append
+	// below, never above.
+	TE_Q3_PLASMA_UNSEEN,
 
     TE_NUM_ENTITIES
 } temp_event_t;

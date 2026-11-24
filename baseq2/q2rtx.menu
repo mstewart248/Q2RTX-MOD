@@ -606,6 +606,11 @@ begin sound
     range --status "(ogg_volume)" -p -f "%.0f%%" "music volume" ogg_volume 0 1 0.05
     toggle --status "(ogg_enable)" "enable music" ogg_enable
     toggle --status "(ogg_shuffle)" "shuffle tracks" ogg_shuffle
+    // ogg.c, QUAKE 1 MUSIC LEVEL: Quake's soundtrack is mastered 5-9 dB under Quake II's
+    ifge fs_quake1 1
+        pairs --status "the Quake campaigns' music is recorded much quieter than Quake II's. Raised measures each track as it starts and plays it at about the loudness of Quake II's music, its peaks held back by a limiter (ogg_q1_loudness)" \
+            "quake music level" ogg_q1_loudness "as recorded" 0 "raised to quake ii's" -12
+    endif
     blank
     values --status "(s_ambient)" "ambient sounds" s_ambient "no" "yes" "only player's own"
     values --status "(cl_chat_sound)" "chat beep" cl_chat_sound "disabled" "default" "alternative"

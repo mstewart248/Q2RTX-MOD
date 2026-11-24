@@ -28,6 +28,9 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include <refresh/models.h>
 #include <refresh/refresh.h>
 
+// models.c: hide a muzzle flash on the frames it is parked off its gun
+extern cvar_t *cl_md5_flash_hide;
+
 static bool IQM_CheckRange(const iqmHeader_t* header, uint32_t offset, uint32_t count, size_t size)
 {
 	// return true if the range specified by offset, count and size
@@ -452,6 +455,7 @@ int MOD_LoadIQM_Base(model_t* model, const void* rawdata, size_t length, const c
 	iqmData->jointSnap = NULL;  // an IQM's joints all blend (model_md5.c md5_snap_joint)
 	iqmData->jointSnapRider = NULL;
 	iqmData->jointSnapOffset = NULL;
+	iqmData->jointSnapParked = NULL;
 
 	// fill header
 	iqmData->num_vertexes = (header->num_meshes > 0) ? header->num_vertexes : 0;
@@ -896,6 +900,29 @@ bool R_ComputeIQMTransforms(const iqm_model_t* model, const entity_t* entity, fl
 			float abs_rider[12], abs_flash[12];
 			Matrix34Multiply(&pose_matrices[r * 12], &model->bindJoints[r * 12], abs_rider);
 			Matrix34Multiply(abs_rider, &model->jointSnapOffset[slot * 12], abs_flash);
+			Matrix34Multiply(abs_flash, &model->invBindJoints[j * 12], &pose_matrices[j * 12]);
+		}
+	}
+
+	/* A PARKED muzzle flash (model_md5.c MD5_SnapRiders) - put away behind or
+	   under the gun on a frame with no flash - shrinks to a point where it is
+	   parked, so the path tracer neither sees its glow nor lights the gun with
+	   it. Scaled by a small factor rather than zero so the skinned normals still
+	   normalize. Only joints with no children ride, so nothing hangs off it. */
+	if (model->jointSnapParked && cl_md5_flash_hide && cl_md5_flash_hide->integer)
+	{
+		const int near_frame = (oldframe == frame || backlerp < 0.5f) ? frame : oldframe;
+		const byte *parked = model->jointSnapParked + (size_t)near_frame * model->num_joints;
+		for (uint32_t j = 0; j < model->num_joints && j < model->num_poses; j++)
+		{
+			if (!parked[j])
+				continue;
+
+			float abs_flash[12];
+			Matrix34Multiply(&pose_matrices[j * 12], &model->bindJoints[j * 12], abs_flash);
+			for (int row = 0; row < 3; row++)
+				for (int col = 0; col < 3; col++)
+					abs_flash[row * 4 + col] *= 1e-3f;
 			Matrix34Multiply(abs_flash, &model->invBindJoints[j * 12], &pose_matrices[j * 12]);
 		}
 	}

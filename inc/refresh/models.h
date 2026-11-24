@@ -102,6 +102,10 @@ typedef struct
 	// on its barrel through the barrel's blended spin (model_md5.c MD5_SnapRiders)
 	short* jointSnapRider;
 	float* jointSnapOffset;     // [num_frames * num_joints * 12]
+	// [num_frames * num_joints], or NULL: 1 = on that frame the snap joint is
+	// PARKED - well behind the joint it rides, off its gun, not a flash at a
+	// muzzle. R_ComputeIQMTransforms shrinks it to a point (cl_md5_flash_hide).
+	byte* jointSnapParked;
 	int* jointParents;
 	float* bindJoints; // [num_joints * 12]
 	float* invBindJoints; // [num_joints * 12]

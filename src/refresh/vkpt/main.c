@@ -4139,6 +4139,83 @@ static inline void transform_point(const float* p, const float* matrix, float* r
 	VectorCopy(transformed, result); // vec4 -> vec3
 }
 
+/* A stained glass window light (DYNLIGHT_WINDOW) on a brush entity - Quake 1
+   windows that are func_doors (e4m5) - moved with the entity. Its record is not
+   three corners (bsp_mesh.c stained_emit_windows, stained_glass.h WindowLight):
+   positions[0] and [1] are the glass's texture axes S and T, which a point
+   does not move like; positions[2] is the window's extent in the tile, packed,
+   which stays as it is; window[] is the tile's u and v offsets and the glass's
+   plane distance; spot_emission_profile's low bit says the room side is
+   -(S x T).
+
+   A point m of the model is drawn at x = L m + t. Its texture coordinate
+   u = S.m + off stays the same at x when S' = L^-T S (then S'.(L m) = S.m),
+   with off' = off + S.p0 - S'.x0 for p0 on the glass and x0 = L p0 + t. The
+   plane goes through x0, facing the room normal the shader rebuilds from
+   S' x T' and the flip bit - which a mirroring L (det < 0) turns over. The
+   shader takes S and T to lie in the glass's plane: true for a turn and an
+   even scale, all an entity has. */
+static void transform_window_light(const light_poly_t* src, const float* m, light_poly_t* dst)
+{
+	// the linear part, L[r][c] = m[c * 4 + r] (column-major, as mult_matrix_vector)
+	float L[3][3];
+	for (int r = 0; r < 3; r++)
+		for (int c = 0; c < 3; c++)
+			L[r][c] = m[c * 4 + r];
+
+	// its cofactors: L^-T = C / det
+	float C[3][3];
+	C[0][0] = L[1][1] * L[2][2] - L[1][2] * L[2][1];
+	C[0][1] = L[1][2] * L[2][0] - L[1][0] * L[2][2];
+	C[0][2] = L[1][0] * L[2][1] - L[1][1] * L[2][0];
+	C[1][0] = L[0][2] * L[2][1] - L[0][1] * L[2][2];
+	C[1][1] = L[0][0] * L[2][2] - L[0][2] * L[2][0];
+	C[1][2] = L[0][1] * L[2][0] - L[0][0] * L[2][1];
+	C[2][0] = L[0][1] * L[1][2] - L[0][2] * L[1][1];
+	C[2][1] = L[0][2] * L[1][0] - L[0][0] * L[1][2];
+	C[2][2] = L[0][0] * L[1][1] - L[0][1] * L[1][0];
+	float det = L[0][0] * C[0][0] + L[0][1] * C[0][1] + L[0][2] * C[0][2];
+	if (fabsf(det) < 1e-12f)
+		det = 1e-12f;
+	const float inv_det = 1.f / det;
+
+	const float* S = src->positions + 0;
+	const float* T = src->positions + 3;
+	float* S2 = dst->positions + 0;
+	float* T2 = dst->positions + 3;
+	for (int r = 0; r < 3; r++)
+	{
+		S2[r] = (C[r][0] * S[0] + C[r][1] * S[1] + C[r][2] * S[2]) * inv_det;
+		T2[r] = (C[r][0] * T[0] + C[r][1] * T[1] + C[r][2] * T[2]) * inv_det;
+	}
+	dst->positions[6] = src->positions[6];
+	dst->positions[7] = src->positions[7];
+	dst->positions[8] = src->positions[8];
+
+	// the room side, in the model and in the world
+	const int flip = src->spot_emission_profile & 1;
+	const int flip2 = flip ^ (det < 0.f ? 1 : 0);
+	vec3_t n, n2;
+	CrossProduct(S, T, n);
+	VectorNormalize(n);
+	if (flip)
+		VectorInverse(n);
+	CrossProduct(S2, T2, n2);
+	VectorNormalize(n2);
+	if (flip2)
+		VectorInverse(n2);
+
+	// a point on the glass, and where it is drawn
+	vec3_t p0, x0;
+	VectorScale(n, src->window[2], p0);
+	transform_point(p0, m, x0);
+
+	dst->window[0] = src->window[0] + DotProduct(S, p0) - DotProduct(S2, x0);
+	dst->window[1] = src->window[1] + DotProduct(T, p0) - DotProduct(T2, x0);
+	dst->window[2] = DotProduct(n2, x0);
+	dst->spot_emission_profile = flip2;
+}
+
 static void instance_model_lights(int num_light_polys, const light_poly_t* light_polys, const float* transform, entity_hash_t hash,
 	const entity_t* entity)
 {
@@ -4158,10 +4235,17 @@ static void instance_model_lights(int num_light_polys, const light_poly_t* light
 		const light_poly_t* src_light = light_polys + nlight;
 		light_poly_t* dst_light = model_lights + num_model_lights;
 
-		// Transform the light's positions and center
-		transform_point(src_light->positions + 0, transform, dst_light->positions + 0);
-		transform_point(src_light->positions + 3, transform, dst_light->positions + 3);
-		transform_point(src_light->positions + 6, transform, dst_light->positions + 6);
+		// Transform the light's positions and center - a stained glass window's
+		// are its texture axes and extent, not corners (transform_window_light)
+		const bool is_window = src_light->type == DYNLIGHT_WINDOW;
+		if (is_window)
+			transform_window_light(src_light, transform, dst_light);
+		else
+		{
+			transform_point(src_light->positions + 0, transform, dst_light->positions + 0);
+			transform_point(src_light->positions + 3, transform, dst_light->positions + 3);
+			transform_point(src_light->positions + 6, transform, dst_light->positions + 6);
+		}
 		transform_point(src_light->off_center, transform, dst_light->off_center);
 
 		// Find the cluster based on the center. Maybe it's OK to use the model's cluster, need to test.
@@ -4186,7 +4270,7 @@ static void instance_model_lights(int num_light_polys, const light_poly_t* light
 				dst_light->material = (pbr_material_t*)last_material;
 		}
 		dst_light->style = src_light->style;
-		dst_light->type = DYNLIGHT_POLYGON;
+		dst_light->type = is_window ? DYNLIGHT_WINDOW : DYNLIGHT_POLYGON;
 		dst_light->volumetric_scale = src_light->volumetric_scale;
 		// a Quake III program's glow on a door or a lift: copy_light works its
 		// colour out from these, as for the world's
@@ -4765,7 +4849,14 @@ prepare_entities(EntityUploadInfo* upload_info)
 	upload_info->masked_prim_count = num_instanced_prim - upload_info->masked_prim_offset;
 	upload_info->viewer_model_prim_offset = num_instanced_prim;
 	
-	if (first_person_model)
+	/* 'mat author' painting the gun in hand with the camera flown off: freecam.c
+	   kept first person for the gun, and your own body - this pass - is left out,
+	   so it neither shadows nor reflects onto the gun being painted (Matt,
+	   2026-11-23: "lets not render player model if the view weapon is being
+	   edited"). Back at "home" it returns. */
+	const bool body_left_out = vkpt_freecam_moved() && MAT_AuthorEditingGun();
+
+	if (first_person_model && !body_left_out)
 	{
 		for (int i = 0; i < viewer_model_num; i++)
 		{

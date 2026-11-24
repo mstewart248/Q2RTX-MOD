@@ -1077,6 +1077,14 @@ static void CL_ParseTEntPacket(void)
         te.entity1 = MSG_ReadShort();
         break;
 
+    // where it went off, its surface, who fired it, the server's muzzle
+    case TE_Q3_PLASMA_UNSEEN:
+        MSG_ReadPos(te.pos1);
+        MSG_ReadDir(te.dir);
+        te.entity1 = MSG_ReadShort();
+        MSG_ReadPos(te.pos2);
+        break;
+
     // Quake 1's, from its own game code (baseq2 g_q1vm_cmds.c): the kind,
     // then Quake 1's payload for it
     case TE_Q1:

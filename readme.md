@@ -2064,6 +2064,7 @@ controls when it starts.
 |---|---|
 | hold **right mouse** | look around; **WASD** / **Q E** fly (**Shift** fast, **Ctrl** slow); **Ctrl + right mouse** zooms |
 | **H**, or the panel's **home** | the camera back where it started: the player's eye, unzoomed |
+| (painting the gun in hand) | flying the camera away keeps the gun where it is, so you can paint it from any side; your own body is left out so it can't shadow or reflect onto it. Any other material goes third person, as photo mode does. `mat_author_keep_gun 0` turns this off |
 | **C**, or the panel's **flashlight** | a light at the camera, pointing where it looks, on or off (`mat author light [on\|off]`). The slider beside the button sets its brightness, where 100% is the game's flashlight (`mat_author_light_scale`); `mat_author_light_cone` sets its cone, 90 degrees across by default. It doesn't light the fog |
 | **left mouse** | paint (or press a panel control) |
 | **Alt + left mouse** | switch to the material under the brush |
@@ -2084,6 +2085,7 @@ controls when it starts.
 | **M** (**Shift + M** back) | selection shape: rectangle, ellipse, lasso, then back to painting. Left-drag selects; **Shift** + drag adds, **Ctrl** + drag takes away, a click drops it. Drag on the selection to move it, or on a side of the last rectangle or ellipse to resize it |
 | **Ctrl + A** / **Ctrl + D** / **Ctrl + I** | select all / drop the selection (**Ctrl + Shift + D** brings it back) / invert it |
 | **Tab** | the map view (a flat view of the map, paintable) |
+| **Shift + Tab**, or the panel's **half size** | the map view at half its size, out of the way of the gun (`mat author half [on\|off]`, `mat_author_map_half`) |
 | **O** | the base texture under the map in the map view, or the map alone |
 | **Ctrl + Z** | undo, on the map being painted |
 | **Ctrl + Y**, **Ctrl + Shift + Z** | redo, on the map being painted |

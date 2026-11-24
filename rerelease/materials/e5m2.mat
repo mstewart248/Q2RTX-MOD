@@ -1,0 +1,231 @@
+
+# instance of textures/q1/twall2_1
+# e5m2, created at (-939 446 67)
+# Inherits everything from textures/q1/twall2_1; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/twall2_1#d822bfab:
+#	texture_base materialDev/textures/q1/twall2_1.png
+#	texture_emissive materialDev/textures/q1/twall2_1_emit.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 0
+#	base_factor 1
+#	emissive_factor 2
+	light_factor 16
+#	kind REGULAR
+	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+	default_radiance 3
+
+# instance of textures/q1/twall2_1
+# e5m2, created at (-1014 332 82)
+# Inherits everything from textures/q1/twall2_1; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/twall2_1#b720ec8b:
+#	texture_base materialDev/textures/q1/twall2_1.png
+#	texture_emissive materialDev/textures/q1/twall2_1_emit.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 0
+#	base_factor 1
+#	emissive_factor 2
+#	light_factor 1
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+	default_radiance 3
+
+# instance of textures/q1/twall2_1
+# e5m2, created at (-965 632 61)
+# Inherits everything from textures/q1/twall2_1; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/twall2_1#db94e808:
+#	texture_base materialDev/textures/q1/twall2_1.png
+#	texture_emissive materialDev/textures/q1/twall2_1_emit.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 0
+#	base_factor 1
+#	emissive_factor 2
+#	light_factor 1
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+	default_radiance 2
+
+# instance of textures/q1/twall2_1
+# e5m2, created at (-964 631 62)
+# Inherits everything from textures/q1/twall2_1; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/twall2_1#2c526b00:
+#	texture_base materialDev/textures/q1/twall2_1.png
+#	texture_emissive materialDev/textures/q1/twall2_1_emit.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 0
+#	base_factor 1
+#	emissive_factor 2
+#	light_factor 1
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+	default_radiance 3
+
+# instance of textures/q1/twall2_1
+# e5m2, created at (-1477 476 104)
+# Inherits everything from textures/q1/twall2_1; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/twall2_1#12a506cb:
+#	texture_base materialDev/textures/q1/twall2_1.png
+#	texture_emissive materialDev/textures/q1/twall2_1_emit.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 0
+#	base_factor 1
+#	emissive_factor 2
+#	light_factor 1
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+	default_radiance 3
+
+# instance of textures/q1/twall2_1
+# e5m2, created at (-1461 481 104)
+# Inherits everything from textures/q1/twall2_1; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/twall2_1#3ecee661:
+#	texture_base materialDev/textures/q1/twall2_1.png
+#	texture_emissive materialDev/textures/q1/twall2_1_emit.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 0
+#	base_factor 1
+#	emissive_factor 2
+#	light_factor 1
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+	default_radiance 3
+
+# instance of textures/q1/twall2_1
+# e5m2, created at (-1472 472 105)
+# Inherits everything from textures/q1/twall2_1; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/twall2_1#ded68759:
+#	texture_base materialDev/textures/q1/twall2_1.png
+#	texture_emissive materialDev/textures/q1/twall2_1_emit.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 0
+#	base_factor 1
+#	emissive_factor 2
+#	light_factor 1
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+	default_radiance 3
+
+# instance of textures/q1/twall2_1
+# e5m2, created at (-1466 515 100)
+# Inherits everything from textures/q1/twall2_1; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/twall2_1#e4ed546f:
+#	texture_base materialDev/textures/q1/twall2_1.png
+#	texture_emissive materialDev/textures/q1/twall2_1_emit.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 0
+#	base_factor 1
+#	emissive_factor 2
+#	light_factor 1
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+	default_radiance 3
+
+# instance of textures/q1/twall2_1
+# e5m2, created at (-1421 480 101)
+# Inherits everything from textures/q1/twall2_1; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/twall2_1#5effb141:
+#	texture_base materialDev/textures/q1/twall2_1.png
+#	texture_emissive materialDev/textures/q1/twall2_1_emit.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 0
+#	base_factor 1
+#	emissive_factor 2
+#	light_factor 1
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+	default_radiance 3
+
+# instance of textures/q1/twall2_1
+# e5m2, created at (-1521 495 98)
+# Inherits everything from textures/q1/twall2_1; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/twall2_1#686ea7e5:
+#	texture_base materialDev/textures/q1/twall2_1.png
+#	texture_emissive materialDev/textures/q1/twall2_1_emit.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 0
+#	base_factor 1
+#	emissive_factor 2
+#	light_factor 1
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+	default_radiance 3
+
+# instance of textures/q1/twall2_1
+# e5m2, created at (-1413 507 95)
+# Inherits everything from textures/q1/twall2_1; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/twall2_1#58dac83f:
+#	texture_base materialDev/textures/q1/twall2_1.png
+#	texture_emissive materialDev/textures/q1/twall2_1_emit.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 0
+#	base_factor 1
+#	emissive_factor 2
+#	light_factor 1
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+	default_radiance 3

@@ -2044,9 +2044,11 @@ A stained glass face makes no light from its emissive texture. It makes two:
   * a WINDOW LIGHT (DYNLIGHT_WINDOW), the share that comes straight through:
     one for each window, which is the faces on the same tile of the same
     plane with the same material - a window the BSP compiler cut into
-    several faces is still one light, with one lamp behind it. World faces
-    only: a brush entity's lights are moved with it as triangles
-    (instance_model_lights), which a window light is not.
+    several faces is still one light, with one lamp behind it. A brush
+    entity's windows too (Matt 11-23: e4m5's twelve window01_2 windows are
+    func_doors, and cast only the fill): built in the model's own space,
+    with no cluster, and moved with the entity each frame by
+    instance_model_lights (main.c transform_window_light).
 =================
 */
 typedef struct {
@@ -2181,7 +2183,7 @@ collect_stained_face(bsp_t *bsp, mface_t *surf, mtexinfo_t *texinfo, pbr_materia
 	if (both_faces)
 		add_back_faces(bsp, model_idx, first_light, num_lights, allocated_lights, lights);
 
-	if (model_idx >= 0 || !surf->plane || surf->numsurfedges < 3 || surf->numsurfedges > MAX_FACE_VERTS)
+	if (!surf->plane || surf->numsurfedges < 3 || surf->numsurfedges > MAX_FACE_VERTS)
 		return;
 
 	// the face's front, where the room is
@@ -2292,9 +2294,10 @@ collect_stained_face(bsp_t *bsp, mface_t *surf, mtexinfo_t *texinfo, pbr_materia
 	(*windows)[(*num_windows)++] = w;
 }
 
-// the windows collect_stained_face gathered, as DYNLIGHT_WINDOW lights
+// the windows collect_stained_face gathered, as DYNLIGHT_WINDOW lights - for
+// a brush model (model_idx >= 0) in its own space, placed when it is instanced
 static void
-stained_emit_windows(bsp_t *bsp, const stained_window_t *windows, int num_windows,
+stained_emit_windows(bsp_t *bsp, int model_idx, const stained_window_t *windows, int num_windows,
                      int *num_lights, int *allocated_lights, light_poly_t **lights)
 {
 	const pbr_material_t *bounds_of = NULL;
@@ -2353,11 +2356,19 @@ stained_emit_windows(bsp_t *bsp, const stained_window_t *windows, int num_window
 		light.volumetric_scale = LIGHT_VOLUMETRIC_SCALE_UNSET;
 		set_light_q3_glow(&light, false, NULL, NULL, NULL);
 
-		// the room just in front of the biggest of its faces
+		// the room just in front of the biggest of its faces; a brush model's
+		// is found where the entity is (instance_model_lights), which also
+		// drops a window whose front is in the wall - a door's edges, or the
+		// door once it has slid away
 		VectorMA(w->centre, 2.f, w->n, light.off_center);
-		light.cluster = BSP_PointLeaf(bsp->nodes, light.off_center)->cluster;
-		if (light.cluster < 0)
-			continue;
+		if (model_idx >= 0)
+			light.cluster = -1;
+		else
+		{
+			light.cluster = BSP_PointLeaf(bsp->nodes, light.off_center)->cluster;
+			if (light.cluster < 0)
+				continue;
+		}
 
 		*append_light_poly(num_lights, allocated_lights, lights) = light;
 	}
@@ -2527,7 +2538,7 @@ collect_light_polys(bsp_mesh_t *wm, bsp_t *bsp, int model_idx, int* num_lights, 
 	if (num_windows > 0)
 	{
 		const int before = *num_lights;
-		stained_emit_windows(bsp, windows, num_windows, num_lights, allocated_lights, lights);
+		stained_emit_windows(bsp, model_idx, windows, num_windows, num_lights, allocated_lights, lights);
 		Com_DPrintf("Stained glass: %d window lights\n", *num_lights - before);
 	}
 	Z_Free(windows);

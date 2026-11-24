@@ -3447,6 +3447,11 @@ void CL_ParseTEnt(void)
         CL_Q3W_Impact(te.type, te.pos1, te.dir);
         break;
 
+    // a plasma ball that went off before we saw it: shown flying there first
+    case TE_Q3_PLASMA_UNSEEN:
+        CL_Q3W_PlasmaFlight(te.entity1, te.pos2, te.pos1, te.dir);
+        break;
+
     case TE_Q3_ROCKET_EXPLOSION:
     case TE_Q3_GRENADE_EXPLOSION: {
         const bool grenade = te.type == TE_Q3_GRENADE_EXPLOSION;

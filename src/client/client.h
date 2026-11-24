@@ -900,6 +900,7 @@ bool CL_Q3W_ViewMuzzle(vec3_t out);
 void CL_Q3W_AddGunParts(const entity_t *gun, int entnum);
 void CL_Q3W_EjectBrass(int entnum, int mz);
 void CL_Q3W_Impact(int type, const vec3_t origin, const vec3_t dir);
+void CL_Q3W_PlasmaFlight(int shooter, const vec3_t start, const vec3_t end, const vec3_t dir);
 void CL_Q3W_Explosion(int type, const vec3_t origin);
 void CL_Q3W_RailImpact(const vec3_t start, const vec3_t end, const vec3_t color);
 void CL_Q3W_RailStart(vec3_t start);
