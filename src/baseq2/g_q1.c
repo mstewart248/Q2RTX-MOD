@@ -557,6 +557,14 @@ static void SP_q1_func_button(edict_t *ent)
     if (!ent->wait)
         ent->wait = 1;
     ent->spawnflags = 0;
+    /* Quake's button frame: 0 up, 1 held in, and the renderer draws the other
+       frame set ("+abasebtn") for any frame but 0, as Quake did. Quake II's
+       EF_ANIM01/EF_ANIM23 would make it 0/1 then 2/3, swapping sets twice a
+       second. The rerelease frame ranges give 0 and 1 (button_wait/done). */
+    ent->bmodel_anim.enabled = true;
+    ent->bmodel_anim.start = ent->bmodel_anim.end = 0;
+    ent->bmodel_anim.alt_start = ent->bmodel_anim.alt_end = 1;
+    ent->bmodel_anim.nowrap = ent->bmodel_anim.alt_nowrap = 1;
     SP_func_button(ent);
     q1_moveinfo_sounds(ent, q1_button_sounds[snd], NULL, NULL);
 }

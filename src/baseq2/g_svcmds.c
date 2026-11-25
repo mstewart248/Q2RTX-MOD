@@ -300,6 +300,8 @@ void    ServerCommand(void)
         SVCmd_WriteIP_f();
     else if (Bot_ServerCommand(cmd))
         ;   // addbot, removebot, listbots
+    else if (Q1VM_ServerCommand(cmd))
+        ;   // q1head, q1gib
     else
         gi.cprintf(NULL, PRINT_HIGH, "Unknown server command \"%s\"\n", cmd);
 }

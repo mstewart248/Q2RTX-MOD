@@ -4288,6 +4288,35 @@ static void instance_model_lights(int num_light_polys, const light_poly_t* light
 		num_model_lights++;
 	}
 }
+
+/* A Quake 1 brush entity drawing its other frame set (process_bsp_entity): the
+   light polys instanced from `first` on take that set's frame for this step -
+   its first frame stepped by the world's count, as animate_material does for
+   the faces - and that frame's colour, as animate_light_polys works it out.
+   A set with no glow leaves a black light: a held button stops casting red. */
+static void q1_alternate_model_lights(int first)
+{
+	for (int i = first; i < num_model_lights; i++)
+	{
+		light_poly_t *light = model_lights + i;
+		const pbr_material_t *material = light->material;
+		if (!material || material->alt_frame <= 0 || material->alt_frame > MAX_PBR_MATERIALS)
+			continue;
+		if (light->type == DYNLIGHT_WINDOW || material->stained_glass)
+			continue;
+
+		const pbr_material_t *alt = r_materials + (material->alt_frame - 1);
+		for (int k = world_anim_steps % max(alt->num_frames, 1); k > 0; k--)
+			alt = r_materials + alt->next_frame;
+
+		light->material = (pbr_material_t *)alt;
+		if (alt->image_emissive)
+			VectorScale(alt->image_emissive->light_color, light->emissive_factor, light->color);
+		else
+			VectorClear(light->color);
+	}
+}
+
 /* An alias model's light triangles for this entity. A vertex-animated one keeps
    a set per frame (models.c extract_model_lights): the frame the entity's pose
    is nearer to - the torch's flame lights the room from where it is drawn. */
@@ -4383,10 +4412,14 @@ static void process_bsp_entity(const entity_t* entity, int* instance_count)
 	   the world's (animate_materials.comp). The model's light polys step with
 	   the world (bsp_mesh_animate_light_polys), so with the entity frame e1m1's
 	   +0basebtn buttons sat lit on their first frame while the light they cast
-	   blinked (Matt, 2026-11-21). The alternates ("+a", a pressed button) are
-	   not linked to the frames they replace (bsp_q1.c), so the entity frame has
-	   nothing more to pick on a Quake 1 map. */
-	mi->frame = vkpt_refdef.bsp_mesh_world.q1 ? world_anim_steps : entity->frame;
+	   blinked (Matt, 2026-11-21). The entity frame only says WHICH set: not 0
+	   draws the other one ("+abasebtn", yellow, while a button is held in -
+	   Quake's alternate_anims), which kept blinking red until 11-25 (Matt). */
+	const bool q1_alternate = vkpt_refdef.bsp_mesh_world.q1 && entity->frame != 0;
+	if (vkpt_refdef.bsp_mesh_world.q1)
+		mi->frame = (world_anim_steps & (ANIM_FRAME_ALTERNATE - 1)) | (q1_alternate ? ANIM_FRAME_ALTERNATE : 0);
+	else
+		mi->frame = entity->frame;
 	mi->alpha = (entity->flags & RF_TRANSLUCENT) ? entity->alpha : 1.f;
 	mi->render_buffer_idx = VERTEX_BUFFER_WORLD;
 	mi->render_prim_offset = model->geometry.prim_offsets[0];
@@ -4395,7 +4428,10 @@ static void process_bsp_entity(const entity_t* entity, int* instance_count)
 	mi->texture_flags = 0;
 	mi->instance_pad0 = mi->instance_pad1 = mi->instance_pad2 = 0;
 
+	const int first_model_light = num_model_lights;
 	instance_model_lights(model->num_light_polys, model->light_polys, transform, hash, NULL);
+	if (q1_alternate)
+		q1_alternate_model_lights(first_model_light);
 
 	if (vkpt_model_geometry_has_blas(&model->geometry))
 	{

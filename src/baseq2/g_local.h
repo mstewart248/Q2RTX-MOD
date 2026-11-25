@@ -2032,6 +2032,7 @@ void Q1VM_ClientBegin(edict_t *ent);
 void Q1VM_ClientDisconnect(edict_t *ent);
 void Q1VM_ClientThink(edict_t *ent, usercmd_t *cmd);
 bool Q1VM_ClientCommand(edict_t *ent);
+bool Q1VM_ServerCommand(const char *cmd);
 void Q1VM_WriteLevel(const char *filename);
 void Q1VM_ReadLevel(const char *filename);
 void QC_FreeProgs(void);

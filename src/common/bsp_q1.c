@@ -529,13 +529,14 @@ static int read_textures(q1load_t *L)
     return Q_ERR_SUCCESS;
 }
 
-// Quake's animation: "+<frame><name>", frames '0'-'9', alternates 'a'-'j'.
+// Quake's animation: "+<frame><name>", frames '0'-'9', alternates 'a'-'j'
+// (Mod_LoadTextures folds 'A'-'J' to the same).
 // Returns the frame (0-9) and sets *alt; -1 for a texture that does not animate.
 static int anim_frame(const char *name, bool *alt)
 {
     if (name[0] != '+' || !name[1] || !name[2])
         return -1;
-    char c = name[1];
+    char c = (char)Q_tolower(name[1]);
     if (c >= '0' && c <= '9') {
         *alt = false;
         return c - '0';
@@ -550,12 +551,12 @@ static int anim_frame(const char *name, bool *alt)
 // the miptex index of frame `frame` of the animation `name` belongs to, or -1
 static int find_frame(const q1load_t *L, const char *name, bool alt, int frame)
 {
-    char want[32];
-    Q_strlcpy(want, name, sizeof(want));
-    want[1] = (alt ? 'a' : '0') + frame;
-    for (int i = 0; i < L->nummiptex; i++)
-        if (!strcmp(L->miptex[i].name, want))
+    const char want = (char)((alt ? 'a' : '0') + frame);
+    for (int i = 0; i < L->nummiptex; i++) {
+        const char *n = L->miptex[i].name;
+        if (n[0] == '+' && Q_tolower(n[1]) == want && !strcmp(n + 2, name + 2))
             return i;
+    }
     return -1;
 }
 
@@ -570,6 +571,38 @@ static int count_frames(const q1load_t *L, int m, bool *alt)
     while (n < 10 && find_frame(L, L->miptex[m].name, *alt, n) >= 0)
         n++;
     return max(n, 1);
+}
+
+/*
+The two frame sets of the animation miptex m belongs to: its own ("+0".."+9",
+or "+a".."+j" for a face that has an alternate frame) and the other one. Quake
+draws the other set on a brush entity whose frame is not 0 (R_TextureAnimation's
+alternate_anims): a button held in ("+0basebtn" blinking red -> "+abasebtn"
+yellow), a func_wall that was used. Each set's frame 0, -1 if it has none.
+*/
+typedef struct {
+    int first, n;               // the face's own set
+    int other_first, other_n;   // the other set, n 0 when there is none
+} q1anim_t;
+
+static bool anim_sets(const q1load_t *L, int m, q1anim_t *a)
+{
+    bool alt, other_alt;
+    if (m < 0 || m >= L->nummiptex || anim_frame(L->miptex[m].name, &alt) < 0)
+        return false;
+    const char *name = L->miptex[m].name;
+    a->first = find_frame(L, name, alt, 0);
+    a->n = count_frames(L, m, &alt);
+    a->other_first = find_frame(L, name, !alt, 0);
+    a->other_n = (a->other_first >= 0) ? count_frames(L, a->other_first, &other_alt) : 0;
+    return a->first >= 0;
+}
+
+// whether a face of miptex m needs rings: an animation, or a frame with an
+// alternate to switch to
+static bool anim_rings(const q1load_t *L, int m, q1anim_t *a)
+{
+    return anim_sets(L, m, a) && (a->n > 1 || a->other_first >= 0);
 }
 
 /*
@@ -972,20 +1005,22 @@ int BSP_LoadQ1(bsp_t *bsp, const byte *buf, size_t filelen)
                 numsolidrefs++;
     const int numleafs = L.numleafs + numsolidrefs;
 
-    // animation rings: one texinfo per frame of every animation a face uses
-    // (an animation's frames and its alternates each count as one)
+    // animation rings: one texinfo per frame of every animation a face uses,
+    // and of its other set when it has one (anim_sets) - the alternates are
+    // in the texture lump but no face's texinfo names them
     int numringtexinfo = 0;
     bool *ring_used = GROW(L.nummiptex, bool);
     for (int i = 0; i < L.numtexinfo; i++) {
-        int m = L.texinfo[i].miptex;
-        bool alt;
-        int n = count_frames(&L, m, &alt);
-        if (n < 2)
+        q1anim_t a;
+        if (!anim_rings(&L, L.texinfo[i].miptex, &a))
             continue;
-        int first = find_frame(&L, L.miptex[m].name, alt, 0);
-        if (first >= 0 && !ring_used[first]) {
-            ring_used[first] = true;
-            numringtexinfo += n;
+        if (!ring_used[a.first]) {
+            ring_used[a.first] = true;
+            numringtexinfo += a.n;
+        }
+        if (a.other_first >= 0 && !ring_used[a.other_first]) {
+            ring_used[a.other_first] = true;
+            numringtexinfo += a.other_n;
         }
     }
     const int numtexinfo = max(L.numtexinfo, 1) + numringtexinfo;
@@ -1101,6 +1136,7 @@ int BSP_LoadQ1(bsp_t *bsp, const byte *buf, size_t filelen)
         }
         out->numframes = 1;
         out->next = NULL;
+        out->alt = NULL;
 #endif
     }
     if (!L.numtexinfo) {
@@ -1112,7 +1148,9 @@ int BSP_LoadQ1(bsp_t *bsp, const byte *buf, size_t filelen)
 
 #if USE_REF
     // the animation rings: frame k's texinfo leads to frame k+1's; a face's own
-    // texinfo leads into its texture's ring one frame on
+    // texinfo leads into its texture's ring one frame on. Every frame of a set
+    // with an other set (anim_sets) points at that set's frame 0, as Quake's
+    // alternate_anims do; a one-frame set gets a ring of one for that.
     {
         int *ring_start = GROW(L.nummiptex, int);  // miptex of frame 0 -> first ring texinfo
         int next_ring = max(L.numtexinfo, 1);
@@ -1122,31 +1160,46 @@ int BSP_LoadQ1(bsp_t *bsp, const byte *buf, size_t filelen)
 
         for (int i = 0; i < L.numtexinfo; i++) {
             int m = L.texinfo[i].miptex;
-            bool alt;
-            int n = count_frames(&L, m, &alt);
-            if (n < 2)
-                continue;
-            int first = find_frame(&L, L.miptex[m].name, alt, 0);
-            if (first < 0)
+            q1anim_t a;
+            if (!anim_rings(&L, m, &a))
                 continue;
 
-            if (ring_start[first] < 0) {
-                ring_start[first] = next_ring;
+            const int firsts[2] = { a.first, a.other_first };
+            const int counts[2] = { a.n, a.other_n };
+            for (int s = 0; s < 2; s++) {
+                if (firsts[s] < 0 || ring_start[firsts[s]] >= 0)
+                    continue;
+                const char *fname = L.miptex[firsts[s]].name;
+                bool salt = false;
+                anim_frame(fname, &salt);
+                const int n = counts[s];
+                ring_start[firsts[s]] = next_ring;
                 for (int k = 0; k < n; k++) {
                     mtexinfo_t *r = &bsp->texinfo[next_ring + k];
-                    SET_TEXTURE(r, find_frame(&L, L.miptex[m].name, alt, k));
+                    SET_TEXTURE(r, find_frame(&L, fname, salt, k));
                     r->numframes = n;
-                    r->next = &bsp->texinfo[next_ring + (k + 1) % n];
+                    r->next = (n > 1) ? &bsp->texinfo[next_ring + (k + 1) % n] : NULL;
+                    r->alt = NULL;
                 }
                 next_ring += n;
             }
 
+            mtexinfo_t *own = &bsp->texinfo[ring_start[a.first]];
+            mtexinfo_t *other = (a.other_first >= 0) ? &bsp->texinfo[ring_start[a.other_first]] : NULL;
+            if (other) {
+                for (int k = 0; k < a.n; k++)
+                    own[k].alt = other;
+                for (int k = 0; k < a.other_n; k++)
+                    other[k].alt = own;
+            }
+
             bool dummy;
             int frame = anim_frame(L.miptex[m].name, &dummy);
-            if (frame < 0 || frame >= n)
+            if (frame < 0 || frame >= a.n)
                 frame = 0;
-            bsp->texinfo[i].numframes = n;
-            bsp->texinfo[i].next = &bsp->texinfo[ring_start[first] + (frame + 1) % n];
+            bsp->texinfo[i].numframes = a.n;
+            bsp->texinfo[i].next = (a.n > 1) ? &own[(frame + 1) % a.n] : NULL;
+            bsp->texinfo[i].alt = other;
         }
         Z_Free(ring_start);
     }

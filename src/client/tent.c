@@ -239,6 +239,10 @@ static cvar_t   *cl_flow_gib_effects;
 static cvar_t   *cl_flow_gib_fire_chance;
 static cvar_t   *cl_flow_gib_smoke;
 
+// A burning gib that lands in water or slime goes out at once and smokes off
+// the surface for cl_flow_gib_smoke seconds (CL_FlowBurnEntity); 0, it burns on.
+static cvar_t   *cl_flow_gib_douse;
+
 // How far the flare's burn is heard, against ATTN_NORM's 2080 units. It keeps
 // Quake II's straight line to silence whatever s_falloff says: it goes on for
 // 15 seconds, and heard all over the level that would wear thin.
@@ -1916,6 +1920,39 @@ void CL_FlowBurnNewGib(const entity_state_t *state, const vec3_t origin, bool tu
     gib->out = cl.time + (int)(1000 * max(cl_flow_gib_burn->value, 0.0f));
 }
 
+// The top of the water or slime over `origin`, which is in it, into `surface`:
+// up 16 units at a time, then halved down to half a unit. False with 512
+// units of it over `origin`, or a roof on it (an underwater tunnel).
+static bool CL_FlowWaterSurface(const vec3_t origin, vec3_t surface)
+{
+    const int   wet = CONTENTS_WATER | CONTENTS_SLIME;
+    float       in = 0, out;
+    vec3_t      p;
+    int         i;
+
+    VectorCopy(origin, p);
+    for (i = 1; i <= 32; i++) {
+        p[2] = origin[2] + 16 * i;
+        if (!(CL_PointContents(p) & wet))
+            break;
+        in = 16 * i;
+    }
+    if (i > 32 || (CL_PointContents(p) & MASK_SOLID))
+        return false;
+    out = 16 * i;
+    for (i = 0; i < 5; i++) {
+        const float mid = 0.5f * (in + out);
+        p[2] = origin[2] + mid;
+        if (CL_PointContents(p) & wet)
+            in = mid;
+        else
+            out = mid;
+    }
+    VectorCopy(origin, surface);
+    surface[2] += out;
+    return true;
+}
+
 /*
 =================
 CL_FlowBurnEntity
@@ -1923,13 +1960,26 @@ CL_FlowBurnEntity
 Entity `cent`, drawn at `origin` this frame (CL_AddPacketEntities): its fire,
 or its smoke, if it is burning. Over the top half of its box, or one 4 units
 each way for what has none - a gib, which is not solid.
+
+A gib in water or slime, with cl_flow_gib_douse - or a monster's head, which
+burns on as its monster did - goes out at once, into smoke for
+cl_flow_gib_smoke seconds, as a rail's gib smokes (Matt, 11-25: "when gibs
+are on fire if they land in water or slime can that immediately put out the
+fire and change it to just smoke"). Not in lava. Its smoke - a rail's gib's
+too - comes off the surface over it, in a box 4 units each way just above it,
+not up through the water; none when that is more than 512 units up or under a
+roof. Not what the beam is on, which it sets alight again each frame. The
+flame it had already put out in Flow burns off on its own, a third of a
+second. Worked out, not seen.
 =================
 */
 void CL_FlowBurnEntity(const centity_t *cent, const vec3_t origin)
 {
-    const cl_flow_burn_t    *b;
-    float                   heat;
-    int                     j;
+    cl_flow_burn_t  *b;
+    vec3_t          at;
+    float           heat;
+    int             j;
+    bool            wet;
 
     if ((!cl_flow_heatbeam_fire->integer && !cl_flow_gib_effects->integer) || !R_FlowEmit)
         return;
@@ -1937,6 +1987,24 @@ void CL_FlowBurnEntity(const centity_t *cent, const vec3_t origin)
     b = CL_FlowBurnFind(cent->current.number, false);
     if (!b || (b->model && b->model != cent->current.modelindex))
         return;
+
+    VectorCopy(origin, at);
+    wet = cl_flow_gib_douse->integer && (b->model || (cent->current.effects & EF_GIB))
+        && !(b->hit && cl.time - b->hit <= FLOW_BURN_SLACK)
+        && (CL_PointContents(origin) & (CONTENTS_WATER | CONTENTS_SLIME));
+    if (wet) {
+        if (!b->smoke) {
+            b->hit = 0;
+            b->model = cent->current.modelindex;
+            b->smoke = true;
+            b->start = cl.time;
+            b->out = cl.time + (int)(1000 * max(cl_flow_gib_smoke->value, 0.0f));
+        }
+        if (!CL_FlowWaterSurface(origin, at))
+            return;
+        at[2] += 4;
+    }
+
     heat = CL_FlowBurnHeat(b);
     if (heat <= 0)
         return;
@@ -1948,14 +2016,14 @@ void CL_FlowBurnEntity(const centity_t *cent, const vec3_t origin)
         .key = cent->current.number,
         .smoke_only = b->smoke,
     };
-    if (cent->current.solid && cent->current.solid != PACKED_BSP) {
+    if (!wet && cent->current.solid && cent->current.solid != PACKED_BSP) {
         VectorAdd(origin, cent->mins, emit.origin);
         VectorAdd(origin, cent->maxs, emit.end);
         emit.origin[2] += 0.5f * (cent->maxs[2] - cent->mins[2]);
     } else {
         for (j = 0; j < 3; j++) {
-            emit.origin[j] = origin[j] - 4;
-            emit.end[j] = origin[j] + 4;
+            emit.origin[j] = at[j] - 4;
+            emit.end[j] = at[j] + 4;
         }
     }
     R_FlowEmit(&emit);
@@ -3989,6 +4057,8 @@ void CL_InitTEnts(void)
     // before it is now". Full for 3 s (flow_burn_spheres), fading over the
     // last 1.25.
     cl_flow_gib_smoke = Cvar_Get("cl_flow_gib_smoke", "4.25", 0);
+    // Asked for (Matt, 11-25), so on.
+    cl_flow_gib_douse = Cvar_Get("cl_flow_gib_douse", "1", 0);
     // Matt, 11-12, of the wall's fire at 8 and pt_flow_burn_flame's 0.65: "the
     // bright core of the fire larger with the over fire a little larger" -
     // its flames 5 -> 6.6 units, their hearts 3.25 -> 5.6.

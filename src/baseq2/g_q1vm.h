@@ -545,6 +545,17 @@ void        Q1_SetModelBounds(int num, int modelindex);
 const char *Q1_ModelName(int modelindex);
 void        Q1_AnimPick(int modelindex, int num, float time, int *frame, int *skin);
 
+// a ThrowHead head's mesh (progs/h_*.mdl), for g_q1vm_phys.c's rolling heads:
+// frame 0's vertices about the middle of their box, in the model's own axes
+#define Q1_HEAD_MAX_VERTS   128
+typedef struct {
+    int     numverts;
+    vec3_t  centre;         // the middle of frame 0's box, from the model's origin
+    float   reach;          // the farthest vertex from the centre
+    vec3_t  verts[Q1_HEAD_MAX_VERTS];   // relative to the centre
+} q1_head_mesh_t;
+const q1_head_mesh_t *Q1_HeadMesh(int modelindex);     // NULL: not a head's model
+
 // g_q1vm_phys.c: Quake's physics and world
 typedef struct {
     bool        allsolid;
@@ -573,6 +584,9 @@ void        Q1_ChangeYaw(int num);
 float       Q1_DropToFloor(int num);
 bool        Q1_RunThink(int num);
 void        Q1_CheckWater(int num);
+void        Q1_PhysicsInit(void);           // its cvars (Q1VM_GameInit)
+int         Q1_OldestKeptGib(void);         // a g_no_janitor gib to recycle, 0 for none
+int         Q1_ThrowTestHead(const vec3_t origin, const vec3_t velocity, const char *model);
 
 // g_q1vm_game.c: the game around it
 bool        Q1VM_Active(void);
@@ -583,6 +597,7 @@ void        Q1VM_ClientBegin(edict_t *ent);
 void        Q1VM_ClientDisconnect(edict_t *ent);
 void        Q1VM_ClientThink(edict_t *ent, usercmd_t *cmd);
 bool        Q1VM_ClientCommand(edict_t *ent);
+bool        Q1VM_ServerCommand(const char *cmd);    // "sv q1head", true when it was one
 void        Q1VM_ChangeLevel(const char *map);
 void        Q1VM_Intermission(int kind, const char *text);
 float       Q1VM_FinaleFinished(void);

@@ -3191,7 +3191,7 @@ static void CL_InitLocal(void)
     // same name in InitGame - one name, one object - and this copy exists so the
     // Effects menu can offer it at the main menu, before any game library is
     // loaded. See KEEP_GIBS() in g_local.h.
-    Cvar_Get("g_no_janitor", "1", CVAR_ARCHIVE);
+    Cvar_Get("g_no_janitor", "0", CVAR_ARCHIVE);
 
     // Draw blood as shaded, path-traced spheres instead of the flat particle
     // quads. Read once at SPAWN, so flipping it mid-fight leaves the droplets

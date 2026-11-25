@@ -2231,7 +2231,7 @@ static bool film_tile_outline_of_fading(const film_tile_t *t)
 Compacting - cl_blood_film_compact (default 1)
 
 Matt (2026-11-14): "can we have an option so the blood never disappears like the
-old blood splat system". With g_no_janitor on (the default) the film never ages
+old blood splat system". With g_no_janitor on (off by default since 11-25) the film never ages
 blood out: a patch fades only when the pool runs low, and what runs low first is
 the renderer's TRIANGLES - ~530 a tile at outline detail 2, so cl_blood_film_tris
 262144 holds about 500 tiles, a handful of shotgun blasts' spatter.
@@ -2726,7 +2726,7 @@ void CL_BloodFilmInit(void)
     film_stretch = Cvar_Get("cl_blood_stretch", "2.0", CVAR_ARCHIVE);
 
     film_splat_size = Cvar_Get("cl_blood_splat_size", "1.5", CVAR_ARCHIVE);
-    film_permanent = Cvar_Get("g_no_janitor", "1", CVAR_ARCHIVE);
+    film_permanent = Cvar_Get("g_no_janitor", "0", CVAR_ARCHIVE);
     film_splat_life = Cvar_Get("cl_blood_splat_life", "8", CVAR_ARCHIVE);
 
     CL_BloodFilmClear();

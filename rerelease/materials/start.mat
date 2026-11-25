@@ -885,3 +885,24 @@ textures/q1/mhole1_3#10f663be:
 #	default_radiance 1
 	texture_roughness materialDev/textures/q1/mhole1_3_rough.png
 	texture_metallic materialDev/textures/q1/mhole1_3_metal.png
+
+# instance of textures/q1/tlight02
+# start, created at (130 1744 126)
+# Inherits everything from textures/q1/tlight02; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/tlight02#eb4d92f1:
+#	texture_base materialDev/textures/q1/tlight02.png
+#	texture_emissive materialDev/remix/TextureDev/Panel_Orange_Lights_emissive.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	light_factor 1
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1

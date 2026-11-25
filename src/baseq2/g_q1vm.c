@@ -769,8 +769,16 @@ int QC_Alloc(void)
         }
     }
 
-    if (i >= qvm.max_edicts)
+    if (i >= qvm.max_edicts) {
+        // out of entities with gibs kept (g_no_janitor): the oldest gib goes
+        int gib = KEEP_GIBS() ? Q1_OldestKeptGib() : 0;
+        if (gib > 0) {
+            QC_Free(gib);
+            QC_ClearEdict(gib);
+            return gib;
+        }
         QC_RunError("no free edicts (%d)", qvm.max_edicts);
+    }
 
     qvm.num_edicts++;
     if (globals.num_edicts < qvm.num_edicts)

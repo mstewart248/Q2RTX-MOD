@@ -835,8 +835,17 @@ void vkpt_q3_build_program(pbr_material_t *mat, const q3shader_t *q3, imagetype_
        - Any other picture replaces the shader's glow stage (the stage loop
          above: shinymetaldoor_outside3a2_light.png) - unless a stage<N>_map line
          already does - or, with no glow stage, is added over the whole program
-         as a glow, the way a Quake II texture's _light map is. */
+         as a glow, the way a Quake II texture's _light map is.
+       - A glow stage the entry turns off (stage<N>_map off) counts as none: the
+         stage loop skips it before it could take the picture, so the picture is
+         added instead. textures/base_light/geolight (2026-11-25): Matt turned
+         off its glow stage (a big fake lens flare) and painted a glow in mat
+         author; the map was dropped, nothing emitted, and q3map_surfacelight
+         made the whole face SELF_LIT below - all glowing or, at emissive_factor
+         0, none. */
     p->script_stages = p->num_stages;
+
+    const bool glow_stage_live = q3->emissive_stage >= 0 && !vkpt_q3_stage_off(mat->name, q3->emissive_stage);
 
     if (named_stage >= 0 && named_stage != q3->emissive_stage && named_stage < p->num_stages) {
         q3pstage_t *ps = &p->stages[named_stage];
@@ -844,7 +853,7 @@ void vkpt_q3_build_program(pbr_material_t *mat, const q3shader_t *q3, imagetype_
             ps->flags |= Q3P_STAGE_GLOW;
             p->flags |= Q3P_PROG_GLOW;
         }
-    } else if (own_emissive && mat->image_emissive && named_stage < 0 && q3->emissive_stage < 0) {
+    } else if (own_emissive && mat->image_emissive && named_stage < 0 && !glow_stage_live) {
         if (p->num_stages < Q3P_MAX_STAGES) {
             q3pstage_t *ps = &p->stages[p->num_stages++];
             memset(ps, 0, sizeof(*ps));     // rgbGen and alphaGen identity, no tcMods

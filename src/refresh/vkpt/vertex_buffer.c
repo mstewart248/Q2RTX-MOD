@@ -1753,6 +1753,10 @@ vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp
 			mat_data[4] |= 1u << 31;
 		mat_data[5] = floatToHalf(material->specular_factor);
 		mat_data[5] |= floatToHalf(material->base_factor) << 16;
+		// Quake 1's other frame set: its first material + 1 in the low half of
+		// word 13, 0 = none (animate_material); the top half is spare
+		if (material->alt_frame > 0)
+			mat_data[13] = (uint32_t)material->alt_frame & 0xffffu;
 
 		// Stored as value+1, so the cleared row of an unregistered material
 		// (memset above) reads back as "the material said nothing" rather than

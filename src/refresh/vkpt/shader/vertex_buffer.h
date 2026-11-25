@@ -53,7 +53,15 @@ with this program; if not, write to the Free Software Foundation, Inc.,
    Quake III program offset. Low half of word 10; its top half is spare. */
 /* Raised from 11 for stained glass (2026-11-21): its switches and spread in
    the top half of word 10, its four other numbers as halves in 11 and 12. */
-#define MATERIAL_UINTS          13
+/* Raised from 13 for Quake 1's alternate frame set (2026-11-25): its first
+   material + 1 in the low half of word 13 (animate_material); the top half is
+   the next knob's. */
+#define MATERIAL_UINTS          14
+
+/* ModelInstance.frame on a Quake 1 brush entity: the world's animation step,
+   with this bit when the entity's frame is not 0 - draw the other frame set
+   ("+abasebtn" for "+0basebtn", main.c process_bsp_entity). */
+#define ANIM_FRAME_ALTERNATE    0x40000000
 
 // should match the same constant declared in material.h
 #define MAX_PBR_MATERIALS      8192
@@ -811,9 +819,24 @@ uint
 animate_material(uint material, int frame)
 {
 	// Apply frame-based material animation: go through the linked list of materials.
-	if (frame > 0)
+	if (frame != 0)
 	{
 		uint new_material = material;
+
+		/* A Quake 1 brush entity whose frame is not 0 draws the other frame
+		   set, from its first frame (Quake's alternate_anims): a held button's
+		   "+a" frames for its "+0" ones. The low half of word 13 is that
+		   material + 1, read on its own so get_material_info's callers carry
+		   nothing more. Inside this branch rather than ahead of it: there it
+		   took primary_rays from 48 to 64 B of local memory (11-25). */
+		if ((frame & ANIM_FRAME_ALTERNATE) != 0)
+		{
+			frame &= ~ANIM_FRAME_ALTERNATE;
+			uint alt = light_buffer.material_table[(material & MATERIAL_INDEX_MASK) * MATERIAL_UINTS + 13] & 0xffffu;
+			if (alt != 0u)
+				new_material = alt - 1u;
+		}
+
 		MaterialInfo minfo = get_material_info(new_material);
 		frame = frame % int(minfo.num_frames);
 
@@ -822,7 +845,7 @@ animate_material(uint material, int frame)
 			minfo = get_material_info(new_material);
 		}
 
-		material = new_material | (material & ~MATERIAL_INDEX_MASK); // preserve flags
+		material = (new_material & MATERIAL_INDEX_MASK) | (material & ~MATERIAL_INDEX_MASK); // preserve flags
 	}
 	return material;
 }

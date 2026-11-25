@@ -126,6 +126,27 @@ vec4 q3_stage_sample(uint image, vec2 st, mat2 lin, bool env, float mip_level, v
 	return global_textureGrad(image, st, lin * tex_coord_x, lin * tex_coord_y);
 }
 
+// path_tracer_rgen.h, which includes this file before it defines it
+float AdjustRoughnessToksvig(float roughness, float normalMapLen, float mip_level);
+
+/* The mip q3_stage_sample reads `image` at - the material's normal map takes its
+   from the gradients the same way (get_material, for Toksvig). */
+float q3_stage_lod(uint image, mat2 lin, float mip_level, vec2 base_size,
+	vec2 tex_coord_x, vec2 tex_coord_y)
+{
+	vec2 size = vec2(global_textureSize(image, 0));
+	if (mip_level >= 0.0)
+	{
+		float lod = mip_level;
+		if (base_size.x > 0.0 && size.x > 0.0)
+			lod += log2(size.x / base_size.x);
+		return lod + 0.5 * log2(max(abs(determinant(lin)), 1e-6));
+	}
+	vec2 tx = (lin * tex_coord_x) * size;
+	vec2 ty = (lin * tex_coord_y) * size;
+	return 0.5 * log2(max(max(dot(tx, tx), dot(ty, ty)), 1e-12));
+}
+
 /* Where the stage whose vec4s start at `o` reads its images, from `st0` (the
    surface's texture coordinates, or tcGen environment's): tcMods before the
    turb, the turb, the tcMods after it - and `lin`, the linear part of both
@@ -217,8 +238,25 @@ void q3_stage_props(uint o, uint o_stage, uvec4 info, uint flags, uint src_f, ui
 	vec3 n = vec3(0, 0, 1);
 	if ((pflags & Q3P_PROP_NORMAL_MAP) != 0u)
 	{
-		vec3 rgb = q3_stage_sample(pi.y & 0xffffu, st, lin, env, mip_level, base_size, tex_coord_x, tex_coord_y).rgb;
+		uint normal_image = pi.y & 0xffffu;
+		vec3 rgb = q3_stage_sample(normal_image, st, lin, env, mip_level, base_size, tex_coord_x, tex_coord_y).rgb;
 		vec3 m = vec3(rgb.xy * 2.0 - 1.0, rgb.z);     // as rgbToNormal
+
+		/* pt_toksvig, as the material's normal map has it (get_material): far
+		   off, the map's mips average its bumps into shorter normals, and the
+		   roughness rises to stand in for them. Without it a stage's own
+		   surface kept its roughness at any distance - the same maps as the
+		   floor around it, and in q3dm0's mirror the patch read smoother and
+		   darker (Matt, 2026-11-25, diamond2c_ow in diamond2c; pt_toksvig 0
+		   matched them). */
+		if (!env && (pflags & (Q3P_PROP_ROUGH | Q3P_PROP_ROUGH_MAP)) != 0u && global_ubo.pt_toksvig > 0)
+		{
+			float len = length(m);
+			float lod = q3_stage_lod(normal_image, lin, mip_level, base_size, tex_coord_x, tex_coord_y);
+			if (len > 0.0 && lod > 0.0)
+				rough = AdjustRoughnessToksvig(clamp(rough, 0.0, 1.0), len, lod);
+		}
+
 		// the map's slopes run along the stage's own axes, which its tcMods
 		// turned: turned back onto the surface's (the turn only, not the scale)
 		if (!env)

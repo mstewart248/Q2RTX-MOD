@@ -2039,7 +2039,7 @@ void FX_Init(void)
     // Nothing is unbounded: once cl_blood_max splats exist, the OLDEST is
     // retired to make room, so the count is capped and the newest blood is
     // always the blood you keep.
-    cl_blood_permanent = Cvar_Get("g_no_janitor", "1", CVAR_ARCHIVE);
+    cl_blood_permanent = Cvar_Get("g_no_janitor", "0", CVAR_ARCHIVE);
     cl_blood_stats = Cvar_Get("cl_blood_stats", "0", 0);
 
     // Surface blood (cl_blood_film) - after the cvars above, which it reads.

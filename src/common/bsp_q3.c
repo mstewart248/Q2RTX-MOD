@@ -1852,6 +1852,7 @@ int BSP_LoadQ3(bsp_t *bsp, const byte *buf, size_t filelen)
         out->radiance = L.surfvalue[i];
         out->numframes = 1;
         out->next = NULL;
+        out->alt = NULL;
 #endif
     }
 

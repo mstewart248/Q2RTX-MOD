@@ -143,6 +143,10 @@ typedef struct pbr_material_s {
 	int registration_sequence;
 	int num_frames;
 	int next_frame;
+	// Quake 1: the material index + 1 of the other frame set's first frame
+	// ("+abasebtn" for "+0basebtn"), drawn by a brush entity whose frame is
+	// not 0 (bsp_q1.c, animate_material); 0 = none, so a cleared row says none
+	int alt_frame;
 	bool light_styles;
 	bool bsp_radiance;
 	float default_radiance;

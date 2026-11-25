@@ -231,7 +231,9 @@ void InitGame(void)
     // Gibs, heads and debris stay where they land - see KEEP_GIBS(). Registered
     // by the client too, so the Effects menu can offer it before a game library
     // is loaded; one name, one object, exactly as g_ludicrous_gibs does it.
-    g_no_janitor = gi.cvar("g_no_janitor", "1", CVAR_ARCHIVE);
+    // off by default (Matt, 2026-11-25: kept gibs and corpses may cost Quake III
+    // deathmatch); his own config turns it on
+    g_no_janitor = gi.cvar("g_no_janitor", "0", CVAR_ARCHIVE);
 
     // Rerelease weapon switching. id's names and id's defaults: the rerelease
     // raises and lowers weapons at 20 Hz rather than 10, which is why switching

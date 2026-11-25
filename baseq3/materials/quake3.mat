@@ -975,8 +975,11 @@ models/mapobjects/lamplight_y:
 # scripts/models.shader
 #	stage0: map textures/effects/envmapmach.tga; blendfunc GL_ONE GL_ONE; tcGen environment; rgbGen identity
 	stage0_map materialDev/textures/effects/envmapmach.jpg
+	kind REGULAR
+	is_light 1
+	stained_glass 1
 #	texture_normals materialDev/models/mapobjects/lamplight_y_n.png
-#	texture_roughness materialDev/models/mapobjects/lamplight_y_rough.png
+	texture_roughness materialDev/textures/effects/envmapmach_rough.png
 #	texture_metallic materialDev/models/mapobjects/lamplight_y_metal.png
 #	texture_height materialDev/models/mapobjects/lamplight_y_height.png
 #	texture_emissive materialDev/models/mapobjects/lamplight_y_light.png
@@ -2303,7 +2306,7 @@ models/players/doom/doom_f_statue:
 models/players/doom/doom_statue:
 	texture_base materialDev/models/players/doom/doom_statue.tga
 #	texture_normals materialDev/models/players/doom/doom_statue_n.png
-#	texture_roughness materialDev/models/players/doom/doom_statue_rough.png
+	texture_roughness materialDev/models/players/doom/doom_statue_rough.png
 #	texture_metallic materialDev/models/players/doom/doom_statue_metal.png
 #	texture_height materialDev/models/players/doom/doom_statue_height.png
 #	texture_emissive materialDev/models/players/doom/doom_statue_light.png
@@ -3095,7 +3098,7 @@ models/players/ranger/ranger_h_statue:
 models/players/ranger/ranger_statue:
 	texture_base materialDev/models/players/ranger/ranger_statue.tga
 #	texture_normals materialDev/models/players/ranger/ranger_statue_n.png
-#	texture_roughness materialDev/models/players/ranger/ranger_statue_rough.png
+	texture_roughness materialDev/models/players/ranger/ranger_statue_rough.png
 #	texture_metallic materialDev/models/players/ranger/ranger_statue_metal.png
 #	texture_height materialDev/models/players/ranger/ranger_statue_height.png
 #	texture_emissive materialDev/models/players/ranger/ranger_statue_light.png
@@ -5591,8 +5594,9 @@ textures/base_floor/cybergrate3:
 textures/base_floor/diamond2:
 	texture_base materialDev/textures/base_floor/diamond2.jpg
 #	texture_normals materialDev/textures/base_floor/diamond2_n.png
-#	texture_roughness materialDev/textures/base_floor/diamond2_rough.png
+	texture_roughness materialDev/textures/base_floor/diamond2_rough.png
 	texture_metallic materialDev/textures/base_floor/diamond2_metal.png
+	base_factor 2.5
 #	texture_height materialDev/textures/base_floor/diamond2_height.png
 #	texture_emissive materialDev/textures/base_floor/diamond2_light.png
 
@@ -6639,12 +6643,17 @@ textures/base_light/geolight:
 #	stage1: map textures/base_light/geolight.tga; blendFunc GL_DST_COLOR GL_SRC_ALPHA; rgbGen identity; alphaGen lightingSpecular
 	stage1_map materialDev/textures/base_light/geolight.tga
 #	stage2: map textures/base_light/geolight_glow.tga; blendFunc add; rgbgen wave sin .575 .025 0 10
-	stage2_map materialDev/textures/base_light/geolight_glow.jpg
+	stage2_map off
+	emissive_factor 1
 #	texture_normals materialDev/textures/base_light/geolight_n.png
 #	texture_roughness materialDev/textures/base_light/geolight_rough.png
 #	texture_metallic materialDev/textures/base_light/geolight_metal.png
 #	texture_height materialDev/textures/base_light/geolight_height.png
-#	texture_emissive materialDev/textures/base_light/geolight_light.png
+	texture_emissive materialDev/textures/base_light/geolight_emit_2.png
+	stage2_emissive_factor 0
+	stage1_emissive_factor 0
+	default_radiance 1
+	light_factor 8
 
 textures/base_light/invisi_light1:
 # scripts/base_light.shader
@@ -7340,12 +7349,13 @@ textures/base_light/wsupprt1_12:
 #	stage1: map textures/base_light/wsupprt1_12.tga; blendFunc GL_DST_COLOR GL_ZERO; rgbGen identity
 	stage1_map materialDev/textures/base_light/wsupprt1_12.jpg
 #	stage2: map textures/base_light/wsupprt1_12.blend.tga; rgbGen wave sin 0.5 0.5 1 1; blendfunc GL_ONE GL_ONE
-	stage2_map materialDev/textures/base_light/wsupprt1_12.blend.jpg
+	stage2_map materialDev/textures/base_light/wsupprt1_12_emit.png
+	emissive_factor 2
 #	texture_normals materialDev/textures/base_light/wsupprt1_12_n.png
 #	texture_roughness materialDev/textures/base_light/wsupprt1_12_rough.png
 #	texture_metallic materialDev/textures/base_light/wsupprt1_12_metal.png
 #	texture_height materialDev/textures/base_light/wsupprt1_12_height.png
-#	texture_emissive materialDev/textures/base_light/wsupprt1_12_light.png
+	texture_emissive materialDev/textures/base_light/wsupprt1_12_emit.png
 
 textures/base_light/wsupprt1_12h:
 # scripts/base_light.shader
@@ -9086,7 +9096,7 @@ textures/base_wall/bluemetalsupport2c_1:
 	stage1_map materialDev/textures/base_wall/bluemetalsupport2c_1.tga
 	metalness_factor 1
 #	stage2: map $lightmap; blendfunc filter; rgbGen identity
-#	texture_normals materialDev/textures/base_wall/bluemetalsupport2c_1_n.png
+	texture_normals materialDev/textures/base_wall/bluemetalsupport2c_1_n.png
 #	texture_roughness materialDev/textures/base_wall/bluemetalsupport2c_1_rough.png
 #	texture_metallic materialDev/textures/base_wall/bluemetalsupport2c_1_metal.png
 #	texture_height materialDev/textures/base_wall/bluemetalsupport2c_1_height.png
@@ -9854,6 +9864,7 @@ textures/base_wall/metaltechgeomtrn:
 	stage2_map materialDev/textures/base_wall/metaltechgeomtrn2.tga
 #	stage3: map textures/base_wall/metaltechgeomtrn.tga; blendFunc blend; rgbGen identity
 	stage3_map materialDev/textures/base_wall/metaltechgeomtrn.tga
+	stage0_emissive_factor 1
 #	stage4: map $lightmap; blendFunc GL_DST_COLOR GL_ONE_MINUS_DST_ALPHA; rgbGen identity
 #	texture_normals materialDev/textures/base_wall/metaltechgeomtrn_n.png
 #	texture_roughness materialDev/textures/base_wall/metaltechgeomtrn_rough.png
@@ -10031,7 +10042,7 @@ textures/base_wall/q3tourneyscreen:
 	stage3_map materialDev/textures/base_wall/comp3frame.tga
 	emissive_factor 0
 	is_light 1
-	stage0_emissive_factor 0.5
+	stage0_emissive_factor 1
 	roughness_override -1
 	stage0_roughness_override 0.1
 #	stage4: map $lightmap; blendfunc gl_dst_color gl_zero; rgbgen identity
@@ -10122,7 +10133,7 @@ textures/base_wall/shinygrate1_4:
 #	stage1: map textures/base_wall/shinygrate1_4.tga; blendFunc GL_ONE_MINUS_SRC_ALPHA GL_SRC_ALPHA; rgbGen identity
 	stage1_map materialDev/textures/base_wall/shinygrate1_4.tga
 #	stage2: map $lightmap; rgbgen identity; blendFunc GL_DST_COLOR GL_ZERO
-#	texture_normals materialDev/textures/base_wall/shinygrate1_4_n.png
+	texture_normals materialDev/textures/base_wall/shinygrate1_4_n.png
 #	texture_roughness materialDev/textures/base_wall/shinygrate1_4_rough.png
 #	texture_metallic materialDev/textures/base_wall/shinygrate1_4_metal.png
 #	texture_height materialDev/textures/base_wall/shinygrate1_4_height.png
@@ -11637,6 +11648,7 @@ textures/gothic_block/blocks17_ow:
 	stage0_map materialDev/textures/sfx/firegorre.tga
 #	stage1: map textures/gothic_block/blocks17_ow.tga; blendFunc blend; rgbGen identity
 	stage1_map materialDev/textures/gothic_block/blocks17_ow.tga
+	stage0_emissive_factor 1
 #	stage2: map $lightmap; blendFunc filter; rgbGen identity
 #	texture_normals materialDev/textures/gothic_block/blocks17_ow_n.png
 #	texture_roughness materialDev/textures/gothic_block/blocks17_ow_rough.png
@@ -11984,6 +11996,13 @@ textures/gothic_block/evil_e3window_dark:
 	stage1_map materialDev/textures/gothic_block/windowevil2c_block18c.jpg
 #	stage2: map textures/gothic_block/evil2cglow.tga; blendfunc GL_ONE GL_ONE
 	stage2_map materialDev/textures/gothic_block/evil2cglow.jpg
+	kind REGULAR
+	is_light 1
+	stained_glass 1
+	texture_stained_mask materialDev/textures/gothic_block/windowevil2c_block18c_glassmask.png
+	stained_light_height 1
+	stained_light_sun 1
+	volumetric_scale 5
 #	texture_normals materialDev/textures/gothic_block/evil_e3window_dark_n.png
 #	texture_roughness materialDev/textures/gothic_block/evil_e3window_dark_rough.png
 #	texture_metallic materialDev/textures/gothic_block/evil_e3window_dark_metal.png
@@ -12322,6 +12341,13 @@ textures/gothic_block/mkc_evil_e3window:
 	stage1_map materialDev/textures/gothic_block/windowevil2c_block18c.jpg
 #	stage2: map textures/gothic_block/evil2cglow.tga; blendfunc GL_ONE GL_ONE
 	stage2_map materialDev/textures/gothic_block/evil2cglow.jpg
+	kind REGULAR
+	is_light 1
+	stained_glass 1
+	texture_stained_mask materialDev/textures/gothic_block/windowevil2c_block18c_glassmask.png
+	stained_light_height 1
+	stained_light_sun 1
+	volumetric_scale 10
 #	texture_normals materialDev/textures/gothic_block/mkc_evil_e3window_n.png
 #	texture_roughness materialDev/textures/gothic_block/mkc_evil_e3window_rough.png
 #	texture_metallic materialDev/textures/gothic_block/mkc_evil_e3window_metal.png

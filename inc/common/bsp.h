@@ -60,6 +60,10 @@ typedef struct mtexinfo_s {  // used internally due to name len probs //ZOID
 #endif
     int                 numframes;
     struct mtexinfo_s   *next; // used for animation
+    // Quake 1: the first frame of the OTHER set ("+a.." for "+0..", and back),
+    // which a brush entity whose frame is not 0 draws instead - a pressed
+    // button, a toggled func_wall. NULL elsewhere (bsp_q1.c).
+    struct mtexinfo_s   *alt;
 #endif
 } mtexinfo_t;
 

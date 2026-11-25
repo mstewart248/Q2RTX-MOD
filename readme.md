@@ -82,10 +82,24 @@ existing Quake II RTX install.
 * **[DLSS 5 Neural Rendering](#dlss-5-neural-rendering)** on RTX 50 series
   cards: NVIDIA's neural model reworks the finished frame's detail, shadows,
   materials and tone, on both path tracers.
+* **[Quake III Arena](#quake-iii-arena-support)** from your own `baseq3` paks,
+  path traced: its campaign with the podium and medals, its arenas and CTF
+  maps in bot match, its weapons, movement, player models and bots (Quake
+  III's own bot AI), and its shaders, curved surfaces, skies and fog.
+* **[Quake](#quake-support)**, all of its 2021 remaster's content, from your
+  own paks and path traced: the original campaign and all five expansions
+  (*Scourge of Armagon*, *Dissolution of Eternity*, *Dimension of the Past*,
+  *Dimension of the Machine* and *Dawn of the Machine*), each running its own
+  `progs.dat` in a QuakeC virtual machine, with Quake's status bar, demos and
+  saves; its deathmatch and Threewave CTF maps in bot match; its guns, and its Ranger as a player
+  model; and its skies, sun, fog, teleporter gates you can see through, and
+  [stained glass](#stained-glass) windows that throw their colours into the room.
 * **A stronger [path tracer](#path-tracer)**: ReSTIR direct and global
   illumination, multi-bounce lighting from a radiance cache (SHaRC), full
   materials on bounces, parallax occlusion mapping, and an animated sky with a
   moving sun.
+* **[Simulated fire and smoke](#simulated-fire-and-smoke-nvidia-flow)** with
+  NVIDIA Flow: explosions, BFG plasma and rocket trails that light the room.
 * **[Volumetric fog](#volumetric-fog-and-atmosphere)** lit by the sun, the sky
   and every light in the map, with real shadows through it, shaped by each
   remaster map's own fog.
@@ -99,22 +113,8 @@ existing Quake II RTX install.
   against up to 15 bots, each with its own skill and its own pick of model and
   skin, on any deathmatch map, classic or remaster, or on the campaign's maps.
   [Co-op](#co-op-with-bots) plays the campaign with the bots on your side.
-* **[Quake III Arena](#quake-iii-arena-support)** from your own `baseq3` paks,
-  path traced: its campaign with the podium and medals, its arenas and CTF
-  maps in bot match, its weapons, movement, player models and bots (Quake
-  III's own bot AI), and its shaders, curved surfaces, skies and fog.
-* **[Quake](#quake-support)**, all of its 2021 remaster's content, from your
-  own paks and path traced: the original campaign and all five expansions
-  (*Scourge of Armagon*, *Dissolution of Eternity*, *Dimension of the Past*,
-  *Dimension of the Machine* and *Dawn of the Machine*), each running its own
-  `progs.dat` in a QuakeC virtual machine, with Quake's status bar, demos and
-  saves; its deathmatch and Threewave CTF maps in bot match; its guns, and its Ranger as a player
-  model; and its skies, sun, fog, teleporter gates you can see through, and
-  [stained glass](#stained-glass) windows that throw their colours into the room.
 * **[Physical blood and gore](#gore-and-physical-blood)**: droplets are real,
   lit geometry that splats, runs down walls and pools.
-* **[Simulated fire and smoke](#simulated-fire-and-smoke-nvidia-flow)** with
-  NVIDIA Flow: explosions, BFG plasma and rocket trails that light the room.
 * **[Sound](#sound)**: the remaster's room reverb, and Steam Audio with HRTF,
   occlusion, and ray-traced reflections and diffraction.
 * **Post effects**: [motion blur](#motion-blur),
@@ -231,6 +231,235 @@ The model works on SDR images. Under HDR output (`vid_hdr`) it is shown the
 frame SDR mode would have produced, and its change is mapped back onto the HDR
 image, so highlights keep their range. On Vulkan, `pt_dlss5_drugs 1` pauses the
 game and feeds the model its own output, frame after frame.
+
+## Quake III Arena support
+
+![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/Q3.png)
+
+Quake III Arena's maps, models, weapons, bots and single-player campaign run
+inside the Quake II engine, path traced like everything else. Nothing from
+Quake III ships with this project: copy your own retail `pak0.pk3` through
+`pak8.pk3` into a `baseq3` folder next to the exe. The game finds them at
+start-up (`fs_quake3` turns on and the console prints *Quake III Arena data:
+N pk3 file(s)*), and the Quake III options below appear in the menus. Without
+them, none of them show.
+
+### Single player
+
+**Single player** → **quake iii arena** opens Quake III's own campaign, in its
+own menus: *choose level* by tier with each arena's levelshot, the difficulty
+(*I Can Win* to *Nightmare!*), the bots of each arena with their Quake III
+names, characters and skills, the intro and tier videos, the end-of-match
+podium with medals and the announcer, and the records it keeps. Each arena is
+played as deathmatch with Quake III's rules. `levelshots` makes the levelshot
+pictures for the menus from your own maps.
+
+### Bot match
+
+With the paks installed, the bot match page gets a **map set** row:
+**quake iii arena** offers its deathmatch and tourney arenas, *Introduction*
+through *The Very End Of You* plus the four *pro* maps, and in capture the
+flag its CTF maps, *Dueling Keeps* through *Across Space*. Its jump pads,
+teleporters, movers, speakers and music work. Its items map onto Quake II's
+one for one, drawn with Quake III's own models, and Haste, Regeneration,
+Flight and the two holdables (the medkit and the personal teleporter) work as
+they did in Quake III. More rows set how it plays, and they work on Quake II
+maps too:
+
+* **Health and armor** (`g_q3_items`): Quake III's amounts (5 / 25 / 50 / 100
+  health, 5 / 50 / 100 armor) and its *Battle Suit*, or Quake II's own and the
+  *Environment Suit*.
+* **Weapons** (`g_q3_weapons`): Quake II's guns, Quake III's (gauntlet,
+  machinegun, shotgun, grenade and rocket launchers, lightning gun, railgun,
+  plasma gun and BFG10K), or **by player model**, so a Quake III model gets
+  Quake III's guns and a Quake II model Quake II's. **Spawn with** (`g_q3_kit`)
+  says what Quake II's guns start from. With Quake installed, **quake**
+  (`g_q3_weapons 3`, and it needs no Quake III) deals Quake's guns instead:
+  the axe, shotgun and super shotgun, nailgun and super nailgun, grenade and
+  rocket launchers and the Thunderbolt, with Quake's damage, ammo, pickups and
+  obituaries. Everyone spawns with the axe and shotgun, nails come out of
+  bullets, and both launchers fire rockets. They are drawn with Quake's own
+  models, and with its icons in the weapon bar and wheel; their explosions
+  and rocket trails are the [simulated fire and smoke](#simulated-fire-and-smoke-nvidia-flow).
+* **Movement** (`g_q3_physics`): Quake II's running, jumping and knockback, or
+  Quake III's: its speed, friction, jump height and knockback, so strafe
+  jumping and rocket jumps work the way they did there.
+* **Friendly fire** (`bot_friendly_fire`): off by default, as in Quake III.
+* **Bot models** (`bot_models`): Quake II's, Quake III's bots (Sarge, Doom,
+  Major, Klesk and the rest, each with its own name), or both.
+* **Bot AI** (`bot_q3_ai`): **quake ii**, the bots described under [Bot match](#bot-match);
+  **quake iii characters**, the same brain driven by each Quake III bot's
+  character file (its aim, reaction, accuracy and weapon preferences); or
+  **quake iii engine**, the whole of Quake III's bot engine (the open-source
+  botlib, its area-awareness navigation and its game AI): Quake III's
+  movement, item timing, chat and team play, on any Quake III map with its
+  `.aas` file. Other maps fall back to the characters.
+* **Team leader** (`bot_q3_human_leader`): in team games, Quake III's bots
+  pick their own leader and give each other orders (*get the flag*, *defend
+  the base*). Say *I am the leader* in team chat to take over, and *I quit
+  being the leader* to hand it back. **You** makes you the leader from the
+  start, as Quake III did.
+
+### Multiplayer
+
+**Multiplayer** → **start server** has the same rows: the map set and the
+Quake III arenas and CTF maps, the game mode, health and armor, weapons,
+movement and friendly fire, plus **bots** (`bot_server_count`, none by
+default) to fill empty slots with the bot match's line-up. The server sends
+its weapons and movement rules to every player, so each one's guns and
+movement prediction match it, and everyone sees each other's Quake III
+models. Each player needs their own Quake III paks to join a Quake III map:
+the server never sends Quake III's files, and tells a player without them
+what is missing.
+
+### Weapons
+
+Quake III's guns are drawn in your hand on their own tags, with their own
+firing, raising and lowering animations, muzzle flashes and sounds. Shells fly
+from the machinegun and shotgun (`cl_brass_time`), shots leave burn marks and
+bullet holes (`cl_q3_marks_time`), and rockets, plasma and the BFG use the
+[NVIDIA Flow](#simulated-fire-and-smoke-nvidia-flow) fire and smoke. They are
+on the [weapon wheel](#quake-ii-2023-rerelease-support) with their own icons.
+With `cl_classic_railgun 0`, the Q2RTX railgun stands in for Quake III's, in
+your hand and on the ground; `1` shows Quake III's.
+
+### Player models
+
+**Player setup** shows every installed model in a grid with a live preview,
+Quake III's models and skins included (`cl_q3_players`). A Quake III model
+animates with its own legs, torso and head, and in team games wears its red or
+blue skin.
+
+### Rendering
+
+* **Shaders**: Quake III's shader stages (blending, scrolling, rotating,
+  turbulent and animated textures, environment maps) run in the path tracer,
+  and `deformVertexes` moves the geometry (`pt_q3_deform`). Glowing stages
+  become real lights. The shader code is only built into the path tracer while
+  Quake III content is in view (`pt_q3_shaders 1`, the default), so Quake II
+  maps don't pay for it.
+* **Curved surfaces**: Quake III's patches are tessellated and collide like
+  any other wall.
+* **Skies**: each map's sky with its cloud layers moving
+  (`pt_q3_sky_clouds`), and its `q3map_sun` as the path tracer's sun
+  (`pt_q3_sun_scale`, `pt_q3_sun_color`). `sky_override` swaps in another sky.
+* **Fog**: fog brushes become [volumetric fog](#volumetric-fog-and-atmosphere)
+  (`pt_fog_q3_thickness`).
+* **Mirrors and portals** reflect and look through, as in Quake III, and so
+  do Quake's teleporter gates. Light comes through a portal too, so a lit room
+  on the far side lights this one, and a lamp behind a teleporter gate shines
+  through it (`pt_portal_light`), and DLSS Ray
+  Reconstruction is told to trust the current frame on a portal's view, which
+  moves under the flat surface's motion vectors (`pt_dlss_portal_responsive`).
+* **Materials**: `baseq3/materials/quake3.mat` gives Quake III's textures
+  roughness, metal and normal maps. Quake III's painted-on environment-map
+  shine becomes a real reflection of the room (`pt_q3_env_shine 1`, the
+  default; `0` draws it as Quake III did). The health orbs are glass, and
+  throw caustics on the floor around them.
+
+### Modding
+
+Quake III maps use the same tools as Quake II's, from `baseq3`:
+
+* `baseq3/materials/quake3.mat`, plus a `<map>.mat` per map, and the source
+  images in `baseq3/materialDev`. A `stage<N>_` key (`stage1_map`,
+  `stage2_roughness_override`, `stage1_emissive_factor`) sets one stage of a
+  Quake III shader, from the file or from the `mat` console command.
+* `baseq3/maps/<map>.cfg` for [per-map settings](#per-map-settings-mapcvar),
+  and `baseq3/maps/lights/<map>.cfg` for
+  [placed lights](#the-light-placement-system).
+
+## Quake support
+
+![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/Q1.jpg)
+
+Quake's campaigns and maps run inside the Quake II engine, path traced like
+everything else. Nothing from Quake ships with this project. Copy the episode
+folders from your own install of the Quake rerelease into a folder named `id1`
+next to the exe: `id1`, and any of `hipnotic`, `rogue`, `dopa`, `mg1`, `mg3`
+and `ctf`, each with its `pak0.pak` (so the first is `id1/id1/pak0.pak`). The
+game finds them at start-up (`fs_quake1` counts the episodes and the console
+prints *Quake 1 data: N episode(s)*), and the Quake options below appear in the
+menus. Without them, none of them show, and the project's own `id1` files stay
+out of Quake II's way.
+
+Quake's maps are renamed so they never collide with Quake II's: `q1/<map>` for
+the original game (`map q1/e1m1`) and `q1/<episode>/<map>` for an add-on
+(`map q1/mg1/hub`).
+
+### Single player
+
+**Single player** → **quake** lists the campaigns you have: *Quake*, *Scourge
+of Armagon*, *Dissolution of Eternity*, *Dimension of the Past*, *Dimension of
+the Machine* and *Dawn of the Machine*. Each starts on its own start map on
+Normal, and the start map's skill halls pick the difficulty for the rest, as in
+Quake.
+
+Each campaign runs **its own `progs.dat`** in a QuakeC virtual machine
+(`g_q1_progs 1`, the default), so its monsters, weapons, items, doors, lifts,
+secrets, intermissions and end text are Quake's own code rather than a copy of
+it. The add-ons' new monsters, weapons and entities come with them, and so does
+*Dimension of the Machine*'s fog, which changes room by room. The status bar is
+Quake's own, drawn from its own graphics; **Tab** shows Quake's scoreboard; and
+saving and loading work. Quake has no crouch, so the crouch key does nothing.
+
+Quake's demos join the [attract loop](#demo-playback) at the main menu, and
+`q1demo id1/id1/demo1.dem` plays one by hand.
+
+### Bot match and multiplayer
+
+With Quake's paks, **map set** on the bot match and **start server** pages
+offers **quake**: its eight deathmatch maps, the add-ons' arenas and every level
+of the first game, and in capture the flag the Threewave CTF maps. Their items,
+doors, lifts, buttons, teleporters and exploding boxes become Quake II's, and
+their monsters are left out.
+
+**Weapons** → **quake** (`g_q3_weapons 3`, and it needs no Quake III) deals
+Quake's guns, on Quake II maps too: the axe, the shotgun and super shotgun, the
+nailgun and super nailgun, the grenade and rocket launchers and the
+Thunderbolt, with Quake's damage, ammo, pickups and obituaries. **Player setup**
+lists Quake's Ranger first (`quake1/ranger`), with Quake's own animations and
+sounds; under **weapons** → **by player model**, the Ranger plays with Quake's
+guns while everyone else keeps their own.
+
+### Rendering
+
+* **Lights**: Quake's lamps, torches and glowing textures light the room, and
+  flicker and switch with the map's light styles. The light entities Quake's
+  compiler baked into the map are [map lights](#standing-in-for-the-maps-own-lights),
+  ready to be stood in for with `light replace`.
+* **Skies**: each map's two-layer scrolling sky, or its skybox, in Quake's own
+  colours, under **sky type** → **rerelease**. On a Quake map the environment
+  menu sets how bright it looks (`pt_q1_sky_brightness`), the light it casts and
+  its colour (`pt_q1_sky_light`, `_r`, `_g`, `_b`), and how much it lights the
+  fog (`pt_q1_sky_fog`).
+* **Sun**: the maps that ask for one with `_sunlight` (*Dimension of the Past*,
+  *Dimension of the Machine*, *Dawn of the Machine*) get the path tracer's sun,
+  from the direction in their `_sun_mangle` (`pt_q1_sun`, `pt_q1_sun_scale`).
+* **Fog**: a map's own `fog` becomes [volumetric fog](#volumetric-fog-and-atmosphere).
+* **Teleporters**: a slipgate shows the place it leads to, with a ripple
+  (`pt_q1_teleport_portals`, `pt_q1_teleport_warp`), and the light on the far
+  side comes through it (`pt_portal_light`). A gate whose view would start under
+  the far floor is raised to `pt_q1_teleport_clearance` (8) units above it.
+* **Materials**: `id1/materials/quake1.mat` gives Quake's textures normal,
+  roughness, metal and emissive maps, shaded the way Quake II RTX shades its
+  own. Its windows are [stained glass](#stained-glass): the light behind them
+  comes into the room, and into the fog, in the glass's colours.
+* **Fire and blood**: rockets, grenades, lava balls and exploding boxes use the
+  [simulated fire and smoke](#simulated-fire-and-smoke-nvidia-flow), and gibs
+  leave three times Quake II's blood trail (`cl_q1_gib_drops`, on the blood
+  menu as **quake gib trail**).
+
+### Modding
+
+Quake maps use the same tools as Quake II's, from `id1`:
+
+* `id1/materials/quake1.mat`, plus `id1/maps/q1/<map>.mat` per map, and the
+  source images in `id1/materialDev`.
+* `id1/maps/quake1.cfg` for every Quake map, then `id1/maps/q1/<map>.cfg`
+  (`id1/maps/q1/<episode>/<map>.cfg` for an add-on's) for
+  [per-map settings](#per-map-settings-mapcvar), and
+  `id1/maps/lights/q1/<map>.cfg` for [placed lights](#the-light-placement-system).
 
 ## Path tracer
 
@@ -368,6 +597,124 @@ game and feeds the model its own output, frame after frame.
   glass with multi-bounce reflections, stochastic secondary glass rays
   (`pt_glass_secondary_stochastic`), light transfer onto metallic surfaces, and
   crashes in `vid_restart` with DLSS active.
+
+## Simulated fire and smoke (NVIDIA Flow)
+
+Explosions, the BFG's plasma and rocket trails can be simulated by **NVIDIA
+Flow 2**, NVIDIA's gas solver (advection, combustion, vorticity and pressure on
+a sparse grid). It runs as compute on the game's own GPU device and queue —
+Vulkan, or on the [Direct3D 12 renderer](#direct3d-12-renderer) a Direct3D 12
+backend for Flow written for this project — and the path tracer marches the
+result. The fire is a volume in the
+room rather than a flat sprite: it has depth, it shows in mirrors, glass and
+water, and it burns out into smoke that rises, drifts and fades.
+
+![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/quake043.jpg)
+
+*Rocket explosions lighting the room (photo mode).*
+
+![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/quake045.jpg)
+
+*A BFG blast: a cloud of green plasma throwing out jets.*
+
+* **Explosions** (`cl_flow_explosions`): a rocket or grenade makes a fireball
+  of burning fuel that goes from white-yellow through orange to grey smoke in
+  about a second and a half. The BFG's blast is a flower of plasma puffs with
+  thin jets thrown a couple of hundred units out, after the BFG impacts in
+  NVIDIA's RTX trailer, and each of its laser zaps leaves a small burst of
+  plasma. `1` adds the simulation to the classic fireball, `2` replaces the
+  fireball, `0` is off.
+* **Light** (`pt_flow_lighting`): the glowing gas is gathered into up to eight
+  lights that follow the fire, in place of the classic explosion light, so the
+  room is lit from where the fire actually is. The smoke scatters that light,
+  with Flow's self-shadow toward the brightest of them.
+* **Smoke lit by the world** (`pt_flow_env`): the smoke takes its light from
+  the sun, the sky and the map's lights, traced from a grid of probes around
+  it, instead of being one flat colour. Needs the ray query API.
+* **Collision** (`pt_flow_collision`): walls, floors and ceilings hold the
+  smoke in instead of letting it drift through. Costs about 0.4 ms while
+  there is smoke.
+* **Rocket trail** (`cl_rocket_flame`): `1` is a small simulated fireball at
+  the rocket's tail that cools into a column of smoke (the particle flame
+  stands in while the simulation is full), `2` a particle flame with a little
+  smoke, `0` the classic smoke and falling sparks.
+* **Grenade trail** (`cl_flow_grenadetrail`): `1` is simulated smoke along a
+  grenade's flight, thick where it leaves and thinning out like the classic
+  trail (the classic particles stand in while the simulation is full), `0`
+  the classic particles.
+* **Railgun trail** (`cl_flow_railtrail`): `1` is simulated gas in place of
+  the trail's particles, a cyan-blue spiral that glows and cools into wisps
+  round a thread of pale smoke (the classic particles stand in while the
+  simulation is full), `0` the classic particles. While it is on, **railgun
+  trail fade time** (`pt_flow_rail_fade`) lets it linger longer than the
+  1.4 seconds it is tuned to, up to 5; a longer fade holds the simulation
+  pool longer, so a quick second shot may go to particles.
+* **Plasma beam** (`cl_flow_heatbeam`): `1` makes the beam simulated gas: a
+  hot yellow-orange core in place of the beam model, rings of heat running
+  out along it that start white-hot and cool through yellow and orange to
+  smoke, and a hot spot burning off smoke where it hits - or, with **plasma
+  beam impact** set to fire (`cl_flow_heatbeam_fire`), what it hits set
+  alight: a wall bursts into flames where the beam is on it (size
+  `cl_flow_heatbeam_fire_size`, white-hot heart `cl_flow_heatbeam_fire_core`),
+  a monster or player burns over its top half and dies down once the beam moves off
+  (`cl_flow_burn_after`, 1.5 s), and the gibs it blows off burn and go out
+  into smoke (`cl_flow_gib_burn`, 3 s). **Plasma beam trails**
+  (`pt_flow_heatbeam_trails`) is off by default: the gas stays with the
+  weapon as you sweep it. On, it leaves glow and smoke where it was, which
+  costs a lot while strafing. The
+  model is still drawn past the first 1024 units of a long beam, and it still
+  lights the room (the classic beam and rings stand in while the simulation
+  is full). `0` is the classic beam and rings.
+* **Gib fire and smoke** (`cl_flow_gib_effects`): `1` sets some of the gibs
+  a rocket, grenade or exploding barrel blows off alight, at random (about
+  one in three, `cl_flow_gib_fire_chance`), burning like the plasma beam's
+  gibs and going out into smoke; and the railgun's gibs smoke with no flame,
+  in the air and on as they lie (`cl_flow_gib_smoke`, 4.25 s). `0` off.
+* **Under water** (`cl_explosion_water`): an explosion keeps a flame and
+  lights the water yellow-white. `1` is a smaller simulated flame when Flow
+  draws the explosions, `2` always the classic fireball, `0` the classic
+  fireball and light.
+
+| cvar | Default | Notes |
+|---|---|---|
+| `cl_flow_explosions` | `2` | `0` off, `1` with the classic fireball, `2` instead of it. |
+| `cl_rocket_flame` | `1` | `0` classic, `1` simulated, `2` particles. |
+| `cl_flow_grenadetrail` | `1` | `0` classic, `1` simulated. |
+| `cl_flow_railtrail` | `1` | `0` classic, `1` simulated. |
+| `pt_flow_rail_fade` | `1.4` | Seconds the simulated railgun trail takes to fade, 1.4 (the shortest) to 5. |
+| `cl_flow_heatbeam` | `1` | `0` classic beam and rings, `1` simulated. |
+| `cl_flow_heatbeam_fire` | `0` | Where the simulated plasma beam hits: `0` a hot spot, `1` fire. |
+| `pt_flow_heatbeam_trails` | `0` | `0` the simulated plasma beam stays with the weapon, `1` it leaves glow and smoke behind as it is swept. |
+| `pt_flow_heatbeam_lean` | `1` | With trails off, the plasma beam skips the simulation work it never shows (moving the gas, the room kept round it); `0` runs it all, for comparison. Same picture. |
+| `cl_flow_gib_effects` | `1` | Explosions' gibs sometimes catch fire, the railgun's smoke. |
+| `cl_explosion_water` | `1` | `0` off, `1` simulated, `2` classic. |
+| `pt_flow_lighting` | `1` | The fire and plasma cast light. |
+| `pt_flow_env` | `1` | Smoke lit by the world. |
+| `pt_flow_collision` | `1` | Smoke collides with the world. |
+| `pt_flow_collision_layers` | `1` | Collision only for the effects with gas this frame; `0` for all of them, as before. Same picture. |
+| `pt_flow_march` | `31` | Shortcuts in the march through the volume, as bits (`1` light read once a step, `2` two steps at a time, `4` and `8` empty space passed quickly, `16` pixels with no gas in front not marched at all); `15` leaves out the last, `0` all of them, for comparison. Same picture. |
+| `pt_flow_max_blocks` | `3584` | The simulation pool, 512 to 4096 blocks; about 0.45 MB of video memory a block, taken whether used or not. |
+| `pt_flow_cell_size` | `3` | Cell size in units for the explosions, the BFG, bubbles and the rocket and grenade trails. Half the size takes eight times the blocks. |
+| `pt_flow_rail_cell_size` | `0.5` | The railgun trail near the view. |
+| `pt_flow_rail_far_cell_size` | `1.5` | The railgun trail beyond `pt_flow_rail_lod_distance` (256). |
+| `pt_flow_heatbeam_cell_size` | `1` | The plasma beam. |
+| `pt_flow` | `1` | `0` skips Flow when the renderer starts. |
+
+The simulation steps 60 times a second (`pt_flow_rate`) at the start of the
+frame. The volume is marched per pixel at render resolution, in the primary
+and reflection passes, before DLSS, which denoises and upscales it with
+everything else. The GPU profiler (`profiler 1`) has *flow simulation* and
+*flow smoke lighting* rows; `pt_flow_profile 1` prints Flow's own passes
+and their GPU time once a second (FLOWPROF lines in the console).
+
+Flow needs the RTX renderer and `nvflow.dll` and `nvflowext.dll` beside
+`q2rtx.exe`. The release package includes them, with their licence (BSD-3) in
+`licenses/nvidia-flow/`; for your own build, `setup/build_flow.py` builds them
+from NVIDIA's source. Without them the game runs as before and the options
+stay hidden; the read-only `flow_available` and `flow_env_available` say what
+was found. Windows only for now.
+
+In the menu: **options** → **effects setup**.
 
 ## Motion blur
 
@@ -857,235 +1204,6 @@ rockets and grenades, and respawn. In any deathmatch game, from the console:
 
 `bot_debug 1` prints each bot's goal, route and target once a second.
 
-## Quake III Arena support
-
-![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/Q3.png)
-
-Quake III Arena's maps, models, weapons, bots and single-player campaign run
-inside the Quake II engine, path traced like everything else. Nothing from
-Quake III ships with this project: copy your own retail `pak0.pk3` through
-`pak8.pk3` into a `baseq3` folder next to the exe. The game finds them at
-start-up (`fs_quake3` turns on and the console prints *Quake III Arena data:
-N pk3 file(s)*), and the Quake III options below appear in the menus. Without
-them, none of them show.
-
-### Single player
-
-**Single player** → **quake iii arena** opens Quake III's own campaign, in its
-own menus: *choose level* by tier with each arena's levelshot, the difficulty
-(*I Can Win* to *Nightmare!*), the bots of each arena with their Quake III
-names, characters and skills, the intro and tier videos, the end-of-match
-podium with medals and the announcer, and the records it keeps. Each arena is
-played as deathmatch with Quake III's rules. `levelshots` makes the levelshot
-pictures for the menus from your own maps.
-
-### Bot match
-
-With the paks installed, the bot match page gets a **map set** row:
-**quake iii arena** offers its deathmatch and tourney arenas, *Introduction*
-through *The Very End Of You* plus the four *pro* maps, and in capture the
-flag its CTF maps, *Dueling Keeps* through *Across Space*. Its jump pads,
-teleporters, movers, speakers and music work. Its items map onto Quake II's
-one for one, drawn with Quake III's own models, and Haste, Regeneration,
-Flight and the two holdables (the medkit and the personal teleporter) work as
-they did in Quake III. More rows set how it plays, and they work on Quake II
-maps too:
-
-* **Health and armor** (`g_q3_items`): Quake III's amounts (5 / 25 / 50 / 100
-  health, 5 / 50 / 100 armor) and its *Battle Suit*, or Quake II's own and the
-  *Environment Suit*.
-* **Weapons** (`g_q3_weapons`): Quake II's guns, Quake III's (gauntlet,
-  machinegun, shotgun, grenade and rocket launchers, lightning gun, railgun,
-  plasma gun and BFG10K), or **by player model**, so a Quake III model gets
-  Quake III's guns and a Quake II model Quake II's. **Spawn with** (`g_q3_kit`)
-  says what Quake II's guns start from. With Quake installed, **quake**
-  (`g_q3_weapons 3`, and it needs no Quake III) deals Quake's guns instead:
-  the axe, shotgun and super shotgun, nailgun and super nailgun, grenade and
-  rocket launchers and the Thunderbolt, with Quake's damage, ammo, pickups and
-  obituaries. Everyone spawns with the axe and shotgun, nails come out of
-  bullets, and both launchers fire rockets. They are drawn with Quake's own
-  models, and with its icons in the weapon bar and wheel; their explosions
-  and rocket trails are the [simulated fire and smoke](#simulated-fire-and-smoke-nvidia-flow).
-* **Movement** (`g_q3_physics`): Quake II's running, jumping and knockback, or
-  Quake III's: its speed, friction, jump height and knockback, so strafe
-  jumping and rocket jumps work the way they did there.
-* **Friendly fire** (`bot_friendly_fire`): off by default, as in Quake III.
-* **Bot models** (`bot_models`): Quake II's, Quake III's bots (Sarge, Doom,
-  Major, Klesk and the rest, each with its own name), or both.
-* **Bot AI** (`bot_q3_ai`): **quake ii**, the bots described above;
-  **quake iii characters**, the same brain driven by each Quake III bot's
-  character file (its aim, reaction, accuracy and weapon preferences); or
-  **quake iii engine**, the whole of Quake III's bot engine (the open-source
-  botlib, its area-awareness navigation and its game AI): Quake III's
-  movement, item timing, chat and team play, on any Quake III map with its
-  `.aas` file. Other maps fall back to the characters.
-* **Team leader** (`bot_q3_human_leader`): in team games, Quake III's bots
-  pick their own leader and give each other orders (*get the flag*, *defend
-  the base*). Say *I am the leader* in team chat to take over, and *I quit
-  being the leader* to hand it back. **You** makes you the leader from the
-  start, as Quake III did.
-
-### Multiplayer
-
-**Multiplayer** → **start server** has the same rows: the map set and the
-Quake III arenas and CTF maps, the game mode, health and armor, weapons,
-movement and friendly fire, plus **bots** (`bot_server_count`, none by
-default) to fill empty slots with the bot match's line-up. The server sends
-its weapons and movement rules to every player, so each one's guns and
-movement prediction match it, and everyone sees each other's Quake III
-models. Each player needs their own Quake III paks to join a Quake III map:
-the server never sends Quake III's files, and tells a player without them
-what is missing.
-
-### Weapons
-
-Quake III's guns are drawn in your hand on their own tags, with their own
-firing, raising and lowering animations, muzzle flashes and sounds. Shells fly
-from the machinegun and shotgun (`cl_brass_time`), shots leave burn marks and
-bullet holes (`cl_q3_marks_time`), and rockets, plasma and the BFG use the
-[NVIDIA Flow](#simulated-fire-and-smoke-nvidia-flow) fire and smoke. They are
-on the [weapon wheel](#quake-ii-2023-rerelease-support) with their own icons.
-With `cl_classic_railgun 0`, the Q2RTX railgun stands in for Quake III's, in
-your hand and on the ground; `1` shows Quake III's.
-
-### Player models
-
-**Player setup** shows every installed model in a grid with a live preview,
-Quake III's models and skins included (`cl_q3_players`). A Quake III model
-animates with its own legs, torso and head, and in team games wears its red or
-blue skin.
-
-### Rendering
-
-* **Shaders**: Quake III's shader stages (blending, scrolling, rotating,
-  turbulent and animated textures, environment maps) run in the path tracer,
-  and `deformVertexes` moves the geometry (`pt_q3_deform`). Glowing stages
-  become real lights. The shader code is only built into the path tracer while
-  Quake III content is in view (`pt_q3_shaders 1`, the default), so Quake II
-  maps don't pay for it.
-* **Curved surfaces**: Quake III's patches are tessellated and collide like
-  any other wall.
-* **Skies**: each map's sky with its cloud layers moving
-  (`pt_q3_sky_clouds`), and its `q3map_sun` as the path tracer's sun
-  (`pt_q3_sun_scale`, `pt_q3_sun_color`). `sky_override` swaps in another sky.
-* **Fog**: fog brushes become [volumetric fog](#volumetric-fog-and-atmosphere)
-  (`pt_fog_q3_thickness`).
-* **Mirrors and portals** reflect and look through, as in Quake III, and so
-  do Quake's teleporter gates. Light comes through a portal too, so a lit room
-  on the far side lights this one, and a lamp behind a teleporter gate shines
-  through it (`pt_portal_light`), and DLSS Ray
-  Reconstruction is told to trust the current frame on a portal's view, which
-  moves under the flat surface's motion vectors (`pt_dlss_portal_responsive`).
-* **Materials**: `baseq3/materials/quake3.mat` gives Quake III's textures
-  roughness, metal and normal maps. Quake III's painted-on environment-map
-  shine becomes a real reflection of the room (`pt_q3_env_shine 1`, the
-  default; `0` draws it as Quake III did). The health orbs are glass, and
-  throw caustics on the floor around them.
-
-### Modding
-
-Quake III maps use the same tools as Quake II's, from `baseq3`:
-
-* `baseq3/materials/quake3.mat`, plus a `<map>.mat` per map, and the source
-  images in `baseq3/materialDev`. A `stage<N>_` key (`stage1_map`,
-  `stage2_roughness_override`, `stage1_emissive_factor`) sets one stage of a
-  Quake III shader, from the file or from the `mat` console command.
-* `baseq3/maps/<map>.cfg` for [per-map settings](#per-map-settings-mapcvar),
-  and `baseq3/maps/lights/<map>.cfg` for
-  [placed lights](#the-light-placement-system).
-
-## Quake support
-
-![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/Q1.jpg)
-
-Quake's campaigns and maps run inside the Quake II engine, path traced like
-everything else. Nothing from Quake ships with this project. Copy the episode
-folders from your own install of the Quake rerelease into a folder named `id1`
-next to the exe: `id1`, and any of `hipnotic`, `rogue`, `dopa`, `mg1`, `mg3`
-and `ctf`, each with its `pak0.pak` (so the first is `id1/id1/pak0.pak`). The
-game finds them at start-up (`fs_quake1` counts the episodes and the console
-prints *Quake 1 data: N episode(s)*), and the Quake options below appear in the
-menus. Without them, none of them show, and the project's own `id1` files stay
-out of Quake II's way.
-
-Quake's maps are renamed so they never collide with Quake II's: `q1/<map>` for
-the original game (`map q1/e1m1`) and `q1/<episode>/<map>` for an add-on
-(`map q1/mg1/hub`).
-
-### Single player
-
-**Single player** → **quake** lists the campaigns you have: *Quake*, *Scourge
-of Armagon*, *Dissolution of Eternity*, *Dimension of the Past*, *Dimension of
-the Machine* and *Dawn of the Machine*. Each starts on its own start map on
-Normal, and the start map's skill halls pick the difficulty for the rest, as in
-Quake.
-
-Each campaign runs **its own `progs.dat`** in a QuakeC virtual machine
-(`g_q1_progs 1`, the default), so its monsters, weapons, items, doors, lifts,
-secrets, intermissions and end text are Quake's own code rather than a copy of
-it. The add-ons' new monsters, weapons and entities come with them, and so does
-*Dimension of the Machine*'s fog, which changes room by room. The status bar is
-Quake's own, drawn from its own graphics; **Tab** shows Quake's scoreboard; and
-saving and loading work. Quake has no crouch, so the crouch key does nothing.
-
-Quake's demos join the [attract loop](#demo-playback) at the main menu, and
-`q1demo id1/id1/demo1.dem` plays one by hand.
-
-### Bot match and multiplayer
-
-With Quake's paks, **map set** on the bot match and **start server** pages
-offers **quake**: its eight deathmatch maps, the add-ons' arenas and every level
-of the first game, and in capture the flag the Threewave CTF maps. Their items,
-doors, lifts, buttons, teleporters and exploding boxes become Quake II's, and
-their monsters are left out.
-
-**Weapons** → **quake** (`g_q3_weapons 3`, and it needs no Quake III) deals
-Quake's guns, on Quake II maps too: the axe, the shotgun and super shotgun, the
-nailgun and super nailgun, the grenade and rocket launchers and the
-Thunderbolt, with Quake's damage, ammo, pickups and obituaries. **Player setup**
-lists Quake's Ranger first (`quake1/ranger`), with Quake's own animations and
-sounds; under **weapons** → **by player model**, the Ranger plays with Quake's
-guns while everyone else keeps their own.
-
-### Rendering
-
-* **Lights**: Quake's lamps, torches and glowing textures light the room, and
-  flicker and switch with the map's light styles. The light entities Quake's
-  compiler baked into the map are [map lights](#standing-in-for-the-maps-own-lights),
-  ready to be stood in for with `light replace`.
-* **Skies**: each map's two-layer scrolling sky, or its skybox, in Quake's own
-  colours, under **sky type** → **rerelease**. On a Quake map the environment
-  menu sets how bright it looks (`pt_q1_sky_brightness`), the light it casts and
-  its colour (`pt_q1_sky_light`, `_r`, `_g`, `_b`), and how much it lights the
-  fog (`pt_q1_sky_fog`).
-* **Sun**: the maps that ask for one with `_sunlight` (*Dimension of the Past*,
-  *Dimension of the Machine*, *Dawn of the Machine*) get the path tracer's sun,
-  from the direction in their `_sun_mangle` (`pt_q1_sun`, `pt_q1_sun_scale`).
-* **Fog**: a map's own `fog` becomes [volumetric fog](#volumetric-fog-and-atmosphere).
-* **Teleporters**: a slipgate shows the place it leads to, with a ripple
-  (`pt_q1_teleport_portals`, `pt_q1_teleport_warp`), and the light on the far
-  side comes through it (`pt_portal_light`). A gate whose view would start under
-  the far floor is raised to `pt_q1_teleport_clearance` (8) units above it.
-* **Materials**: `id1/materials/quake1.mat` gives Quake's textures normal,
-  roughness, metal and emissive maps, shaded the way Quake II RTX shades its
-  own. Its windows are [stained glass](#stained-glass): the light behind them
-  comes into the room, and into the fog, in the glass's colours.
-* **Fire and blood**: rockets, grenades, lava balls and exploding boxes use the
-  [simulated fire and smoke](#simulated-fire-and-smoke-nvidia-flow), and gibs
-  leave three times Quake II's blood trail (`cl_q1_gib_drops`, on the blood
-  menu as **quake gib trail**).
-
-### Modding
-
-Quake maps use the same tools as Quake II's, from `id1`:
-
-* `id1/materials/quake1.mat`, plus `id1/maps/q1/<map>.mat` per map, and the
-  source images in `id1/materialDev`.
-* `id1/maps/quake1.cfg` for every Quake map, then `id1/maps/q1/<map>.cfg`
-  (`id1/maps/q1/<episode>/<map>.cfg` for an add-on's) for
-  [per-map settings](#per-map-settings-mapcvar), and
-  `id1/maps/lights/q1/<map>.cfg` for [placed lights](#the-light-placement-system).
-
 ## Gore and physical blood
 
 Blood droplets are **real, shaded sphere geometry**, not particles
@@ -1145,129 +1263,9 @@ space, so a burst of sixty costs one instance, not sixty.
 * **Motion vectors** are per-vertex previous-position deltas packed into
   `custom0..2` and tracked client-side per droplet, which is what keeps bursts
   from leaving red comet trails under DLSS-RR.
-* **`g_ludicrous_gibs`** (off by default): far more gib chunks, heavier blood
-  trails, gibs that never expire, and corpses that can be shot apart in stages
-  after they are already dead. **`g_no_janitor`** stops the entity janitor
-  removing gibs and corpses, and the flies on corpses stay with them instead of
-  leaving after a minute.
-
-## Simulated fire and smoke (NVIDIA Flow)
-
-Explosions, the BFG's plasma and rocket trails can be simulated by **NVIDIA
-Flow 2**, NVIDIA's gas solver (advection, combustion, vorticity and pressure on
-a sparse grid). It runs as compute on the game's own GPU device and queue —
-Vulkan, or on the [Direct3D 12 renderer](#direct3d-12-renderer) a Direct3D 12
-backend for Flow written for this project — and the path tracer marches the
-result. The fire is a volume in the
-room rather than a flat sprite: it has depth, it shows in mirrors, glass and
-water, and it burns out into smoke that rises, drifts and fades.
-
-![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/quake043.jpg)
-
-*Rocket explosions lighting the room (photo mode).*
-
-![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/quake045.jpg)
-
-*A BFG blast: a cloud of green plasma throwing out jets.*
-
-* **Explosions** (`cl_flow_explosions`): a rocket or grenade makes a fireball
-  of burning fuel that goes from white-yellow through orange to grey smoke in
-  about a second and a half. The BFG's blast is a flower of plasma puffs with
-  thin jets thrown a couple of hundred units out, after the BFG impacts in
-  NVIDIA's RTX trailer, and each of its laser zaps leaves a small burst of
-  plasma. `1` adds the simulation to the classic fireball, `2` replaces the
-  fireball, `0` is off.
-* **Light** (`pt_flow_lighting`): the glowing gas is gathered into up to eight
-  lights that follow the fire, in place of the classic explosion light, so the
-  room is lit from where the fire actually is. The smoke scatters that light,
-  with Flow's self-shadow toward the brightest of them.
-* **Smoke lit by the world** (`pt_flow_env`): the smoke takes its light from
-  the sun, the sky and the map's lights, traced from a grid of probes around
-  it, instead of being one flat colour. Needs the ray query API.
-* **Collision** (`pt_flow_collision`): walls, floors and ceilings hold the
-  smoke in instead of letting it drift through. Costs about 0.4 ms while
-  there is smoke.
-* **Rocket trail** (`cl_rocket_flame`): `1` is a small simulated fireball at
-  the rocket's tail that cools into a column of smoke (the particle flame
-  stands in while the simulation is full), `2` a particle flame with a little
-  smoke, `0` the classic smoke and falling sparks.
-* **Grenade trail** (`cl_flow_grenadetrail`): `1` is simulated smoke along a
-  grenade's flight, thick where it leaves and thinning out like the classic
-  trail (the classic particles stand in while the simulation is full), `0`
-  the classic particles.
-* **Railgun trail** (`cl_flow_railtrail`): `1` is simulated gas in place of
-  the trail's particles, a cyan-blue spiral that glows and cools into wisps
-  round a thread of pale smoke (the classic particles stand in while the
-  simulation is full), `0` the classic particles. While it is on, **railgun
-  trail fade time** (`pt_flow_rail_fade`) lets it linger longer than the
-  1.4 seconds it is tuned to, up to 5; a longer fade holds the simulation
-  pool longer, so a quick second shot may go to particles.
-* **Plasma beam** (`cl_flow_heatbeam`): `1` makes the beam simulated gas: a
-  hot yellow-orange core in place of the beam model, rings of heat running
-  out along it that start white-hot and cool through yellow and orange to
-  smoke, and a hot spot burning off smoke where it hits - or, with **plasma
-  beam impact** set to fire (`cl_flow_heatbeam_fire`), what it hits set
-  alight: a wall bursts into flames where the beam is on it (size
-  `cl_flow_heatbeam_fire_size`, white-hot heart `cl_flow_heatbeam_fire_core`),
-  a monster or player burns over its top half and dies down once the beam moves off
-  (`cl_flow_burn_after`, 1.5 s), and the gibs it blows off burn and go out
-  into smoke (`cl_flow_gib_burn`, 3 s). **Plasma beam trails**
-  (`pt_flow_heatbeam_trails`) is off by default: the gas stays with the
-  weapon as you sweep it. On, it leaves glow and smoke where it was, which
-  costs a lot while strafing. The
-  model is still drawn past the first 1024 units of a long beam, and it still
-  lights the room (the classic beam and rings stand in while the simulation
-  is full). `0` is the classic beam and rings.
-* **Gib fire and smoke** (`cl_flow_gib_effects`): `1` sets some of the gibs
-  a rocket, grenade or exploding barrel blows off alight, at random (about
-  one in three, `cl_flow_gib_fire_chance`), burning like the plasma beam's
-  gibs and going out into smoke; and the railgun's gibs smoke with no flame,
-  in the air and on as they lie (`cl_flow_gib_smoke`, 4.25 s). `0` off.
-* **Under water** (`cl_explosion_water`): an explosion keeps a flame and
-  lights the water yellow-white. `1` is a smaller simulated flame when Flow
-  draws the explosions, `2` always the classic fireball, `0` the classic
-  fireball and light.
-
-| cvar | Default | Notes |
-|---|---|---|
-| `cl_flow_explosions` | `2` | `0` off, `1` with the classic fireball, `2` instead of it. |
-| `cl_rocket_flame` | `1` | `0` classic, `1` simulated, `2` particles. |
-| `cl_flow_grenadetrail` | `1` | `0` classic, `1` simulated. |
-| `cl_flow_railtrail` | `1` | `0` classic, `1` simulated. |
-| `pt_flow_rail_fade` | `1.4` | Seconds the simulated railgun trail takes to fade, 1.4 (the shortest) to 5. |
-| `cl_flow_heatbeam` | `1` | `0` classic beam and rings, `1` simulated. |
-| `cl_flow_heatbeam_fire` | `0` | Where the simulated plasma beam hits: `0` a hot spot, `1` fire. |
-| `pt_flow_heatbeam_trails` | `0` | `0` the simulated plasma beam stays with the weapon, `1` it leaves glow and smoke behind as it is swept. |
-| `pt_flow_heatbeam_lean` | `1` | With trails off, the plasma beam skips the simulation work it never shows (moving the gas, the room kept round it); `0` runs it all, for comparison. Same picture. |
-| `cl_flow_gib_effects` | `1` | Explosions' gibs sometimes catch fire, the railgun's smoke. |
-| `cl_explosion_water` | `1` | `0` off, `1` simulated, `2` classic. |
-| `pt_flow_lighting` | `1` | The fire and plasma cast light. |
-| `pt_flow_env` | `1` | Smoke lit by the world. |
-| `pt_flow_collision` | `1` | Smoke collides with the world. |
-| `pt_flow_collision_layers` | `1` | Collision only for the effects with gas this frame; `0` for all of them, as before. Same picture. |
-| `pt_flow_march` | `31` | Shortcuts in the march through the volume, as bits (`1` light read once a step, `2` two steps at a time, `4` and `8` empty space passed quickly, `16` pixels with no gas in front not marched at all); `15` leaves out the last, `0` all of them, for comparison. Same picture. |
-| `pt_flow_max_blocks` | `3584` | The simulation pool, 512 to 4096 blocks; about 0.45 MB of video memory a block, taken whether used or not. |
-| `pt_flow_cell_size` | `3` | Cell size in units for the explosions, the BFG, bubbles and the rocket and grenade trails. Half the size takes eight times the blocks. |
-| `pt_flow_rail_cell_size` | `0.5` | The railgun trail near the view. |
-| `pt_flow_rail_far_cell_size` | `1.5` | The railgun trail beyond `pt_flow_rail_lod_distance` (256). |
-| `pt_flow_heatbeam_cell_size` | `1` | The plasma beam. |
-| `pt_flow` | `1` | `0` skips Flow when the renderer starts. |
-
-The simulation steps 60 times a second (`pt_flow_rate`) at the start of the
-frame. The volume is marched per pixel at render resolution, in the primary
-and reflection passes, before DLSS, which denoises and upscales it with
-everything else. The GPU profiler (`profiler 1`) has *flow simulation* and
-*flow smoke lighting* rows; `pt_flow_profile 1` prints Flow's own passes
-and their GPU time once a second (FLOWPROF lines in the console).
-
-Flow needs the RTX renderer and `nvflow.dll` and `nvflowext.dll` beside
-`q2rtx.exe`. The release package includes them, with their licence (BSD-3) in
-`licenses/nvidia-flow/`; for your own build, `setup/build_flow.py` builds them
-from NVIDIA's source. Without them the game runs as before and the options
-stay hidden; the read-only `flow_available` and `flow_env_available` say what
-was found. Windows only for now.
-
-In the menu: **options** → **effects setup**.
+* **`g_no_janitor`** (off by default) stops the entity janitor removing gibs and
+  corpses, and the flies on corpses stay with them instead of leaving after a
+  minute.
 
 ## Sound
 

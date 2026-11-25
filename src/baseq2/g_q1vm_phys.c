@@ -481,6 +481,45 @@ static void q1_check_velocity(qc_entvars_t *ev)
 }
 
 /*
+GIBS THAT STAY. ThrowGib, in every episode's progs (id1, hipnotic, rogue, dopa,
+mg1, mg3, ctf), gives each chunk `think = SUB_Remove; nextthink = time + 10 +
+random() * 10` - Quake's own janitor; ThrowHead's head never goes. Matt
+(11-25): "The heads stay but the rest of the gibs do not. No janitor should
+make the gibs stay." So under KEEP_GIBS() (g_no_janitor, or ludicrous gibs,
+as for Quake II's own) that one think is skipped: a chunk of a gib model
+(Q1_MF_GIB, the blood trail flag), thrown loose (SOLID_NOT, bouncing), about to
+SUB_Remove itself. Its nextthink is spent, so it stays for the level, in a save
+too. Should the level run out of entities, the oldest of them goes then
+(Q1_OldestKeptGib, from QC_Alloc).
+*/
+static bool q1_is_kept_gib(int num)
+{
+    const qc_entvars_t *ev = QC_EV(num);
+    const int mt = (int)ev->movetype;
+
+    if (num <= game.maxclients || !(qvm.ed[num].mdl_flags & Q1_MF_GIB) || (int)ev->solid != Q1_SOLID_NOT)
+        return false;
+    if (mt != Q1_MOVETYPE_BOUNCE && mt != Q1_MOVETYPE_GIB && mt != Q1_MOVETYPE_TOSS)
+        return false;
+    if (ev->think <= 0 || ev->think >= qvm.progs->numfunctions)
+        return false;
+    return !strcmp(QC_Str(qvm.functions[ev->think].s_name), "SUB_Remove");
+}
+
+int Q1_OldestKeptGib(void)
+{
+    int oldest = 0;
+
+    for (int i = game.maxclients + 1; i < qvm.num_edicts; i++) {
+        if (qvm.ed[i].free || qvm.ed[i].isstatic || !q1_is_kept_gib(i))
+            continue;
+        if (!oldest || QC_EV(i)->ltime < QC_EV(oldest)->ltime)
+            oldest = i;
+    }
+    return oldest;
+}
+
+/*
 Runs thinking code if time. There is some play in the exact time the think
 function will be called, because it is called before any movement is done in
 a frame. Not used for pushmove objects, because they must be exact. Returns
@@ -500,6 +539,10 @@ bool Q1_RunThink(int num)
     ev->nextthink = 0;
     if (!ev->think)
         return true;    // Quake stopped the server here
+
+    // no janitor: a gib's SUB_Remove is skipped (GIBS THAT STAY above)
+    if (KEEP_GIBS() && q1_is_kept_gib(num))
+        return true;
 
     qvm.g->time = thinktime;
     qvm.g->self = QC_ToProg(num);
@@ -929,6 +972,449 @@ static void q1_check_water_transition(int num)
 }
 
 /*
+==============================================================================
+
+ROLLING HEADS (g_q1_head_roll)
+
+ThrowHead, in every episode's progs, makes the gibbed monster its own head:
+progs/h_*.mdl, MOVETYPE_BOUNCE, SOLID_NOT, box '-16 -16 0' '16 16 56' with the
+origin dropped 24 to the feet, and a random spin about the vertical. Quake's
+toss physics traces that box as hull 1 - the player's 32x32x56 - and stops it
+only on ground flatter than 45 degrees (normal z > 0.7). So a head comes to
+rest on a corner of a box twice its width over a slope or a ledge, the model
+drawn at the box's bottom middle, up to 16 units over the floor under it; the
+56-unit box catches slanted walls and arches far above the head itself, and on
+anything steeper than 45 it bounces at half speed (backoff 1.5), spinning,
+until it finds flat ground. Matt (11-25, e1m1's sfloor4 ramp down into the
+exit corridor): heads "floating", one "spinning in mid air not traveling then
+it bounced around like a ping pong ball and never really landed" - "the heads
+should of rolled down the slope".
+
+With g_q1_head_roll 1 (the default) the engine moves a head itself:
+- against the map's real surfaces (point traces, hull 0), as the mesh it is:
+  its lowest vertex, as it is turned now, sits on the floor;
+- on a floor steeper than g_q1_head_roll_slope degrees (default 15) it rolls
+  down, gaining speed as a rolling ball does (5/7 of gravity along the slope);
+  flatter, its rolling resistance (which holds a ball on exactly that slope)
+  brings it to rest - so a head thrown along a floor rolls a little and stops;
+  a drag growing with its speed (a lumpy head bumps) keeps it to about 80
+  units a second down e1m1's 27 degree ramp;
+- it turns by the distance it covers (angle = distance / height of its middle
+  over the floor), about the middle of its mesh, so it really rolls;
+- a hard landing bounces at 0.3 of its speed into the floor and scuffs off a
+  quarter of the rest; a soft one stays down;
+- it rests (Quake's FL_ONGROUND, velocity and spin cleared) once slow on a floor
+  it can stay on, or once it has stopped moving at all (wedged).
+The progs' box is left as it was, so pushers and triggers see what they did.
+Dead players are left to Quake's physics: their view rides the head.
+
+The client draws the model about its own origin, so the origin sent is put
+where the middle should be, less the turned offset of the middle; and since a
+client lerps each angle between 10 Hz frames on its own, the angles are the
+Euler triple nearest the last frame's (no flip at pitch 90), and the turn is
+capped at 100 degrees a frame (faster than that the head skids rather than
+reads as spinning backwards).
+
+The spin it is thrown with is kept in avelocity until it lands; after that
+avelocity holds the world angular velocity (degrees a second) as (pitch, yaw,
+roll) = (about y, about z, about x) - which ThrowHead's '0 yaw 0' already is.
+==============================================================================
+*/
+
+static cvar_t *g_q1_head_roll;
+static cvar_t *g_q1_head_roll_slope;
+static cvar_t *g_q1_head_debug;     // a line a frame per head moved
+
+#define HEAD_SUBSTEPS       4
+#define HEAD_BOUNCE         0.3f    // the speed into the floor kept off a hard landing
+#define HEAD_BOUNCE_MIN     60.0f   // slower than this into the floor stays down
+#define HEAD_SCUFF          0.75f   // the speed along the floor kept through a hard landing
+#define HEAD_REST_SPEED     6.0f
+#define HEAD_MAX_TURN       100.0f  // degrees a frame
+#define HEAD_GROUND_GAP     1.0f    // this close over the floor is on it
+#define HEAD_LIFTOFF        30.0f   // faster than this away from the floor is off it
+#define HEAD_ROLL_DRAG      1.5f    // a second, of the speed rolling: a 27 deg ramp's ~80 u/s
+
+void Q1_PhysicsInit(void)
+{
+    g_q1_head_roll = gi.cvar("g_q1_head_roll", "1", CVAR_ARCHIVE);
+    g_q1_head_roll_slope = gi.cvar("g_q1_head_roll_slope", "15", CVAR_ARCHIVE);
+    g_q1_head_debug = gi.cvar("g_q1_head_debug", "0", 0);
+}
+
+// a ThrowHead head these physics move, or NULL for Quake's toss
+static const q1_head_mesh_t *q1_head_for(int num)
+{
+    const qc_entvars_t *ev = QC_EV(num);
+    const int mt = (int)ev->movetype;
+
+    if (!g_q1_head_roll || !g_q1_head_roll->integer || num <= game.maxclients)
+        return NULL;
+    if ((mt != Q1_MOVETYPE_BOUNCE && mt != Q1_MOVETYPE_GIB) || (int)ev->solid != Q1_SOLID_NOT)
+        return NULL;
+    if (!(qvm.ed[num].mdl_flags & Q1_MF_GIB))
+        return NULL;
+    return Q1_HeadMesh((int)ev->modelindex);
+}
+
+// the axes a client draws the alias model with: forward, left, up (SyncEdict
+// sends an alias model's pitch and roll negated)
+static void head_axes(const vec3_t view, vec3_t axis[3])
+{
+    vec3_t right;
+    AngleVectors(view, axis[0], right, axis[2]);
+    VectorNegate(right, axis[1]);
+}
+
+static void head_to_world(vec3_t axis[3], const vec3_t v, vec3_t out)
+{
+    for (int k = 0; k < 3; k++)
+        out[k] = v[0] * axis[0][k] + v[1] * axis[1][k] + v[2] * axis[2][k];
+}
+
+// how far the mesh, turned to (axis), reaches from its middle against (dir):
+// over a floor of normal dir, the height of the middle when it sits on it
+static float head_support(const q1_head_mesh_t *m, vec3_t axis[3], const vec3_t dir)
+{
+    const vec3_t d = { DotProduct(dir, axis[0]), DotProduct(dir, axis[1]), DotProduct(dir, axis[2]) };
+    float best = 0;
+
+    for (int i = 0; i < m->numverts; i++) {
+        float s = -DotProduct(m->verts[i], d);
+        if (s > best)
+            best = s;
+    }
+    return best;
+}
+
+// axis turned (rad) about the unit vector (w), in the world
+static void head_turn(vec3_t axis[3], const vec3_t w, float rad)
+{
+    const float c = cosf(rad), s = sinf(rad);
+
+    for (int i = 0; i < 3; i++) {
+        vec3_t v, cr;
+        VectorCopy(axis[i], v);
+        CrossProduct(w, v, cr);
+        const float d = DotProduct(w, v) * (1 - c);
+        for (int k = 0; k < 3; k++)
+            axis[i][k] = v[k] * c + cr[k] * s + w[k] * d;
+    }
+    // keep them square
+    VectorNormalize(axis[0]);
+    CrossProduct(axis[2], axis[0], axis[1]);
+    VectorNormalize(axis[1]);
+    CrossProduct(axis[0], axis[1], axis[2]);
+}
+
+static float head_clip(float x, float lo, float hi)
+{
+    return x < lo ? lo : x > hi ? hi : x;
+}
+
+static float head_angle_diff(float a, float b)
+{
+    float d = fmodf(a - b, 360);
+    if (d > 180)
+        d -= 360;
+    else if (d < -180)
+        d += 360;
+    return d;
+}
+
+// AngleVectors' angles for (axis), the triple nearest (prev), kept continuous with it
+static void head_angles(vec3_t axis[3], const vec3_t prev, vec3_t out)
+{
+    const float *f = axis[0], *l = axis[1], *u = axis[2];
+    const float sp = head_clip(-f[2], -1, 1);
+    const float cp = sqrtf(f[0] * f[0] + f[1] * f[1]);
+    vec3_t a, b;
+
+    if (cp < 1e-4f) {
+        // straight up or down: yaw and roll turn about the same line; yaw stays
+        const float y = DEG2RAD(prev[YAW]), cy = cosf(y), sy = sinf(y);
+        const float r0 = -l[0], r1 = -l[1];     // right
+        a[PITCH] = sp > 0 ? 90 : -90;
+        a[YAW] = prev[YAW];
+        a[ROLL] = RAD2DEG(atan2f(-(r0 * cy + r1 * sy) / (sp > 0 ? 1 : -1), r0 * sy - r1 * cy));
+    } else {
+        a[PITCH] = RAD2DEG(asinf(sp));
+        a[YAW] = RAD2DEG(atan2f(f[1], f[0]));
+        a[ROLL] = RAD2DEG(atan2f(l[2], u[2]));
+        b[PITCH] = 180 - a[PITCH];
+        b[YAW] = a[YAW] + 180;
+        b[ROLL] = a[ROLL] + 180;
+        float da = 0, db = 0;
+        for (int k = 0; k < 3; k++) {
+            da += fabsf(head_angle_diff(a[k], prev[k]));
+            db += fabsf(head_angle_diff(b[k], prev[k]));
+        }
+        if (db < da)
+            VectorCopy(b, a);
+    }
+    for (int k = 0; k < 3; k++)
+        out[k] = q1_anglemod(prev[k] + head_angle_diff(a[k], prev[k]));
+}
+
+static q1trace_t head_trace(int num, const vec3_t start, const vec3_t end)
+{
+    return Q1_Move(start, vec3_origin, vec3_origin, end, Q1_MOVE_NOMONSTERS, num);
+}
+
+// the floor under the middle (p) of a head turned to (axis): its normal and
+// the gap from the lowest vertex down to it; false with none within reach
+static bool head_floor(int num, const q1_head_mesh_t *m, vec3_t axis[3], const vec3_t p,
+                       vec3_t normal, float *gap, int *ent)
+{
+    vec3_t end;
+    VectorCopy(p, end);
+    end[2] -= m->reach * 2 + 8;
+
+    q1trace_t t = head_trace(num, p, end);
+    if (t.fraction >= 1 || t.startsolid || t.plane.normal[2] < 0.05f)
+        return false;
+
+    vec3_t d;
+    VectorSubtract(p, t.endpos, d);
+    VectorCopy(t.plane.normal, normal);
+    *gap = DotProduct(d, normal) - head_support(m, axis, normal);
+    *ent = t.ent >= 0 && !q1_free(t.ent) ? t.ent : 0;
+    return true;
+}
+
+// moves (p) by (move) as far as it goes; the plane it stopped on, if any
+static bool head_slide(int num, vec3_t p, const vec3_t move, vec3_t hitnormal)
+{
+    vec3_t end;
+    VectorAdd(p, move, end);
+    q1trace_t t = head_trace(num, p, end);
+    if (t.startsolid || t.allsolid)
+        return false;
+    VectorCopy(t.endpos, p);
+    if (t.fraction < 1) {
+        VectorCopy(t.plane.normal, hitnormal);
+        if (t.ent > 0 && !q1_free(t.ent))
+            q1_impact_trace(num, &t);
+        return true;
+    }
+    return false;
+}
+
+// (v) off a surface of normal (n): bounced when hard, else only stopped into it
+static void head_hit(vec3_t v, const vec3_t n)
+{
+    const float vn = DotProduct(v, n);
+    if (vn >= 0)
+        return;
+    if (vn < -HEAD_BOUNCE_MIN) {
+        VectorMA(v, -vn, n, v);             // along the surface
+        VectorScale(v, HEAD_SCUFF, v);
+        VectorMA(v, -vn * HEAD_BOUNCE, n, v);
+    } else {
+        VectorMA(v, -vn, n, v);
+    }
+}
+
+/*
+One frame of a head (ROLLING HEADS above). False when it can't be done here
+(stuck in the map): Quake's toss has the frame.
+*/
+static bool q1_physics_head(int num, const q1_head_mesh_t *m)
+{
+    qc_entvars_t *ev = QC_EV(num);
+    const float gravity = sv_gravity ? sv_gravity->value : 800;
+    const float h = qvm.frametime / HEAD_SUBSTEPS;
+    const float slope = DEG2RAD(head_clip(g_q1_head_roll_slope->value, 0, 80));
+    const float rest_nz = cosf(slope);
+    // the rolling resistance that just holds a ball on a slope of that angle
+    const float resist = (5.0f / 7.0f) * gravity * tanf(slope);
+    vec3_t view, axis[3], p, p0, v, w, mid;
+    float spin;     // rad/s about w
+    bool down = false, landed = false;
+    int groundent = 0;
+    vec3_t floor_n = { 0, 0, 1 };
+
+    // where the client draws it from: the middle of the mesh
+    VectorSet(view, -ev->angles[PITCH], ev->angles[YAW], -ev->angles[ROLL]);
+    head_axes(view, axis);
+    head_to_world(axis, m->centre, mid);
+    VectorAdd(ev->origin, mid, p);
+
+    if (Q1_PointContents(p) == Q1_CONTENTS_SOLID) {
+        // thrown against a wall: try a little higher
+        int k;
+        for (k = 0; k < 6 && Q1_PointContents(p) == Q1_CONTENTS_SOLID; k++)
+            p[2] += 4;
+        if (k == 6)
+            return false;
+    }
+    VectorCopy(p, p0);
+    q1_check_velocity(ev);
+    VectorCopy(ev->velocity, v);
+
+    // the spin: world angular velocity, degrees a second (see above)
+    VectorSet(w, DEG2RAD(ev->avelocity[ROLL]), DEG2RAD(ev->avelocity[PITCH]), DEG2RAD(ev->avelocity[YAW]));
+    spin = VectorNormalize(w);
+    float turn_left = DEG2RAD(HEAD_MAX_TURN);
+
+    for (int s = 0; s < HEAD_SUBSTEPS; s++) {
+        vec3_t n, hit, move;
+        float gap = 0;
+        int fe = 0;
+
+        // on the floor - unless leaving it (thrown up off it)
+        const bool over = head_floor(num, m, axis, p, n, &gap, &fe);
+        down = over && gap < HEAD_GROUND_GAP && DotProduct(v, n) < HEAD_LIFTOFF;
+        if (down) {
+            const float vn = DotProduct(v, n);
+            VectorCopy(n, floor_n);
+            groundent = fe;
+            if (vn < -HEAD_BOUNCE_MIN) {
+                // a hard landing: up off the floor again
+                head_hit(v, n);
+                down = false;
+            } else {
+                if (vn < 0)
+                    VectorMA(v, -vn, n, v);
+                // down the slope: 5/7 of gravity along it, for a rolling ball
+                vec3_t along = { 0, 0, -gravity };
+                VectorMA(along, gravity * n[2], n, along);
+                VectorMA(v, (5.0f / 7.0f) * h, along, v);
+                // the rolling resistance, against the way it goes, and the
+                // bumping of a lumpy head, growing with its speed
+                const float speed = VectorLength(v);
+                const float drop = (resist * n[2] + HEAD_ROLL_DRAG * speed) * h;
+                if (speed <= drop)
+                    VectorClear(v);
+                else
+                    VectorScale(v, (speed - drop) / speed, v);
+                landed = true;
+            }
+            // onto the floor (or out of it), along its normal
+            if (fabsf(gap) > 0.01f) {
+                VectorScale(n, -gap, move);
+                head_slide(num, p, move, hit);
+            }
+        }
+        if (!down)
+            v[2] -= gravity * h;
+
+        // the move, and the walls in the way; falling, it stops ON the floor
+        // (the trace is of the middle, which would go all the way down to it)
+        VectorScale(v, h, move);
+        if (over && !down) {
+            const float into = -DotProduct(move, n);
+            if (into > 0 && into > gap)
+                VectorScale(move, max(gap, 0) / into, move);
+        }
+        if (head_slide(num, p, move, hit)) {
+            if (qvm.ed[num].free)
+                return true;
+            head_hit(v, hit);
+        }
+        const float hs = sqrtf(v[0] * v[0] + v[1] * v[1]);
+        if (hs > 1) {
+            // the side of the mesh, not just its middle, keeps off a wall
+            const vec3_t dir = { v[0] / hs, v[1] / hs, 0 };
+            vec3_t back = { -dir[0], -dir[1], 0 }, end;
+            const float side = head_support(m, axis, back) + 0.5f;
+            VectorMA(p, side, dir, end);
+            q1trace_t t = head_trace(num, p, end);
+            if (!t.startsolid && t.fraction < 1) {
+                VectorScale(t.plane.normal, side * (1 - t.fraction), move);
+                head_slide(num, p, move, hit);
+                head_hit(v, t.plane.normal);
+            }
+        }
+
+        // the turn: rolling on the floor, else the spin it had
+        if (down) {
+            vec3_t along, axis_w;
+            VectorMA(v, -DotProduct(v, floor_n), floor_n, along);
+            CrossProduct(floor_n, along, axis_w);
+            const float height = max(head_support(m, axis, floor_n), 2.0f);
+            spin = VectorNormalize(axis_w) / height;
+            VectorCopy(axis_w, w);
+        }
+        float rad = min(spin * h, turn_left);
+        if (rad > 1e-5f) {
+            head_turn(axis, w, rad);
+            turn_left -= rad;
+        }
+    }
+
+    // resting: slow on a floor it can stay on, or not moving at all
+    vec3_t moved;
+    VectorSubtract(p, p0, moved);
+    if (landed && down && ((VectorLength(v) < HEAD_REST_SPEED && floor_n[2] >= rest_nz) || VectorLength(moved) < 0.25f)) {
+        ev->flags = (int)ev->flags | Q1_FL_ONGROUND;
+        ev->groundentity = QC_ToProg(groundent);
+        VectorClear(v);
+        spin = 0;
+    }
+
+    // back into the progs' fields: the model's origin from its middle
+    vec3_t out;
+    head_angles(axis, view, out);
+    ev->angles[PITCH] = q1_anglemod(-out[PITCH]);
+    ev->angles[YAW] = out[YAW];
+    ev->angles[ROLL] = q1_anglemod(-out[ROLL]);
+    head_to_world(axis, m->centre, mid);
+    VectorSubtract(p, mid, ev->origin);
+    VectorCopy(v, ev->velocity);
+    VectorScale(w, RAD2DEG(spin), w);
+    VectorSet(ev->avelocity, w[1], w[2], w[0]);
+
+    if (g_q1_head_debug->integer) {
+        vec3_t n;
+        float gap = 0;
+        int fe;
+        bool over = head_floor(num, m, axis, p, n, &gap, &fe);
+        gi.dprintf("head #%d t %.1f: middle %.1f %.1f %.1f speed %.0f%s, floor %s nz %.3f gap %.2f, angles %.0f %.0f %.0f\n",
+                   num, qvm.time, p[0], p[1], p[2], VectorLength(v), ((int)ev->flags & Q1_FL_ONGROUND) ? " RESTING" : "",
+                   over ? "yes" : "no", over ? n[2] : 0, gap, ev->angles[0], ev->angles[1], ev->angles[2]);
+    }
+
+    Q1_LinkEdict(num, true);
+    if (!qvm.ed[num].free)
+        q1_check_water_transition(num);
+    return true;
+}
+
+/*
+"sv q1head x y z [vx vy vz] [model]": a head as ThrowHead leaves it - feet at
+(origin), its box, the random spin - to watch it fall and roll (the headless
+q1gamehost's HOST_HEAD, or by hand). The entity number, 0 when it can't.
+*/
+int Q1_ThrowTestHead(const vec3_t origin, const vec3_t velocity, const char *model)
+{
+    if (!qvm.active)
+        return 0;
+    int mi = Q1_ModelIndex(model);
+    if (mi <= 0)
+        return 0;
+
+    int n = QC_Alloc();
+    qc_entvars_t *ev = QC_EV(n);
+    ev->classname = QC_EngineString("q1head");
+    ev->model = QC_EngineString(model);
+    ev->modelindex = mi;
+    qvm.ed[n].mdl_flags = Q1_ModelFlags(mi);
+    ev->movetype = Q1_MOVETYPE_BOUNCE;
+    ev->solid = Q1_SOLID_NOT;
+    VectorSet(ev->mins, -16, -16, 0);
+    VectorSet(ev->maxs, 16, 16, 56);
+    VectorSubtract(ev->maxs, ev->mins, ev->size);
+    VectorSet(ev->view_ofs, 0, 0, 8);
+    VectorCopy(origin, ev->origin);
+    VectorCopy(velocity, ev->velocity);
+    VectorSet(ev->avelocity, 0, crandom() * 600, 0);
+    ev->nextthink = -1;
+    Q1_LinkEdict(n, false);
+    return n;
+}
+
+/*
 Toss, bounce, and fly movement. When onground, do nothing.
 */
 static void q1_physics_toss(int num)
@@ -942,6 +1428,11 @@ static void q1_physics_toss(int num)
 
     // if onground, return without moving
     if ((int)ev->flags & Q1_FL_ONGROUND)
+        return;
+
+    // a ThrowHead head rolls (ROLLING HEADS above)
+    const q1_head_mesh_t *head = q1_head_for(num);
+    if (head && q1_physics_head(num, head))
         return;
 
     q1_check_velocity(ev);

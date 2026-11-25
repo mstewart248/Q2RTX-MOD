@@ -96,6 +96,7 @@ void Q1VM_GameInit(void)
 {
     g_q1_progs = gi.cvar("g_q1_progs", "1", 0);
     g_q1_flaregun_delay = gi.cvar("g_q1_flaregun_delay", "2", 0);
+    Q1_PhysicsInit();
 
     // a new game: no parms, no runes
     memset(q1c, 0, sizeof(q1c));
@@ -826,6 +827,56 @@ static int q1_weapon_impulse(const char *s)
         if (!Q_stricmp(s, weapons[i].name))
             return weapons[i].impulse;
     return 0;
+}
+
+// "sv q1head x y z [vx vy vz] [model]" (Q1_ThrowTestHead)
+bool Q1VM_ServerCommand(const char *cmd)
+{
+    // sv q1gib x y z [count]: the progs' own ThrowGib, count times, from a
+    // stand-in body there (health -60) - to see what becomes of its gibs
+    if (!Q_stricmp(cmd, "q1gib")) {
+        qc_function_t *f = qvm.active ? QC_FindFunction("ThrowGib") : NULL;
+        if (!f || gi.argc() < 5) {
+            gi.cprintf(NULL, PRINT_HIGH, "usage (on a Quake 1 level the progs run): sv q1gib x y z [count]\n");
+            return true;
+        }
+        static const char *const gibs[3] = { "progs/gib1.mdl", "progs/gib2.mdl", "progs/gib3.mdl" };
+        const int count = gi.argc() > 5 ? atoi(gi.argv(5)) : 3;
+        const int body = QC_Alloc();
+        const int save_self = qvm.g->self;
+        qc_entvars_t *ev = QC_EV(body);
+        for (int k = 0; k < 3; k++)
+            ev->origin[k] = atof(gi.argv(2 + k));
+        ev->health = -60;
+        for (int i = 0; i < count; i++) {
+            qvm.g->time = qvm.time;
+            qvm.g->self = QC_ToProg(body);
+            QC_G_INT(QC_OFS_PARM0) = QC_EngineString(gibs[i % 3]);
+            QC_G_FLOAT(QC_OFS_PARM1) = -60;
+            QC_Execute((int)(f - qvm.functions));
+        }
+        qvm.g->self = save_self;
+        QC_Free(body);
+        gi.cprintf(NULL, PRINT_HIGH, "q1gib: %d thrown\n", count);
+        return true;
+    }
+
+    if (Q_stricmp(cmd, "q1head"))
+        return false;
+    if (!qvm.active || gi.argc() < 5) {
+        gi.cprintf(NULL, PRINT_HIGH, "usage (on a Quake 1 level the progs run): sv q1head x y z [vx vy vz] [model]\n");
+        return true;
+    }
+    vec3_t org, vel = { 0, 0, 0 };
+    for (int k = 0; k < 3; k++) {
+        org[k] = atof(gi.argv(2 + k));
+        if (gi.argc() > 7)
+            vel[k] = atof(gi.argv(5 + k));
+    }
+    const char *model = gi.argc() > 8 ? gi.argv(8) : "progs/h_ogre.mdl";
+    int n = Q1_ThrowTestHead(org, vel, model);
+    gi.cprintf(NULL, PRINT_HIGH, n ? "q1head: entity %d\n" : "q1head: no head (%d)\n", n);
+    return true;
 }
 
 bool Q1VM_ClientCommand(edict_t *ent)

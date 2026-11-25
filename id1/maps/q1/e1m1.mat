@@ -31,6 +31,7 @@ textures/q1/comp1_1:
 	emissive_factor 2
 	texture_emissive materialDev/textures/q1/comp1_1_emit.png
 	light_styles 0
+	texture_normals materialDev/textures/q1/comp1_1_n.png
 
 textures/q1/comp1_2:
 	texture_base overrides/comp1_2.tga

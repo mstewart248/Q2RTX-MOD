@@ -1918,8 +1918,11 @@ collect_one_light_poly(bsp_t *bsp, mface_t *surf, mtexinfo_t *texinfo, pbr_mater
 			   rectangle clipped to the face is a fan of two or more, so those lights -
 			   most Quake II and rerelease light panels, whose glow does not reach the
 			   texture's edges - cast about half their light, all of it from one
-			   diagonal half. pt_light_full_panels 0 = that speed-up again. */
-			const bool full_panel = !cvar_pt_light_full_panels || cvar_pt_light_full_panels->integer != 0;
+			   diagonal half. pt_light_full_panels 0 = that speed-up again. A stained
+			   glass fill (collect_stained_face) always keeps them all: it was the
+			   whole face before it was cut to the glass. */
+			const bool full_panel = material->stained_glass
+			                        || !cvar_pt_light_full_panels || cvar_pt_light_full_panels->integer != 0;
 			const int num_triangles = full_panel ? instance.len - 2 : 1;
 
 			for (int i = 0; i < num_triangles; i++)
@@ -2050,10 +2053,14 @@ STAINED GLASS (material.h stained_glass, shader/stained_glass.h)
 
 A stained glass face makes no light from its emissive texture. It makes two:
   * its soft FILL, the share the glass spreads (stained_scatter): ordinary
-    light polys over the whole face, in the glass's average colour - what the
+    light polys over the face, in the glass's average colour - what the
     texture lets through on average, the base image times base_factor, less
     the two faces' reflection. copy_light scales it by stained_scatter, so the
-    console can change that live.
+    console can change that live. With a glass mask (texture_stained_mask)
+    the polys are cut to the box round its glass, as an emissive texture's
+    are to its glow, and the average is over that box (Matt 11-25: the fill
+    over the whole face lit the fog in front of the stone round the glass
+    too, so volumetric_scale brightened the whole texture's fog).
   * a WINDOW LIGHT (DYNLIGHT_WINDOW), the share that comes straight through:
     one for each window, which is the faces on the same tile of the same
     plane with the same material - a window the BSP compiler cut into
@@ -2168,6 +2175,51 @@ stained_average_transmission(const pbr_material_t *material, vec3_t out)
 		out[c] = (float)(sum[c] / (double)count) * faces;
 }
 
+/* What a stained glass material's lights are made from, worked out once per
+   material each time the lights are collected - both are a pass over a whole
+   image, and a window is often several faces. */
+typedef struct {
+	const pbr_material_t *material;
+	float glass[4];     // the box round the mask's glass (stained_mask_bounds)
+	bool has_bounds;    // there is such a box; false = the whole tile
+	bool no_glass;      // the mask has no glass at all: no fill, no window
+	vec3_t fill;        // the fill's colour, averaged over the box
+} stained_info_t;
+
+typedef struct {
+	stained_info_t *items;
+	int count, allocated;
+} stained_infos_t;
+
+static const stained_info_t *
+stained_info_for(stained_infos_t *infos, const pbr_material_t *material)
+{
+	for (int k = 0; k < infos->count; k++)
+		if (infos->items[k].material == material)
+			return infos->items + k;
+
+	if (infos->count == infos->allocated)
+	{
+		infos->allocated = max(infos->allocated * 2, 8);
+		infos->items = Z_Realloc(infos->items, infos->allocated * sizeof(stained_info_t));
+	}
+	stained_info_t *info = infos->items + infos->count++;
+	memset(info, 0, sizeof(*info));
+	info->material = material;
+	info->has_bounds = stained_mask_bounds(material, info->glass, &info->no_glass);
+
+	// the whole tile's average, the wall's texels at 0 - so over the glass's
+	// box, where every glass texel is, it is the same light from less area
+	stained_average_transmission(material, info->fill);
+	if (info->has_bounds)
+	{
+		const float share = (info->glass[2] - info->glass[0]) * (info->glass[3] - info->glass[1]);
+		if (share > 0.f)
+			VectorScale(info->fill, 1.f / share, info->fill);
+	}
+	return info;
+}
+
 // two of a window's extents, 12 bits each over -1..2 of the tile, rounded outward
 static float
 stained_pack_extent(float lo, float hi)
@@ -2183,16 +2235,36 @@ stained_pack_extent(float lo, float hi)
    made into a light when all the faces are in (stained_emit_windows). */
 static void
 collect_stained_face(bsp_t *bsp, mface_t *surf, mtexinfo_t *texinfo, pbr_material_t *material, int model_idx,
-                     int light_style, float emissive, stained_window_t **windows, int *num_windows, int *allocated_windows,
+                     int light_style, float emissive, stained_infos_t *infos,
+                     stained_window_t **windows, int *num_windows, int *allocated_windows,
                      int *num_lights, int *allocated_lights, light_poly_t **lights)
 {
 	const bool both_faces = (material->flags & MATERIAL_FLAG_DOUBLE_SIDED) != 0;
 	const int first_light = *num_lights;
+	const stained_info_t *info = stained_info_for(infos, material);
 
-	vec3_t fill;
-	stained_average_transmission(material, fill);
-	collect_one_light_poly_entire_texture(bsp, surf, texinfo, material, model_idx, fill, emissive, light_style,
-	                                      false, num_lights, allocated_lights, lights);
+	// the fill: the whole face, or with a glass mask the box round its glass
+	// on every tile of the face, as collect_one_light_poly cuts a glow
+	vec4_t plane;
+	if (info->no_glass)
+		;
+	else if (!info->has_bounds)
+		collect_one_light_poly_entire_texture(bsp, surf, texinfo, material, model_idx, info->fill, emissive, light_style,
+		                                      false, num_lights, allocated_lights, lights);
+	else if (get_surf_plane_equation(surf, plane))
+	{
+		// as collect_light_polys scales a glow's tile (SURF_N64_UV: twice the size)
+		float tex_scale[2] = { 1.f / (float)max(1, material->original_width),
+		                       1.f / (float)max(1, material->original_height) };
+		if (texinfo->c.flags & SURF_N64_UV)
+		{
+			tex_scale[0] *= 0.5f;
+			tex_scale[1] *= 0.5f;
+		}
+		collect_one_light_poly(bsp, surf, texinfo, material, model_idx, plane, tex_scale,
+		                       info->glass, info->glass + 2, info->fill, emissive, light_style, false,
+		                       num_lights, allocated_lights, lights);
+	}
 	if (both_faces)
 		add_back_faces(bsp, model_idx, first_light, num_lights, allocated_lights, lights);
 
@@ -2311,12 +2383,8 @@ collect_stained_face(bsp_t *bsp, mface_t *surf, mtexinfo_t *texinfo, pbr_materia
 // a brush model (model_idx >= 0) in its own space, placed when it is instanced
 static void
 stained_emit_windows(bsp_t *bsp, int model_idx, const stained_window_t *windows, int num_windows,
-                     int *num_lights, int *allocated_lights, light_poly_t **lights)
+                     stained_infos_t *infos, int *num_lights, int *allocated_lights, light_poly_t **lights)
 {
-	const pbr_material_t *bounds_of = NULL;
-	float glass[4] = { 0, 0, 1, 1 };
-	bool has_bounds = false, no_glass = false;
-
 	for (int k = 0; k < num_windows; k++)
 	{
 		const stained_window_t *w = windows + k;
@@ -2325,22 +2393,17 @@ stained_emit_windows(bsp_t *bsp, int model_idx, const stained_window_t *windows,
 		// light through: the window shrinks to the box round it, so the light
 		// is not picked for a floor that would see it through the wall part
 		float rect[4] = { w->rect[0], w->rect[1], w->rect[2], w->rect[3] };
-		// one pass over the mask per material, not per window
-		if (w->material != bounds_of)
+		const stained_info_t *info = stained_info_for(infos, w->material);
+		if (info->has_bounds)
 		{
-			bounds_of = w->material;
-			has_bounds = stained_mask_bounds(w->material, glass, &no_glass);
-		}
-		if (has_bounds)
-		{
-			rect[0] = max(rect[0], glass[0]);
-			rect[1] = max(rect[1], glass[1]);
-			rect[2] = min(rect[2], glass[2]);
-			rect[3] = min(rect[3], glass[3]);
+			rect[0] = max(rect[0], info->glass[0]);
+			rect[1] = max(rect[1], info->glass[1]);
+			rect[2] = min(rect[2], info->glass[2]);
+			rect[3] = min(rect[3], info->glass[3]);
 			if (!(rect[2] > rect[0]) || !(rect[3] > rect[1]))
 				continue;
 		}
-		else if (no_glass)
+		else if (info->no_glass)
 			continue;
 
 		light_poly_t light;
@@ -2411,9 +2474,11 @@ collect_light_polys(bsp_mesh_t *wm, bsp_t *bsp, int model_idx, int* num_lights, 
 	mface_t *surfaces = model_idx < 0 ? bsp->faces : bsp->models[model_idx].firstface;
 	int num_faces = model_idx < 0 ? bsp->numfaces : bsp->models[model_idx].numfaces;
 
-	// stained glass's windows, made into lights at the end (collect_stained_face)
+	// stained glass's windows, made into lights at the end (collect_stained_face),
+	// and what each stained material's lights are made from
 	stained_window_t *windows = NULL;
 	int num_windows = 0, allocated_windows = 0;
+	stained_infos_t stained_infos = { NULL, 0, 0 };
 
 	for (int i = 0; i < num_faces; i++)
 	{
@@ -2464,7 +2529,7 @@ collect_light_polys(bsp_mesh_t *wm, bsp_t *bsp, int model_idx, int* num_lights, 
 			if (emissive != 0.f)
 			{
 				const int style = material->light_styles ? get_surf_light_style(surf) : 0;
-				collect_stained_face(bsp, surf, texinfo, material, model_idx, style, emissive,
+				collect_stained_face(bsp, surf, texinfo, material, model_idx, style, emissive, &stained_infos,
 				                     &windows, &num_windows, &allocated_windows, num_lights, allocated_lights, lights);
 			}
 			continue;
@@ -2559,10 +2624,11 @@ collect_light_polys(bsp_mesh_t *wm, bsp_t *bsp, int model_idx, int* num_lights, 
 	if (num_windows > 0)
 	{
 		const int before = *num_lights;
-		stained_emit_windows(bsp, model_idx, windows, num_windows, num_lights, allocated_lights, lights);
+		stained_emit_windows(bsp, model_idx, windows, num_windows, &stained_infos, num_lights, allocated_lights, lights);
 		Com_DPrintf("Stained glass: %d window lights\n", *num_lights - before);
 	}
 	Z_Free(windows);
+	Z_Free(stained_infos.items);
 }
 
 static void
@@ -3570,6 +3636,12 @@ bsp_mesh_register_textures(bsp_t *bsp)
 			material->num_frames = texinfo->numframes;
 			material->next_frame = texinfo->next->material->flags & MATERIAL_INDEX_MASK;
 		}
+
+		// Quake 1's other frame set (bsp_q1.c); written for every texinfo so a
+		// material keeps none from an earlier map
+		if (material)
+			material->alt_frame = (texinfo->alt && texinfo->alt->material)
+				? (int)(texinfo->alt->material->flags & MATERIAL_INDEX_MASK) + 1 : 0;
 	}
 }
 

@@ -45,6 +45,7 @@ typedef struct {
     int     numframes, numskins;
     bool    anim;               // frame_slots or skin_slots is set
     bool    sync_rand;          // ST_RAND: each entity at its own point in the cycle
+    int     head_slot;          // Q1_HeadMesh: 0 not looked at, -1 not a head, else slot + 1
 } q1_model_t;
 
 static q1_model_t q1_models[MAX_MODELS];
@@ -241,6 +242,123 @@ static bool q1_has_suffix(const char *s, const char *suffix)
 {
     size_t a = strlen(s), b = strlen(suffix);
     return a >= b && !Q_stricmp(s + a - b, suffix);
+}
+
+/*
+HEADS. ThrowHead's models (progs/h_*.mdl, 12 to 61 vertices, one frame) as
+g_q1vm_phys.c rolls them: which vertex is lowest as the head is turned now, and
+the middle it turns about. Kept by name across levels; the slots outlive the
+level's q1_models table.
+*/
+#define Q1_HEAD_SLOTS   32
+
+static struct {
+    char            name[MAX_QPATH];    // as the progs named it
+    char            episode[16];        // whose copy (an add-on may have its own)
+    bool            ok;
+    q1_head_mesh_t  mesh;
+} q1_heads[Q1_HEAD_SLOTS];
+static int q1_num_heads;
+
+// frame 0 of an .mdl (a group's first member), into (out); false if it isn't all there
+static bool q1_read_head(const byte *buf, size_t len, q1_head_mesh_t *out)
+{
+    if (len < 84 || memcmp(buf, "IDPO", 4))
+        return false;
+    vec3_t scale, translate;
+    for (int k = 0; k < 3; k++) {
+        scale[k] = q1_rdf(buf + 8 + 4 * k);
+        translate[k] = q1_rdf(buf + 20 + 4 * k);
+    }
+    const int numskins = q1_rd32(buf + 48), sw = q1_rd32(buf + 52), sh = q1_rd32(buf + 56);
+    const int nv = q1_rd32(buf + 60), nt = q1_rd32(buf + 64), nf = q1_rd32(buf + 68);
+    if (numskins < 0 || numskins > 32 || sw < 1 || sw > 4096 || sh < 1 || sh > 4096
+        || nv < 3 || nv > Q1_HEAD_MAX_VERTS || nt < 1 || nf < 1)
+        return false;
+
+    size_t p = 84;
+    for (int i = 0; i < numskins; i++) {
+        if (p + 4 > len)
+            return false;
+        if (q1_rd32(buf + p) == 0) {
+            p += 4 + (size_t)sw * sh;
+        } else {
+            if (p + 8 > len)
+                return false;
+            int n = q1_rd32(buf + p + 4);
+            if (n < 1 || n > 1024)
+                return false;
+            p += 8 + 4 * (size_t)n + (size_t)n * sw * sh;
+        }
+    }
+    p += 12 * (size_t)nv + 16 * (size_t)nt;
+    if (p + 4 > len)
+        return false;
+    if (q1_rd32(buf + p) == 0) {
+        p += 4 + 8 + 16;            // type, bboxmin, bboxmax, name
+    } else {
+        if (p + 8 > len)
+            return false;
+        int n = q1_rd32(buf + p + 4);
+        if (n < 1 || n > 1024)
+            return false;
+        p += 16 + 4 * (size_t)n + 8 + 16;   // the group's header and times, member 0's own
+    }
+    if (p + 4 * (size_t)nv > len)
+        return false;
+
+    vec3_t mins = { 1e9f, 1e9f, 1e9f }, maxs = { -1e9f, -1e9f, -1e9f };
+    out->numverts = nv;
+    for (int i = 0; i < nv; i++) {
+        for (int k = 0; k < 3; k++) {
+            float x = buf[p + 4 * i + k] * scale[k] + translate[k];
+            out->verts[i][k] = x;
+            mins[k] = min(mins[k], x);
+            maxs[k] = max(maxs[k], x);
+        }
+    }
+    VectorAvg(mins, maxs, out->centre);
+    out->reach = 0;
+    for (int i = 0; i < nv; i++) {
+        VectorSubtract(out->verts[i], out->centre, out->verts[i]);
+        out->reach = max(out->reach, VectorLength(out->verts[i]));
+    }
+    return out->reach > 1;
+}
+
+const q1_head_mesh_t *Q1_HeadMesh(int modelindex)
+{
+    if (modelindex <= 0 || modelindex >= MAX_MODELS)
+        return NULL;
+    q1_model_t *m = &q1_models[modelindex];
+
+    if (!m->head_slot) {
+        const char *base = COM_SkipPath(m->name);
+        m->head_slot = -1;
+        if (Q_strncasecmp(base, "h_", 2) || !q1_has_suffix(base, ".mdl"))
+            return NULL;
+
+        int i;
+        for (i = 0; i < q1_num_heads; i++)
+            if (!strcmp(q1_heads[i].name, m->name) && !strcmp(q1_heads[i].episode, qvm.episode))
+                break;
+        if (i == q1_num_heads) {
+            if (q1_num_heads == Q1_HEAD_SLOTS)
+                return NULL;
+            char path[MAX_QPATH];
+            byte *buf;
+            int len = gi.LoadFile(Q1_FilePath(m->name, path, sizeof(path)), (void **)&buf);
+            Q_strlcpy(q1_heads[i].name, m->name, sizeof(q1_heads[i].name));
+            Q_strlcpy(q1_heads[i].episode, qvm.episode, sizeof(q1_heads[i].episode));
+            q1_heads[i].ok = len > 0 && buf && q1_read_head(buf, (size_t)len, &q1_heads[i].mesh);
+            if (buf)
+                gi.FreeFile(buf);
+            q1_num_heads++;
+        }
+        if (q1_heads[i].ok)
+            m->head_slot = i + 1;
+    }
+    return m->head_slot > 0 ? &q1_heads[m->head_slot - 1].mesh : NULL;
 }
 
 // what Quake's server knew of a model: an alias model's or a sprite's box is

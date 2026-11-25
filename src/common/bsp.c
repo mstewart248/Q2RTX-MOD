@@ -148,6 +148,7 @@ LOAD(Texinfo)
         } else {
             out->next = NULL;
         }
+        out->alt = NULL;    // Quake 1's alternate set only (bsp_q1.c)
 #endif
     }
 
