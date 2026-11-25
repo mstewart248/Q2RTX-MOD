@@ -413,6 +413,7 @@ enum {
     Q3W_RAILGUN,
     Q3W_PLASMA,
     Q3W_BFG,
+    Q3W_GRAPPLE,    // WP_GRAPPLING_HOOK: only with g_q3_grapple
     Q3W_NUM
 };
 
@@ -460,6 +461,7 @@ enum {
 #define WEAP_Q3_RAILGUN         27
 #define WEAP_Q3_PLASMAGUN       28
 #define WEAP_Q3_BFG             29
+#define WEAP_Q3_GRAPPLE         30      // registered after the BFG10K's (Q3W_Precache)
 
 typedef struct gitem_s {
     char        *classname; // spawning name
@@ -1995,6 +1997,7 @@ void Team_Command(edict_t *ent);
 extern  cvar_t  *g_q3_items;
 extern  cvar_t  *g_q3_kit;
 extern  cvar_t  *g_q3_weapons;
+extern  cvar_t  *g_q3_grapple;  // Quake III's grappling hook in the spawn kit (g_q3weap.c)
 extern  cvar_t  *g_q3_physics;
 
 void Q3_InitGame(void);
@@ -2047,6 +2050,7 @@ bool Pickup_Q3Powerup(edict_t *ent, edict_t *other);
 bool Pickup_Q3Holdable(edict_t *ent, edict_t *other);
 void Use_Q3Medkit(edict_t *ent, gitem_t *item);
 void Use_Q3Teleporter(edict_t *ent, gitem_t *item);
+bool Q3_UseHoldable(edict_t *ent);
 bool Q3_PickupHealth(edict_t *ent, edict_t *other);
 int  Q3_HealthSound(const edict_t *ent);
 void Q3_DroppedItem(edict_t *dropped);
@@ -2094,10 +2098,12 @@ const char *Q3W_Obituary(int mod, bool self_kill, const char **message2, edict_t
 bool Q1W_Available(void);
 bool Q1W_ClientQ1(const gclient_t *client);
 bool Q1W_PlayerQ1(const edict_t *ent);
-gitem_t *Q1W_ItemFor(gitem_t *item, const edict_t *player);
-gitem_t *Q1W_FindItem(const char *name);
+gitem_t *Q1W_ItemFor(const edict_t *item_ent, const edict_t *player);
+gitem_t *Q1W_FindItem(edict_t *ent, const char *name);
 const char *Q1W_SpawnClassname(const char *classname);
 void Q1W_ItemModel(edict_t *ent);
+bool Q1W_RaiseOnPickup(edict_t *player, const gitem_t *item);
+bool Q1W_NoAmmoChange(edict_t *ent);
 bool Pickup_Q1Weapon(edict_t *ent, edict_t *other);
 bool Q1W_PickupAmmo(edict_t *ent, edict_t *other);
 void Q1W_GiveSpawnKit(gclient_t *client);
@@ -2161,6 +2167,8 @@ void CTFDrop_Tech(edict_t *ent, gitem_t *item);
 void CTFWeapon_Grapple(edict_t *ent);
 void CTF_GivePersistant(gclient_t *client);
 void CTF_PlayerResetGrapple(edict_t *ent);
+bool CTF_FireQ3Grapple(edict_t *ent, vec3_t start, vec3_t dir);    // Quake III's hook
+void CTF_ResetGrapple(edict_t *hook);
 void CTF_ClientThink(edict_t *ent);
 void CTF_ClientFrame(edict_t *ent);
 void CTF_PlayerDied(edict_t *self, edict_t *attacker);

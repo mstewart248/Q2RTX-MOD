@@ -511,6 +511,11 @@ static void CL_MouseMove(void)
     if (m_autosens->integer) {
         mx *= cl.fov_x * autosens_x;
         my *= cl.fov_y * autosens_y;
+    } else {
+        // +zoom turns slower by its own ratio, as Quake III's did (view.c)
+        const float zoom = V_ZoomSensitivity();
+        mx *= zoom;
+        my *= zoom;
     }
 
 // add mouse X/Y movement

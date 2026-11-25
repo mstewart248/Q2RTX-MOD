@@ -4027,6 +4027,32 @@ gitem_t itemlist[] = {
         /* precache */ "id1/id1/progs/bolt2.mdl #id1/sound/weapons/lstart.wav #id1/sound/weapons/lhit.wav"
     },
 
+    // Quake III's grappling hook (weapon 10, WP_GRAPPLING_HOOK), with its
+    // guns but after Quake's, so no item before it moves: g_q3_grapple hands
+    // it out (g_q3weap.c), and the hook itself is the CTF grapple's (g_ctf.c)
+    // with Quake III's rules and look. Its shot is Quake III's own missile,
+    // the rocket model (cg_weapons.c).
+    {
+        "weapon_q3_grapple",
+        Pickup_Q3Weapon,
+        Use_Weapon,
+        Drop_Weapon,
+        Weapon_Q3,
+        "#baseq3/sound/misc/w_pkup.wav",
+        "models/weapons2/grapple/grapple.md3", EF_ROTATE,
+        "models/weapons2/grapple/grapple.md3",
+        /* icon */      "/icons/iconw_grapple.tga",
+        /* pickup */    "Grappling Hook",
+        0,
+        0,
+        NULL,
+        IT_WEAPON | IT_Q3,
+        WEAP_Q3_GRAPPLE,
+        NULL,
+        Q3W_GRAPPLE,
+        /* precache */ "models/ammo/rocket/rocket.md3 #baseq3/sound/weapons/lightning/lg_hit.wav #baseq3/sound/weapons/lightning/lg_hit2.wav #baseq3/sound/weapons/lightning/lg_hit3.wav"
+    },
+
     // end of list marker
     {NULL}
 };
@@ -4144,6 +4170,7 @@ static const char *const rerelease_weapon_order[] = {
     "weapon_q3_railgun",
     "weapon_q3_plasmagun",
     "weapon_q3_bfg",
+    "weapon_q3_grapple",
     // Quake's, in its own impulse order (g_q1weap.c)
     "weapon_q1_axe",
     "weapon_q1_shotgun",

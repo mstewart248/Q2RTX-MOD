@@ -21,6 +21,7 @@ GNU General Public License for more details.
 #include "g_q1vm.h"
 
 static cvar_t *g_q1_progs;
+static cvar_t *g_q1_flaregun_delay;    // seconds between flares (THE FLARE GUN)
 
 // a player, as Quake's server and client knew them
 typedef struct {
@@ -52,10 +53,24 @@ typedef struct {
     bool    show_scores;        // Quake's +showscores: toggled by inven / score / help
     int     gun_string;         // weaponmodel the gun index is for
     int     gun_index;
+
+    // Quake II RTX's flare gun (THE FLARE GUN): out instead of the progs'
+    // weapon, when the next flare may go, the view model's frame
+    bool    flare_held;
+    float   flare_next;
+    int     flare_frame;
 } q1_client_t;
 
 static q1_client_t  q1c[MAX_CLIENTS];
 static float        q1_serverflags;
+
+// Quake II RTX's flare gun on Quake 1's levels (THE FLARE GUN, below)
+#define Q1_FLARE_CLASS  "q2rtx_flare"
+#define Q1_FLARE_MODEL  "models/objects/flare/tris.md2"
+#define Q1_FLARE_VIEW   "models/weapons/v_flareg/tris.md3"
+static int flare_class_str, flare_model_str;    // their QC strings this level
+static bool q1_flaregun_allowed(void);
+static void q1_flare_weapon_impulse(int num, int impulse);
 
 // a field the status bar reads that only some progs define (-1 when they
 // don't): the mission packs' items2
@@ -80,6 +95,7 @@ bool Q1VM_Active(void)
 void Q1VM_GameInit(void)
 {
     g_q1_progs = gi.cvar("g_q1_progs", "1", 0);
+    g_q1_flaregun_delay = gi.cvar("g_q1_flaregun_delay", "2", 0);
 
     // a new game: no parms, no runes
     memset(q1c, 0, sizeof(q1c));
@@ -234,6 +250,13 @@ bool Q1VM_SpawnEntities(const char *mapname, const char *entities)
     // effects and pictures
     gi.configstring(CS_Q1VM, qvm.episode);
 
+    // Quake II RTX's flare gun (THE FLARE GUN), loaded with the level
+    flare_class_str = flare_model_str = 0;
+    if (q1_flaregun_allowed()) {
+        gi.modelindex(Q1_FLARE_VIEW);
+        gi.modelindex(Q1_FLARE_MODEL);
+    }
+
     gi.dprintf("Quake 1 game: %s (%s), %i entities\n", map, episode, qvm.num_edicts);
     return true;
 }
@@ -283,6 +306,8 @@ void Q1VM_ClientBegin(edict_t *ent)
         c->layout_sent = 0;
         c->gun_string = -1;
         c->gun_index = 0;
+        c->flare_held = false;
+        c->flare_next = 0;
 
         // the view the save had: the client's own angles start at zero
         for (int i = 0; i < 3; i++) {
@@ -314,6 +339,8 @@ void Q1VM_ClientBegin(edict_t *ent)
     c->layout_sent = 0;
     c->gun_string = -1;
     c->gun_index = 0;
+    c->flare_held = false;      // the progs' weapon on every level
+    c->flare_next = 0;
 
     // the client clears its view angles when it connects to a level, so the
     // spawn's fixangle (q1_fix_angles, before this level's first command)
@@ -450,8 +477,10 @@ void Q1VM_ClientThink(edict_t *ent, usercmd_t *ucmd)
         return;
 
     // the impulse waits until the progs take it (ImpulseCommands)
-    if (ucmd->impulse)
+    if (ucmd->impulse) {
         ev->impulse = ucmd->impulse;
+        q1_flare_weapon_impulse(num, ucmd->impulse);
+    }
 
     q1_fix_angles(ent, num);
 
@@ -550,6 +579,230 @@ void Q1VM_ClientThink(edict_t *ent, usercmd_t *ucmd)
 /*
 ==============================================================================
 
+THE FLARE GUN
+
+Quake II RTX's flare gun on Quake 1's levels (11-24, Matt: "the quake1 levels
+should have the flare gun as an option"), under sv_flaregun as in Quake II.
+F ("use flare gun") takes it out in place of the progs' weapon; F again, or
+a Quake weapon key, puts it away. It is free, one flare every
+g_q1_flaregun_delay seconds, since Quake has no grenades to spend.
+
+The flare is Quake II's (fire_flaregun): 800 ups, spinning, stopped dead by
+what it hits (q1_physics_toss), sparking (TE_FLARE) and burning for 60
+seconds. It is the progs' entity (QC_Alloc), so it saves with the level, but
+the progs never run it: no think, no touch, SOLID_NOT (bmodels only, as a
+Quake trigger moves). q1_flares_frame keeps it, in fields the engine doesn't
+read for a bounce:
+  ltime = when it goes out
+  teleport_time = the next spark
+  armorvalue = the next burn sound
+
+Campaign only: the bot match on a Quake map is Quake II's game, which has
+its own flare gun.
+
+==============================================================================
+*/
+
+#define FLARE_LIFE          60.0f
+#define FLARE_SPARK         0.2f    // seconds between TE_FLAREs (flare_think)
+#define FLARE_SOUND_LEN     15.0f   // weapons/flare.wav
+#define FLARE_SOUND_GAP     14.9f   // the longest wait between its plays
+
+// v_flareg's frames (Weapon_FlareGun), one a server frame
+#define FLARE_FRAME_UP_LAST     8
+#define FLARE_FRAME_FIRE        9
+#define FLARE_FRAME_FIRE_LAST   13
+#define FLARE_FRAME_IDLE        14
+#define FLARE_FRAME_IDLE_LAST   49
+#define FLARE_FRAME_DOWN        50
+#define FLARE_FRAME_DOWN_LAST   53
+
+static bool q1_flaregun_allowed(void)
+{
+    return sv_flaregun && sv_flaregun->integer > 0;
+}
+
+// a QC string made once a level (the heap is saved with it)
+static int q1_flare_string(int *cache, const char *s)
+{
+    if (!*cache || strcmp(QC_Str(*cache), s))
+        *cache = QC_NewString(s);
+    return *cache;
+}
+
+bool Q1VM_IsFlare(int num)
+{
+    return !strcmp(QC_Str(QC_EV(num)->classname), Q1_FLARE_CLASS);
+}
+
+static void q1_flare_fire(int num)
+{
+    qc_entvars_t *ev = QC_EV(num);
+    vec3_t forward, right, eye, start;
+
+    if (qvm.num_edicts >= qvm.max_edicts - 8)
+        return;     // QC_Alloc would end the game
+
+    // Quake II's P_ProjectSource: 8 forward, 8 right, 8 below the eye, held
+    // back by a wall in between
+    AngleVectors(ev->v_angle, forward, right, NULL);
+    VectorAdd(ev->origin, ev->view_ofs, eye);
+    VectorMA(eye, 8, forward, start);
+    VectorMA(start, 8, right, start);
+    start[2] -= 8;
+    q1trace_t tr = Q1_Move(eye, vec3_origin, vec3_origin, start, Q1_MOVE_NOMONSTERS, num);
+
+    int f = QC_Alloc();
+    qc_entvars_t *fv = QC_EV(f);
+    fv->classname = q1_flare_string(&flare_class_str, Q1_FLARE_CLASS);
+    fv->model = q1_flare_string(&flare_model_str, Q1_FLARE_MODEL);
+    fv->modelindex = gi.modelindex(Q1_FLARE_MODEL);
+    fv->movetype = Q1_MOVETYPE_BOUNCE;
+    fv->solid = Q1_SOLID_NOT;
+    fv->owner = QC_ToProg(num);
+    VectorCopy(tr.endpos, fv->origin);
+    VectorCopy(tr.endpos, fv->oldorigin);
+    VectorScale(forward, 800, fv->velocity);
+    VectorSet(fv->avelocity, 300, 300, 300);
+    fv->ltime = qvm.time + FLARE_LIFE;
+    fv->teleport_time = qvm.time + FLARE_SPARK;
+    fv->armorvalue = 0;     // the first spark starts the burn
+    Q1_LinkEdict(f, false);
+
+    gi.WriteByte(svc_muzzleflash);
+    gi.WriteShort(num);
+    gi.WriteByte(MZ_FLARE);
+    gi.multicast(ev->origin, MULTICAST_PVS);
+
+    ev->punchangle[0] = -1;
+}
+
+/* When the burn sound has to start again, given that it starts now:
+   flare_next_sound_frame's spacing, so that the last play ends with the
+   flare instead of running on after it. */
+static float q1_flare_next_sound(float now, float out)
+{
+    float until_last = out - now - FLARE_SOUND_LEN;
+
+    if (until_last <= 0)
+        return out + 1;     // this play outlasts the flare
+
+    int restarts = (int)ceilf(until_last / FLARE_SOUND_GAP);
+    return now + until_last / restarts;
+}
+
+// flare_sparks
+static void q1_flare_spark(int f)
+{
+    qc_entvars_t *fv = QC_EV(f);
+    bool sound = qvm.time >= fv->armorvalue;
+
+    if (sound)
+        fv->armorvalue = q1_flare_next_sound(qvm.time, fv->ltime);
+
+    gi.WriteByte(svc_temp_entity);
+    gi.WriteByte(TE_FLARE);
+    gi.WriteShort(f);
+    gi.WriteByte(sound);
+    gi.WritePosition(fv->origin);
+    if (VectorLength(fv->velocity) > 0) {
+        vec3_t dir, up;
+        vectoangles(fv->velocity, dir);
+        AngleVectors(dir, NULL, NULL, up);
+        gi.WriteDir(up);
+    } else {
+        gi.WriteDir(vec3_origin);
+    }
+    gi.multicast(fv->origin, MULTICAST_PVS);
+}
+
+// the flares' sparks and ends, once a frame after the physics
+static void q1_flares_frame(void)
+{
+    for (int i = game.maxclients + 1; i < qvm.num_edicts; i++) {
+        if (qvm.ed[i].free)
+            continue;
+        qc_entvars_t *fv = QC_EV(i);
+        if ((int)fv->movetype != Q1_MOVETYPE_BOUNCE || !Q1VM_IsFlare(i))
+            continue;
+        if (qvm.time >= fv->ltime) {
+            QC_Free(i);
+            continue;
+        }
+        if (qvm.time >= fv->teleport_time) {
+            fv->teleport_time = qvm.time + FLARE_SPARK;
+            q1_flare_spark(i);
+        }
+    }
+}
+
+// F: out, or away again
+static void q1_flare_use(edict_t *ent, int num)
+{
+    q1_client_t *c = &q1c[num - 1];
+
+    if (!q1_flaregun_allowed()) {
+        gi.cprintf(ent, PRINT_HIGH, "The flare gun is off (sv_flaregun 0)\n");
+        return;
+    }
+    if (QC_EV(num)->health <= 0 || qvm.intermission)
+        return;
+
+    if (c->flare_held && c->flare_frame < FLARE_FRAME_DOWN) {
+        c->flare_frame = FLARE_FRAME_DOWN;
+    } else {
+        c->flare_held = true;
+        c->flare_frame = 0;
+    }
+}
+
+// a Quake weapon key while it's out: put it away, the progs' weapon after
+static void q1_flare_weapon_impulse(int num, int impulse)
+{
+    q1_client_t *c = &q1c[num - 1];
+
+    if ((impulse >= 1 && impulse <= 8) || impulse == 10 || impulse == 12)
+        if (c->flare_held && c->flare_frame < FLARE_FRAME_DOWN)
+            c->flare_frame = FLARE_FRAME_DOWN;
+}
+
+// Weapon_Generic, for one gun with no ammo: up, fire, idle, down
+static void q1_flare_think(int num)
+{
+    q1_client_t *c = &q1c[num - 1];
+    qc_entvars_t *ev = QC_EV(num);
+
+    if (!c->flare_held)
+        return;
+    if (!q1_flaregun_allowed() || ev->health <= 0 || qvm.intermission) {
+        c->flare_held = false;
+        return;
+    }
+
+    int f = c->flare_frame;
+    if (f >= FLARE_FRAME_DOWN) {
+        if (++f > FLARE_FRAME_DOWN_LAST) {
+            c->flare_held = false;
+            return;
+        }
+    } else if (f < FLARE_FRAME_UP_LAST || (f >= FLARE_FRAME_FIRE && f < FLARE_FRAME_FIRE_LAST)) {
+        f++;
+    } else if ((c->buttons & BUTTON_ATTACK) && qvm.time >= c->flare_next) {
+        // ready: up, fired or idling
+        f = FLARE_FRAME_FIRE;
+        c->flare_next = qvm.time + max(g_q1_flaregun_delay->value, 0.0f);
+        q1_flare_fire(num);
+    } else if (f < FLARE_FRAME_IDLE || f >= FLARE_FRAME_IDLE_LAST) {
+        f = FLARE_FRAME_IDLE;
+    } else {
+        f++;
+    }
+    c->flare_frame = f;
+}
+
+/*
+==============================================================================
+
 COMMANDS
 
 ==============================================================================
@@ -590,15 +843,24 @@ bool Q1VM_ClientCommand(edict_t *ent)
     qc_entvars_t *ev = QC_EV(num);
 
     if (!Q_stricmp(cmd, "use")) {
-        int imp = q1_weapon_impulse(gi.args());
-        if (imp)
-            ev->impulse = imp;
+        const char *s = gi.args();
+        if (!Q_stricmp(s, "flare gun") || !Q_stricmp(s, "flaregun")) {
+            q1_flare_use(ent, num);
+        } else {
+            int imp = q1_weapon_impulse(s);
+            if (imp)
+                ev->impulse = imp;
+            q1_flare_weapon_impulse(num, imp);
+        }
     } else if (!Q_stricmp(cmd, "weapnext")) {
         ev->impulse = 10;
+        q1_flare_weapon_impulse(num, 10);
     } else if (!Q_stricmp(cmd, "weapprev")) {
         ev->impulse = 12;
+        q1_flare_weapon_impulse(num, 12);
     } else if (!Q_stricmp(cmd, "impulse")) {
         ev->impulse = atoi(gi.argv(1));
+        q1_flare_weapon_impulse(num, (int)ev->impulse);
     } else if (!Q_stricmp(cmd, "kill")) {
         // Quake's Host_Kill_f
         if (ev->health <= 0) {
@@ -951,9 +1213,14 @@ static void q1_client_end_frame(edict_t *ent)
     if (ev->health > 0)
         ps->kick_angles[ROLL] += q1_calc_roll(ps->viewangles, ev->velocity, 2, 200);
 
-    // the gun, where Quake held it
-    ps->gunindex = ev->health > 0 ? q1_gun_index(c, ev) : 0;
-    ps->gunframe = (int)ev->weaponframe;
+    // the gun, where Quake held it, or Quake II RTX's flare gun
+    if (c->flare_held && ev->health > 0) {
+        ps->gunindex = gi.modelindex(Q1_FLARE_VIEW);
+        ps->gunframe = c->flare_frame;
+    } else {
+        ps->gunindex = ev->health > 0 ? q1_gun_index(c, ev) : 0;
+        ps->gunframe = (int)ev->weaponframe;
+    }
     AngleVectors(ps->viewangles, forward, right, up);
     VectorScale(forward, bob * 0.4f, ps->gunoffset);
     ps->gunoffset[2] += 2;
@@ -1150,9 +1417,25 @@ void Q1VM_SyncEdict(int num)
     // rocket's trail, fire puffing up out of nothing (Matt, 11-21).
     VectorCopy(ed->sent ? ed->sent_origin : e->s.origin, e->s.old_origin);
 
-    // a jump no velocity explains is a teleport: no sliding across the map
-    if (ed->sent && Distance(ed->sent_origin, ev->origin) > 64 + VectorLength(ev->velocity) * 0.2f)
-        e->s.event = EV_OTHER_TELEPORT;
+    /* A jump no velocity explains is a teleport: no sliding across the map.
+       Quake's own clients called it one past 100 units on any axis in one
+       update (FitzQuake CL_RelinkEntities: "assume a teleportation, not a
+       motion"). This was 64 units in all, and a dog runs in 64-unit strides
+       (dog_run5/run11, ai_run(64)) with no velocity - a walking monster moves
+       by steps - so every stride over a stair or a slope, and some diagonals
+       by rounding alone, went out as a teleport. The client drops a
+       teleport's lerp, so position, angles and frame snapped twice a run
+       cycle (Matt 11-24: the dog "jumps around", "warping"). Velocity keeps
+       its own allowance, for missiles and falls. */
+    if (ed->sent) {
+        const float allow = 100 + VectorLength(ev->velocity) * 0.2f;
+        for (int k = 0; k < 3; k++) {
+            if (fabsf(ev->origin[k] - ed->sent_origin[k]) > allow) {
+                e->s.event = EV_OTHER_TELEPORT;
+                break;
+            }
+        }
+    }
     VectorCopy(ev->origin, ed->sent_origin);
     ed->sent = true;
 }
@@ -1169,7 +1452,9 @@ void Q1VM_RunFrame(void)
         qc_entvars_t *ev = QC_EV(i);
         int b = c->buttons;
 
-        ev->button0 = (b & BUTTON_ATTACK) ? 1 : 0;
+        // the flare gun, when it's out, has the attack button
+        q1_flare_think(i);
+        ev->button0 = ((b & BUTTON_ATTACK) && !c->flare_held) ? 1 : 0;
         ev->button1 = (b & BUTTON_USE) ? 1 : 0;
         // jumping is pmove's; jump still swims up, respawns and leaves
         // the intermission, which the progs do
@@ -1182,6 +1467,7 @@ void Q1VM_RunFrame(void)
     qvm.g->frametime = qvm.frametime;
 
     Q1_Physics();
+    q1_flares_frame();
     Q1_MessagesFrame();
 
     for (i = 1; i < qvm.num_edicts; i++)
@@ -1455,6 +1741,7 @@ void Q1VM_ReadLevel(const char *filename)
     qvm.changelevel_issued = false;
     qvm.sky_impact = false;
     q1_serverflags = h.serverflags;
+    flare_class_str = flare_model_str = 0;     // the save's heap, looked up again
 
     for (i = 0; i < game.maxclients; i++) {
         q1_save_client_t c;

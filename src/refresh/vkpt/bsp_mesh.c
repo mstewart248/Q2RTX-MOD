@@ -36,6 +36,7 @@ extern cvar_t *cvar_pt_enable_nodraw;
 extern cvar_t *cvar_pt_enable_surface_lights;
 extern cvar_t *cvar_pt_enable_surface_lights_warp;
 extern cvar_t* cvar_pt_bsp_radiance_scale;
+extern cvar_t *cvar_pt_light_full_panels;
 extern cvar_t *cvar_pt_light_style_reach;
 extern cvar_t *cvar_pt_bsp_sky_lights;
 extern cvar_t *cvar_pt_q1_sky_lights;
@@ -1676,6 +1677,7 @@ set_light_q3_glow(light_poly_t *light, bool q3_glow, const float *uv0, const flo
 {
 	light->q3_glow = q3_glow;
 	light->q3_glow_key = 0;
+	light->q3_glow_frame = 0;
 	VectorClear(light->q3_glow_rgb);
 	VectorClear(light->q3_glow_stages_rgb);
 	light->q3_samples = 1;
@@ -1726,6 +1728,11 @@ collect_one_light_poly_entire_texture(bsp_t *bsp, mface_t *surf, mtexinfo_t *tex
 		} else {
 			t[0] = (DotProduct(p, texinfo->axis[0]) + texinfo->offset[0]) / (float)max(1, material->original_width);
 			t[1] = (DotProduct(p, texinfo->axis[1]) + texinfo->offset[1]) / (float)max(1, material->original_height);
+			// as create_poly draws it
+			if (texinfo->c.flags & SURF_N64_UV) {
+				t[0] *= 0.5f;
+				t[1] *= 0.5f;
+			}
 		}
 	}
 
@@ -1905,9 +1912,15 @@ collect_one_light_poly(bsp_t *bsp, mface_t *surf, mtexinfo_t *texinfo, pbr_mater
 				VectorAdd(p2, point_on_texture_plane, instance_positions[vert]);
 			}
 
-			// Create triangles for the polygon, using a triangle fan topology
-
-			const int num_triangles = 1; //instance.len - 2;
+			// Create triangles for the polygon, using a triangle fan topology.
+			/* EVERY TRIANGLE OF THE CUT (11-24). 2023's "small performance increase on
+			   machine games map" kept only the first (`1; //instance.len - 2`): a glow
+			   rectangle clipped to the face is a fan of two or more, so those lights -
+			   most Quake II and rerelease light panels, whose glow does not reach the
+			   texture's edges - cast about half their light, all of it from one
+			   diagonal half. pt_light_full_panels 0 = that speed-up again. */
+			const bool full_panel = !cvar_pt_light_full_panels || cvar_pt_light_full_panels->integer != 0;
+			const int num_triangles = full_panel ? instance.len - 2 : 1;
 
 			for (int i = 0; i < num_triangles; i++)
 			{
@@ -2525,6 +2538,14 @@ collect_light_polys(bsp_mesh_t *wm, bsp_t *bsp, int model_idx, int* num_lights, 
 		}
 
 		float tex_scale[2] = { 1.0f / material->original_width, 1.0f / material->original_height };
+		// as create_poly draws it: SURF_N64_UV stretches the texture to twice its size on
+		// the face, so the glow rectangle repeats half as often (Quake II 64's lights were
+		// cut at the wrong size and place, 11-24)
+		if (texinfo->c.flags & SURF_N64_UV)
+		{
+			tex_scale[0] *= 0.5f;
+			tex_scale[1] *= 0.5f;
+		}
 
 		collect_one_light_poly(bsp, surf, texinfo, material, model_idx, plane,
 							   tex_scale, min_light_texcoord, max_light_texcoord,
@@ -2620,13 +2641,16 @@ collect_sky_and_lava_light_polys(bsp_mesh_t *wm, bsp_t* bsp)
 			light.style = 0;
 			light.type = DYNLIGHT_POLYGON;
 			light.volumetric_scale = LIGHT_VOLUMETRIC_SCALE_UNSET;
+			// the colour has no face factor in it; animate_light_polys scales by this
+			// (left unset, an animated lava texture's light read stack garbage)
+			light.emissive_factor = 1.f;
 			set_light_q3_glow(&light, false, NULL, NULL, NULL);
 
 			if (!get_triangle_off_center(light.positions, light.off_center, NULL, 1.f))
 				continue;
 
 			light.cluster = BSP_PointLeaf(bsp->nodes, light.off_center)->cluster;
-			
+
 			if (is_sky_or_lava_cluster(wm, surf, light.cluster, surf->texinfo->material->flags) ||
 				(cvar_pt_bsp_sky_lights->integer && is_sky && is_light && (cvar_pt_bsp_sky_lights->integer > 1 || !is_nodraw)) ||
 				q1_sky_light(bsp, flags))
@@ -3148,6 +3172,7 @@ collect_fog_lava_lights(bsp_mesh_t *wm, bsp_t *bsp)
 			light.style = 0;
 			light.type = DYNLIGHT_POLYGON;
 			light.volumetric_scale = LIGHT_VOLUMETRIC_SCALE_UNSET;
+			light.emissive_factor = 1.f;    // as the lava lights above
 			set_light_q3_glow(&light, false, NULL, NULL, NULL);
 			light.cluster = leaf->cluster;
 
@@ -3561,7 +3586,10 @@ static void animate_light_polys(int num_light_polys, light_poly_t *light_polys)
 
 		pbr_material_t *new_material = r_materials + material->next_frame;
 		light_polys[i].material = new_material;
-		float emissive_factor = new_material->emissive_factor * light_polys[i].emissive_factor;
+		/* The face's own factor only (compute_emissive), as the light was made with:
+		   copy_light (and cpu_trace) multiply the material's emissive_factor in, so
+		   baking it here as well gave an animated light it squared (11-24). */
+		float emissive_factor = light_polys[i].emissive_factor;
 		if(new_material->image_emissive)
 			VectorScale(new_material->image_emissive->light_color, emissive_factor, light_polys[i].color);
 		else

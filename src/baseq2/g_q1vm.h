@@ -588,6 +588,7 @@ void        Q1VM_Intermission(int kind, const char *text);
 float       Q1VM_FinaleFinished(void);
 void        Q1VM_BonusFlash(int client);
 void        Q1VM_SyncEdict(int num);
+bool        Q1VM_IsFlare(int num);      // Quake II RTX's flare (g_q1vm_game.c THE FLARE GUN)
 bool        Q1_IsAliasModel(int modelindex);
 unsigned    Q1_ModelTrailEffects(int modelindex);
 int         Q1VM_Skill(void);

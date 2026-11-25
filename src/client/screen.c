@@ -1965,6 +1965,8 @@ static const wbslot_t wb_slots[] = {
     { "Railgun",          "/icons/iconw_railgun.tga",    "models/weapons2/railgun/railgun.md3",     "Slugs",     WB_Q3, "/icons/icona_railgun.tga" },
     { "Plasma Gun",       "/icons/iconw_plasma.tga",     "models/weapons2/plasma/plasma.md3",       "Cells",     WB_Q3, "/icons/icona_plasma.tga" },
     { "BFG10K",           "/icons/iconw_bfg.tga",        "models/weapons2/bfg/bfg.md3",             "Bfg Ammo",  WB_Q3, "/icons/icona_bfg.tga" },
+    // g_q3_grapple's hook: its item comes after Quake's (SCR_WeaponBarFindItem)
+    { "Grappling Hook",   "/icons/iconw_grapple.tga",    "models/weapons2/grapple/grapple.md3",     NULL,        WB_Q3 },
 
     /* QUAKE'S GUNS - the bot match's g_q3_weapons 3 (baseq2 g_q1weap.c), in
        Quake's order, with its status bar's weapon and ammo icons (gfx.wad).
@@ -1984,7 +1986,7 @@ static const wbslot_t wb_slots[] = {
 };
 
 // the Quake III slots, then Quake's, at the end of wb_slots[]
-#define WB_NUM_Q3_SLOTS     9
+#define WB_NUM_Q3_SLOTS     10
 #define WB_NUM_Q1_SLOTS     8
 
 // The same weapons in this tree's own itemlist order, which is the order a
@@ -2045,6 +2047,12 @@ static int SCR_WeaponBarFindItem(const char *name, int set)
         for (i = end - 1; i >= 0; i--)
             if (!strcmp(cl.configstrings[CS_ITEMS + i], name))
                 return i;
+        // a Quake III item listed after Quake's (the grappling hook): its
+        // name is its own
+        if (set == WB_Q3 && end < MAX_ITEMS)
+            for (i = MAX_ITEMS - 1; i >= end; i--)
+                if (!strcmp(cl.configstrings[CS_ITEMS + i], name))
+                    return i;
         return -1;
     }
 

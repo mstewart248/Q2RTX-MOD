@@ -246,7 +246,7 @@ void CL_MuzzleFlash(void)
     // the bot match's Quake III guns flash on their own tag_flash
     // (q3weapons.c): in the view, and in a Quake III body's hand. A Quake II
     // body holds Quake II's counterpart, which flashes as Quake II's do.
-    const bool q3gun = mz.weapon >= MZ_Q3_GAUNTLET && mz.weapon <= MZ_Q3_BFG;
+    const bool q3gun = mz.weapon >= MZ_Q3_GAUNTLET && mz.weapon <= MZ_Q3_GRAPPLE;
     const bool q3body = q3gun && mz.entity >= 1 && mz.entity <= MAX_CLIENTS &&
                         cl.clientinfo[mz.entity - 1].q3.q3;
 
@@ -507,6 +507,7 @@ void CL_MuzzleFlash(void)
     case MZ_Q3_RAILGUN:
     case MZ_Q3_PLASMAGUN:
     case MZ_Q3_BFG:
+    case MZ_Q3_GRAPPLE:
         CL_Q3W_MuzzleFlash(mz.entity, mz.weapon, dl);
         break;
     }

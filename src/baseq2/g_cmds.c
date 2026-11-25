@@ -1139,6 +1139,39 @@ void Cmd_Players_f(edict_t *ent)
 
 /*
 =================
+Cmd_Taunt_f
+
+Quake III's gesture key (+button3; issue #30): the taunt, which a Quake III
+model plays as its gesture (client q3player.c), with the character's own
+taunt in its voice on a Quake III map - "*taunt.wav", sound/player/<model>/
+taunt.wav (q3player.c Q3P_SexedSound). Quake II's models have no taunt to
+say, so elsewhere it is the animation alone, as "wave 2" was. One at a time:
+pressed again while it plays, nothing.
+=================
+*/
+void Cmd_Taunt_f(edict_t *ent)
+{
+    gclient_t *client = ent->client;
+
+    if (ent->health <= 0 || ent->deadflag || client->resp.spectator)
+        return;
+    if (client->ps.pmove.pm_flags & PMF_DUCKED)
+        return;
+    if (client->anim_priority > ANIM_WAVE)
+        return;
+    if (client->anim_priority == ANIM_WAVE && ent->s.frame < client->anim_end)
+        return;
+
+    client->anim_priority = ANIM_WAVE;
+    ent->s.frame = FRAME_taunt01 - 1;
+    client->anim_end = FRAME_taunt17;
+
+    if (level.q3map)
+        gi.sound(ent, CHAN_VOICE, gi.soundindex("*taunt.wav"), 1, ATTN_NORM, 0);
+}
+
+/*
+=================
 Cmd_Wave_f
 =================
 */
@@ -1403,6 +1436,10 @@ void ClientCommand(edict_t *ent)
         Cmd_Kill_f(ent);
     else if (Q_stricmp(cmd, "putaway") == 0)
         Cmd_PutAway_f(ent);
+    else if (Q_stricmp(cmd, "taunt") == 0)
+        Cmd_Taunt_f(ent);
+    else if (Q_stricmp(cmd, "useitem") == 0)
+        Q3_UseHoldable(ent);
     else if (Q_stricmp(cmd, "wave") == 0)
         Cmd_Wave_f(ent);
     else if (Q_stricmp(cmd, "team") == 0)

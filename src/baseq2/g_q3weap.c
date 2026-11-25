@@ -85,6 +85,9 @@ static const q3w_info_t q3w_info[Q3W_NUM] = {
                         NULL, NULL, "weapons/plasma/hyprbf1a.wav" },
     [Q3W_BFG]       = { "weapon_q3_bfg",              200,  20, MZ_Q3_BFG,
                         "weapons/bfg/bfg_hum.wav", NULL, "weapons/bfg/bfg_fire.wav" },
+    // the gauntlet's hum and whir (cg_weapons.c), and no shot sound
+    [Q3W_GRAPPLE]   = { "weapon_q3_grapple",          400,   0, MZ_Q3_GRAPPLE,
+                        "weapons/melee/fsthum.wav", "weapons/melee/fstrun.wav", NULL },
 };
 
 // Quake III's numbers (g_weapon.c, g_missile.c)
@@ -147,6 +150,7 @@ static const struct {
     { "weapon_bfg",             "weapon_q3_bfg" },
     { "ammo_lightning",         "ammo_q3_lightning" },
     { "ammo_bfg",               "ammo_q3_bfg" },
+    { "weapon_grapplinghook",   "weapon_q3_grapple" },
 };
 
 /*
@@ -278,7 +282,7 @@ gitem_t *Q3W_FindItem(edict_t *ent, const char *name)
     int         i;
 
     if (Q1W_PlayerQ1(ent))
-        return Q1W_FindItem(name);     // Quake's guns (g_q1weap.c)
+        return Q1W_FindItem(ent, name);    // Quake's guns (g_q1weap.c)
     if (!level.q3_weapons)
         return FindItem((char *)name);
 
@@ -314,7 +318,7 @@ gitem_t *Q3W_ItemFor(const edict_t *item_ent, const edict_t *player)
 
     // Quake's Ranger, or a Quake gun one dropped (g_q1weap.c)
     if (level.q1_by_model && item && (Q1W_PlayerQ1(player) || (item->flags & IT_Q1)))
-        return Q1W_ItemFor(item, player);
+        return Q1W_ItemFor(item_ent, player);
 
     if (item_ent->q3_alt_item && item &&
         !!(item->flags & IT_Q3) != Q3W_PlayerQ3(player))
@@ -576,6 +580,13 @@ void Q3W_GiveSpawnKit(gclient_t *client)
     client->pers.inventory[ITEM_INDEX(bullets)] = 100;
     client->pers.weapon = mg;
     client->pers.selected_item = ITEM_INDEX(mg);
+
+    // the grappling hook, as Quake III's g_grapple did for CTF mods
+    if (g_q3_grapple && g_q3_grapple->integer) {
+        gitem_t *hook = Q3W_Item("weapon_q3_grapple");
+        if (hook)
+            client->pers.inventory[ITEM_INDEX(hook)] = 1;
+    }
 
     client->pers.max_bullets = Q3_MAX_AMMO;
     client->pers.max_shells = Q3_MAX_AMMO;
@@ -1128,8 +1139,9 @@ static void Q3W_Fire(edict_t *ent, int weapon, int late_ms)
 
     scale = Q3W_DamageScale(ent);
 
-    // the campaign's accuracy: every shot but the gauntlet's (g_sp.c)
-    if (weapon != Q3W_GAUNTLET)
+    // the campaign's accuracy: every shot but the gauntlet's and the hook's
+    // (g_sp.c)
+    if (weapon != Q3W_GAUNTLET && weapon != Q3W_GRAPPLE)
         SP_AccuracyShot(ent);
 
     switch (weapon) {
@@ -1177,6 +1189,13 @@ static void Q3W_Fire(edict_t *ent, int weapon, int late_ms)
         if (client->weaponstate == WEAPON_FIRING)
             sound = NULL;
         break;
+    case Q3W_GRAPPLE:
+        // Weapon_GrapplingHook_Fire: one hook a pull of the trigger (Q3W_Think
+        // keeps the state FIRING while it stays down), none while one is out
+        if (client->weaponstate == WEAPON_FIRING || client->ctf_grapple)
+            return;     // still the last pull: no shot, no quad sound
+        CTF_FireQ3Grapple(ent, muzzle, forward);
+        break;
     default:
         break;
     }
@@ -1217,6 +1236,9 @@ static int Q3W_SelectableScore(edict_t *ent, const gitem_t *it)
 
     if (!it || !(it->flags & IT_Q3) || !inv[ITEM_INDEX(it)])
         return 0;
+    // never the hook: out of ammo, a gun
+    if (it->tag == Q3W_GRAPPLE)
+        return 0;
     if (it->ammo) {
         ammo = FindItem(it->ammo);
         if (ammo && !inv[ITEM_INDEX(ammo)] && !((int)dmflags->value & DF_INFINITE_AMMO))
@@ -1236,6 +1258,10 @@ static void Q3W_NoAmmoChange(edict_t *ent)
 {
     gitem_t *best = NULL, *it;
     int     i, score, best_score = 0;
+
+    // Quake's Ranger with Quake III's BFG10K: Quake's best gun (g_q1weap.c)
+    if (Q1W_NoAmmoChange(ent))
+        return;
 
     for (i = 1; i < Q3W_NUM; i++) {
         it = Q3W_Item(q3w_info[i].classname);
@@ -1328,6 +1354,10 @@ void Q3W_Think(edict_t *ent, const usercmd_t *ucmd)
 
     attack = (ucmd->buttons & BUTTON_ATTACK) != 0;
     client->latched_buttons &= ~BUTTON_ATTACK;
+
+    // the hook lets go with the trigger (g_active.c ClientThink_real)
+    if (tag == Q3W_GRAPPLE && !attack && client->ctf_grapple)
+        CTF_ResetGrapple(client->ctf_grapple);
 
     if (client->q3_weapon_time > 0)
         client->q3_weapon_time -= ucmd->msec;
@@ -1430,7 +1460,7 @@ everyone spawns with.
 bool Q3W_KeepsOnDeath(const gitem_t *item)
 {
     return item && (item->flags & IT_Q3) &&
-           (item->tag == Q3W_GAUNTLET || item->tag == Q3W_MACHINEGUN);
+           (item->tag == Q3W_GAUNTLET || item->tag == Q3W_MACHINEGUN || item->tag == Q3W_GRAPPLE);
 }
 
 /*

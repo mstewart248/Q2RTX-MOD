@@ -856,6 +856,7 @@ bool vkpt_q3_deform_take_lights(const pbr_material_t *material, const light_poly
 			light_poly_t *light = dm->lights + dm->num_lights + k;
 			light->cluster = -1;        // instance_model_lights finds it where the lamp is
 			light->q3_glow_key = 0;
+			light->q3_glow_frame = 0;
 		}
 		dm->num_lights += count;
 

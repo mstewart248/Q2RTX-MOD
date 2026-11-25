@@ -1687,6 +1687,13 @@ static float srgb_to_linear[256];
 /* Counts free_light_image calls. A light program set up before the latest one
    may hold a freed image (set_up_light_program checks it). */
 static uint32_t light_image_frees;
+// light images made, ever - the profiler's lights counts (issue #31)
+static uint32_t light_images_made;
+
+uint32_t vkpt_q3_light_images_made(void)
+{
+    return light_images_made;
+}
 
 static void free_light_image(q3lightimage_t *li)
 {
@@ -1737,6 +1744,7 @@ static const q3lightimage_t *light_image(const image_t *image)
         }
     }
 
+    light_images_made++;
     li = Z_Mallocz(sizeof(*li));
     Q_strlcpy(li->name, image->name, sizeof(li->name));
     li->pix_data = image->pix_data;
@@ -2011,6 +2019,9 @@ static const q3lightprog_t *set_up_light_program(const q3program_t *p, uint32_t 
     return lp;
 }
 
+static int light_glow_eval(const q3program_t *p, const q3lightprog_t *lp, const float uv[6], int samples,
+                           vec3_t out, vec3_t out_stages);
+
 int vkpt_q3_light_glow(const pbr_material_t *mat, const float uv[6], int samples, float time, vec3_t out,
                        vec3_t out_stages)
 {
@@ -2026,6 +2037,52 @@ int vkpt_q3_light_glow(const pbr_material_t *mat, const float uv[6], int samples
     if (!lp->ready)
         return 0;
 
+    return light_glow_eval(p, lp, uv, samples, out, out_stages);
+}
+
+/* THE GLOWS ON THE RENDERER'S WORKERS (issue #31, 2026-11-24: Quake III maps far
+   slower than Quake II ones at the lowest settings, CPU-bound - q3dm0 90 fps
+   where q3dm1 gave 175). copy_light worked every moving program's glow out here
+   on the main thread, every frame, for every light poly: up to 16 samples a
+   triangle, each through every stage. q3dm0's world has some 3,300 triangles of
+   moving glow (proto_zzztblu3's 1,376 alone, the jump pad walls, the trims)
+   where q3dm1 has about 150. The work is the same now, split: the main thread
+   sets each program up for the frame's clock (set_up_light_program writes the
+   program's slot and may make light images), then any thread evaluates - it
+   only reads what that set-up left. */
+bool vkpt_q3_light_glow_prepare(const pbr_material_t *mat, float time)
+{
+    const q3program_t *p = program_of(mat);
+    if (!p)
+        return false;
+    time = fmodf(time, 86400.f);    // as vkpt_q3_upload
+    return set_up_light_program(p, vkpt_q3_program_key(mat), time)->ready;
+}
+
+int vkpt_q3_light_glow_prepared(const pbr_material_t *mat, const float uv[6], int samples, float time, vec3_t out,
+                                vec3_t out_stages)
+{
+    VectorClear(out);
+    VectorClear(out_stages);
+
+    const q3program_t *p = program_of(mat);
+    if (!p)
+        return 0;
+
+    time = fmodf(time, 86400.f);
+    const q3lightprog_t *lp = &light_programs[p - programs];
+    // set up by vkpt_q3_light_glow_prepare at this clock, and still whole -
+    // the same test set_up_light_program makes before it would write anything
+    if (!(lp->key == vkpt_q3_program_key(mat) && lp->time == time && lp->ready && lp->frees == light_image_frees))
+        return 0;
+
+    return light_glow_eval(p, lp, uv, samples, out, out_stages);
+}
+
+// the evaluation itself: reads the program and its set-up, writes only `out`s
+static int light_glow_eval(const q3program_t *p, const q3lightprog_t *lp, const float uv[6], int samples,
+                           vec3_t out, vec3_t out_stages)
+{
     const bool self_lit = (p->flags & Q3P_PROG_SELF_LIT) != 0;
     const bool stage_emit = (p->flags & Q3P_PROG_STAGE_EMIT) != 0;
     // as q3_stages.glsl: stage<N>_emissive_factor settings take the entry's

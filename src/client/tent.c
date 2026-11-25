@@ -3570,6 +3570,10 @@ void CL_ParseTEnt(void)
         CL_Q3W_Lightning(te.entity1, te.entity2 != 0, te.pos1, te.pos2);
         break;
 
+    case TE_Q3_GRAPPLE:
+        CL_Q3W_Grapple(te.entity1, te.entity2, te.pos1);
+        break;
+
     case TE_Q3_GIBS:
         CL_Q3W_Gibs(te.pos1);
         break;

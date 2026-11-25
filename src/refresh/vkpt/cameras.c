@@ -378,13 +378,38 @@ floor there is the marker's height plus 3. A point on the gate is the same
 point across the destination's view.
 
 pt_q1_teleport_portals 0 (map load) keeps the textures; pt_q1_teleport_warp is
-the waver, 0 none, 1 Quake's.
+the waver, 0 none, 1 Quake's; pt_q1_teleport_clearance (map load, 8) raises a
+gate whose bottom edge would look out from under the destination's floor
+(q1_gate_shapes).
 
 ==============================================================================
 */
 
 static cvar_t *cvar_pt_q1_teleport_portals;
 static cvar_t *cvar_pt_q1_teleport_warp;
+static cvar_t *cvar_pt_q1_teleport_clearance;
+
+/* The floor under the destination: the top of the first solid going down from
+   the player's origin there (the marker + 27, dest + 24) to `lowest`. False
+   when there is none that high, or the origin is itself in the solid. */
+static bool q1_dest_floor(const bsp_t* bsp, const vec3_t dest, float lowest, float* floor_z)
+{
+	vec3_t p = { dest[0], dest[1], dest[2] + 24.0f };
+	mleaf_t *leaf = BSP_PointLeaf(bsp->nodes, p);
+
+	if (!leaf || (leaf->contents & CONTENTS_SOLID))
+		return false;
+
+	for (int step = 0; step < 512 && p[2] >= lowest; step++) {
+		p[2] -= 1.0f;
+		leaf = BSP_PointLeaf(bsp->nodes, p);
+		if (!leaf || (leaf->contents & CONTENTS_SOLID)) {
+			*floor_z = p[2] + 1.0f;
+			return true;
+		}
+	}
+	return false;
+}
 
 static bool face_in_a_model(const bsp_t* bsp, const mface_t* surf)
 {
@@ -445,7 +470,8 @@ static void q1_gate_shapes(bsp_mesh_t* wm, const bsp_t* bsp)
 		cx = 0.5f * (wm->cameras[g].gate_mins[0] + wm->cameras[g].gate_maxs[0]);
 		cy = 0.5f * (wm->cameras[g].gate_mins[1] + wm->cameras[g].gate_maxs[1]);
 
-		float thick = 0, width = 0, height = 0;
+		float thick = 0, width = 0, height = 0, bottom = wm->cameras[g].gate_mins[2];
+		bool any = false;
 		for (int i = 0; i < bsp->numfaces; i++) {
 			const mface_t *surf = bsp->faces + i;
 
@@ -457,7 +483,29 @@ static void q1_gate_shapes(bsp_mesh_t* wm, const bsp_t* bsp)
 				thick = max(thick, fabsf(dx * nx + dy * ny));
 				width = max(width, fabsf(dy * nx - dx * ny));
 				height = max(height, v[2] - wm->cameras[g].gate_mins[2]);
+				bottom = any ? min(bottom, v[2]) : v[2];
+				any = true;
 			}
+		}
+
+		/* A gate that would look out from under the destination's floor (Matt
+		   11-24, e2m2: "the view going into the floor"). The TRIGGER's bottom is
+		   what lands on marker + 3, and on 10 of the 299 gates in id1, mg1 and
+		   mg3 it floats above the gate's own bottom edge - e2m2's box is 38 tall
+		   and 25 up - or the marker sits low over its floor, so the bottom of the
+		   gate showed the floor from inside it. Those are raised until the gate's
+		   bottom edge lands pt_q1_teleport_clearance over the floor there. The
+		   rest already clear it by 1 to 64+ units and keep their view (Quake's
+		   markers float 8 or more over the floor, and a mid-air destination,
+		   mgdm2's, has no floor near it at all). */
+		const float clearance = cvar_pt_q1_teleport_clearance ? max(0.f, cvar_pt_q1_teleport_clearance->value) : 8.0f;
+		const float bottom_there = wm->cameras[g].dest[2] + (bottom - wm->cameras[g].gate_mins[2]);
+		float floor_z;
+		if (any && q1_dest_floor(bsp, wm->cameras[g].dest, bottom_there - clearance, &floor_z) &&
+		    floor_z + clearance > bottom_there) {
+			Com_DPrintf("Teleporter %d: view raised %.0f units off the floor at its destination\n",
+			            g, floor_z + clearance - bottom_there);
+			wm->cameras[g].dest[2] += floor_z + clearance - bottom_there;
 		}
 
 		// the cluster at the player's origin there (dest is the floor, which a
@@ -608,6 +656,9 @@ void vkpt_cameras_init(void)
 	Cmd_Register(cmds);
 	cvar_pt_q1_teleport_portals = Cvar_Get("pt_q1_teleport_portals", "1", CVAR_ARCHIVE);
 	cvar_pt_q1_teleport_warp = Cvar_Get("pt_q1_teleport_warp", "1", CVAR_ARCHIVE);
+	// map load: how far over the destination's floor a gate's bottom edge has
+	// to look out from - a gate that would look out lower is raised to it
+	cvar_pt_q1_teleport_clearance = Cvar_Get("pt_q1_teleport_clearance", "8", CVAR_ARCHIVE);
 }
 
 void vkpt_cameras_shutdown(void)

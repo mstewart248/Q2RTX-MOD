@@ -52,6 +52,7 @@ cvar_t  *g_q3_items;    // 1: Quake III health/armor amounts and the Battle Suit
 cvar_t  *g_q3_kit;      // what a player spawns holding, see Q3_GiveSpawnKit
 cvar_t  *g_q3_weapons;  // bot match: 0 Quake II's guns, 1 Quake III's, 2 by player model (g_q3weap.c)
 cvar_t  *g_q3_physics;  // bot match: 1 Quake III's movement and knockback (pmove.c q3move)
+cvar_t  *g_q3_grapple;  // 1: Quake III's grappling hook in the spawn kit, with its guns (g_q3weap.c)
 
 // Quake III item spawnflag
 #define Q3_ITEM_SUSPENDED   1
@@ -78,6 +79,7 @@ void Q3_InitGame(void)
     g_q3_kit = gi.cvar("g_q3_kit", "0", CVAR_ARCHIVE);
     g_q3_weapons = gi.cvar("g_q3_weapons", "0", CVAR_ARCHIVE);
     g_q3_physics = gi.cvar("g_q3_physics", "0", CVAR_ARCHIVE);
+    g_q3_grapple = gi.cvar("g_q3_grapple", "0", CVAR_ARCHIVE);
 }
 
 /*
@@ -259,6 +261,25 @@ void Use_Q3Teleporter(edict_t *ent, gitem_t *item)
     VectorCopy(spot->s.origin, origin);
     origin[2] += 8;
     Q3_TeleportPlayer(ent, origin, spot->s.angles);
+}
+
+/* Quake III's "use item" key (+button2; issue #30): the one holdable carried,
+   whatever the inventory has selected - Quake II's invuse wanted it picked
+   with invprev / invnext first. The useitem command and +use both come here
+   (g_cmds.c, p_client.c ClientThink). False when there is nothing to use. */
+bool Q3_UseHoldable(edict_t *ent)
+{
+    gitem_t *item;
+
+    if (!ent->client || ent->health <= 0 || ent->deadflag || ent->client->resp.spectator)
+        return false;
+
+    item = Q3_HeldHoldable(ent);
+    if (!item || !item->use)
+        return false;
+
+    item->use(ent, item);
+    return true;
 }
 
 /*
@@ -1878,6 +1899,9 @@ void Q3_LevelStart(void)
 
     if (!level.q3map)
         return;
+
+    // the taunt key's voice (g_cmds.c Cmd_Taunt_f), loaded with the map
+    gi.soundindex("*taunt.wav");
 
     for (i = game.maxclients + 1; i < globals.num_edicts; i++) {
         e = g_edicts + i;

@@ -587,6 +587,77 @@ float V_CalcFov(float fov_x, float width, float height)
     return a;
 }
 
+/*
+=============================================================================
+
+ZOOM (issue #30: Quake III's +zoom)
+
+Held, the view narrows to cl_zoomfov (Quake III's cg_zoomfov, 22.5) over
+ZOOM_MS, as Quake III's did in 150 ms; let go, it widens back the same way.
+Let go half way in, it turns round from where it is, where Quake III jumped.
+Only alive (PM_NORMAL / PM_SPECTATOR) and outside demos. The mouse turns
+slower by the same ratio while zoomed (V_ZoomSensitivity, input.c), as Quake
+III's zoomSensitivity did, unless m_autosens already scales it by the fov.
+
+=============================================================================
+*/
+
+#define ZOOM_MS     150.f
+
+static cvar_t   *cl_zoomfov;
+static bool     zoom_held;
+static unsigned zoom_time;      // cls.realtime at the last press or release
+static float    zoom_from;      // how far in the zoom was then, 0..1
+static float    zoom_ratio = 1; // the last V_ZoomFov's out / in
+
+static float V_ZoomFraction(void)
+{
+    const float f = (float)(cls.realtime - zoom_time) / ZOOM_MS;
+    return zoom_held ? min(1.f, zoom_from + f) : max(0.f, zoom_from - f);
+}
+
+static void V_ZoomDown_f(void)
+{
+    if (zoom_held)
+        return;
+    zoom_from = V_ZoomFraction();
+    zoom_time = cls.realtime;
+    zoom_held = true;
+}
+
+static void V_ZoomUp_f(void)
+{
+    if (!zoom_held)
+        return;
+    zoom_from = V_ZoomFraction();
+    zoom_time = cls.realtime;
+    zoom_held = false;
+}
+
+// the horizontal fov at 4:3, `fov_x` the server's, with the zoom laid over it
+float V_ZoomFov(float fov_x)
+{
+    float f = V_ZoomFraction();
+
+    if (cls.demo.playback || cl.frame.ps.pmove.pm_type >= PM_DEAD)
+        f = 0;
+    if (f <= 0) {
+        zoom_ratio = 1;
+        return fov_x;
+    }
+
+    const float zoom = Cvar_ClampValue(cl_zoomfov, 1, 160);
+    const float out = fov_x + f * (zoom - fov_x);
+    zoom_ratio = fov_x > 0 ? out / fov_x : 1;
+    return out;
+}
+
+// how much slower the mouse turns for the zoom: 1 when not zoomed
+float V_ZoomSensitivity(void)
+{
+    return zoom_ratio;
+}
+
 
 /*
 ==================
@@ -773,6 +844,8 @@ static const cmdreg_t v_cmds[] = {
     { "gun_prev", V_Gun_Prev_f },
     { "gun_model", V_Gun_Model_f },
     { "viewpos", V_Viewpos_f },
+    { "+zoom", V_ZoomDown_f },
+    { "-zoom", V_ZoomUp_f },
     { NULL }
 };
 
@@ -813,6 +886,7 @@ void V_Init(void)
     cl_add_blend->changed = cl_add_blend_changed;
 
     cl_adjustfov = Cvar_Get("cl_adjustfov", "1", 0);
+    cl_zoomfov = Cvar_Get("cl_zoomfov", "22.5", CVAR_ARCHIVE);
 }
 
 void V_Shutdown(void)

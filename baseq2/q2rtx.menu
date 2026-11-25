@@ -1461,6 +1461,11 @@ begin startserver
         pairs --status "quake iii arena: its gauntlet, machinegun, shotgun, grenade and rocket launchers, lightning gun, railgun, plasma gun and bfg10k for everyone. by player model: quake iii's for quake iii models, quake ii's for quake ii models (g_q3_weapons)" "weapons" g_q3_weapons "quake ii" 0 "quake iii arena" 1 "by player model" 2
     endif
         pairs --status "quake iii arena: its faster running, air control, jumps and knockback, for everyone (g_q3_physics)" "movement" g_q3_physics "quake ii" 0 "quake iii arena" 1
+    ifge g_q3_weapons 1
+    ifle g_q3_weapons 2
+        toggle --status "quake iii arena's grappling hook, for every player with its weapons: hold fire to throw it and be pulled along the line, let go to drop it (g_q3_grapple)" "grappling hook" g_q3_grapple
+    endif
+    endif
     endif
     ifneq fs_quake3 1
     ifeq fs_quake1_id1 1
@@ -1821,6 +1826,11 @@ begin botmatch
         pairs --status "quake iii arena: its gauntlet, machinegun, shotgun, grenade and rocket launchers, lightning gun, railgun, plasma gun and bfg10k for everyone. by player model: quake iii's for quake iii models, quake ii's for quake ii models (g_q3_weapons)" "weapons" g_q3_weapons "quake ii" 0 "quake iii arena" 1 "by player model" 2
     endif
         pairs --status "quake iii arena: its faster running, air control, jumps and knockback, for everyone (g_q3_physics)" "movement" g_q3_physics "quake ii" 0 "quake iii arena" 1
+    ifge g_q3_weapons 1
+    ifle g_q3_weapons 2
+        toggle --status "quake iii arena's grappling hook, for every player with its weapons: hold fire to throw it and be pulled along the line, let go to drop it (g_q3_grapple)" "grappling hook" g_q3_grapple
+    endif
+    endif
     endif
     ifneq fs_quake3 1
     ifeq fs_quake1_id1 1
@@ -2264,4 +2274,18 @@ begin weapons
     bind "environment suit" "use environment suit"
     bind "invulnerability" "use invulnerability"
     bind "power shield" "use power shield"
+    blank
+    // Quake III's own keys (issue #30): zoom to cl_zoomfov while held (client
+    // view.c), the taunt (game g_cmds.c: gesture, plus the character's voice on
+    // a Quake III map), and the one holdable carried - medkit or personal
+    // teleporter - without picking it in the inventory first (g_q3.c; +use
+    // does the same), and the grappling hook, with its weapons and
+    // g_q3_grapple 1 (g_q3weap.c). The flare gun's key also takes out
+    // Quake II RTX's flare gun on Quake 1's levels (g_q1vm_game.c).
+    bind "zoom" +zoom
+    bind "taunt" taunt
+    ifeq fs_quake3 1
+    bind "quake iii holdable item" useitem
+    bind "quake iii grappling hook" "use grappling hook"
+    endif
 end

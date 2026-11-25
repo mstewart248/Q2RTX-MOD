@@ -80,6 +80,11 @@ extern uint64_t cpuprof_wait_us;
     CPUPROF_DD(BLOOD_BODIES, "blood bodies")  /* blood sim: droplets against monster meshes */ \
     CPUPROF_DD(BLOOD_FILM,   "blood film")    /* particles: CL_BloodFilmFrame */ \
     CPUPROF_DD(SCENE,        "scene")         /* rrender: vkpt_prepare_frame */ \
+    CPUPROF_DD(LIGHTS,       "lights")        /* scene: light lists + lights, Quake III glows (issue #31) */ \
+    CPUPROF_DD(LIGHT_LISTS,  "light lists")   /* lights: the cluster lists copied, model lights put in */ \
+    CPUPROF_DD(GLOW_SETUP,   "glow set-up")   /* lights: which glows to work out, programs set up (main thread) */ \
+    CPUPROF_DD(GLOW_EVAL,    "glow eval")     /* lights: the glows worked out (workers, and the wait for them) */ \
+    CPUPROF_DD(LIGHT_COPY,   "light copy")    /* lights: every light into the upload, inline glows included */ \
     CPUPROF_DD(FLOW,         "flow")          /* rrender: vkpt_flow_update */ \
     CPUPROF_DD(TRANSPARENT,  "transparent")   /* rrender: particles, beams, sprites to geometry */ \
     CPUPROF_DD(BLOOD_MESH,   "blood mesh")    /* rrender: vkpt_blood_prepare */ \
@@ -109,7 +114,17 @@ typedef enum {
     CPUPROF_DC(BLOOD_STILL)         /* meshes untouched */ \
     CPUPROF_DC(BLOOD_COPIES)        /* upload regions */ \
     CPUPROF_DC(BLOOD_UP_KB)         /* bytes those regions carry, KB */ \
-    CPUPROF_DC(BLOOD_GPU_MOVES)     /* moved meshes the GPU moved (pt_blood_gpu_move) */
+    CPUPROF_DC(BLOOD_GPU_MOVES)     /* moved meshes the GPU moved (pt_blood_gpu_move) */ \
+    CPUPROF_DC(LIGHT_POLYS)         /* lights copied to the upload */ \
+    CPUPROF_DC(LIGHT_MODEL)         /* of those, model lights */ \
+    CPUPROF_DC(LIGHT_NODES)         /* light list entries */ \
+    CPUPROF_DC(LIST_BUILDS)         /* frames of the last 64 that built the light lists again */ \
+    CPUPROF_DC(LIST_STAGED)         /* frames of the last 64 that wrote them to the staging */ \
+    CPUPROF_DC(GLOW_EVALS)          /* Quake III glows worked out on the workers */ \
+    CPUPROF_DC(GLOW_SAMPLES)        /* their samples (n x n each) */ \
+    CPUPROF_DC(GLOW_INLINE)         /* glows the copy had to work out itself */ \
+    CPUPROF_DC(GLOW_RUNS)           /* material runs the set-up looked at */ \
+    CPUPROF_DC(GLOW_IMAGES)         /* light images made (each one a box filter of a texture) */
 
 typedef enum {
 #define CPUPROF_DC(id) CPUPROF_C_##id,

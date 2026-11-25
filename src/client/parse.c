@@ -1077,6 +1077,13 @@ static void CL_ParseTEntPacket(void)
         te.entity1 = MSG_ReadShort();
         break;
 
+    // Quake III's grappling hook out: its owner, the hook, where it is
+    case TE_Q3_GRAPPLE:
+        te.entity1 = MSG_ReadShort();
+        te.entity2 = MSG_ReadShort();
+        MSG_ReadPos(te.pos1);
+        break;
+
     // where it went off, its surface, who fired it, the server's muzzle
     case TE_Q3_PLASMA_UNSEEN:
         MSG_ReadPos(te.pos1);

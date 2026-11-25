@@ -2222,6 +2222,11 @@ void ClientThink(edict_t *ent, usercmd_t *ucmd)
     client->buttons = ucmd->buttons;
     client->latched_buttons |= client->buttons & ~client->oldbuttons;
 
+    // +use is Quake III's "use item" (+button2): the holdable, once a press
+    // (g_q3.c; nothing happens without one). Quake II's game never read it.
+    if ((client->buttons & BUTTON_USE) && !(client->oldbuttons & BUTTON_USE))
+        Q3_UseHoldable(ent);
+
     // save light level the player is standing on for
     // monster sighting AI
     ent->light_level = ucmd->lightlevel;

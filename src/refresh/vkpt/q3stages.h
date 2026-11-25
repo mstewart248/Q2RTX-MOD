@@ -88,6 +88,16 @@ void vkpt_q3_print_program(const pbr_material_t *mat);
 int vkpt_q3_light_glow(const pbr_material_t *mat, const float uv[6], int samples, float time, vec3_t out,
                        vec3_t out_stages);
 
+// vkpt_q3_light_glow in two halves, for the renderer's workers (vertex_buffer.c):
+// _prepare sets `mat`'s program up for the clock `time` - main thread only; false
+// while its images are not in memory. _prepared then evaluates from any thread,
+// reading only that set-up: 0 unless it was made at this clock and is still whole.
+bool vkpt_q3_light_glow_prepare(const pbr_material_t *mat, float time);
+// light images made so far (each a box filter of a texture), for the profiler
+uint32_t vkpt_q3_light_images_made(void);
+int vkpt_q3_light_glow_prepared(const pbr_material_t *mat, const float uv[6], int samples, float time, vec3_t out,
+                                vec3_t out_stages);
+
 // Changes whenever `mat`'s program is rebuilt or what it emits could change
 // for another reason (pt_q3_env_shine); 0 for no program. A still glow is
 // worked out once per key.

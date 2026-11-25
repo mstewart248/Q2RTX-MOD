@@ -1426,6 +1426,7 @@ static const struct {
     { "pain75_2.wav",   "pain75_1.wav" },
     { "pain100_1.wav",  "pain100_1.wav" },
     { "pain100_2.wav",  "pain100_1.wav" },
+    { "taunt.wav",      "taunt.wav" },      // the taunt key (game g_cmds.c Cmd_Taunt_f)
 };
 
 bool Q3P_SexedSound(const char *model, const char *base, char *out, size_t size)

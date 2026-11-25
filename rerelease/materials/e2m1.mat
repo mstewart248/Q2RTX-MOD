@@ -1,0 +1,147 @@
+
+# instance of textures/q1/ceil1_1
+# e2m1, created at (1782 979 -128)
+# Inherits everything from textures/q1/ceil1_1; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/ceil1_1#95b2f147:
+#	texture_base textures/q1/ceil1_1.wal
+#	texture_emissive materialDev/remix/TextureDev3/BlueSquareLight_emissive.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 0
+#	specular_factor 0
+#	base_factor 1
+#	emissive_factor 2.5
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+	default_radiance 2
+
+# instance of textures/q1/ceil1_1
+# e2m1, created at (1873 966 -128)
+# Inherits everything from textures/q1/ceil1_1; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/ceil1_1#2a738753:
+#	texture_base textures/q1/ceil1_1.wal
+#	texture_emissive materialDev/remix/TextureDev3/BlueSquareLight_emissive.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 0
+#	specular_factor 0
+#	base_factor 1
+#	emissive_factor 2.5
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+	default_radiance 2
+
+# instance of textures/q1/tlight02
+# e2m1, created at (1513 1091 -40)
+# Inherits everything from textures/q1/tlight02; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/tlight02#ef51341b:
+#	texture_base materialDev/textures/q1/tlight02.png
+#	texture_emissive materialDev/remix/TextureDev/Panel_Orange_Lights_emissive.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 0.75
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+	default_radiance 2
+
+# instance of textures/q1/tlight10
+# e2m1, created at (2060 1091 180)
+# Inherits everything from textures/q1/tlight10; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/tlight10#642899ac:
+#	texture_base materialDev/remix/TextureDev/Panel_Yellow_Lights.png
+#	texture_emissive materialDev/remix/TextureDev/Panel_Yellow_Lights_emissive.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 0.375
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+	default_radiance 2
+
+# instance of textures/q1/tlight02
+# e2m1, created at (1805 1451 -90)
+# Inherits everything from textures/q1/tlight02; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/tlight02#03c1b495:
+#	texture_base materialDev/textures/q1/tlight02.png
+#	texture_emissive materialDev/remix/TextureDev/Panel_Orange_Lights_emissive.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 0.75
+#	light_factor 1
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/q1/tlight02
+# e2m1, created at (1961 613 259)
+# Inherits everything from textures/q1/tlight02; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/tlight02#b426fb8f:
+#	texture_base materialDev/textures/q1/tlight02.png
+#	texture_emissive materialDev/remix/TextureDev/Panel_Orange_Lights_emissive.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+	default_radiance 2
+
+# instance of textures/q1/tlight02
+# e2m1, created at (1163 1779 331)
+# Inherits everything from textures/q1/tlight02; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/tlight02#8dc15da3:
+#	texture_base materialDev/textures/q1/tlight02.png
+#	texture_emissive materialDev/remix/TextureDev/Panel_Orange_Lights_emissive.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+	default_radiance 2

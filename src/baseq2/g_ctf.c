@@ -61,6 +61,24 @@ static cvar_t   *capturelimit;
 #define CTF_GRAPPLE_PULL_SPEED  650     // the player on the line
 #define CTF_GRAPPLE_DAMAGE      10
 
+/* QUAKE III'S HOOK (g_q3weap.c, weapon_q3_grapple): this grapple's machinery -
+   the client's ctf_grapple, the pull each command, the resets on death and at
+   teleporters and jump pads - with Quake III's rules: g_missile.c fire_grapple
+   and G_MissileImpact (no damage; onto a player it follows them, anything else
+   holds the point), g_weapon.c Weapon_HookThink, bg_pmove.c PM_GrappleMove.
+   It looks like Quake III's: its missile is the rocket model, it has no
+   sounds of its own but the hit, and its line is the lightning bolt the
+   client draws (TE_Q3_GRAPPLE, q3weapons.c). */
+#define GRAPPLE_Q3              1       // the hook's spawnflags: Quake III's
+#define Q3_GRAPPLE_SPEED        800
+#define Q3_GRAPPLE_PULL_SPEED   800
+#define Q3_GRAPPLE_FLY_TIME     10      // seconds in the air before it's freed
+
+static bool CTF_HookQ3(const edict_t *hook)
+{
+    return (hook->spawnflags & GRAPPLE_Q3) != 0;
+}
+
 static struct {
     int     caps[3];                // by team
     float   last_capture_time;
@@ -858,7 +876,8 @@ void CTF_ResetGrapple(edict_t *hook)
         return;
 
     cl = hook->owner->client;
-    gi.sound(hook->owner, CHAN_WEAPON, gi.soundindex("weapons/grapple/grreset.wav"), cl->silencer_shots ? 0.2f : 1.0f, ATTN_NORM, 0);
+    if (!CTF_HookQ3(hook))
+        gi.sound(hook->owner, CHAN_WEAPON, gi.soundindex("weapons/grapple/grreset.wav"), cl->silencer_shots ? 0.2f : 1.0f, ATTN_NORM, 0);
     cl->ctf_grapple = NULL;
     cl->ctf_grapplereleasetime = level.time;
     cl->ctf_grapplestate = CTF_GRAPPLE_STATE_FLY;
@@ -897,6 +916,24 @@ static void CTF_GrappleTouch(edict_t *self, edict_t *other, cplane_t *plane, csu
 
     VectorClear(self->velocity);
     PlayerNoise(self->owner, self->s.origin, PNOISE_IMPACT);
+
+    if (CTF_HookQ3(self)) {
+        // G_MissileImpact's hook: onto a player, else held where it hit; the
+        // Lightning Gun's hit sound (CG_MissileHitWall's default)
+        static const char *const hits[4] = {
+            "weapons/lightning/lg_hit2.wav", "weapons/lightning/lg_hit2.wav",
+            "weapons/lightning/lg_hit.wav", "weapons/lightning/lg_hit3.wav",
+        };
+
+        cl->ctf_grapplestate = CTF_GRAPPLE_STATE_PULL;
+        self->enemy = (other->takedamage && other->client) ? other : NULL;
+        self->solid = SOLID_NOT;
+        self->movetype = MOVETYPE_NONE;
+        self->nextthink = 0;    // no longer flying
+        gi.linkentity(self);
+        gi.sound(self, CHAN_WEAPON, Q3_SoundIndex(hits[Q_rand() & 3]), 1, ATTN_NORM, 0);
+        return;
+    }
 
     if (other->takedamage) {
         if (self->dmg)
@@ -950,12 +987,79 @@ static void CTF_GrappleDrawCable(edict_t *self)
     gi.multicast(self->s.origin, MULTICAST_PVS);
 }
 
+// Quake III's line: the client draws it from the owner to the hook, once a
+// server frame (the pull runs on every command)
+static void CTF_Q3GrappleLine(edict_t *self)
+{
+    if (self->count == level.framenum)
+        return;
+    self->count = level.framenum;
+
+    gi.WriteByte(svc_temp_entity);
+    gi.WriteByte(TE_Q3_GRAPPLE);
+    gi.WriteShort(self->owner - g_edicts);
+    gi.WriteShort(self - g_edicts);
+    gi.WritePosition(self->s.origin);
+    gi.multicast(self->s.origin, MULTICAST_PVS);
+}
+
+// Weapon_HookThink and PM_GrappleMove, on each command while the hook is out
+static void CTF_Q3GrapplePull(edict_t *self)
+{
+    edict_t     *owner = self->owner;
+    gclient_t   *cl = owner->client;
+    gitem_t     *weapon = cl->pers.weapon;
+    vec3_t      forward, v, vel;
+    float       vlen;
+
+    // only while the hook is the gun in hand (Q3W_Think lets go with the
+    // trigger)
+    if (!weapon || !(weapon->flags & IT_Q3) || weapon->tag != Q3W_GRAPPLE ||
+        owner->health <= 0 || cl->resp.spectator) {
+        CTF_ResetGrapple(self);
+        return;
+    }
+
+    // on a player: with them, at the middle of their box
+    if (self->enemy) {
+        if (!self->enemy->inuse || self->enemy->solid == SOLID_NOT ||
+            (self->enemy->takedamage && self->enemy->deadflag)) {
+            CTF_ResetGrapple(self);
+            return;
+        }
+        VectorAdd(self->enemy->mins, self->enemy->maxs, v);
+        VectorMA(self->enemy->s.origin, 0.5f, v, self->s.origin);
+        gi.linkentity(self);
+    }
+
+    CTF_Q3GrappleLine(self);
+
+    if (cl->ctf_grapplestate == CTF_GRAPPLE_STATE_FLY)
+        return;
+
+    // toward 16 short of the hook along the view: 800 a second, slowing
+    // over the last 100 units to hang there. The move after still has
+    // gravity and air control ("we can wiggle a bit").
+    AngleVectors(cl->v_angle, forward, NULL, NULL);
+    VectorMA(self->s.origin, -16, forward, v);
+    VectorSubtract(v, owner->s.origin, vel);
+    vlen = VectorNormalize(vel);
+    VectorScale(vel, vlen <= 100 ? 10 * vlen : Q3_GRAPPLE_PULL_SPEED, vel);
+    VectorCopy(vel, owner->velocity);
+    owner->groundentity = NULL;
+}
+
 // each think of the player while the hook is out: drag them along the line
 void CTF_GrapplePull(edict_t *self)
 {
     gclient_t   *cl = self->owner->client;
     vec3_t      hookdir, v;
     float       vlen;
+
+    if (CTF_HookQ3(self)) {
+        CTF_Q3GrapplePull(self);
+        return;
+    }
 
     if (cl->pers.weapon == grapple_item && !cl->newweapon &&
         cl->weaponstate != WEAPON_FIRING && cl->weaponstate != WEAPON_ACTIVATING) {
@@ -1008,7 +1112,13 @@ static void CTF_GrappleDie(edict_t *self, edict_t *inflictor, edict_t *attacker,
     CTF_ResetGrapple(self);
 }
 
-static bool CTF_FireGrapple(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed)
+// a Quake III hook that has flown its time without hitting anything
+static void CTF_GrappleExpire(edict_t *self)
+{
+    CTF_ResetGrapple(self);
+}
+
+static bool CTF_FireGrapple(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, bool q3)
 {
     edict_t *grapple;
     trace_t tr;
@@ -1025,7 +1135,13 @@ static bool CTF_FireGrapple(edict_t *self, vec3_t start, vec3_t dir, int damage,
     grapple->solid = SOLID_BBOX;
     VectorClear(grapple->mins);
     VectorClear(grapple->maxs);
-    grapple->s.modelindex = gi.modelindex("models/weapons/grapple/hook/tris.md2");
+    grapple->s.modelindex = gi.modelindex(q3 ? "models/ammo/rocket/rocket.md3" : "models/weapons/grapple/hook/tris.md2");
+    if (q3) {
+        grapple->spawnflags = GRAPPLE_Q3;
+        grapple->count = -1;    // its line not sent this frame (CTF_Q3GrappleLine)
+        grapple->think = CTF_GrappleExpire;
+        grapple->nextthink = level.framenum + Q3_GRAPPLE_FLY_TIME * BASE_FRAMERATE;
+    }
     grapple->owner = self;
     grapple->touch = CTF_GrappleTouch;
     grapple->dmg = damage;
@@ -1042,8 +1158,18 @@ static bool CTF_FireGrapple(edict_t *self, vec3_t start, vec3_t dir, int damage,
         return false;
     }
 
-    grapple->s.sound = gi.soundindex("weapons/grapple/grfly.wav");
+    if (!q3)
+        grapple->s.sound = gi.soundindex("weapons/grapple/grfly.wav");
     return true;
+}
+
+// g_q3weap.c's grappling hook: Quake III's fire_grapple
+bool CTF_FireQ3Grapple(edict_t *ent, vec3_t start, vec3_t dir)
+{
+    vec3_t d;
+
+    VectorCopy(dir, d);
+    return CTF_FireGrapple(ent, start, d, 0, Q3_GRAPPLE_SPEED, true);
 }
 
 static void CTF_GrappleFire(edict_t *ent)
@@ -1065,7 +1191,7 @@ static void CTF_GrappleFire(edict_t *ent)
     VectorScale(cl->kick_origin, 0, cl->kick_origin);
     cl->kick_angles[0] = -1;
 
-    if (CTF_FireGrapple(ent, start, forward, CTF_GRAPPLE_DAMAGE, CTF_GRAPPLE_SPEED))
+    if (CTF_FireGrapple(ent, start, forward, CTF_GRAPPLE_DAMAGE, CTF_GRAPPLE_SPEED, false))
         gi.sound(ent, CHAN_WEAPON, gi.soundindex("weapons/grapple/grfire.wav"), cl->silencer_shots ? 0.2f : 1.0f, ATTN_NORM, 0);
 
     PlayerNoise(ent, start, PNOISE_WEAPON);

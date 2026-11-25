@@ -53,7 +53,7 @@ these to never despawn unless you are playing an actual network game."
 #include "client.h"
 #include "format/md3.h"
 
-#define Q3W_NUM     10      // the game's Q3W_*: 1 gauntlet .. 9 BFG
+#define Q3W_NUM     11      // the game's Q3W_*: 1 gauntlet .. 9 BFG, 10 grappling hook
 
 // the renderer tells meshes apart for motion vectors by entity id (14 bits)
 // and model together: a gun's parts take their gun's id, the brass these
@@ -96,10 +96,12 @@ static q3wgun_t q3w_guns[Q3W_NUM] = {
     [7] = { "railgun",    { 1.0f, 0.5f, 0.0f  }, "w_railgun.md2",     false, false },
     [8] = { "plasma",     { 0.6f, 0.6f, 1.0f  }, "w_hyperblaster.md2", false, false },
     [9] = { "bfg",        { 1.0f, 0.7f, 1.0f  }, "w_bfg.md2",         true,  false },
+    // its flash stays up while the trigger is (cg_weapons.c CG_AddPlayerWeapon)
+    [10] = { "grapple",   { 0.6f, 0.6f, 1.0f  }, "w_grapple.md2",     false, true  },
 };
 
 enum { Q3W_GAUNTLET = 1, Q3W_MACHINEGUN, Q3W_SHOTGUN, Q3W_GRENADE, Q3W_ROCKET,
-       Q3W_LIGHTNING, Q3W_RAILGUN, Q3W_PLASMA, Q3W_BFG };
+       Q3W_LIGHTNING, Q3W_RAILGUN, Q3W_PLASMA, Q3W_BFG, Q3W_GRAPPLE };
 
 // a spent case as a cylinder along the model's Z: see "HOW A SHELL FALLS"
 typedef struct {
@@ -168,13 +170,28 @@ Whether our own player has Quake III's guns: everyone does with g_q3_weapons
 Q3W_ModelIsQ3), on the model our own skin names.
 =================
 */
+// the model half of our own "name\model/skin", false if there is none
+static bool q3w_self_model(char *model, size_t size)
+{
+    const char  *s, *slash;
+    size_t      len;
+
+    s = cl.configstrings[CS_PLAYERSKINS + cl.clientNum];
+    s = strchr(s, '\\') ? strchr(s, '\\') + 1 : s;
+    slash = strchr(s, '/');
+    len = slash ? (size_t)(slash - s) : 0;
+    if (!len || len >= size)
+        return false;
+    memcpy(model, s, len);
+    model[len] = 0;
+    return true;
+}
+
 bool CL_Q3W_Self(void)
 {
     static int      framecount = -1;
     static bool     self;
-    const char      *s, *slash;
     char            model[MAX_QPATH];
-    size_t          len;
 
     if (cl.q3_weapons == 1)
         return true;
@@ -186,17 +203,33 @@ bool CL_Q3W_Self(void)
 
     if (cl.clientinfo[cl.clientNum].q3.q3)
         return self = true;
+    return self = q3w_self_model(model, sizeof(model)) && Q3P_ModelExists(model);
+}
 
-    // "name\model/skin"
-    s = cl.configstrings[CS_PLAYERSKINS + cl.clientNum];
-    s = strchr(s, '\\') ? strchr(s, '\\') + 1 : s;
-    slash = strchr(s, '/');
-    len = slash ? (size_t)(slash - s) : 0;
-    if (!len || len >= sizeof(model))
-        return self = false;
-    memcpy(model, s, len);
-    model[len] = 0;
-    return self = Q3P_ModelExists(model);
+/*
+=================
+CL_Q1W_Self
+
+Whether our own player is Quake's Ranger with Quake's guns in a match by
+player model (CS_Q3RULES "2x1") - the game's test (g_q1weap.c Q1W_ClientQ1):
+"quake1" is the model half of our skin.
+=================
+*/
+bool CL_Q1W_Self(void)
+{
+    static int      framecount = -1;
+    static bool     self;
+    char            model[MAX_QPATH];
+
+    if (cl.q3_weapons != 2 || !cl.q1_weapons)
+        return false;
+    if (framecount == cls.framecount)
+        return self;
+    framecount = cls.framecount;
+
+    if (cl.clientinfo[cl.clientNum].q1)
+        return self = true;
+    return self = q3w_self_model(model, sizeof(model)) && Q1P_ModelExists(model);
 }
 
 /*
@@ -2284,6 +2317,98 @@ static void q3w_add_bolts(void)
 /*
 ==============================================================================
 
+THE GRAPPLING HOOK'S LINE (cg_weapons.c CG_GrappleTrail)
+
+TE_Q3_GRAPPLE, once a server frame while a hook is out (baseq2 g_ctf.c, the
+Quake III hook). Quake III drew the Lightning Gun's bolt from the owner's
+chest - 26 up, 6 down along their view's up - to the hook, not when they were
+within 64 units of it, and the hook's orange light (missileDlight). Here it
+leaves the gun where there is one to leave: the view gun's muzzle in first
+person, a Quake III body's tag_flash; Quake III's own note there was "FIXME
+adjust for muzzle position".
+
+==============================================================================
+*/
+
+typedef struct {
+    int     endtime;
+    int     hook;           // its entity
+    vec3_t  pos;            // where the server last had it
+} q3wgrapple_t;
+
+static q3wgrapple_t q3w_grapples[MAX_CLIENTS + 1];
+
+void CL_Q3W_Grapple(int owner, int hook, const vec3_t pos)
+{
+    q3wgrapple_t *g;
+
+    if (owner < 1 || owner > MAX_CLIENTS)
+        return;
+    g = &q3w_grapples[owner];
+    g->endtime = cl.time + 150;
+    g->hook = hook;
+    VectorCopy(pos, g->pos);
+}
+
+// an entity in this frame, where it is drawn
+static bool q3w_entity_origin(int num, vec3_t out)
+{
+    const centity_t *cent;
+
+    if (num < 1 || num >= MAX_EDICTS)
+        return false;
+    cent = &cl_entities[num];
+    if (cent->serverframe != cl.frame.number)
+        return false;
+    if (num == cl.frame.clientNum + 1)
+        VectorCopy(cl.playerEntityOrigin, out);
+    else
+        LerpVector(cent->prev.origin, cent->current.origin, cl.lerpfrac, out);
+    return true;
+}
+
+static void q3w_add_grapples(void)
+{
+    int i;
+
+    for (i = 1; i <= MAX_CLIENTS; i++) {
+        q3wgrapple_t    *g = &q3w_grapples[i];
+        q3wshooter_t    *sh = &q3w_shooters[i];
+        vec3_t          start, end, forward, up;
+
+        if (!g->endtime || cl.time >= g->endtime || cl.time < g->endtime - 1000) {
+            g->endtime = 0;
+            continue;
+        }
+
+        if (!q3w_entity_origin(g->hook, end))
+            VectorCopy(g->pos, end);
+
+        if (i == cl.frame.clientNum + 1 && CL_Q3W_ViewMuzzle(start)) {
+            // ours, in first person: from the view gun
+        } else if (sh->muzzle_frame == cls.framecount) {
+            VectorCopy(sh->muzzle, start);
+        } else if (q3w_entity_origin(i, start)) {
+            const vec_t *angles = i == cl.frame.clientNum + 1 ? cl.playerEntityAngles :
+                                  cl_entities[i].current.angles;
+
+            AngleVectors(angles, forward, NULL, up);
+            start[2] += 26;
+            VectorMA(start, -6, up, start);
+        } else {
+            continue;
+        }
+
+        V_AddLight(end, 200, 1.0f, 0.75f, 0.0f);
+        if (DistanceSquared(start, end) < 64 * 64)
+            continue;   // don't draw if close
+        q3w_draw_bolt(i, start, end, 0);
+    }
+}
+
+/*
+==============================================================================
+
 THE PLASMA BALL, AND THE MUZZLE FLASH EVENT
 
 ==============================================================================
@@ -2578,6 +2703,7 @@ static const struct {
     [Q3W_RAILGUN]    = { 1500, "weapons/railgun/railgf1a.wav" },
     [Q3W_PLASMA]     = {  100, "weapons/plasma/hyprbf1a.wav" },
     [Q3W_BFG]        = {  200, "weapons/bfg/bfg_fire.wav" },
+    [Q3W_GRAPPLE]    = {  400, NULL },  // never predicted: the hook is the server's
 };
 
 static cvar_t   *cl_q3_predict_shots;
@@ -2713,8 +2839,9 @@ void CL_Q3W_PredictCmd(int number)
         goto done;
     }
 
-    // the gauntlet fires only on a hit, which is the server's to find
-    if (w == Q3W_GAUNTLET) {
+    // the gauntlet fires only on a hit, which is the server's to find, and
+    // the hook is the server's: the view gun only follows the trigger
+    if (w == Q3W_GAUNTLET || w == Q3W_GRAPPLE) {
         q3p.time = 0;
         q3p.firing = true;
         goto done;
@@ -3171,6 +3298,7 @@ void CL_Q3W_AddEntities(void)
     q3w_add_marks();
     q3w_add_fx();
     q3w_add_bolts();
+    q3w_add_grapples();
     q3w_debug_print();
 }
 
@@ -3191,6 +3319,7 @@ void CL_Q3W_Clear(void)
     q3w_mark_next = 0;
     memset(q3w_fx, 0, sizeof(q3w_fx));
     memset(q3w_bolts, 0, sizeof(q3w_bolts));
+    memset(q3w_grapples, 0, sizeof(q3w_grapples));
     memset(q3w_balls, 0, sizeof(q3w_balls));
     memset(q3w_flights, 0, sizeof(q3w_flights));
     memset(q3w_shooters, 0, sizeof(q3w_shooters));

@@ -951,11 +951,33 @@ static void CL_AddPacketEntities(void)
 
                 // a pickup with Quake II's gun in modelindex and Quake III's
                 // in modelindex2: our own game's, Quake III's half as big
-                // again as Quake III draws its guns on the ground
-                if (q3item && s1->modelindex2 && cl.model_draw[s1->modelindex2] && CL_Q3W_Self()) {
-                    ent.model = cl.model_draw[s1->modelindex2];
-                    if (!ent.scale)
-                        ent.scale = 1.5f;
+                // again as Quake III draws its guns on the ground. Quake's
+                // Ranger sees what he takes from it, in modelindex3 (baseq2
+                // g_q1weap.c Q1W_ItemModel): Quake's gun, or for one Quake
+                // has nothing like (the BFG10K) the map's game's, which is
+                // one of the other two indices
+                if (q3item && s1->modelindex2 && cl.model_draw[s1->modelindex2]) {
+                    int pick = s1->modelindex;
+
+                    if (s1->modelindex3 && cl.model_draw[s1->modelindex3] && CL_Q1W_Self())
+                        pick = s1->modelindex3;
+                    else if (CL_Q3W_Self())
+                        pick = s1->modelindex2;
+
+                    if (pick == s1->modelindex2) {
+                        ent.model = cl.model_draw[pick];
+                        if (!ent.scale)
+                            ent.scale = 1.5f;
+                    } else if (pick != s1->modelindex) {
+                        // Quake's, as Quake draws it: its own size, and
+                        // floating 24-40 units over the floor where Quake
+                        // stands the item's origin. This pickup's box is
+                        // Quake II's, its origin 15 over the floor.
+                        ent.model = cl.model_draw[pick];
+                        ent.scale = 0;
+                        ent.origin[2] -= 15;
+                        ent.oldorigin[2] -= 15;
+                    }
                 }
                 // and Quake III's railgun drawn as Q2RTX's (cl_classic_railgun 0)
                 if (cl.q3_weapons)
@@ -1232,7 +1254,9 @@ static void CL_AddPacketEntities(void)
             ent.alpha = 0;
         }
 
-        if (s1->modelindex3) {
+        // (on a pickup with both games' guns it is the Ranger's, drawn above
+        // in place of the others)
+        if (s1->modelindex3 && !q3item) {
             ent.model = cl.model_draw[s1->modelindex3];
             V_AddEntity(&ent);
         }
@@ -2994,6 +3018,7 @@ void CL_CalcViewValues(void)
 
     // interpolate field of view
     cl.fov_x = lerp_client_fov(ops->fov, ps->fov, lerp);
+    cl.fov_x = V_ZoomFov(cl.fov_x);     // +zoom (view.c)
     cl.fov_y = V_CalcFov(cl.fov_x, 4, 3);
 
     LerpVector(ops->viewoffset, ps->viewoffset, lerp, viewoffset);

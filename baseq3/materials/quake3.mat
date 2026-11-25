@@ -948,6 +948,7 @@ models/mapobjects/jets/jet_as:
 
 models/mapobjects/kmlamp1:
 	texture_base materialDev/models/mapobjects/kmlamp1.jpg
+	emissive_factor 0
 #	texture_normals materialDev/models/mapobjects/kmlamp1_n.png
 #	texture_roughness materialDev/models/mapobjects/kmlamp1_rough.png
 #	texture_metallic materialDev/models/mapobjects/kmlamp1_metal.png
@@ -963,6 +964,7 @@ models/mapobjects/kmlamp_white:
 # pt_caustics 1. "caustic 0.5" halves the bend, "caustic 0" turns it off.
 	kind GLASSCAUSTIC
 	caustic 1
+	emissive_factor 0
 #	texture_normals materialDev/models/mapobjects/kmlamp_white_n.png
 #	texture_roughness materialDev/models/mapobjects/kmlamp_white_rough.png
 #	texture_metallic materialDev/models/mapobjects/kmlamp_white_metal.png

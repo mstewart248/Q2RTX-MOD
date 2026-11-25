@@ -43,6 +43,18 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // particles, sprites, beams, explosions, the player model, shells, material
 // animation and scrolling.
 //
+// The newer GPU features, read from the same frame (see the sections below):
+//   - a Quake III sky's cloud layers and a Quake 1 sky's two (q3_sky.glsl), and
+//     the sky as SEEN (pt_sky_brightness, pt_physical_sky_brightness) apart
+//     from the sky as LIGHT (a Quake 1 sky's pt_q1_sky_light_r/g/b) - SKY
+//   - Quake 1 teleporters' gates, Quake III portals and security cameras
+//     (cameras.c, reflect_refract.rgen) - CAMERAS AND PORTALS
+//   - stained glass: the glass's own look and its window lights
+//     (stained_glass.h) - STAINED GLASS
+//   - pt_caustics: a shadow ray through glass or water is tinted and bent as
+//     trace_caustic_ray does it - CAUSTICS. pt_caustics 2's photons are a GPU
+//     grid; here it is pt_caustics 1's shadow-ray caustic.
+//
 // Emission is counted once: lights in the light lists are reached by the
 // light sample, so a bounce that hits one counts its emission only when the
 // bounce came off a near-mirror (roughness < CT_SMOOTH), and then the light
@@ -84,7 +96,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define CT_SKY              4       // returns the environment
 #define CT_PRIMARY_ONLY     8       // the view weapon: camera rays only
 
-enum { CT_RAY_CAMERA, CT_RAY_BOUNCE, CT_RAY_SHADOW, CT_RAY_SKY };
+// CT_RAY_GLASS: the see-through surfaces only (a shadow ray's caustic)
+enum { CT_RAY_CAMERA, CT_RAY_BOUNCE, CT_RAY_SHADOW, CT_RAY_SKY, CT_RAY_GLASS };
 enum { CT_ENV_NONE, CT_ENV_CUBE, CT_ENV_PHYSICAL, CT_ENV_FLAT };
 enum { CT_FOG_SKY_NONE, CT_FOG_SKY_FADE, CT_FOG_SKY_UP, CT_FOG_SKY_EXPOSURE };
 enum { CT_IDLE, CT_PENDING, CT_RUNNING, CT_DONE };
@@ -101,13 +114,35 @@ typedef struct {
 	uint32_t flags;
 } ct_tri_t;
 
+// The light behind one tile of stained glass (StainedLight, stained_glass.h)
+typedef struct {
+	float centre[3];    // the middle of the tile, on the glass
+	float lamp[3];      // the lamp's centre (where the sun is seen from, for a sun)
+	float to_light[3];  // from the middle of the tile towards the light, unit
+	float n_room[3];    // the glass's normal, on the room's side
+	float dist_c, sin_size, radius, cos_c;
+	float radiance;     // for an irradiance of 1 on the glass at the middle
+	bool sun;
+} ct_stained_t;
+
+// A window light's record (WindowLight, stained_glass.h)
+typedef struct {
+	float S[3], T[3], n[3];
+	float window[3];    // u offset, v offset, the glass's plane distance
+	float rect[4];      // u0, v0, u1, v1
+	const pbr_material_t *mat;
+	ct_stained_t sl;
+} ct_window_t;
+
 typedef struct {
 	float p0[3], e1[3], e2[3];
 	float n[3];         // emits along -n... toward where -dot(n, L) > 0, as light_lists.h
 	float area;
-	float radiance[3];  // colour * emissive factor * style
+	float radiance[3];  // colour * emissive factor * light factor * style
 	float vol_scale;    // how much it lights the fog (resolve_volumetric_scale)
 	bool sky;           // a sky portal: radiance is the environment behind it
+	bool window;        // a stained glass window light: `win`, not a triangle
+	ct_window_t win;
 } ct_light_t;
 
 typedef struct {
@@ -128,6 +163,7 @@ typedef struct {
 	float base[3], albedo[3], f0[3];
 	float roughness, metallic, specular_factor;
 	float emissive[3];
+	float uv[2];        // the texture coordinate
 	uint32_t material_id;
 	int cluster;
 	bool backface;      // the ray hit the side the triangle's normals point away from
@@ -188,6 +224,36 @@ static struct {
 	float env_scale;
 	vec3_t sky_matrix[3];
 	vec3_t sun_dir_envmap;  // the sun in the rotated (pre-swizzle) cube space
+
+	// the sky as SEEN - by the camera and what mirrors, glass and portals pass
+	// on - is pt_env_scale times this; as LIGHT, pt_env_scale times the tint
+	float sky_seen_brightness;  // pt_sky_brightness, or pt_physical_sky_brightness
+	vec3_t sky_light_tint;      // a Quake 1 sky's pt_q1_sky_light_r/g/b
+	// a Quake III sky's cloud layers, or a Quake 1 sky's two (q3_sky.glsl)
+	int sky_num_layers;
+	float sky_cloud_height;     // < 0: Quake 1's projection, its size the scale
+	struct {
+		float m[6];             // the tcMod transform: uv = (m0 s + m1 t + m4, m2 s + m3 t + m5)
+		const image_t *image;
+		uint32_t src_blend, dst_blend;
+		float colour[4];
+	} sky_layers[Q3_SKY_MAX_LAYERS];
+
+	// security cameras, Quake 1 teleporters' gates and Quake III portals:
+	// the UBO's camera slots (cameras.c)
+	float time;
+	int num_cameras;
+	bool cameras_on;        // pt_cameras, pt_reflect_refract
+	bool portal_light;      // pt_portal_light: bounce rays go through portals
+	float cameras[MAX_CAMERAS][16];
+
+	// pt_caustics (CAUSTICS)
+	bool caustics;
+	bool caustic_ball;
+	const image_t *water_normal;
+	float *ripple_map;      // water_n.tga's red and green at mip GLASS_RIPPLE_LOD
+	int ripple_w, ripple_h;
+	float ripple_h_step;    // glass_ripple's h: one texel of that mip
 
 	float bump_scale;
 	float adapted_luminance;
@@ -516,16 +582,110 @@ static void ct_physky_sample(int face, float s, float t, float out[3])
 		       + half_to_float[t01[c]] * w01 + half_to_float[t11[c]] * w11;
 }
 
-// env_map() in path_tracer_rgen.h, times pt_env_scale as every caller there
-// applies it: the direction rotated by the sky matrix, then swizzled .xzy for
-// the cube. The physical sky is the GPU's own cube; remove_sun clips the sun
-// disk out of it where the sun is sampled separately. A map skybox has faces
-// ft bk up dn rt lf = +X -X +Y -Y +Z -Z, UNORM, desaturated 10% and halved as
+/*
+=============================================================================
+
+SKY
+
+q3_sky.glsl's cloud layers over the far box: a Quake III sky's scrolling
+images on a dome `cloud height` above the eye, or a Quake 1 sky's two layers
+on GLQuake's flattened sphere (a negative height). The layers are this frame's,
+from the UBO (vkpt_q3_sky_upload), so they stand where the GPU drew them. A
+Quake 1 sky's blend is made linear and scaled by the height's size - the bake's
+scale times pt_q1_sky_light, which the SEEN sky divides back out through
+pt_sky_brightness (main.c prepare_ubo), as on the GPU.
+
+=============================================================================
+*/
+
+// q3_blend_factor, one channel at a time
+static inline float ct_blend_factor(uint32_t f, const float src[4], const float dst[4], int c)
+{
+	switch (f) {
+	case Q3P_BF_ZERO:                return 0.f;
+	case Q3P_BF_DST_COLOR:           return dst[c];
+	case Q3P_BF_ONE_MINUS_DST_COLOR: return 1.f - dst[c];
+	case Q3P_BF_SRC_ALPHA:           return src[3];
+	case Q3P_BF_ONE_MINUS_SRC_ALPHA: return 1.f - src[3];
+	case Q3P_BF_DST_ALPHA:           return dst[3];
+	case Q3P_BF_ONE_MINUS_DST_ALPHA: return 1.f - dst[3];
+	case Q3P_BF_SRC_COLOR:           return src[c];
+	case Q3P_BF_ONE_MINUS_SRC_COLOR: return 1.f - src[c];
+	case Q3P_BF_SRC_ALPHA_SATURATE:  return (c == 3) ? 1.f : min(src[3], 1.f - dst[3]);
+	default:                         return 1.f;    // Q3P_BF_ONE
+	}
+}
+
+static inline float ct_srgb_decode(float c)
+{
+	return (c <= 0.04045f) ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f);
+}
+
+// q3_sky_clouds: the layers over the far box `rgb`, in place
+static void ct_sky_clouds(const float direction[3], float rgb[3])
+{
+	if (scene.sky_num_layers <= 0)
+		return;
+
+	float d[3] = { direction[0], direction[1], direction[2] };
+	ct_normalize(d);
+
+	const float h = scene.sky_cloud_height;
+	float st[2];
+	if (h < 0.f) {
+		const float len = sqrtf(d[0] * d[0] + d[1] * d[1] + 9.f * d[2] * d[2]);
+		const float k = (6.f * 63.f / 128.f) / max(len, 1e-6f);
+		st[0] = d[0] * k;
+		st[1] = d[1] * k;
+	} else {
+		const float R = 4096.f;
+		const float p = -d[2] * R + sqrtf(d[2] * d[2] * R * R + 2.f * R * h + h * h);
+		float v[3] = { d[0] * p, d[1] * p, d[2] * p + R };
+		ct_normalize(v);
+		st[0] = acosf(ct_clampf(v[0], -1.f, 1.f));
+		st[1] = acosf(ct_clampf(v[1], -1.f, 1.f));
+	}
+
+	float dst[4] = { rgb[0], rgb[1], rgb[2], 1.f };
+	for (int l = 0; l < scene.sky_num_layers; l++) {
+		const float *m = scene.sky_layers[l].m;
+		float src[4];
+		ct_sample(scene.sky_layers[l].image, m[0] * st[0] + m[1] * st[1] + m[4], m[2] * st[0] + m[3] * st[1] + m[5], src);
+		for (int c = 0; c < 4; c++)
+			src[c] *= scene.sky_layers[l].colour[c];
+
+		float out[4];
+		for (int c = 0; c < 4; c++) {
+			const float sf = ct_blend_factor(scene.sky_layers[l].src_blend, src, dst, c);
+			const float df = ct_blend_factor(scene.sky_layers[l].dst_blend, src, dst, c);
+			out[c] = ct_clampf(src[c] * sf + dst[c] * df, 0.f, 1.f);
+		}
+		for (int c = 0; c < 4; c++)
+			dst[c] = out[c];
+	}
+
+	if (h < 0.f) {
+		for (int c = 0; c < 3; c++)
+			rgb[c] = ct_srgb_decode(dst[c]) * -h;
+	} else {
+		VectorCopy(dst, rgb);
+	}
+}
+
+// env_map_seen() in path_tracer_rgen.h, then as the callers scale it: `seen`
+// = the sky as drawn (x pt_env_scale x pt_sky_brightness, or the physical
+// sky's pt_physical_sky_brightness), else the sky as light (env_map: x
+// pt_env_scale x a Quake 1 sky's light colour). The direction is rotated by
+// the sky matrix, then swizzled .xzy for the cube. The physical sky is the
+// GPU's own cube; remove_sun clips the sun disk out of it where the sun is
+// sampled separately. A map skybox has faces ft bk up dn rt lf = +X -X +Y -Y
+// +Z -Z, UNORM, with the cloud layers over it, desaturated 10% and halved as
 // DESATURATE_ENVIRONMENT_MAP does.
-static void ct_env(const float dir[3], bool remove_sun, float out[3])
+static void ct_env(const float dir[3], bool remove_sun, bool seen, float out[3])
 {
 	if (scene.env_type == CT_ENV_FLAT) {
-		VectorCopy(scene.env_flat, out);
+		// the physical sky's measured luminance, already its light
+		VectorScale(scene.env_flat, seen ? scene.sky_seen_brightness : 1.f, out);
 		return;
 	}
 
@@ -551,20 +711,27 @@ static void ct_env(const float dir[3], bool remove_sun, float out[3])
 			for (int k = 0; k < 3; k++)
 				out[k] = min(out[k], limit);
 		}
-		VectorScale(out, scene.env_scale, out);
-		return;
+	} else {
+		int si = (int)(s * (float)envmap_width);
+		int ti = (int)(t * (float)envmap_height);
+		si = si < 0 ? 0 : (si >= envmap_width ? envmap_width - 1 : si);
+		ti = ti < 0 ? 0 : (ti >= envmap_height ? envmap_height - 1 : ti);
+
+		const byte *texel = envmap_data + (((size_t)face * envmap_height + ti) * envmap_width + si) * 4;
+		float v[3] = { (float)texel[0] / 255.f, (float)texel[1] / 255.f, (float)texel[2] / 255.f };
+		// the clouds go over the far box in the rotated direction, as on the GPU
+		ct_sky_clouds(r, v);
+		const float avg = (v[0] + v[1] + v[2]) * (1.f / 3.f);
+		for (int k = 0; k < 3; k++)
+			out[k] = (v[k] + (avg - v[k]) * 0.1f) * 0.5f;
 	}
 
-	int si = (int)(s * (float)envmap_width);
-	int ti = (int)(t * (float)envmap_height);
-	si = si < 0 ? 0 : (si >= envmap_width ? envmap_width - 1 : si);
-	ti = ti < 0 ? 0 : (ti >= envmap_height ? envmap_height - 1 : ti);
-
-	const byte *texel = envmap_data + (((size_t)face * envmap_height + ti) * envmap_width + si) * 4;
-	float v[3] = { (float)texel[0] / 255.f, (float)texel[1] / 255.f, (float)texel[2] / 255.f };
-	const float avg = (v[0] + v[1] + v[2]) * (1.f / 3.f);
-	for (int k = 0; k < 3; k++)
-		out[k] = (v[k] + (avg - v[k]) * 0.1f) * 0.5f * scene.env_scale;
+	if (seen) {
+		VectorScale(out, scene.env_scale * scene.sky_seen_brightness, out);
+	} else {
+		for (int k = 0; k < 3; k++)
+			out[k] *= scene.env_scale * scene.sky_light_tint[k];
+	}
 }
 
 void vkpt_cpu_trace_set_envmap(int width, int height, const byte *data)
@@ -666,13 +833,16 @@ static inline bool ct_triangle(const ct_tri_t *t, const ct_ray_t *r, float tmax,
 
 // Closest hit, or for shadow rays any hit. Shadow rays see neither glass nor
 // sky - the GPU's shadow cull mask leaves both out. Sky rays (the fog's sky
-// visibility) look through glass for the sky.
+// visibility) look through glass for the sky. Glass rays see the see-through
+// surfaces alone (trace_caustic_hit's AS_FLAG_TRANSPARENT).
 static bool ct_trace(const ct_ray_t *r, ct_hit_t *hit, int mode, ct_worker_t *w)
 {
 	const uint32_t skip = (mode == CT_RAY_CAMERA) ? 0
 		: (mode == CT_RAY_BOUNCE) ? CT_PRIMARY_ONLY
 		: (mode == CT_RAY_SKY) ? (CT_PRIMARY_ONLY | CT_TRANSPARENT)
+		: (mode == CT_RAY_GLASS) ? (CT_PRIMARY_ONLY | CT_SKY)
 		: (CT_PRIMARY_ONLY | CT_TRANSPARENT | CT_SKY);
+	const uint32_t need = (mode == CT_RAY_GLASS) ? CT_TRANSPARENT : 0;
 	const bool any = (mode == CT_RAY_SHADOW);
 
 	w->rays++;
@@ -696,7 +866,7 @@ static bool ct_trace(const ct_ray_t *r, ct_hit_t *hit, int mode, ct_worker_t *w)
 			const uint32_t end = n->first + n->count;
 			for (uint32_t i = n->first; i < end; i++) {
 				const ct_tri_t *t = &scene.tris[i];
-				if (t->flags & skip)
+				if ((t->flags & skip) || (t->flags & need) != need)
 					continue;
 
 				float tt, u, v;
@@ -948,6 +1118,365 @@ static void ct_build_bvh(const VboPrimitive *prims, const byte *flags, uint32_t 
 	Z_Free(boxes);
 	Z_Free(cent);
 	Z_Free(idx);
+}
+
+/*
+=============================================================================
+
+STAINED GLASS
+
+stained_glass.h: a tile of thick coloured glass with a made-up lamp or sun
+behind it. What the glass shows (ct_stained_radiance, from ct_fetch_surface),
+and the straight share of the light thrown into the room by its window light
+(DYNLIGHT_WINDOW, ct_window_sample). The spread share is the window's fill,
+an ordinary light poly scaled by stained_scatter (ct_capture_light). Textures
+are read at mip 0 - the GPU reads the window light's at its footprint's mip to
+calm the noise; here the samples average it.
+
+A lamp's window light is drawn through sample_projected_sphere and its pdf, as
+on the GPU, so both renderers agree on how bright it is.
+
+=============================================================================
+*/
+
+#define CT_STAINED_ETA          1.5f
+#define CT_STAINED_BLOOM_SHARE  0.5f
+#define CT_STAINED_MIN_SPOT     0.026f
+#define CT_STAINED_ALBEDO       0.35f
+
+// construct_ONB_frisvad's two tangents (columns 0 and 2)
+static void ct_onb_frisvad(const float n[3], float t0[3], float t2[3])
+{
+	if (n[2] < -0.999805696f) {
+		VectorSet(t0, 0.f, -1.f, 0.f);
+		VectorSet(t2, -1.f, 0.f, 0.f);
+		return;
+	}
+	const float a = 1.f / (1.f + n[2]);
+	const float b = -n[0] * n[1] * a;
+	VectorSet(t0, 1.f - n[0] * n[0] * a, b, -n[0]);
+	VectorSet(t2, b, 1.f - n[1] * n[1] * a, -n[1]);
+}
+
+static inline float ct_smoothstep(float e0, float e1, float x)
+{
+	const float t = ct_clampf((x - e0) / (e1 - e0), 0.f, 1.f);
+	return t * t * (3.f - 2.f * t);
+}
+
+// the material's settings as the GPU gets them: the size in radians, the
+// spread in whole degrees (vertex_buffer.c packs it as 1..255)
+static inline float ct_stained_size(const pbr_material_t *m)
+{
+	return m->stained_light_size * 0.017453293f;
+}
+
+static inline float ct_stained_spread(const pbr_material_t *m)
+{
+	int deg = (int)(m->stained_spread + 0.5f);
+	deg = deg < 1 ? 1 : (deg > 255 ? 255 : deg);
+	return (float)deg * 0.017453293f;
+}
+
+// stained_light: the light behind the tile whose u, v = 0, 0 corner is
+// `corner`, u and v running along e_u and e_v, on glass facing n_room
+static void ct_stained_light(const float corner[3], const float e_u[3], const float e_v[3],
+	const float n_room[3], const pbr_material_t *m, ct_stained_t *s)
+{
+	const float tile_h = max(VectorLength(e_v), 1e-3f);
+	const float back = max(m->stained_light_distance, 0.01f) * tile_h;
+	VectorCopy(n_room, s->n_room);
+	for (int k = 0; k < 3; k++) {
+		s->centre[k] = corner[k] + 0.5f * e_u[k] + 0.5f * e_v[k];
+		// v runs down the picture: height 1 is the tile's top edge (v 0)
+		const float spot = corner[k] + 0.5f * e_u[k] + (1.f - m->stained_light_height) * e_v[k];
+		s->lamp[k] = spot - n_room[k] * back;
+	}
+	float d[3];
+	VectorSubtract(s->lamp, s->centre, d);
+	s->dist_c = max(VectorLength(d), 1e-3f);
+	VectorScale(d, 1.f / s->dist_c, s->to_light);
+	s->sun = m->stained_light_sun;
+	s->sin_size = sinf(ct_clampf(ct_stained_size(m), 1e-3f, 1.f));
+	s->radius = s->dist_c * s->sin_size;
+	s->cos_c = max(-DotProduct(s->to_light, n_room), 0.05f);
+	s->radiance = 1.f / (M_PI * s->sin_size * s->sin_size * s->cos_c);
+}
+
+// stained_irradiance: 1 at the middle of the tile; `travel` from the light
+// through the glass
+static float ct_stained_irradiance(const ct_stained_t *s, const float p[3], float travel[3])
+{
+	if (s->sun) {
+		VectorNegate(s->to_light, travel);
+		return 1.f;
+	}
+	float d[3];
+	VectorSubtract(s->lamp, p, d);
+	const float dist2 = max(DotProduct(d, d), 1e-4f);
+	VectorScale(d, 1.f / sqrtf(dist2), d);
+	VectorNegate(d, travel);
+	const float cos_p = max(-DotProduct(d, s->n_room), 0.f);
+	return (s->dist_c * s->dist_c / dist2) * (cos_p / s->cos_c);
+}
+
+// stained_face_transmit: what one face lets through at cosine c (Schlick, F0 0.04)
+static inline float ct_stained_face(float c)
+{
+	const float x = 1.f - ct_clampf(c, 0.f, 1.f);
+	return 1.f - (0.04f + 0.96f * ct_pow5(x));
+}
+
+// stained_thick_transmit: T deepened by the longer path at a slant
+static void ct_stained_thick(const float T[3], float c, float out[3])
+{
+	const float sin2_t = (1.f - c * c) * (1.f / (CT_STAINED_ETA * CT_STAINED_ETA));
+	const float cos_t = sqrtf(max(1.f - sin2_t, 0.3f));
+	for (int k = 0; k < 3; k++)
+		out[k] = powf(ct_clampf(T[k], 0.f, 1.f), 1.f / cos_t);
+}
+
+// stained_glass_radiance: what the glass shows at p towards w_o, for an
+// irradiance of 1 at the middle of the tile
+static void ct_stained_radiance(const ct_stained_t *s, const pbr_material_t *m, const float p[3],
+	const float n_shade[3], const float w_o[3], const float T[3], float out[3])
+{
+	VectorClear(out);
+
+	float travel[3];
+	const float E = ct_stained_irradiance(s, p, travel);
+	const float cos_o = DotProduct(w_o, s->n_room);
+	if (E <= 0.f || cos_o <= 0.f)
+		return;
+
+	// the glass's bumps bend the light on its way out
+	float f[3];
+	for (int k = 0; k < 3; k++)
+		f[k] = travel[k] - (CT_STAINED_ETA - 1.f) * (n_shade[k] - s->n_room[k]);
+	ct_normalize(f);
+	const float c = DotProduct(w_o, f);
+
+	float Tv[3];
+	ct_stained_thick(T, cos_o, Tv);
+	VectorScale(Tv, ct_stained_face(cos_o) * ct_stained_face(DotProduct(travel, s->n_room)), Tv);
+
+	// the spread share: half an even glow, half a bloom round f
+	const float kappa = 0.6931472f / max(1.f - cosf(ct_stained_spread(m)), 1e-4f);
+	const float norm = kappa * kappa / (2.f * (kappa - 1.f + expf(-kappa)));
+	const float bloom = norm * expf(kappa * (min(c, 1.f) - 1.f));
+	const float lobe = ((1.f - CT_STAINED_BLOOM_SHARE) + CT_STAINED_BLOOM_SHARE * bloom) * (1.f / M_PI);
+	VectorScale(Tv, E * m->stained_scatter * lobe, out);
+
+	// the straight share: the light itself, seen through the glass
+	const float clear = 1.f - m->stained_scatter;
+	if (clear > 0.f) {
+		float sin_a = s->sin_size;
+		if (!s->sun) {
+			float d[3];
+			VectorSubtract(s->lamp, p, d);
+			sin_a = min(s->radius / sqrtf(max(DotProduct(d, d), 1e-4f)), 1.f);
+		}
+		const float sin_vis = max(sin_a, CT_STAINED_MIN_SPOT);
+		const float one_minus_cos = 1.f - sqrtf(max(1.f - sin_vis * sin_vis, 0.f));
+		const float spot = ct_smoothstep(1.f - 1.5f * one_minus_cos, 1.f - 0.5f * one_minus_cos, c);
+		VectorMA(out, s->radiance * clear * spot * (sin_a * sin_a) / (sin_vis * sin_vis), Tv, out);
+	}
+}
+
+// stained_tile_frame: the tile's corner and u/v edges, from the triangle the
+// point p (texture coordinate u, v) lies on
+static bool ct_stained_tile_frame(const VboPrimitive *prim, const float p[3], float u, float v,
+	float corner[3], float e_u[3], float e_v[3])
+{
+	float dp1[3], dp2[3];
+	VectorSubtract(prim->pos1, prim->pos0, dp1);
+	VectorSubtract(prim->pos2, prim->pos0, dp2);
+	const float du1 = prim->uv1[0] - prim->uv0[0], dv1 = prim->uv1[1] - prim->uv0[1];
+	const float du2 = prim->uv2[0] - prim->uv0[0], dv2 = prim->uv2[1] - prim->uv0[1];
+	const float det = du1 * dv2 - du2 * dv1;
+	if (fabsf(det) < 1e-12f)
+		return false;
+	const float inv = 1.f / det;
+	const float fu = u - floorf(u), fv = v - floorf(v);
+	for (int k = 0; k < 3; k++) {
+		e_u[k] = (dp1[k] * dv2 - dp2[k] * dv1) * inv;
+		e_v[k] = (dp2[k] * du1 - dp1[k] * du2) * inv;
+		corner[k] = p[k] - fu * e_u[k] - fv * e_v[k];
+	}
+	return true;
+}
+
+static inline float ct_window_rect_unpack(uint32_t q)
+{
+	return (float)q * (3.f / 4095.f) - 1.f;
+}
+
+// get_window_light + window_stained_light, from the light's record (bsp_mesh.c,
+// copy_light); false for one with no material
+static bool ct_window_from_light(const light_poly_t *src, ct_window_t *w)
+{
+	if (!src->material)
+		return false;
+
+	VectorCopy(src->positions + 0, w->S);
+	VectorCopy(src->positions + 3, w->T);
+	CrossProduct(w->S, w->T, w->n);
+	ct_normalize(w->n);
+	if (src->spot_emission_profile & 1)
+		VectorNegate(w->n, w->n);
+	VectorCopy(src->window, w->window);
+	const uint32_t ru = (uint32_t)(src->positions[6] + 0.5f);
+	const uint32_t rv = (uint32_t)(src->positions[7] + 0.5f);
+	w->rect[0] = ct_window_rect_unpack(ru & 0xfffu);
+	w->rect[1] = ct_window_rect_unpack(rv & 0xfffu);
+	w->rect[2] = ct_window_rect_unpack(ru >> 12);
+	w->rect[3] = ct_window_rect_unpack(rv >> 12);
+	w->mat = src->material;
+
+	// S and T lie in the glass's plane, so the tile's edges are their duals in it
+	float c[3], e_u[3], e_v[3], corner[3];
+	CrossProduct(w->S, w->T, c);
+	const float det = DotProduct(c, w->n);
+	if (fabsf(det) < 1e-12f)
+		return false;
+	CrossProduct(w->T, w->n, e_u);
+	CrossProduct(w->n, w->S, e_v);
+	VectorScale(e_u, 1.f / det, e_u);
+	VectorScale(e_v, 1.f / det, e_v);
+	for (int k = 0; k < 3; k++)
+		corner[k] = w->n[k] * w->window[2] - e_u[k] * w->window[0] - e_v[k] * w->window[1];
+	ct_stained_light(corner, e_u, e_v, w->n, w->mat, &w->sl);
+	return true;
+}
+
+// window_light_mass_volume without the texture's average (stained_mean_through):
+// the light's solid angle x radiance x the straight share x the share of its
+// footprint on the glass over the window - what the fog picks it by. A dark
+// window is picked more often than its light is worth; the pick stays unbiased.
+static float ct_window_mass_volume(const ct_window_t *w, const float p[3], float dir[3])
+{
+	const ct_stained_t *s = &w->sl;
+	VectorCopy(s->to_light, dir);
+	const float h = DotProduct(p, w->n) - w->window[2];
+	if (h <= 0.01f)
+		return 0.f;
+
+	float sin_a = s->sin_size;
+	if (!s->sun) {
+		float d[3];
+		VectorSubtract(s->lamp, p, d);
+		const float dist = max(VectorLength(d), 1e-4f);
+		VectorScale(d, 1.f / dist, dir);
+		sin_a = min(s->radius / dist, 1.f);
+	}
+	const float cos_a = sqrtf(max(1.f - sin_a * sin_a, 0.f));
+	const float solid_angle = 2.f * M_PI * (1.f - cos_a);
+
+	const float denom = DotProduct(dir, w->n);
+	if (denom >= -1e-4f)
+		return 0.f;
+	const float cos_g = -denom;
+	float g[3];
+	VectorMA(p, h / cos_g, dir, g);
+	const float uv[2] = { DotProduct(g, w->S) + w->window[0], DotProduct(g, w->T) + w->window[1] };
+	const float per_unit[2] = { VectorLength(w->S), VectorLength(w->T) };
+
+	const float tan_g = sqrtf(max(1.f - cos_g * cos_g, 0.f)) / cos_g;
+	const float tan_a = sin_a / max(cos_a, 1e-4f);
+	const float den = 1.f - tan_g * tan_a;
+	const float r = (den > 1e-3f) ? h * ((tan_g + tan_a) / den - tan_g) : 1e4f;
+
+	float cover = 1.f;
+	for (int k = 0; k < 2; k++) {
+		const float r_uv = max(r * per_unit[k], 1e-6f);
+		const float lo = max(uv[k] - r_uv, w->rect[k]);
+		const float hi = min(uv[k] + r_uv, w->rect[k + 2]);
+		cover *= ct_clampf((hi - lo) / (2.f * r_uv), 0.f, 1.f);
+	}
+
+	return solid_angle * s->radiance * (1.f - w->mat->stained_scatter) * cover;
+}
+
+// sample_window_light: one sample of the window's light at p. *point is where
+// the shadow ray goes (just short of the glass), tint what comes through per
+// unit of the light's colour, already divided by the pdf. False = nothing
+// (behind the glass, or through the wall beside the window).
+static bool ct_window_sample(const ct_window_t *w, const float p[3], float u1, float u2, float point[3], float tint[3])
+{
+	const ct_stained_t *s = &w->sl;
+	const pbr_material_t *m = w->mat;
+
+	const float h = DotProduct(p, w->n) - w->window[2];
+	if (h <= 0.01f)
+		return false;
+
+	// sample_disk
+	const float theta = 2.f * M_PI * u1, rd = sqrtf(u2);
+	const float dx = cosf(theta) * rd, dy = sinf(theta) * rd;
+
+	float dir[3], t0[3], t2[3], pdfw;
+	if (s->sun) {
+		ct_onb_frisvad(s->to_light, t0, t2);
+		const float tan_size = s->sin_size / sqrtf(max(1.f - s->sin_size * s->sin_size, 1e-6f));
+		for (int k = 0; k < 3; k++)
+			dir[k] = s->to_light[k] + (t0[k] * dx + t2[k] * dy) * tan_size;
+		ct_normalize(dir);
+		pdfw = 1.f / (2.f * M_PI * (1.f - sqrtf(max(1.f - s->sin_size * s->sin_size, 0.f))));
+	} else {
+		// sample_projected_sphere, its pdf and all
+		float L[3];
+		VectorSubtract(s->lamp, p, L);
+		const float dist = VectorLength(L);
+		if (!(dist > 1e-4f))
+			return false;
+		VectorScale(L, 1.f / dist, L);
+		const float rr = s->radius / dist;
+		const float projected_area = min(2.f * (1.f - sqrtf(max(0.f, 1.f - rr * rr))), 2.f * M_PI);
+		pdfw = projected_area > 0.f ? 1.f / projected_area : 0.f;
+		ct_onb_frisvad(L, t0, t2);
+		const float dz = sqrtf(max(0.f, 1.f - dx * dx - dy * dy));
+		float q[3];
+		for (int k = 0; k < 3; k++)
+			q[k] = s->lamp[k] + (t0[k] * dx + t2[k] * dy - L[k] * dz) * s->radius;
+		VectorSubtract(q, p, dir);
+		ct_normalize(dir);
+	}
+
+	const float denom = DotProduct(dir, w->n);
+	if (!(pdfw > 0.f) || denom >= -1e-4f)
+		return false;
+
+	const float t = -h / denom;
+	float g[3];
+	VectorMA(p, t, dir, g);
+	const float u = DotProduct(g, w->S) + w->window[0];
+	const float v = DotProduct(g, w->T) + w->window[1];
+	if (u < w->rect[0] || v < w->rect[1] || u > w->rect[2] || v > w->rect[3])
+		return false;
+
+	// the glass mask: the light comes through its white texels only
+	float glass = 1.f;
+	if (m->image_stained_mask) {
+		float c[4];
+		ct_sample(m->image_stained_mask, u, v, c);
+		glass = (c[0] >= 0.5f) ? 1.f : 0.f;
+		if (glass <= 0.f)
+			return false;
+	}
+
+	float T[4] = { 1.f, 1.f, 1.f, 1.f };
+	if (m->image_base)
+		ct_sample(m->image_base, u, v, T);
+	for (int k = 0; k < 3; k++)
+		T[k] = ct_clampf(T[k] * m->base_factor, 0.f, 1.f);
+
+	const float cos_g = -denom;
+	ct_stained_thick(T, cos_g, tint);
+	const float face = ct_stained_face(cos_g);
+	VectorScale(tint, face * face * s->radiance * (1.f - m->stained_scatter) * glass / pdfw, tint);
+
+	VectorMA(g, -0.5f, dir, point);
+	return true;
 }
 
 /*
@@ -1208,21 +1737,30 @@ static void ct_capture_light(const light_poly_t *src, ct_light_t *l)
 		return;
 	}
 
-	// a stained glass window light (DYNLIGHT_WINDOW): its positions are texture
-	// axes, not a triangle, and this tracer has no sampler for it - it lights
-	// nothing here
-	if (src->type == DYNLIGHT_WINDOW) {
-		VectorClear(l->radiance);
-		l->vol_scale = 0.f;
-		return;
-	}
-
 	float style = 1.f;
 	if (src->style > 0 && src->style < MAX_LIGHTSTYLES)
 		style = scene.light_styles[src->style];
-	const float mat_scale = src->material ? src->material->emissive_factor : 1.f;
+	// copy_light: light_factor scales only the light cast, not the look
+	const float mat_scale = src->material ? src->material->emissive_factor * src->material->light_factor : 1.f;
 	VectorScale(src->color, mat_scale * style, l->radiance);
 	l->vol_scale = vkpt_light_volumetric_scale(src);
+
+	// a stained glass window light (DYNLIGHT_WINDOW): its positions are the
+	// tile's texture axes, not a triangle (STAINED GLASS); its colour is the
+	// irradiance on the glass at the middle of the tile
+	if (src->type == DYNLIGHT_WINDOW) {
+		l->area = 0.f;
+		l->window = ct_window_from_light(src, &l->win);
+		if (!l->window) {
+			VectorClear(l->radiance);
+			l->vol_scale = 0.f;
+		}
+		return;
+	}
+
+	// ... and the same window's fill: the share the glass spreads
+	if (src->material && src->material->stained_glass)
+		VectorScale(l->radiance, src->material->stained_scatter, l->radiance);
 }
 
 static void ct_capture_lights(const bsp_mesh_t *wm)
@@ -1366,18 +1904,60 @@ static void ct_fetch_surface(const ct_ray_t *ray, const ct_hit_t *hit, ct_surfac
 	s->specular_factor = mat->specular_factor + (1.f - mat->specular_factor) * metallic;
 
 	VectorClear(s->emissive);
+	s->uv[0] = tu;
+	s->uv[1] = tv;
 	const float prim_emissive = halfToFloat((uint16_t)(p->emissive_and_alpha & 0xffff));
+	// the material's emissive factor, times its light style (the camera kind
+	// keeps its camera slot in those bits)
+	float emissive_factor = mat->emissive_factor;
+	if ((p->material_id & MATERIAL_KIND_MASK) != MATERIAL_KIND_CAMERA) {
+		const uint32_t style = (p->material_id & MATERIAL_LIGHT_STYLE_MASK) >> MATERIAL_LIGHT_STYLE_SHIFT;
+		if (style)
+			emissive_factor *= scene.light_styles[style];
+	}
 	if (prim_emissive > 0.f && mat->image_emissive) {
 		float e[4];
 		ct_sample(mat->image_emissive, tu, tv, e);
-		float scale = mat->emissive_factor * prim_emissive;
-		if ((p->material_id & MATERIAL_KIND_MASK) != MATERIAL_KIND_CAMERA) {
-			const uint32_t style = (p->material_id & MATERIAL_LIGHT_STYLE_MASK) >> MATERIAL_LIGHT_STYLE_SHIFT;
-			if (style)
-				scale *= scene.light_styles[style];
-		}
+		const float scale = emissive_factor * prim_emissive;
 		for (int k = 0; k < 3; k++)
 			s->emissive[k] = max(0.f, e[k] - 0.001f) * scale;
+	}
+
+	/* STAINED GLASS, as get_material ends: what the glass shows is the light
+	   behind it, in place of any emissive texture, and STAINED_ALBEDO of its
+	   colour is its diffuse. With a glass mask, a black texel is the surface
+	   round the glass, shaded as it is, without a glow. */
+	if (mat->stained_glass && MAT_IsKind(mat->flags, MATERIAL_KIND_REGULAR)) {
+		bool glass = true;
+		if (mat->image_stained_mask) {
+			float mk[4];
+			ct_sample(mat->image_stained_mask, tu, tv, mk);
+			VectorClear(s->emissive);
+			glass = mk[0] >= 0.5f;
+		}
+		if (glass) {
+			float T[3], corner[3], e_u[3], e_v[3];
+			VectorCopy(s->base, T);
+			VectorScale(s->base, CT_STAINED_ALBEDO, s->base);
+			VectorClear(s->emissive);
+			if (prim_emissive > 0.f && ct_stained_tile_frame(p, s->p, tu, tv, corner, e_u, e_v)) {
+				float n_room[3], n_shade[3], w_o[3];
+				if (DotProduct(ng, ray->d) < 0.f)
+					VectorCopy(ng, n_room);
+				else
+					VectorNegate(ng, n_room);
+				if (DotProduct(n, n_room) > 0.f)
+					VectorCopy(n, n_shade);
+				else
+					VectorCopy(n_room, n_shade);
+				VectorNegate(ray->d, w_o);
+
+				ct_stained_t sl;
+				ct_stained_light(corner, e_u, e_v, n_room, mat, &sl);
+				ct_stained_radiance(&sl, mat, s->p, n_shade, w_o, T, s->emissive);
+				VectorScale(s->emissive, M_PI * emissive_factor * prim_emissive, s->emissive);
+			}
+		}
 	}
 
 	for (int k = 0; k < 3; k++) {
@@ -1455,20 +2035,571 @@ static inline bool ct_sky_visible(int cluster)
 	return (scene.sky_visibility[cluster >> 3] & (1 << (cluster & 7))) != 0;
 }
 
-static bool ct_unoccluded(ct_worker_t *w, const ct_surface_t *s, const float L[3], float dist)
+/*
+=============================================================================
+
+CAUSTICS
+
+pt_caustics (1 or 2): trace_caustic_ray in path_tracer_rgen.h. A shadow ray
+that the opaque world lets through looks for the first see-through surface on
+its way:
+  - level water or slime: Quake II RTX's caustic from the water's normal map
+  - glass (and a standing water surface, a force field): its colour, and for
+    caustic glass (GLASSCAUSTIC, caustic_ripple) the bend - the lamp in a
+    bulb focused by the shape (glass_caustic), the sun through a glass ball
+    (glass_ball_caustic), light thrown in moving ripples (glass_ripple)
+  - anything else see-through: 1 - its alpha
+The bend is worked out per sample, from the point the shadow ray goes to, as
+photo mode does (pt_caustic_anchor is for real time only). pt_caustics 0
+leaves see-through surfaces out of shadow rays, as before.
+
+=============================================================================
+*/
+
+#define CT_GLASS_CAUSTIC_MAX    8.f
+#define CT_GLASS_CAUSTIC_EPS    0.05f
+#define CT_GLASS_CAUSTIC_STEPS  3
+#define CT_GLASS_BALL_SCAN      16
+#define CT_GLASS_BALL_FIT       0.02f
+#define CT_GLASS_RIPPLE_TILES   4.f
+#define CT_GLASS_RIPPLE_LOD     4
+#define CT_GLASS_RIPPLE_K       2.f
+#define CT_GLASS_RIPPLE_SPEED   1.5f
+#define CT_GLASS_RIPPLE_FLAT_TILE 128.f
+#define CT_GLASS_RIPPLE_FLAT_R  256.f
+
+// The hit triangle as the shaders' Triangle has it: corners, unit vertex
+// normals, and the hit's barycentrics.
+typedef struct {
+	float pos[3][3];
+	float nrm[3][3];
+	float bary[3];
+} ct_tri_frame_t;
+
+static void ct_tri_frame(const VboPrimitive *p, float u, float v, ct_tri_frame_t *t)
+{
+	VectorCopy(p->pos0, t->pos[0]);
+	VectorCopy(p->pos1, t->pos[1]);
+	VectorCopy(p->pos2, t->pos[2]);
+	for (int k = 0; k < 3; k++)
+		ct_decode_normal(p->normals[k], t->nrm[k]);
+	t->bary[0] = 1.f - u - v;
+	t->bary[1] = u;
+	t->bary[2] = v;
+}
+
+// GLSL refract(): false (and 0) on total internal reflection
+static bool ct_refract(const float I[3], const float N[3], float eta, float out[3])
+{
+	const float NdI = DotProduct(N, I);
+	const float k = 1.f - eta * eta * (1.f - NdI * NdI);
+	if (k < 0.f) {
+		VectorClear(out);
+		return false;
+	}
+	const float c = eta * NdI + sqrtf(k);
+	for (int i = 0; i < 3; i++)
+		out[i] = eta * I[i] - c * N[i];
+	return true;
+}
+
+typedef struct {
+	float N[3], d[3], o[3], b1[3], b2[3];
+	float a_straight, a_bent;
+	bool tir;
+} ct_caustic_patch_t;
+
+// glass_caustic_patch
+static void ct_caustic_patch(const ct_tri_frame_t *tri, float beta_x, float beta_y, const float to_p[3],
+	bool directional, float z, float eta, ct_caustic_patch_t *g)
+{
+	g->tir = false;
+	g->a_straight = g->a_bent = 0.f;
+
+	float dp1[3], dp2[3], dn1[3], dn2[3], n[3];
+	for (int k = 0; k < 3; k++) {
+		dp1[k] = (tri->pos[1][k] - tri->pos[0][k]) * CT_GLASS_CAUSTIC_EPS;
+		dp2[k] = (tri->pos[2][k] - tri->pos[0][k]) * CT_GLASS_CAUSTIC_EPS;
+		dn1[k] = (tri->nrm[1][k] - tri->nrm[0][k]) * CT_GLASS_CAUSTIC_EPS;
+		dn2[k] = (tri->nrm[2][k] - tri->nrm[0][k]) * CT_GLASS_CAUSTIC_EPS;
+		n[k] = tri->nrm[0][k] * tri->bary[0] + tri->nrm[1][k] * tri->bary[1] + tri->nrm[2][k] * tri->bary[2]
+			+ dn1[k] * beta_x + dn2[k] * beta_y;
+	}
+	if (DotProduct(n, n) < 1e-8f)
+		return;
+
+	float N[3][3], d[3][3], o[3][3];
+	for (int k = 0; k < 3; k++) {
+		N[0][k] = n[k];
+		N[1][k] = n[k] + dn1[k];
+		N[2][k] = n[k] + dn2[k];
+	}
+	for (int i = 0; i < 3; i++)
+		ct_normalize(N[i]);
+
+	if (directional) {
+		for (int i = 0; i < 3; i++) {
+			VectorCopy(to_p, d[i]);
+			ct_normalize(d[i]);
+		}
+	} else {
+		for (int k = 0; k < 3; k++) {
+			const float v = to_p[k] + dp1[k] * beta_x + dp2[k] * beta_y;
+			d[0][k] = v;
+			d[1][k] = v + dp1[k];
+			d[2][k] = v + dp2[k];
+		}
+		for (int i = 0; i < 3; i++)
+			ct_normalize(d[i]);
+	}
+
+	for (int i = 0; i < 3; i++) {
+		// faceforward: the normal against the light's way
+		float nf[3];
+		if (DotProduct(N[i], d[i]) < 0.f)
+			VectorCopy(N[i], nf);
+		else
+			VectorNegate(N[i], nf);
+		if (!ct_refract(d[i], nf, eta, o[i])) {
+			g->tir = true;
+			return;
+		}
+	}
+
+	float s1[3], s2[3], c[3];
+	for (int k = 0; k < 3; k++) {
+		s1[k] = dp1[k] + z * (d[1][k] - d[0][k]);
+		s2[k] = dp2[k] + z * (d[2][k] - d[0][k]);
+		g->b1[k] = dp1[k] + z * (o[1][k] - o[0][k]);
+		g->b2[k] = dp2[k] + z * (o[2][k] - o[0][k]);
+	}
+	CrossProduct(s1, s2, c);
+	g->a_straight = fabsf(DotProduct(c, d[0]));
+	CrossProduct(g->b1, g->b2, c);
+	g->a_bent = fabsf(DotProduct(c, o[0]));
+	VectorCopy(N[0], g->N);
+	VectorCopy(d[0], g->d);
+	VectorCopy(o[0], g->o);
+}
+
+// glass_ball_turn
+static inline float ct_ball_turn(float b, float R, float eta, float inv_D)
+{
+	const float si = ct_clampf(b / R, -1.f, 1.f);
+	return 2.f * (asinf(si) - asinf(si / eta)) - asinf(ct_clampf(b * inv_D, -1.f, 1.f));
+}
+
+// glass_ball_caustic: a light OUTSIDE a glass ball, bent going in and out
+static bool ct_glass_ball_caustic(const ct_tri_frame_t *tri, const float o[3], const float dir[3], float tmax,
+	float eta, float *ratio)
+{
+	*ratio = 1.f;
+
+	float dn1[3], dn2[3], dp1[3], dp2[3];
+	VectorSubtract(tri->nrm[1], tri->nrm[0], dn1);
+	VectorSubtract(tri->nrm[2], tri->nrm[0], dn2);
+	VectorSubtract(tri->pos[1], tri->pos[0], dp1);
+	VectorSubtract(tri->pos[2], tri->pos[0], dp2);
+	const float nn = DotProduct(dn1, dn1) + DotProduct(dn2, dn2);
+	if (!(nn > 1e-8f))
+		return false;
+	const float R = (DotProduct(dp1, dn1) + DotProduct(dp2, dn2)) / nn;
+	if (!(R > 0.f))
+		return false;
+
+	float c[3][3], C[3] = { 0.f, 0.f, 0.f };
+	for (int i = 0; i < 3; i++) {
+		VectorMA(tri->pos[i], -R, tri->nrm[i], c[i]);
+		VectorMA(C, 1.f / 3.f, c[i], C);
+	}
+	for (int i = 0; i < 3; i++) {
+		float e[3];
+		VectorSubtract(c[i], C, e);
+		if (VectorLength(e) > CT_GLASS_BALL_FIT * R)
+			return false;
+	}
+
+	float v[3];
+	VectorSubtract(o, C, v);
+	if (DotProduct(v, v) <= R * R)
+		return false;
+
+	float axis[3];
+	VectorNegate(dir, axis);
+	float inv_D = 0.f, k_lamp = 1.f;
+	if (tmax < 9000.f) {
+		float lc[3], light[3];
+		VectorMA(o, tmax, dir, light);
+		VectorSubtract(C, light, lc);
+		const float D = VectorLength(lc);
+		if (D <= R * 1.001f)
+			return false;
+		VectorScale(lc, 1.f / D, axis);
+		inv_D = 1.f / D;
+		k_lamp = tmax * tmax * inv_D * inv_D;
+	}
+
+	const float z = DotProduct(v, axis);
+	float side[3];
+	VectorMA(v, -z, axis, side);
+	const float rho = max(VectorLength(side), 1e-3f * R);
+	const float lim = R * 0.9995f;
+
+	float total = 0.f;
+	float b0 = -lim;
+	float p0 = ct_ball_turn(b0, R, eta, inv_D);
+	float f0 = z * sinf(p0) + rho * cosf(p0) - b0;
+	for (int i = 1; i <= CT_GLASS_BALL_SCAN; i++) {
+		const float b1 = lim * (2.f * (float)i / (float)CT_GLASS_BALL_SCAN - 1.f);
+		const float p1 = ct_ball_turn(b1, R, eta, inv_D);
+		const float f1 = z * sinf(p1) + rho * cosf(p1) - b1;
+		if (f0 * f1 < 0.f) {
+			float lo = b0, hi = b1, flo = f0, fhi = f1;
+			for (int k = 0; k < 5; k++) {
+				float m = lo - flo * (hi - lo) / (fhi - flo);
+				if (!(m > min(lo, hi) && m < max(lo, hi)))
+					m = 0.5f * (lo + hi);
+				const float pm = ct_ball_turn(m, R, eta, inv_D);
+				const float fm = z * sinf(pm) + rho * cosf(pm) - m;
+				if (fm * flo < 0.f) { hi = m; fhi = fm; }
+				else                { lo = m; flo = fm; }
+			}
+			const float b = (fhi != flo) ? lo - flo * (hi - lo) / (fhi - flo) : 0.5f * (lo + hi);
+			const float psi = ct_ball_turn(b, R, eta, inv_D);
+			const float s = z * cosf(psi) - rho * sinf(psi);
+
+			const float si = b / R;
+			const float ci = sqrtf(max(1.f - si * si, 1e-8f));
+			if (s >= R * ci - 1e-4f * R) {
+				const float st = si / eta;
+				const float ct = sqrtf(max(1.f - st * st, 1e-8f));
+				const float sd = sqrtf(max(1.f - b * b * inv_D * inv_D, 1e-8f));
+				const float dpsi = 2.f * (1.f / (R * ci) - 1.f / (eta * R * ct)) - inv_D / sd;
+				const float r = fabsf(b) * k_lamp / (sd * rho * max(fabsf(1.f - dpsi * s), 1e-6f));
+				const float rs = (ci - eta * ct) / (ci + eta * ct);
+				const float rp = (eta * ci - ct) / (eta * ci + ct);
+				const float t = 1.f - 0.5f * (rs * rs + rp * rp);
+				total += r * t * t;
+			}
+		}
+		b0 = b1;
+		f0 = f1;
+	}
+
+	*ratio = min(total, CT_GLASS_CAUSTIC_MAX);
+	return true;
+}
+
+// glass_caustic: how much the patch of glass the light leaves through squeezes
+// it onto the lit point, against no glass at all
+static float ct_glass_caustic(const ct_tri_frame_t *tri, const float o[3], const float dir[3], float tmax,
+	float hit_distance, float strength)
+{
+	const float eta = 1.f + 0.52f * strength;
+	const float z = hit_distance;
+
+	float ball;
+	if (scene.caustic_ball && ct_glass_ball_caustic(tri, o, dir, tmax, eta, &ball))
+		return ball;
+
+	const bool directional = tmax >= 9000.f;
+	float to_p[3];
+	VectorScale(dir, -max(tmax - hit_distance, 0.01f), to_p);
+
+	float beta_x = 0.f, beta_y = 0.f;
+	ct_caustic_patch_t g;
+	ct_caustic_patch(tri, beta_x, beta_y, to_p, directional, z, eta, &g);
+	if (g.tir)
+		return 0.f;
+	if (!(g.a_straight > 0.f))
+		return 1.f;
+
+	float target[3], dp1[3], dp2[3];
+	VectorScale(g.d, z, target);
+	for (int k = 0; k < 3; k++) {
+		dp1[k] = (tri->pos[1][k] - tri->pos[0][k]) * CT_GLASS_CAUSTIC_EPS;
+		dp2[k] = (tri->pos[2][k] - tri->pos[0][k]) * CT_GLASS_CAUSTIC_EPS;
+	}
+	for (int step = 0; step < CT_GLASS_CAUSTIC_STEPS; step++) {
+		float miss[3];
+		for (int k = 0; k < 3; k++)
+			miss[k] = target[k] - (dp1[k] * beta_x + dp2[k] * beta_y + z * g.o[k]);
+		const float a11 = DotProduct(g.b1, g.b1);
+		const float a12 = DotProduct(g.b1, g.b2);
+		const float a22 = DotProduct(g.b2, g.b2);
+		const float det = a11 * a22 - a12 * a12;
+		if (!(det > 1e-6f * a11 * a22))
+			break;
+		const float rbx = DotProduct(g.b1, miss), rby = DotProduct(g.b2, miss);
+		float nx = beta_x + (a22 * rbx - a12 * rby) / det;
+		float ny = beta_y + (a11 * rby - a12 * rbx) / det;
+		const float reach = max(max(fabsf(nx), fabsf(ny)), fabsf(nx + ny)) * CT_GLASS_CAUSTIC_EPS;
+		if (reach > 1.f) {
+			nx /= reach;
+			ny /= reach;
+		}
+		ct_caustic_patch_t g2;
+		ct_caustic_patch(tri, nx, ny, to_p, directional, z, eta, &g2);
+		if (g2.tir)
+			return 0.f;
+		if (!(g2.a_straight > 0.f))
+			break;
+		g = g2;
+		beta_x = nx;
+		beta_y = ny;
+	}
+
+	const float ratio = g.a_straight / max(g.a_bent, g.a_straight * (1.f / CT_GLASS_CAUSTIC_MAX));
+	const float ci = fabsf(DotProduct(g.N, g.d));
+	const float ct = fabsf(DotProduct(g.N, g.o));
+	const float rs = (eta * ci - ct) / (eta * ci + ct);
+	const float rp = (ci - eta * ct) / (ci + eta * ct);
+	return ratio * (1.f - 0.5f * (rs * rs + rp * rp));
+}
+
+// water_n.tga's red and green at mip GLASS_RIPPLE_LOD, bilinear and wrapping
+static void ct_ripple_sample(float u, float v, float out[2])
+{
+	const int w = scene.ripple_w, h = scene.ripple_h;
+	u -= floorf(u);
+	v -= floorf(v);
+	const float x = u * (float)w - 0.5f, y = v * (float)h - 0.5f;
+	const float fx = floorf(x), fy = floorf(y);
+	const float ax = x - fx, ay = y - fy;
+	int x0 = ((int)fx % w + w) % w, y0 = ((int)fy % h + h) % h;
+	const int x1 = (x0 + 1) % w, y1 = (y0 + 1) % h;
+	const float *m = scene.ripple_map;
+	for (int c = 0; c < 2; c++) {
+		const float a = m[((size_t)y0 * w + x0) * 2 + c] * (1.f - ax) + m[((size_t)y0 * w + x1) * 2 + c] * ax;
+		const float b = m[((size_t)y1 * w + x0) * 2 + c] * (1.f - ax) + m[((size_t)y1 * w + x1) * 2 + c] * ax;
+		out[c] = a * (1.f - ay) + b * ay;
+	}
+}
+
+// glass_ripple_tilt: water's three octaves
+static void ct_ripple_tilt(float u, float v, float out[2])
+{
+	const float t = scene.time * CT_GLASS_RIPPLE_SPEED;
+	float a[2], b[2], c[2];
+	ct_ripple_sample(u + t * 0.01f, v + t * 0.02f, a);
+	ct_ripple_sample(u * 0.5f + t * 0.013f, v * 0.5f + t * 0.014f, b);
+	ct_ripple_sample(u * 1.25f - t * 0.01f, v * 1.25f - t * 0.02f, c);
+	for (int k = 0; k < 2; k++)
+		out[k] = (a[k] * 2.f - 1.f) * 0.3f + (b[k] * 2.f - 1.f) * 0.5f + (c[k] * 2.f - 1.f) * 0.3f;
+}
+
+static float ct_ripple_bright(float u, float v, float k, float h)
+{
+	float o0[2], ou[2], ov[2];
+	ct_ripple_tilt(u, v, o0);
+	ct_ripple_tilt(u + h, v, ou);
+	ct_ripple_tilt(u, v + h, ov);
+	const float dux = (ou[0] - o0[0]) * (k / h), duy = (ou[1] - o0[1]) * (k / h);
+	const float dvx = (ov[0] - o0[0]) * (k / h), dvy = (ov[1] - o0[1]) * (k / h);
+	const float det = (1.f + dux) * (1.f + dvy) - duy * dvx;
+	return 1.f / max(fabsf(det), 1.f / CT_GLASS_CAUSTIC_MAX);
+}
+
+static float ct_ripple_mean(float k)
+{
+	static const float m[9] = { 1.f, 1.110f, 1.740f, 2.275f, 2.318f, 2.151f, 1.921f, 1.700f, 1.501f };
+	const float x = ct_clampf(k, 0.f, 7.999f);
+	const int i = (int)x;
+	return m[i] + (m[i + 1] - m[i]) * (x - (float)i);
+}
+
+// glass_ripple: the light through the glass thrown in moving water ripples
+static float ct_glass_ripple(const ct_tri_frame_t *tri, const float o[3], const float dir[3], float tmax,
+	float hit_distance, float strength)
+{
+	if (!scene.ripple_map)
+		return 1.f;
+
+	float N[3];
+	for (int k = 0; k < 3; k++)
+		N[k] = tri->nrm[0][k] * tri->bary[0] + tri->nrm[1][k] * tri->bary[1] + tri->nrm[2][k] * tri->bary[2];
+	if (DotProduct(N, N) < 1e-8f)
+		return 1.f;
+	ct_normalize(N);
+
+	float P[3];
+	VectorMA(o, hit_distance, dir, P);  // the lit point is the ray's origin
+
+	const float k = CT_GLASS_RIPPLE_K * strength;
+	const float h = scene.ripple_h_step;
+
+	float dp1[3], dp2[3], dn1[3], dn2[3];
+	VectorSubtract(tri->pos[1], tri->pos[0], dp1);
+	VectorSubtract(tri->pos[2], tri->pos[0], dp2);
+	VectorSubtract(tri->nrm[1], tri->nrm[0], dn1);
+	VectorSubtract(tri->nrm[2], tri->nrm[0], dn2);
+	const float nn = DotProduct(dn1, dn1) + DotProduct(dn2, dn2);
+	const float pn = DotProduct(dp1, dn1) + DotProduct(dp2, dn2);
+
+	float bright;
+	if (nn > 1e-8f && pn > 0.f && pn < CT_GLASS_RIPPLE_FLAT_R * nn) {
+		const float R = pn / nn;
+		float C[3], light_pos[3], lc[3], d[3];
+		VectorMA(P, -R, N, C);
+		VectorMA(o, tmax, dir, light_pos);
+		VectorSubtract(light_pos, C, lc);
+		const bool outside = tmax >= 9000.f || VectorLength(lc) > R;
+		VectorSubtract(outside ? P : o, C, d);
+		ct_normalize(d);
+
+		const float per_radian = CT_GLASS_RIPPLE_TILES / (2.f * M_PI);
+		const float w_cap = ct_smoothstep(0.643f, 0.866f, fabsf(d[2]));
+		bright = 0.f;
+		if (w_cap < 1.f)
+			bright += (1.f - w_cap) * ct_ripple_bright(atan2f(d[1], d[0]) * per_radian,
+				acosf(ct_clampf(-d[2], -1.f, 1.f)) * per_radian, k, h);
+		if (w_cap > 0.f) {
+			const float off = (d[2] > 0.f) ? 0.5f : 0.f;
+			bright += w_cap * ct_ripple_bright(d[0] * per_radian + off, d[1] * per_radian + off, k, h);
+		}
+	} else {
+		const float aN[3] = { fabsf(N[0]), fabsf(N[1]), fabsf(N[2]) };
+		float t0[3], t2[3];
+		ct_onb_frisvad(aN, t0, t2);
+		bright = ct_ripple_bright(DotProduct(o, t0) / CT_GLASS_RIPPLE_FLAT_TILE,
+			DotProduct(o, t2) / CT_GLASS_RIPPLE_FLAT_TILE, k, h);
+	}
+
+	return bright / ct_ripple_mean(k);
+}
+
+// get_water_normal(..., local_space = true)'s caustic, as trace_caustic_ray
+// turns it into a brightness
+static float ct_water_caustic(const VboPrimitive *p, const float hit_pos[3], float hit_distance)
+{
+	if (!scene.water_normal)
+		return 1.f;
+
+	float pos[3], geo[3], t0[3], t2[3];
+	VectorCopy(hit_pos, pos);
+	if (p->material_id & MATERIAL_FLAG_FLOWING) {
+		float tangent[3];
+		ct_decode_normal(p->tangents[0], tangent);
+		VectorMA(pos, -scene.time * 32.f, tangent, pos);
+	}
+	ct_decode_normal(p->normals[0], geo);
+	for (int k = 0; k < 3; k++)
+		geo[k] = fabsf(geo[k]);
+	ct_onb_frisvad(geo, t0, t2);
+	const float px = DotProduct(pos, t0), py = DotProduct(pos, t2);
+
+	const float t = scene.time * 2.5f;
+	float a[4], b[4], c[4];
+	ct_sample(scene.water_normal, px * 0.006f + t * 0.01f, py * 0.006f + t * 0.02f, a);
+	ct_sample(scene.water_normal, px * 0.003f + t * 0.013f, py * 0.003f + t * 0.014f, b);
+	ct_sample(scene.water_normal, px * 0.0061f - t * 0.01f, py * 0.0061f - t * 0.02f, c);
+	float n[3];
+	for (int k = 0; k < 2; k++)
+		n[k] = (a[k] * 2.f - 1.f) * 0.3f + (b[k] * 2.f - 1.f) * 0.5f + (c[k] * 2.f - 1.f) * 0.3f;
+	n[2] = a[2] + b[2] + c[2];
+	ct_normalize(n);
+
+	// the local normal is n.xzy, so its .xz is n.xy
+	const float len = sqrtf(n[0] * n[0] + n[1] * n[1]);
+	const float flat = ct_clampf(1.f - len, 0.f, 1.f);
+	const float caustic = ct_clampf((1.f - flat * flat) * 100.f, 0.f, 8.f);
+	return 1.f + (caustic - 1.f) * ct_clampf(hit_distance * 0.02f, 0.f, 1.f);
+}
+
+// What a shadow ray from o along dir, tmax long, gets through the first
+// see-through surface on its way - trace_caustic_ray, less the extinction of
+// the water it crosses (this tracer has no water medium).
+static void ct_shadow_caustic(ct_worker_t *w, const float o[3], const float dir[3], float tmax, float out[3])
+{
+	VectorSet(out, 1.f, 1.f, 1.f);
+
+	ct_ray_t r;
+	ct_hit_t hit;
+	ct_ray_init(&r, o, dir, tmax);
+	if (!ct_trace(&r, &hit, CT_RAY_GLASS, w))
+		return;
+
+	const VboPrimitive *p = scene.prims + hit.prim;
+	// a cloaked player lets the light through untouched
+	if (p->texture_flags & TEXTURE_FLAG_CLOAK)
+		return;
+
+	float geo[3];
+	ct_decode_normal(p->normals[0], geo);
+	const bool vertical = fabsf(geo[2]) < 0.1f;
+	const uint32_t kind = p->material_id & MATERIAL_KIND_MASK;
+	const bool liquid = kind == MATERIAL_KIND_WATER || kind == MATERIAL_KIND_SLIME;
+
+	if (liquid && !vertical) {
+		float pos[3];
+		VectorMA(o, hit.t, dir, pos);
+		const float c = ct_water_caustic(p, pos, hit.t);
+		VectorSet(out, c, c, c);
+		return;
+	}
+
+	if (kind == MATERIAL_KIND_GLASS || (kind == MATERIAL_KIND_WATER && vertical)) {
+		const pbr_material_t *mat = ct_material(p->material_id);
+		const float wb = 1.f - hit.u - hit.v;
+		const float tu = p->uv0[0] * wb + p->uv1[0] * hit.u + p->uv2[0] * hit.v;
+		const float tv = p->uv0[1] * wb + p->uv1[1] * hit.u + p->uv2[1] * hit.v;
+
+		float base[4] = { 1.f, 1.f, 1.f, 1.f };
+		if (mat->image_base)
+			ct_sample(mat->image_base, tu, tv, base);
+		if (mat->alpha_glass && kind == MATERIAL_KIND_GLASS) {
+			// alpha glass: the frame stops the light, the pane is clear
+			const float k = (mat->image_base && base[3] >= 0.5f) ? 0.f : mat->base_factor;
+			VectorSet(out, k, k, k);
+		} else {
+			for (int k = 0; k < 3; k++)
+				out[k] = base[k] * mat->base_factor;
+		}
+		for (int k = 0; k < 3; k++)
+			out[k] = ct_clampf(out[k], 0.f, 1.f);
+
+		if (kind == MATERIAL_KIND_GLASS && (mat->glass_caustic > 0.f || mat->caustic_ripple > 0.f)
+			&& (out[0] > 0.f || out[1] > 0.f || out[2] > 0.f)) {
+			ct_tri_frame_t tri;
+			ct_tri_frame(p, hit.u, hit.v, &tri);
+			float f = 1.f;
+			if (mat->glass_caustic > 0.f)
+				f *= ct_glass_caustic(&tri, o, dir, tmax, hit.t, mat->glass_caustic);
+			if (mat->caustic_ripple > 0.f && f > 0.f)
+				f *= ct_glass_ripple(&tri, o, dir, tmax, hit.t, mat->caustic_ripple);
+			VectorScale(out, f, out);
+		}
+		return;
+	}
+
+	const float alpha = halfToFloat((uint16_t)(p->emissive_and_alpha >> 16));
+	const float k = ct_clampf(1.f - alpha, 0.f, 1.f);
+	VectorSet(out, k, k, k);
+}
+
+// The light a shadow ray from s along L, dist long, lets through: 0 when the
+// opaque world blocks it, else 1 - or with pt_caustics, the caustic.
+static bool ct_unoccluded(ct_worker_t *w, const ct_surface_t *s, const float L[3], float dist, float tr[3])
 {
 	ct_ray_t r;
 	float o[3];
 	ct_offset(s->p, s->ng, 1.f, o);
 	ct_ray_init(&r, o, L, dist);
-	return !ct_trace(&r, NULL, CT_RAY_SHADOW, w);
+	if (ct_trace(&r, NULL, CT_RAY_SHADOW, w))
+		return false;
+	if (scene.caustics) {
+		ct_shadow_caustic(w, o, L, dist, tr);
+		return tr[0] > 0.f || tr[1] > 0.f || tr[2] > 0.f;
+	}
+	VectorSet(tr, 1.f, 1.f, 1.f);
+	return true;
 }
 
-// One sun sample and one polygon light sample.
+// One sun sample and one light sample.
 static void ct_direct(ct_worker_t *w, ct_rng_t *rng, const ct_surface_t *s, float out[3])
 {
 	const bool specular = s->roughness >= CT_SMOOTH;
-	float f[3];
+	float f[3], tr[3];
 
 	VectorClear(out);
 
@@ -1480,10 +2611,10 @@ static void ct_direct(ct_worker_t *w, ct_rng_t *rng, const ct_surface_t *s, floa
 			L[k] = scene.sun_dir[k] + scene.sun_tangent[k] * (r * cosf(phi)) + scene.sun_bitangent[k] * (r * sinf(phi));
 		ct_normalize(L);
 
-		if (DotProduct(L, s->n) > 0.f && DotProduct(L, s->ng) > 0.f && ct_unoccluded(w, s, L, CT_FAR)) {
+		if (DotProduct(L, s->n) > 0.f && DotProduct(L, s->ng) > 0.f && ct_unoccluded(w, s, L, CT_FAR, tr)) {
 			ct_brdf_cos(s, L, specular, f);
 			for (int k = 0; k < 3; k++)
-				out[k] += f[k] * scene.sun_irradiance[k];
+				out[k] += f[k] * scene.sun_irradiance[k] * tr[k];
 		}
 	}
 
@@ -1495,10 +2626,13 @@ static void ct_direct(ct_worker_t *w, ct_rng_t *rng, const ct_surface_t *s, floa
 	if (count <= 0)
 		return;
 
-	// RIS over (light, point): candidates uniform over the list and over each
-	// triangle's area, kept in proportion to their unshadowed contribution.
+	// RIS over (light, direction): candidates uniform over the list, each
+	// light sampled its own way - a triangle over its area, a window light
+	// through its glass (sample_window_light). F is the candidate's estimate
+	// of the light in full (its contribution over its own pdf), kept in
+	// proportion to its luminance; unshadowed.
 	float wsum = 0.f, sel_phat = 0.f, sel_dist = 0.f;
-	float sel_f[3] = { 0.f, 0.f, 0.f }, sel_L[3] = { 0.f, 0.f, 0.f };
+	float sel_F[3] = { 0.f, 0.f, 0.f }, sel_L[3] = { 0.f, 0.f, 0.f };
 
 	for (int c = 0; c < CT_RIS_CANDIDATES; c++) {
 		int pick = (int)(ct_rand(rng) * (float)count);
@@ -1509,50 +2643,70 @@ static void ct_direct(ct_worker_t *w, ct_rng_t *rng, const ct_surface_t *s, floa
 		if (li < 0 || li >= scene.num_lights)
 			continue;
 		const ct_light_t *l = scene.lights + li;
-		if (l->area <= 0.f)
-			continue;
 
-		const float su = sqrtf(u1);
-		const float b1 = su * (1.f - u2), b2 = su * u2;
-		float q[3], d[3];
-		for (int k = 0; k < 3; k++)
-			q[k] = l->p0[k] + l->e1[k] * b1 + l->e2[k] * b2;
-		VectorSubtract(q, s->p, d);
-		const float dist2 = DotProduct(d, d);
-		if (dist2 < 1e-4f)
-			continue;
-		const float dist = sqrtf(dist2);
-		VectorScale(d, 1.f / dist, d);
-
-		if (DotProduct(d, s->n) <= 0.f || DotProduct(d, s->ng) <= 0.f)
-			continue;
-
-		float cos_l = -DotProduct(l->n, d);
-		float Le[3];
-		if (l->sky) {
-			cos_l = fabsf(cos_l);
-			ct_env(d, true, Le);
-		} else {
-			if (cos_l <= 0.f)
+		float F[3], d[3], dist;
+		if (l->window) {
+			float point[3], tint[3];
+			if (!ct_window_sample(&l->win, s->p, u1, u2, point, tint))
 				continue;
-			// light_lists.h: emission falls off as sqrt(cos) from the normal
-			VectorScale(l->radiance, sqrtf(cos_l), Le);
+			VectorSubtract(point, s->p, d);
+			dist = VectorLength(d);
+			if (!(dist > 1e-3f))
+				continue;
+			VectorScale(d, 1.f / dist, d);
+			if (DotProduct(d, s->n) <= 0.f || DotProduct(d, s->ng) <= 0.f)
+				continue;
+			ct_brdf_cos(s, d, specular, f);
+			for (int k = 0; k < 3; k++)
+				F[k] = f[k] * l->radiance[k] * tint[k];
+		} else {
+			if (l->area <= 0.f)
+				continue;
+
+			const float su = sqrtf(u1);
+			const float b1 = su * (1.f - u2), b2 = su * u2;
+			float q[3];
+			for (int k = 0; k < 3; k++)
+				q[k] = l->p0[k] + l->e1[k] * b1 + l->e2[k] * b2;
+			VectorSubtract(q, s->p, d);
+			const float dist2 = DotProduct(d, d);
+			if (dist2 < 1e-4f)
+				continue;
+			dist = sqrtf(dist2);
+			VectorScale(d, 1.f / dist, d);
+
+			if (DotProduct(d, s->n) <= 0.f || DotProduct(d, s->ng) <= 0.f)
+				continue;
+
+			float cos_l = -DotProduct(l->n, d);
+			float Le[3];
+			if (l->sky) {
+				cos_l = fabsf(cos_l);
+				ct_env(d, true, false, Le);
+			} else {
+				if (cos_l <= 0.f)
+					continue;
+				// light_lists.h: emission falls off as sqrt(cos) from the normal
+				VectorScale(l->radiance, sqrtf(cos_l), Le);
+			}
+
+			ct_brdf_cos(s, d, specular, f);
+			const float g = cos_l / dist2 * l->area;
+			for (int k = 0; k < 3; k++)
+				F[k] = f[k] * Le[k] * g;
+			// stop short of the light's own surface, which sits on the polygon
+			dist = max(0.f, dist - 0.05f);
 		}
 
-		ct_brdf_cos(s, d, specular, f);
-		const float g = cos_l / dist2;
-		for (int k = 0; k < 3; k++)
-			f[k] *= Le[k] * g;
-
-		const float phat = ct_lum(f);
-		if (!(phat > 0.f))
+		const float phat = ct_lum(F);
+		if (!(phat > 0.f) || !isfinite(phat))
 			continue;
-		const float weight = phat * (float)count * l->area;
+		const float weight = phat * (float)count;
 		wsum += weight;
 		if (ct_rand(rng) * wsum < weight) {
 			sel_phat = phat;
 			sel_dist = dist;
-			VectorCopy(f, sel_f);
+			VectorCopy(F, sel_F);
 			VectorCopy(d, sel_L);
 		}
 	}
@@ -1560,13 +2714,12 @@ static void ct_direct(ct_worker_t *w, ct_rng_t *rng, const ct_surface_t *s, floa
 	if (wsum <= 0.f || sel_phat <= 0.f)
 		return;
 
-	// stop short of the light's own surface, which sits on the light polygon
-	if (!ct_unoccluded(w, s, sel_L, max(0.f, sel_dist - 0.05f)))
+	if (!ct_unoccluded(w, s, sel_L, sel_dist, tr))
 		return;
 
 	const float scale = wsum / ((float)CT_RIS_CANDIDATES * sel_phat);
 	for (int k = 0; k < 3; k++)
-		out[k] += sel_f[k] * scale;
+		out[k] += sel_F[k] * scale * tr[k];
 }
 
 // The next direction off an opaque surface: GGX (VNDF) or cosine diffuse,
@@ -1882,7 +3035,20 @@ static float ct_fog_sky_visibility(ct_worker_t *w, ct_rng_t *rng, const float p[
 // volume_light_estimate: the RIS target, from the light's centre
 static float ct_fog_light_estimate(const ct_light_t *l, const float p[3], const float view[3])
 {
-	if (l->sky || l->vol_scale <= 0.f || l->area <= 0.f)
+	if (l->sky || l->vol_scale <= 0.f)
+		return 0.f;
+
+	// a stained glass window light: its mass from p, if the line to it comes
+	// through the window (the GPU's estimate, less the glass's average colour)
+	if (l->window) {
+		float to_w[3];
+		const float m = ct_window_mass_volume(&l->win, p, to_w);
+		if (!(m > 0.f))
+			return 0.f;
+		return ct_lum(l->radiance) * m * ct_fog_phase(DotProduct(view, to_w), scene.fog.g_light) * l->vol_scale;
+	}
+
+	if (l->area <= 0.f)
 		return 0.f;
 
 	float d[3];
@@ -1934,30 +3100,51 @@ static void ct_fog_lights(ct_worker_t *w, ct_rng_t *rng, const float p[3], const
 		return;
 	const float W = wsum / ((float)scene.fog.light_samples * sel_phat);
 
-	const float su = sqrtf(ct_rand(rng)), u2 = ct_rand(rng);
-	const float b1 = su * (1.f - u2), b2 = su * u2;
-	float d[3];
-	for (int k = 0; k < 3; k++)
-		d[k] = sel->p0[k] + sel->e1[k] * b1 + sel->e2[k] * b2 - p[k];
-	const float dist2 = DotProduct(d, d);
-	if (dist2 < 1e-8f)
-		return;
-	const float dist = sqrtf(dist2);
-	VectorScale(d, 1.f / dist, d);
+	// a window light: one sample through its glass, the shadow ray to the glass
+	if (sel->window) {
+		float point[3], tint[3], d[3];
+		if (!ct_window_sample(&sel->win, p, ct_rand(rng), ct_rand(rng), point, tint))
+			return;
+		VectorSubtract(point, p, d);
+		const float dist = VectorLength(d);
+		if (!(dist > 1e-3f))
+			return;
+		VectorScale(d, 1.f / dist, d);
 
-	const float cos_l = -DotProduct(sel->n, d);
-	if (cos_l <= 0.f)
-		return;
+		ct_ray_t r;
+		ct_ray_init(&r, p, d, dist);
+		if (ct_trace(&r, NULL, CT_RAY_SHADOW, w))
+			return;
 
-	ct_ray_t r;
-	ct_ray_init(&r, p, d, max(dist - 1.f, 0.01f));
-	if (ct_trace(&r, NULL, CT_RAY_SHADOW, w))
-		return;
+		const float k = ct_fog_phase(DotProduct(view, d), scene.fog.g_light) * sel->vol_scale * W;
+		for (int i = 0; i < 3; i++)
+			out[i] = sel->radiance[i] * tint[i] * k;
+	} else {
+		const float su = sqrtf(ct_rand(rng)), u2 = ct_rand(rng);
+		const float b1 = su * (1.f - u2), b2 = su * u2;
+		float d[3];
+		for (int k = 0; k < 3; k++)
+			d[k] = sel->p0[k] + sel->e1[k] * b1 + sel->e2[k] * b2 - p[k];
+		const float dist2 = DotProduct(d, d);
+		if (dist2 < 1e-8f)
+			return;
+		const float dist = sqrtf(dist2);
+		VectorScale(d, 1.f / dist, d);
 
-	// radiance * sqrt(cos) emission profile * phase / pdf, the pdf over solid angle
-	const float inv_pdf = sel->area * cos_l / dist2;
-	const float k = sqrtf(cos_l) * ct_fog_phase(DotProduct(view, d), scene.fog.g_light) * sel->vol_scale * W * inv_pdf;
-	VectorScale(sel->radiance, k, out);
+		const float cos_l = -DotProduct(sel->n, d);
+		if (cos_l <= 0.f)
+			return;
+
+		ct_ray_t r;
+		ct_ray_init(&r, p, d, max(dist - 1.f, 0.01f));
+		if (ct_trace(&r, NULL, CT_RAY_SHADOW, w))
+			return;
+
+		// radiance * sqrt(cos) emission profile * phase / pdf, the pdf over solid angle
+		const float inv_pdf = sel->area * cos_l / dist2;
+		const float k = sqrtf(cos_l) * ct_fog_phase(DotProduct(view, d), scene.fog.g_light) * sel->vol_scale * W * inv_pdf;
+		VectorScale(sel->radiance, k, out);
+	}
 
 	if (scene.fog.firefly > 0.f) {
 		const float lum = ct_lum(out);
@@ -2053,6 +3240,136 @@ static void ct_fog_segment(ct_worker_t *w, ct_rng_t *rng, const ct_ray_t *ray, f
 	}
 }
 
+/*
+=============================================================================
+
+CAMERAS AND PORTALS
+
+A camera-kind surface (cameras.c), by its slot in the UBO:
+  - a Quake 1 teleporter's gate or a Quake III portal: the ray goes on from
+    the far side (portal_carry_ray) - the eye's, and with pt_portal_light a
+    bounce ray's, whose lights there no light sample reached, so they count
+  - a security camera's screen: the camera's picture inside the screen
+    rectangle, plus the screen's black-mirror reflection - the GPU's two
+    fields, summed; here one of the two at twice the weight
+pt_cameras 0 or pt_reflect_refract 0, or a camera surface too rough for a
+mirror (not a portal), and it is an ordinary surface.
+
+=============================================================================
+*/
+
+// portal_carry_ray: `n` is the face's normal toward the eye
+static void ct_portal_carry(const float *data, const float n[3], const float position[3], const float direction[3],
+	float out_pos[3], float out_dir[3])
+{
+	if (data[3] < -1.5f) {
+		// a Quake 1 gate: on from the destination, turned to the way it faces
+		float into[2] = { -n[0], -n[1] };
+		const float il = sqrtf(into[0] * into[0] + into[1] * into[1]);
+		if (il > 0.f) {
+			into[0] /= il;
+			into[1] /= il;
+		}
+		const float across[2] = { -into[1], into[0] };
+		const float turn = data[7] - atan2f(into[1], into[0]);
+		const float c = cosf(turn), s = sinf(turn);
+
+		float rel[3];
+		VectorSubtract(position, data, rel);
+		const float on = rel[0] * into[0] + rel[1] * into[1];
+		rel[0] -= into[0] * on;
+		rel[1] -= into[1] * on;
+		const float along = rel[0] * across[0] + rel[1] * across[1];
+
+		out_pos[0] = data[4] + c * rel[0] - s * rel[1];
+		out_pos[1] = data[5] + s * rel[0] + c * rel[1];
+		out_pos[2] = data[6] + rel[2];
+		out_dir[0] = c * direction[0] - s * direction[1];
+		out_dir[1] = s * direction[0] + c * direction[1];
+		out_dir[2] = direction[2];
+
+		// Quake's water waver: sines along the gate and up it
+		const float waver = data[8];
+		float side[3];
+		const float up_z[3] = { 0.f, 0.f, 1.f };
+		CrossProduct(out_dir, up_z, side);
+		if (waver > 0.f && DotProduct(side, side) > 1e-6f) {
+			const float k = 6.2831853f / 64.f;
+			const float t = scene.time * data[9];
+			float up[3];
+			ct_normalize(side);
+			CrossProduct(side, out_dir, up);
+			const float wx = waver * sinf(rel[2] * k + t);
+			const float wy = waver * sinf(along * k + 1.3f * t + 1.7f);
+			for (int i = 0; i < 3; i++)
+				out_dir[i] += side[i] * wx + up[i] * wy;
+		}
+		ct_normalize(out_dir);
+	} else {
+		// a Quake III portal: the rotation's rows in columns 1..3, the
+		// translation in their .w
+		for (int r = 0; r < 3; r++) {
+			const float *row = data + 4 * (r + 1);
+			out_pos[r] = DotProduct(row, position) + row[3];
+			out_dir[r] = DotProduct(row, direction);
+		}
+		ct_normalize(out_dir);
+	}
+}
+
+// What a camera-kind surface does with the ray. True: the ray has been sent on
+// (through a portal, from a camera, or off a screen) and T updated.
+static bool ct_camera_surface(const ct_surface_t *s, ct_rng_t *rng, ct_ray_t *ray, float T[3], bool on_seen_path)
+{
+	if (!scene.cameras_on)
+		return false;
+
+	const uint32_t id = ((s->material_id & MATERIAL_LIGHT_STYLE_MASK) >> (MATERIAL_LIGHT_STYLE_SHIFT + 2)) & (MAX_CAMERAS - 1);
+	if ((int)id >= scene.num_cameras)
+		return false;
+	const float *data = scene.cameras[id];
+	const bool portal = data[3] < 0.f;
+
+	float pos[3], dir[3];
+
+	if (portal) {
+		if (!on_seen_path && !scene.portal_light)
+			return false;
+		ct_portal_carry(data, s->ng, s->p, ray->d, pos, dir);
+		VectorMA(pos, CT_EPS, dir, pos);
+		ct_ray_init(ray, pos, dir, CT_FAR);
+		return true;
+	}
+
+	// a security camera: a view, on the eye's path, on a mirror-smooth screen
+	if (!on_seen_path || s->roughness >= MAX_MIRROR_ROUGHNESS)
+		return false;
+
+	// get_camera_uv: the picture's rectangle in the screen texture
+	const float u = ((s->uv[0] - floorf(s->uv[0])) - 11.f / 256.f) / ((245.f - 11.f) / 256.f);
+	const float v = ((s->uv[1] - floorf(s->uv[1])) - 14.f / 256.f) / ((148.f - 14.f) / 256.f);
+	if (!(u > 0.f && u < 1.f && v > 0.f && v < 1.f))
+		return false;
+
+	if (ct_rand(rng) < 0.5f) {
+		VectorCopy(data, pos);
+		for (int k = 0; k < 3; k++)
+			dir[k] = data[4 + k] + data[8 + k] * u + data[12 + k] * v;
+		ct_normalize(dir);
+		VectorScale(T, 2.f, T);
+	} else {
+		// the screen, a black mirror
+		const float n_dot_v = fabsf(DotProduct(ray->d, s->ng));
+		const float F = 0.05f + 0.95f * ct_pow5(1.f - n_dot_v);
+		for (int k = 0; k < 3; k++)
+			dir[k] = ray->d[k] + 2.f * n_dot_v * s->ng[k];
+		ct_offset(s->p, s->ng, 1.f, pos);
+		VectorScale(T, 2.f * F, T);
+	}
+	ct_ray_init(ray, pos, dir, CT_FAR);
+	return true;
+}
+
 static void ct_path(ct_worker_t *w, ct_rng_t *rng, int px, int py, float L[3])
 {
 	const float sx = ((float)px + ct_rand(rng)) / (float)scene.width * 2.f - 1.f;
@@ -2071,6 +3388,7 @@ static void ct_path(ct_worker_t *w, ct_rng_t *rng, int px, int py, float L[3])
 
 	bool count_emission = true;
 	bool fog = scene.fog.on;    // the camera ray and what glass and mirrors carry on
+	bool seen = true;           // still the eye's own: the sky is drawn as SEEN
 	int mode = CT_RAY_CAMERA;
 	int layers = 0;
 	int bounce = 0;
@@ -2086,7 +3404,7 @@ static void ct_path(ct_worker_t *w, ct_rng_t *rng, int px, int py, float L[3])
 		if (!found) {
 			// out of the map
 			if (count_emission) {
-				ct_env(ray.d, false, c);
+				ct_env(ray.d, false, seen, c);
 				ct_add(L, T, c, bounce);
 			}
 			break;
@@ -2098,7 +3416,7 @@ static void ct_path(ct_worker_t *w, ct_rng_t *rng, int px, int py, float L[3])
 		if (flags & CT_SKY) {
 			if (count_emission || !(p->material_id & MATERIAL_FLAG_LIGHT)) {
 				// diffuse bounces leave the sun out, as the light sample has it
-				ct_env(ray.d, !count_emission, c);
+				ct_env(ray.d, !count_emission, seen, c);
 				// the physical sky draws its own sun disk
 				if (count_emission && scene.sun && scene.env_type != CT_ENV_PHYSICAL
 					&& DotProduct(ray.d, scene.sun_dir) >= scene.sun_cos_half && scene.sun_solid_angle > 0.f)
@@ -2123,6 +3441,18 @@ static void ct_path(ct_worker_t *w, ct_rng_t *rng, int px, int py, float L[3])
 			continue;
 		}
 
+		// a portal, a security camera's picture, a screen's reflection
+		if ((s.material_id & MATERIAL_KIND_MASK) == MATERIAL_KIND_CAMERA) {
+			if (layers < CT_MAX_LAYERS && ct_camera_surface(&s, rng, &ray, T, seen)) {
+				layers++;
+				// what lies through it no light sample reached
+				count_emission = true;
+				// the view weapon is the eye's alone
+				mode = CT_RAY_BOUNCE;
+				continue;
+			}
+		}
+
 		if (count_emission || !(s.material_id & MATERIAL_FLAG_LIGHT))
 			ct_add(L, T, s.emissive, bounce);
 
@@ -2137,6 +3467,7 @@ static void ct_path(ct_worker_t *w, ct_rng_t *rng, int px, int py, float L[3])
 		if (!(T[0] > 0.f || T[1] > 0.f || T[2] > 0.f))
 			break;
 		fog = fog && count_emission;   // a near-mirror reflection keeps it
+		seen = false;
 
 		mode = CT_RAY_BOUNCE;
 		bounce++;
@@ -2293,6 +3624,8 @@ static void ct_free_scene(void)
 	Z_Free(gather_flags);
 	Z_Free(physky_data);
 	physky_data = NULL;
+	Z_Free(scene.ripple_map);
+	scene.ripple_map = NULL;
 	scene.prims = NULL;
 	scene.tris = NULL;
 	scene.nodes = NULL;
@@ -2806,6 +4139,118 @@ static void ct_capture_fog(const bsp_mesh_t *wm, const sun_light_t *sun, const Q
 	}
 }
 
+// a texture the GPU reads by its index in r_images, if this tracer can read it too
+static const image_t *ct_image_by_index(uint32_t index)
+{
+	if (index == 0 || index >= MAX_RIMAGES)
+		return NULL;
+	const image_t *img = &r_images[index];
+	if (!img->registration_sequence || !img->pix_data || img->pixel_format != PF_R8G8B8A8_UNORM
+		|| img->upload_width <= 0 || img->upload_height <= 0)
+		return NULL;
+	return img;
+}
+
+// SKY: how bright it is seen and what colour its light is, and the cloud
+// layers as this frame's UBO has them (vkpt_q3_sky_upload)
+static void ct_capture_sky(const QVKUniformBuffer_t *ubo)
+{
+	scene.sky_seen_brightness = (scene.env_type == CT_ENV_CUBE)
+		? max(0.f, ubo->pt_sky_brightness) : max(0.f, ubo->pt_physical_sky_brightness);
+	for (int k = 0; k < 3; k++)
+		scene.sky_light_tint[k] = ubo->q1_sky_light_tint[k];
+
+	scene.sky_num_layers = 0;
+	scene.sky_cloud_height = ubo->q3_sky_cloud_height;
+	if (scene.env_type != CT_ENV_CUBE)
+		return;
+
+	const int n = min(ubo->q3_sky_num_layers, Q3_SKY_MAX_LAYERS);
+	int missing = 0;
+	for (int l = 0; l < n; l++) {
+		const float *m = ubo->q3_sky_layers[l * Q3_SKY_LAYER_VEC4S + 0];
+		const float *k = ubo->q3_sky_layers[l * Q3_SKY_LAYER_VEC4S + 1];
+		const float *colour = ubo->q3_sky_layers[l * Q3_SKY_LAYER_VEC4S + 2];
+		uint32_t image, blend;
+		memcpy(&image, &k[2], sizeof(image));
+		memcpy(&blend, &k[3], sizeof(blend));
+
+		const image_t *img = ct_image_by_index(image);
+		if (!img) {
+			missing++;
+			continue;
+		}
+
+		const int i = scene.sky_num_layers++;
+		scene.sky_layers[i].m[0] = m[0];
+		scene.sky_layers[i].m[1] = m[1];
+		scene.sky_layers[i].m[2] = m[2];
+		scene.sky_layers[i].m[3] = m[3];
+		scene.sky_layers[i].m[4] = k[0];
+		scene.sky_layers[i].m[5] = k[1];
+		scene.sky_layers[i].image = img;
+		scene.sky_layers[i].src_blend = blend & 0xfu;
+		scene.sky_layers[i].dst_blend = (blend >> 4) & 0xfu;
+		for (int c = 0; c < 4; c++)
+			scene.sky_layers[i].colour[c] = colour[c];
+	}
+	if (missing)
+		Com_WPrintf("cpu_bench: %d sky cloud layer(s) not readable on the CPU, left out\n", missing);
+}
+
+// CAMERAS AND PORTALS: the UBO's camera slots (prepare_ubo)
+static void ct_capture_cameras(const QVKUniformBuffer_t *ubo)
+{
+	scene.time = ubo->time;
+	scene.num_cameras = max(0, min(ubo->num_cameras, MAX_CAMERAS));
+	scene.cameras_on = ubo->pt_cameras != 0.f && ubo->pt_reflect_refract != 0.f;
+	scene.portal_light = ubo->pt_portal_light != 0.f;
+	for (int i = 0; i < scene.num_cameras; i++)
+		memcpy(scene.cameras[i], ubo->security_camera_data[i], sizeof(scene.cameras[i]));
+}
+
+// CAUSTICS: pt_caustics, and the water normal map - mip 0 for water's caustic,
+// box-filtered to glass_ripple's mip for the ripples
+static void ct_capture_caustics(const QVKUniformBuffer_t *ubo)
+{
+	scene.caustics = Cvar_VariableValue("pt_caustics") != 0.f;
+	scene.caustic_ball = ubo->pt_caustic_ball != 0.f;
+	scene.water_normal = NULL;
+	Z_Free(scene.ripple_map);
+	scene.ripple_map = NULL;
+
+	if (!scene.caustics)
+		return;
+
+	const image_t *img = ct_image_by_index((uint32_t)ubo->water_normal_texture);
+	if (!img)
+		return;
+	scene.water_normal = img;
+
+	const int W = img->upload_width, H = img->upload_height;
+	const int f = 1 << CT_GLASS_RIPPLE_LOD;
+	const int w = max(1, W / f), h = max(1, H / f);
+	const int bx = W / w, by = H / h;
+	scene.ripple_map = Z_Malloc(sizeof(float) * 2 * (size_t)w * h);
+	scene.ripple_w = w;
+	scene.ripple_h = h;
+	scene.ripple_h_step = (float)f / (float)W;
+
+	for (int y = 0; y < h; y++) {
+		for (int x = 0; x < w; x++) {
+			float sum[2] = { 0.f, 0.f };
+			for (int j = 0; j < by; j++) {
+				const byte *row = img->pix_data + ((size_t)(y * by + j) * W + (size_t)x * bx) * 4;
+				for (int i = 0; i < bx; i++)
+					for (int c = 0; c < 2; c++)
+						sum[c] += img->is_srgb ? srgb_to_linear[row[i * 4 + c]] : (float)row[i * 4 + c] * (1.f / 255.f);
+			}
+			for (int c = 0; c < 2; c++)
+				scene.ripple_map[((size_t)y * w + x) * 2 + c] = sum[c] / (float)(bx * by);
+		}
+	}
+}
+
 void vkpt_cpu_trace_capture(const refdef_t *fd, bsp_t *bsp, const sun_light_t *sun, const vec3_t sky_matrix[3],
 	float env_scale, float adapted_luminance, float sun_luminance, float sky_luminance, const QVKUniformBuffer_t *ubo)
 {
@@ -2910,6 +4355,9 @@ void vkpt_cpu_trace_capture(const refdef_t *fd, bsp_t *bsp, const sun_light_t *s
 	} else {
 		scene.env_type = envmap_data ? CT_ENV_CUBE : CT_ENV_NONE;
 	}
+	ct_capture_sky(ubo);
+	ct_capture_cameras(ubo);
+	ct_capture_caustics(ubo);
 
 	ct_capture_fog(wm, sun, ubo);
 

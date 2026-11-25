@@ -97,6 +97,7 @@ static const struct {
     { "weapon_rocketlauncher",  "weapon_q1_rocketlauncher" },
     { "weapon_phalanx",         "weapon_q1_rocketlauncher" },
     { "weapon_railgun",         "weapon_q1_lightning" },
+    // in a game of Quake's guns; the Ranger by player model keeps it (q1w_keep)
     { "weapon_bfg",             "weapon_q1_lightning" },
     { "weapon_plasmabeam",      "weapon_q1_lightning" },
     { "weapon_disintegrator",   "weapon_q1_lightning" },
@@ -186,11 +187,36 @@ static const struct {
     { "weapon_q3_lightning",        "weapon_q1_lightning" },
     { "weapon_q3_railgun",          "weapon_q1_lightning" },
     { "weapon_q3_plasmagun",        "weapon_q1_supernailgun" },
-    { "weapon_q3_bfg",              "weapon_q1_lightning" },
-    // their own ammo: the cells of the Thunderbolt standing in
+    // the Lightning Gun's own ammo: the cells of the Thunderbolt standing in
     { "ammo_q3_lightning",          "ammo_cells" },
-    { "ammo_q3_bfg",                "ammo_cells" },
 };
+
+/*
+Guns Quake has nothing like: the Ranger takes them as they are, with their own
+ammo - Quake II's on Quake II's and Quake's maps, Quake III's on Quake III's
+(Q1W_RangerItem). Matt, 2026-11-24: "If there is no one to one quake 1 weapon
+with the quake3 weapon (bfg for example) maybe just use/pickup the
+quake2/quake3 (depending on map)". Checked before the tables above, so a
+game of Quake's guns (g_q3_weapons 3) still turns the BFG10K into the
+Thunderbolt.
+*/
+static const char *const q1w_keep[] = {
+    "weapon_bfg",
+    "weapon_q3_bfg",
+    "ammo_q3_bfg",      // the BFG10K's; Quake II's takes cells
+};
+
+static bool Q1W_Keeps(const gitem_t *it)
+{
+    int i;
+
+    if (!it || !it->classname)
+        return false;
+    for (i = 0; i < q_countof(q1w_keep); i++)
+        if (!strcmp(it->classname, q1w_keep[i]))
+            return true;
+    return false;
+}
 
 // and the other way, for everyone else and a gun a Ranger dropped: Quake II's
 // gun, and Quake III's for a Quake III body
@@ -209,34 +235,28 @@ static const struct {
 
 /*
 =================
-Q1W_ItemFor
+Q1W_RangerItem
 
-Q3W_ItemFor, in a match by player model with Quake's Ranger in it: what
-(player) takes from (item) on the ground. The Ranger takes Quake's gun most
-like any other game's, and Quake's ammo for the ammo no Quake gun uses;
-anyone else takes their own game's gun for a Quake gun a Ranger dropped.
-Anything else is itself.
+What the Ranger takes from a pickup that is (item), with (alt) the other
+game's gun or ammo riding along (edict_t q3_alt_item, NULL for none): Quake's
+gun most like the item, and Quake's ammo for the ammo no Quake gun uses. A
+gun Quake has nothing like (q1w_keep) is the map's game's own: Quake III's on
+a Quake III map, Quake II's anywhere else. Anything else is itself.
 =================
 */
-gitem_t *Q1W_ItemFor(gitem_t *item, const edict_t *player)
+static gitem_t *Q1W_RangerItem(gitem_t *item, gitem_t *alt)
 {
-    gitem_t     *other;
-    const char  *name;
-    int         i;
+    gitem_t *other;
+    int     i;
 
-    if (!item || !item->classname || !level.q1_by_model)
+    if (!item || !item->classname || (item->flags & IT_Q1))
         return item;
 
-    if (!Q1W_PlayerQ1(player)) {
-        if (!Q1W_IsGun(item))
-            return item;
-        name = Q3W_PlayerQ3(player) ? q1w_to[item->tag].q3 : q1w_to[item->tag].q2;
-        other = name ? Q1W_Item(name) : NULL;
-        return other ? other : item;
+    if (Q1W_Keeps(item)) {
+        if (alt && Q1W_Keeps(alt) && !!(alt->flags & IT_Q3) == level.q3map)
+            return alt;
+        return item;
     }
-
-    if (item->flags & IT_Q1)
-        return item;
 
     if (item->flags & IT_Q3) {
         for (i = 0; i < q_countof(q1w_from_q3); i++)
@@ -253,16 +273,47 @@ gitem_t *Q1W_ItemFor(gitem_t *item, const edict_t *player)
 
 /*
 =================
+Q1W_ItemFor
+
+Q3W_ItemFor, in a match by player model with Quake's Ranger in it: what
+(player) takes from (item_ent) on the ground. The Ranger takes
+Q1W_RangerItem's; anyone else takes their own game's gun for a Quake gun a
+Ranger dropped. Anything else is itself.
+=================
+*/
+gitem_t *Q1W_ItemFor(const edict_t *item_ent, const edict_t *player)
+{
+    gitem_t     *item = item_ent->item;
+    gitem_t     *other;
+    const char  *name;
+
+    if (!item || !item->classname || !level.q1_by_model)
+        return item;
+
+    if (!Q1W_PlayerQ1(player)) {
+        if (!Q1W_IsGun(item))
+            return item;
+        name = Q3W_PlayerQ3(player) ? q1w_to[item->tag].q3 : q1w_to[item->tag].q2;
+        other = name ? Q1W_Item(name) : NULL;
+        return other ? other : item;
+    }
+
+    return Q1W_RangerItem(item, item_ent->q3_alt_item);
+}
+
+/*
+=================
 Q1W_FindItem
 
 Q3W_FindItem, with Quake's guns: Quake's gun of a name before Quake II's or
-Quake III's ("Shotgun", "Rocket Launcher"...), and for the name of a Quake II
-gun that is not Quake's, the Quake gun standing in for it - so the stock
-"use Chaingun" and "use Railgun" binds raise the super nailgun and the
-Thunderbolt.
+Quake III's ("Shotgun", "Rocket Launcher"...); a gun the Ranger keeps
+(q1w_keep - Quake II's and Quake III's BFG10K share the name) as the one he
+carries; and for the name of a Quake II gun that is not Quake's, the Quake gun
+standing in for it - so the stock "use Chaingun" and "use Railgun" binds raise
+the super nailgun and the Thunderbolt.
 =================
 */
-gitem_t *Q1W_FindItem(const char *name)
+gitem_t *Q1W_FindItem(edict_t *ent, const char *name)
 {
     gitem_t *it, *found;
     int     i, j;
@@ -271,7 +322,15 @@ gitem_t *Q1W_FindItem(const char *name)
         if ((it->flags & IT_Q1) && it->pickup_name && !Q_stricmp(it->pickup_name, name))
             return it;
 
+    if (ent && ent->client)
+        for (i = 0, it = itemlist; i < game.num_items; i++, it++)
+            if (Q1W_Keeps(it) && it->pickup_name && !Q_stricmp(it->pickup_name, name) &&
+                ent->client->pers.inventory[i])
+                return it;
+
     found = FindItem((char *)name);
+    if (level.q1_by_model && Q1W_Keeps(found))
+        return found;   // not carried: "Out of item"
     if (found && (found->flags & IT_WEAPON) && found->classname)
         for (j = 0; j < q_countof(q1w_swap); j++)
             if (!strcmp(found->classname, q1w_swap[j].q2))
@@ -312,22 +371,99 @@ const char *Q1W_SpawnClassname(const char *classname)
 =================
 Q1W_ItemModel
 
-droptofloor and Drop_Item, once the item has its model: Quake's gun models
-stand on their origin, where Quake II's are centred on it, so the box goes
-from the origin up and the drop puts the origin on the floor.
+droptofloor and Drop_Item, after Q3W_ItemModel.
+
+In a game of Quake's guns: Quake's gun models stand on their origin, where
+Quake II's are centred on it, so the box goes from the origin up and the drop
+puts the origin on the floor.
+
+In a match by player model, the Ranger SEES what he takes (Matt, 2026-11-24:
+"the weapon pickups should be quake1 weapons"). A pickup carrying both games'
+guns (RF_Q3_ITEM: Quake II's model in modelindex, Quake III's in modelindex2)
+also carries the model of the Ranger's in modelindex3, which the client draws
+for him alone: Quake's gun, or for a gun he keeps the Quake II or Quake III
+model already there (the client tells them apart by index). A Quake gun a
+Ranger dropped becomes such a pickup too, with the guns the others take from
+it. The box stays Quake II's, centred on the origin; the client lowers Quake's
+model by its half height to stand it where Quake would.
 =================
 */
 void Q1W_ItemModel(edict_t *ent)
 {
-    if (!ent->item || !(ent->item->flags & IT_Q1))
+    gitem_t *item = ent->item, *q2, *q3, *mine;
+
+    if (!item)
         return;
-    ent->mins[2] = 0;
-    ent->maxs[2] = 30;
+
+    if (level.q1_weapons) {
+        if (item->flags & IT_Q1) {
+            ent->mins[2] = 0;
+            ent->maxs[2] = 30;
+        }
+        return;
+    }
+
+    if (!level.q1_by_model)
+        return;
+
+    if (Q1W_IsGun(item)) {
+        q2 = Q1W_Item(q1w_to[item->tag].q2);
+        q3 = Q1W_Item(q1w_to[item->tag].q3);
+        if (!q2 || !q3 || !q2->world_model || !q3->world_model || !item->world_model)
+            return;     // Quake's model for everyone
+        ent->s.modelindex = gi.modelindex(q2->world_model);
+        ent->s.modelindex2 = gi.modelindex(q3->world_model);
+        ent->s.modelindex3 = gi.modelindex(item->world_model);
+        ent->s.renderfx |= RF_Q3_ITEM;
+        return;
+    }
+
+    if (!(ent->s.renderfx & RF_Q3_ITEM) || !ent->s.modelindex2)
+        return;
+    mine = Q1W_RangerItem(item, ent->q3_alt_item);
+    // the axe from a gauntlet: its model is the one in the hand, so he sees
+    // the gauntlet
+    if (!mine || !mine->world_model || (Q1W_IsGun(mine) && mine->tag == Q1W_AXE))
+        return;
+    ent->s.modelindex3 = gi.modelindex(mine->world_model);
 }
 
+/*
+=================
+Q1W_Rank
+
+items.qc RankForWeapon, lower is better. A gun the Ranger keeps (q1w_keep,
+the BFG10K) is better than all of Quake's, so a pickup of Quake's never takes
+it out of his hands, and he raises it as he would a better gun.
+=================
+*/
 static int Q1W_Rank(const gitem_t *it)
 {
-    return Q1W_IsGun(it) ? q1w_info[it->tag].rank : 7;
+    if (Q1W_IsGun(it))
+        return q1w_info[it->tag].rank;
+    if (it && (it->flags & IT_WEAPON) && Q1W_Keeps(it))
+        return 0;
+    return 7;
+}
+
+/*
+=================
+Q1W_RaiseOnPickup
+
+Pickup_Weapon, for a Quake II gun the Ranger keeps (Quake III's switch to any
+gun new to the player, Pickup_Q3Weapon): raise it if it is better than the one
+in hand, as Quake does (items.qc weapon_touch).
+=================
+*/
+bool Q1W_RaiseOnPickup(edict_t *player, const gitem_t *item)
+{
+    gclient_t   *client = player->client;
+    gitem_t     *current;
+
+    if (!level.q1_by_model || !Q1W_PlayerQ1(player))
+        return false;
+    current = client->newweapon ? client->newweapon : client->pers.weapon;
+    return Q1W_Rank(item) < Q1W_Rank(current);
 }
 
 static int Q1W_Ammo(edict_t *ent, const gitem_t *gun)
@@ -370,6 +506,28 @@ static gitem_t *Q1W_BestWeapon(edict_t *ent)
             return Q1W_Gun(order[i]);
     }
     return Q1W_Gun(Q1W_AXE);
+}
+
+/*
+=================
+Q1W_NoAmmoChange
+
+NoAmmoWeaponChange and Quake III's (Q3W_NoAmmoChange), for the Ranger out of
+ammo for a gun he keeps (the BFG10K): Quake's best gun, as Quake's own guns
+do. Their searches look only at their own game's guns, which he has none of.
+False for anyone else.
+=================
+*/
+bool Q1W_NoAmmoChange(edict_t *ent)
+{
+    gitem_t *best;
+
+    if (!level.q1_by_model || !Q1W_PlayerQ1(ent))
+        return false;
+    best = Q1W_BestWeapon(ent);
+    if (best && best != ent->client->pers.weapon)
+        ent->client->newweapon = best;
+    return true;
 }
 
 /*
@@ -531,6 +689,19 @@ void Q1W_Precache(void)
     for (i = 0; i < q_countof(q1w_swap); i++)
         if (!strncmp(q1w_swap[i].q1, "ammo_", 5))
             PrecacheItem(Q1W_Item(q1w_swap[i].q1));
+    // a Quake gun a Ranger drops shows the others theirs (Q1W_ItemModel):
+    // their pickup models now, not a disk load at the drop
+    if (level.q1_by_model) {
+        for (i = 1; i < Q1W_NUM; i++) {
+            gitem_t *q2 = q1w_to[i].q2 ? Q1W_Item(q1w_to[i].q2) : NULL;
+            gitem_t *q3 = q1w_to[i].q3 ? Q1W_Item(q1w_to[i].q3) : NULL;
+
+            if (q2 && q2->world_model)
+                gi.modelindex(q2->world_model);
+            if (q3 && q3->world_model)
+                gi.modelindex(q3->world_model);
+        }
+    }
     gi.imageindex("/id1/id1/gfx/sb_shells.lmp");
     gi.imageindex("/id1/id1/gfx/sb_nails.lmp");
     gi.imageindex("/id1/id1/gfx/sb_rocket.lmp");

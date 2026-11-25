@@ -1063,6 +1063,8 @@ enum {
 #define MZ_Q3_RAILGUN       48
 #define MZ_Q3_PLASMAGUN     49
 #define MZ_Q3_BFG           50
+// Quake III's grappling hook (g_q3weap.c, g_q3_grapple): appended
+#define MZ_Q3_GRAPPLE       51
 // Q2RTX
 
     MZ_SILENCED = 128,  // bit flag ORed with one of the above numbers
@@ -1363,6 +1365,12 @@ typedef enum {
 	// shooter's gun and goes off on arrival (q3weapons.c). Fork-local: append
 	// below, never above.
 	TE_Q3_PLASMA_UNSEEN,
+	// Quake III's grappling hook out (g_ctf.c, a hook fired from g_q3weap.c):
+	// [short owner][short hook][hook pos], once a server frame from the throw
+	// until it lets go. The client draws Quake III's line, the lightning
+	// bolt from the owner's chest to the hook, and the hook's light
+	// (q3weapons.c). Fork-local: append below, never above.
+	TE_Q3_GRAPPLE,
 
     TE_NUM_ENTITIES
 } temp_event_t;

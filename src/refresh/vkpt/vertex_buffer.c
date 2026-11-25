@@ -20,6 +20,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "material.h"
 #include "fog.h"
 #include "q3stages.h"
+#include "jobs.h"
+#include "common/cpuprof.h"
 
 #include <assert.h>
 #include "conversion.h"
@@ -705,11 +707,15 @@ static struct {
 	bool     iqm_full_pending;
 } upload_ranges;
 
+static void lcache_invalidate(void);
+
 static void reset_upload_ranges(void)
 {
 	memset(&upload_ranges, 0, sizeof(upload_ranges));
 	upload_ranges.light_full_pending = true;
 	upload_ranges.iqm_full_pending = true;
+	// new staging buffers or a new map: the kept light lists are void (THE LIGHT LISTS ARE KEPT)
+	lcache_invalidate();
 }
 
 static inline bool upload_ranges_enabled(void)
@@ -976,6 +982,307 @@ inject_model_lights(bsp_mesh_t* bsp_mesh, bsp_t* bsp, int num_model_lights, ligh
 	return (uint32_t)tail;
 }
 
+/* THE LIGHT LISTS ARE KEPT (issue #31, 2026-11-24). Matt's q3dm0 profile, with the
+   lights row split: "light lists" 2.9-3.3 ms of its 3.4, the Quake III glows 0.2.
+   Every frame inject_model_lights wrote every cluster's whole list - 1.35 million
+   entries on q3dm0: the static lists copied, then 910 model lights scattered into
+   every cluster that sees them - straight into the light staging. That is an
+   upload heap on D3D12 and host-visible memory on Vulkan, write-combined, where
+   scattered writes are at their slowest. And nearly always the same numbers as
+   the frame before: the lists depend on the map and on which cluster each model
+   light is in, nothing else.
+
+   Now they are built in ordinary memory, and again only when those clusters
+   change (or the map, or the staging buffers - reset_upload_ranges). Each
+   cluster's list is written start to end, its model lights taken in runs of
+   consecutive lights in one cluster, so the entries come out exactly as
+   inject_model_lights wrote them. A frame slot's staging is written only when it
+   does not already hold this build, in two sequential copies. The light counts
+   history still gets its entry every frame. pt_light_list_cache 0 = the old way. */
+#define LCACHE_SLOTS 4
+
+static cvar_t* cvar_pt_light_list_cache;
+
+static struct {
+	int*      lists;            // light_list_lights as built
+	size_t    lists_allocated;
+	int*      offsets;          // light_list_offsets, num_clusters + 1
+	int*      counts;           // each cluster's entries, for the light counts history
+	int       clusters_allocated;
+	uint32_t  tail;             // entries in `lists`
+
+	// what it was built from
+	bool      built;
+	bool      injected;         // the model-light path (max_model_lights > 0)
+	const int* static_lists;    // bsp_mesh cluster_lights
+	uint32_t  static_total;
+	int       num_clusters;
+	int       model_light_offset;
+	int*      key_clusters;     // each model light's cluster
+	int       key_count, key_allocated;
+
+	uint32_t  generation;                   // bumped by every build, never 0
+	uint32_t  slot_generation[LCACHE_SLOTS]; // the build each frame slot's staging holds; 0 = not known
+
+	// the build's runs: consecutive model lights in one cluster
+	int*      run_first;
+	int*      run_count;
+	int*      run_cluster;
+	int       runs_allocated;
+	int*      dest_runs;        // the runs each cluster sees, cluster by cluster, in order
+	size_t    dest_runs_allocated;
+
+	uint64_t  built_history, staged_history;    // a bit a frame, newest lowest (the profiler's counts)
+} lcache;
+
+static int lcache_dest_start[MAX_LIGHT_LISTS + 1];
+static int lcache_dest_fill[MAX_LIGHT_LISTS];
+
+static void lcache_invalidate(void)
+{
+	lcache.built = false;
+	memset(lcache.slot_generation, 0, sizeof(lcache.slot_generation));
+}
+
+// this frame's slot's staging was written some other way: it holds no build
+static void lcache_slot_dirty(void)
+{
+	const int slot = qvk.current_frame_index;
+	if (slot >= 0 && slot < LCACHE_SLOTS)
+		lcache.slot_generation[slot] = 0;
+}
+
+static bool lcache_on(void)
+{
+	return !cvar_pt_light_list_cache || cvar_pt_light_list_cache->integer != 0;
+}
+
+static int popcount64(uint64_t v)
+{
+	int n = 0;
+	for (; v; v &= v - 1)
+		n++;
+	return n;
+}
+
+static void* lcache_grow(void* p, size_t* allocated, size_t needed, size_t elem)
+{
+	if (needed <= *allocated)
+		return p;
+	size_t n = max(*allocated * 2, needed);
+	n = max(n, (size_t)1024);
+	*allocated = n;
+	return Z_Realloc(p, n * elem);
+}
+
+// whether the kept lists are this frame's
+static bool
+lcache_current(const bsp_mesh_t* bsp_mesh, int num_model_lights, const light_poly_t* lights, int model_light_offset,
+               bool inject)
+{
+	const int nc = bsp_mesh->num_clusters;
+	if (!lcache.built || lcache.injected != inject || lcache.num_clusters != nc ||
+		lcache.static_lists != bsp_mesh->cluster_lights ||
+		lcache.static_total != (uint32_t)bsp_mesh->cluster_light_offsets[nc] ||
+		lcache.model_light_offset != model_light_offset)
+		return false;
+	if (!inject)
+		return true;
+	if (lcache.key_count != num_model_lights)
+		return false;
+	for (int n = 0; n < num_model_lights; n++)
+		if (lcache.key_clusters[n] != lights[n].cluster)
+			return false;
+	return true;
+}
+
+static void
+lcache_build(const bsp_mesh_t* bsp_mesh, bsp_t* bsp, int num_model_lights, const light_poly_t* lights,
+             int model_light_offset, bool inject)
+{
+	const int nc = bsp_mesh->num_clusters;
+	const int* soff = bsp_mesh->cluster_light_offsets;
+	const uint32_t static_total = (uint32_t)soff[nc];
+
+	if (nc + 1 > lcache.clusters_allocated)
+	{
+		lcache.clusters_allocated = nc + 1;
+		lcache.offsets = Z_Realloc(lcache.offsets, sizeof(int) * (nc + 1));
+		lcache.counts = Z_Realloc(lcache.counts, sizeof(int) * (nc + 1));
+	}
+
+	// the key
+	if (inject)
+	{
+		if (num_model_lights > lcache.key_allocated)
+		{
+			lcache.key_allocated = max(num_model_lights, lcache.key_allocated * 2);
+			lcache.key_clusters = Z_Realloc(lcache.key_clusters, sizeof(int) * lcache.key_allocated);
+		}
+		for (int n = 0; n < num_model_lights; n++)
+			lcache.key_clusters[n] = lights[n].cluster;
+	}
+	lcache.key_count = inject ? num_model_lights : 0;
+	lcache.injected = inject;
+	lcache.static_lists = bsp_mesh->cluster_lights;
+	lcache.static_total = static_total;
+	lcache.num_clusters = nc;
+	lcache.model_light_offset = model_light_offset;
+
+	// the runs, and how many entries and runs each cluster gets
+	memset(cluster_light_counts, 0, nc * sizeof(int));
+	memset(lcache_dest_fill, 0, nc * sizeof(int));
+	int num_runs = 0;
+	size_t total_dest_runs = 0;
+	if (inject && num_model_lights > 0)
+	{
+		if (num_model_lights > lcache.runs_allocated)
+		{
+			lcache.runs_allocated = max(num_model_lights, lcache.runs_allocated * 2);
+			lcache.run_first = Z_Realloc(lcache.run_first, sizeof(int) * lcache.runs_allocated);
+			lcache.run_count = Z_Realloc(lcache.run_count, sizeof(int) * lcache.runs_allocated);
+			lcache.run_cluster = Z_Realloc(lcache.run_cluster, sizeof(int) * lcache.runs_allocated);
+		}
+
+		for (int n = 0; n < num_model_lights; n++)
+		{
+			const int c = lights[n].cluster;
+			if (c < 0 || c >= nc)
+				continue;   // main.c drops these; never in a list
+			if (num_runs > 0 && lcache.run_cluster[num_runs - 1] == c &&
+				lcache.run_first[num_runs - 1] + lcache.run_count[num_runs - 1] == n)
+			{
+				lcache.run_count[num_runs - 1]++;
+				continue;
+			}
+			lcache.run_first[num_runs] = n;
+			lcache.run_count[num_runs] = 1;
+			lcache.run_cluster[num_runs] = c;
+			num_runs++;
+		}
+
+		for (int r = 0; r < num_runs; r++)
+		{
+			const byte* mask = BSP_GetPvs(bsp, lcache.run_cluster[r]);
+			for (int j = 0; j < bsp->visrowsize; j++)
+			{
+				if (!mask[j])
+					continue;
+				for (int k = 0; k < 8; k++)
+				{
+					const int c = j * 8 + k;
+					if ((mask[j] & (1 << k)) && c < nc)
+					{
+						cluster_light_counts[c] += lcache.run_count[r];
+						lcache_dest_fill[c]++;
+						total_dest_runs++;
+					}
+				}
+			}
+		}
+	}
+
+	uint32_t required = static_total;
+	for (int c = 0; c < nc; c++)
+		required += (uint32_t)cluster_light_counts[c];
+	if (required > MAX_LIGHT_LIST_NODES)
+	{
+		Com_WPrintf("Insufficient light interaction buffer size (%u needed). Increase MAX_LIGHT_LIST_NODES.\n", required);
+		// the static lists alone, as inject_model_lights falls back to
+		memset(cluster_light_counts, 0, nc * sizeof(int));
+		memset(lcache_dest_fill, 0, nc * sizeof(int));
+		num_runs = 0;
+		total_dest_runs = 0;
+		required = static_total;
+	}
+
+	// each cluster's runs, in run order
+	lcache_dest_start[0] = 0;
+	for (int c = 0; c < nc; c++)
+		lcache_dest_start[c + 1] = lcache_dest_start[c] + lcache_dest_fill[c];
+	if (total_dest_runs > 0)
+	{
+		lcache.dest_runs = lcache_grow(lcache.dest_runs, &lcache.dest_runs_allocated, total_dest_runs, sizeof(int));
+		memcpy(lcache_dest_fill, lcache_dest_start, nc * sizeof(int));
+		for (int r = 0; r < num_runs; r++)
+		{
+			const byte* mask = BSP_GetPvs(bsp, lcache.run_cluster[r]);
+			for (int j = 0; j < bsp->visrowsize; j++)
+			{
+				if (!mask[j])
+					continue;
+				for (int k = 0; k < 8; k++)
+				{
+					const int c = j * 8 + k;
+					if ((mask[j] & (1 << k)) && c < nc)
+						lcache.dest_runs[lcache_dest_fill[c]++] = r;
+				}
+			}
+		}
+	}
+
+	// the lists, cluster by cluster
+	size_t la = lcache.lists_allocated;
+	lcache.lists = lcache_grow(lcache.lists, &la, max((size_t)required, (size_t)1), sizeof(int));
+	lcache.lists_allocated = la;
+	uint32_t tail = 0;
+	for (int c = 0; c < nc; c++)
+	{
+		const int original_size = soff[c + 1] - soff[c];
+		lcache.offsets[c] = (int)tail;
+		memcpy(lcache.lists + tail, bsp_mesh->cluster_lights + soff[c], sizeof(int) * original_size);
+		tail += (uint32_t)original_size;
+		for (int i = lcache_dest_start[c]; i < lcache_dest_start[c + 1]; i++)
+		{
+			const int r = lcache.dest_runs[i];
+			const int first = model_light_offset + lcache.run_first[r];
+			const int count = lcache.run_count[r];
+			for (int n = 0; n < count; n++)
+				lcache.lists[tail++] = first + n;
+		}
+		lcache.counts[c] = original_size + cluster_light_counts[c];
+	}
+	lcache.offsets[nc] = (int)tail;
+	lcache.tail = tail;
+	assert(tail == required);
+
+	if (++lcache.generation == 0)
+		lcache.generation = 1;
+	lcache.built = true;
+}
+
+// the light lists into this frame's staging, from the kept build; returns the entries
+static uint32_t
+lcache_lists(const bsp_mesh_t* bsp_mesh, bsp_t* bsp, int num_model_lights, const light_poly_t* lights,
+             int model_light_offset, bool inject, LightBuffer* lbo)
+{
+	const int nc = bsp_mesh->num_clusters;
+	const bool build = !lcache_current(bsp_mesh, num_model_lights, lights, model_light_offset, inject);
+	if (build)
+		lcache_build(bsp_mesh, bsp, num_model_lights, lights, model_light_offset, inject);
+
+	// the light counts history takes an entry every frame
+	uint* sample_light_counts = (uint*)vkpt_prep_backend->map_staging(VKPT_STAGING_LIGHT_COUNTS);
+	if (sample_light_counts)
+		memcpy(sample_light_counts, lcache.counts, sizeof(uint) * nc);
+	vkpt_prep_backend->unmap_staging(VKPT_STAGING_LIGHT_COUNTS);
+
+	const int slot = qvk.current_frame_index;
+	const bool known = slot >= 0 && slot < LCACHE_SLOTS;
+	const bool stage = !known || lcache.slot_generation[slot] != lcache.generation;
+	if (stage)
+	{
+		memcpy(lbo->light_list_offsets, lcache.offsets, sizeof(uint32_t) * (nc + 1));
+		memcpy(lbo->light_list_lights, lcache.lists, sizeof(uint32_t) * lcache.tail);
+		if (known)
+			lcache.slot_generation[slot] = lcache.generation;
+	}
+
+	lcache.built_history = (lcache.built_history << 1) | (build ? 1 : 0);
+	lcache.staged_history = (lcache.staged_history << 1) | (stage ? 1 : 0);
+	return lcache.tail;
+}
+
 // the shader clock this frame's lights are worked out at (Quake III programs)
 static float light_time;
 
@@ -985,15 +1292,33 @@ static float light_time;
    the material's emissive_factor x light_factor, which scales the program's
    own glow; its stage<N>_emissive_factor stages' glow takes light_factor only
    (q3stages.h STAGE SETTINGS). */
+// the frame number of the glow pass below (light_poly_t q3_glow_frame); never 0
+static uint32_t glow_frame;
+
+// this frame's tallies for the profiler's lights counts (cpuprof.h, issue #31); main thread only
+static uint32_t glow_inline_count, glow_samples_count, glow_runs_count;
+
+// whether `light` shines with a Quake III program's glow (q3_glow_color)
+static inline bool
+light_has_q3_glow(const light_poly_t* light)
+{
+	// the material first: q3_glow is only set on lights whose material has a program
+	return light->material && light->material->q3_program && light->q3_glow &&
+		light->type == DYNLIGHT_POLYGON && light->color[0] >= 0.f;
+}
+
 static const float*
 q3_glow_color(light_poly_t* light, float mat_scale, vec3_t out)
 {
-	if (!light->q3_glow || light->type != DYNLIGHT_POLYGON || !light->material || !light->material->q3_program)
+	if (!light->material || !light->material->q3_program || !light->q3_glow || light->type != DYNLIGHT_POLYGON)
 		return NULL;
 
 	const float stage_scale = light->material->light_factor;
 	const uint32_t key = vkpt_q3_program_key(light->material);
-	if (key && light->q3_glow_key == key)
+	const bool this_frame = light->q3_glow_frame == glow_frame;
+	if (this_frame && light->q3_glow_rgb[0] < 0.f)
+		return NULL;    // the glow pass found its images not in memory yet
+	if (this_frame || (key && light->q3_glow_key == key))
 	{
 		VectorScale(light->q3_glow_rgb, mat_scale, out);
 		VectorMA(out, stage_scale, light->q3_glow_stages_rgb, out);
@@ -1001,6 +1326,8 @@ q3_glow_color(light_poly_t* light, float mat_scale, vec3_t out)
 		return out;
 	}
 
+	// a light the pass did not cover: worked out here, as it always was
+	glow_inline_count++;
 	vec3_t rgb, stages;
 	const int result = vkpt_q3_light_glow(light->material, light->q3_uv, light->q3_samples, light_time, rgb, stages);
 	if (result == 0)
@@ -1096,6 +1423,91 @@ copy_light(light_poly_t* light, float* vblight, const float* sky_radiance)
 	}
 }
 
+/* THE GLOW PASS (issue #31, 2026-11-24). copy_light worked every moving Quake III
+   glow out on the main thread, light by light: on q3dm0, some 3,300 triangles of
+   moving glow at up to 16 samples each through every stage, every frame, where
+   q3dm1 has about 150 - the map ran CPU-bound at half q3dm1's frame rate. Now the
+   lights whose glow has to be worked out this frame are gathered first, their
+   programs set up for the frame's clock here on the main thread
+   (vkpt_q3_light_glow_prepare), and the glows evaluated across the renderer's
+   workers (jobs.c), each light's into its own light_poly_t (q3_glow_frame).
+   copy_light then only reads them. Same numbers as before; pt_cpu_threads 1 runs
+   the pass on the main thread alone, for the A/B. */
+#define GLOW_JOB_LIGHTS 32
+
+static light_poly_t** glow_list;
+static int glow_list_count, glow_list_allocated;
+
+static void
+glow_gather(light_poly_t* lights, int count, const pbr_material_t** last_mat, bool* last_ready)
+{
+	for (int i = 0; i < count; i++)
+	{
+		light_poly_t* light = lights + i;
+		if (!light_has_q3_glow(light))
+			continue;
+		const uint32_t key = vkpt_q3_program_key(light->material);
+		if (key && light->q3_glow_key == key)
+			continue;   // a still glow, worked out once and kept
+
+		// lights come in runs of one material (a surface's triangles)
+		if (light->material != *last_mat)
+		{
+			*last_mat = light->material;
+			*last_ready = vkpt_q3_light_glow_prepare(light->material, light_time);
+			glow_runs_count++;
+		}
+		if (!*last_ready)
+		{
+			// its images are not in memory yet: `color` stands in (copy_light)
+			light->q3_glow_rgb[0] = -1.f;
+			light->q3_glow_frame = glow_frame;
+			continue;
+		}
+
+		if (glow_list_count == glow_list_allocated)
+		{
+			glow_list_allocated = max(1024, glow_list_allocated * 2);
+			glow_list = Z_Realloc(glow_list, sizeof(*glow_list) * glow_list_allocated);
+		}
+		glow_list[glow_list_count++] = light;
+		glow_samples_count += (uint32_t)light->q3_samples * light->q3_samples;
+	}
+}
+
+static void
+glow_job(void* ctx, int index)
+{
+	(void)ctx;
+	const int end = min(glow_list_count, (index + 1) * GLOW_JOB_LIGHTS);
+	for (int i = index * GLOW_JOB_LIGHTS; i < end; i++)
+	{
+		light_poly_t* light = glow_list[i];
+		vec3_t rgb, stages;
+		const int result = vkpt_q3_light_glow_prepared(light->material, light->q3_uv, light->q3_samples, light_time,
+		                                               rgb, stages);
+		/* 0: the set-up went stale after the gather (a light image was made
+		   again for another program) - left for copy_light, which works it out
+		   on the main thread as it always did */
+		if (result == 0)
+			continue;
+		VectorCopy(rgb, light->q3_glow_rgb);
+		VectorCopy(stages, light->q3_glow_stages_rgb);
+		if (result == 2)
+			light->q3_glow_key = vkpt_q3_program_key(light->material);
+		light->q3_glow_frame = glow_frame;
+	}
+}
+
+static void
+glow_run(void)
+{
+	CPUPROF_COUNT_SET(GLOW_EVALS, glow_list_count);
+	if (glow_list_count > 0)
+		vkpt_parallel_for((glow_list_count + GLOW_JOB_LIGHTS - 1) / GLOW_JOB_LIGHTS, glow_job, NULL);
+	glow_list_count = 0;
+}
+
 extern char cluster_debug_mask[VIS_MAX_BYTES];
 
 bool vkpt_q3_materials_in_use;
@@ -1111,6 +1523,13 @@ vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp
 
 	// the clock vkpt_q3_upload draws the programs at, below
 	light_time = vkpt_refdef.fd ? vkpt_refdef.fd->time : 0.f;
+	if (++glow_frame == 0)
+		glow_frame = 1;
+	// the profiler's "lights" row (cpuprof.h): the lists and the lights, to the materials
+	CPUPROF_DETAIL_BEGIN(LIGHTS);
+	glow_inline_count = glow_samples_count = glow_runs_count = 0;
+	const uint32_t images_before = vkpt_q3_light_images_made();
+	CPUPROF_COUNT_SET(GLOW_EVALS, 0);
 
 	// How far into the two list arrays this frame writes - see WHAT THE LIGHT AND
 	// IQM UPLOADS COPY.
@@ -1142,7 +1561,14 @@ vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp
 		int model_light_offset = bsp_mesh->num_light_polys;
 		max_model_lights = max(max_model_lights, num_model_lights);
 
-		if (max_model_lights > 0)
+		CPUPROF_DETAIL_BEGIN(LIGHT_LISTS);
+		if (lcache_on())
+		{
+			// THE LIGHT LISTS ARE KEPT: built again only when they change
+			lists_written = lcache_lists(bsp_mesh, bsp, num_model_lights, transformed_model_lights, model_light_offset,
+			                             max_model_lights > 0, lbo);
+		}
+		else if (max_model_lights > 0)
 		{
 			// If any of the BSP models contain lights, inject these lights right into the visibility lists.
 			// The shader doesn't know that these lights are dynamic.
@@ -1153,7 +1579,31 @@ vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp
 		{
 			lists_written = copy_bsp_lights(bsp_mesh, lbo);
 		}
+		if (!lcache_on())
+			lcache_slot_dirty();
+		CPUPROF_DETAIL_END(LIGHT_LISTS);
 
+		// the fog-only lights are copied below when the rest leave them room
+		const int fog_base = MAX_LIGHT_POLYS - bsp_mesh->num_fog_light_polys;
+		const bool fog_lights = bsp_mesh->num_fog_light_polys > 0 && total_lights <= fog_base;
+
+		// this frame's Quake III glows, on the workers (THE GLOW PASS above)
+		{
+			const pbr_material_t* last_mat = NULL;
+			bool last_ready = false;
+			CPUPROF_DETAIL_BEGIN(GLOW_SETUP);
+			glow_gather(bsp_mesh->light_polys, min(bsp_mesh->num_light_polys, MAX_LIGHT_POLYS), &last_mat, &last_ready);
+			glow_gather(transformed_model_lights, max(0, min(num_model_lights, MAX_LIGHT_POLYS - model_light_offset)),
+			            &last_mat, &last_ready);
+			if (fog_lights)
+				glow_gather(bsp_mesh->fog_light_polys, bsp_mesh->num_fog_light_polys, &last_mat, &last_ready);
+			CPUPROF_DETAIL_END(GLOW_SETUP);
+			CPUPROF_DETAIL_BEGIN(GLOW_EVAL);
+			glow_run();
+			CPUPROF_DETAIL_END(GLOW_EVAL);
+		}
+
+		CPUPROF_DETAIL_BEGIN(LIGHT_COPY);
 		for (int nlight = 0; nlight < bsp_mesh->num_light_polys && nlight < MAX_LIGHT_POLYS; nlight++)
 		{
 			light_poly_t* light = bsp_mesh->light_polys + nlight;
@@ -1172,8 +1622,7 @@ vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp
 		// already hold those indices. If the regular lights have grown into
 		// that space this frame, the fog goes without them rather than
 		// overwriting anything.
-		int fog_base = MAX_LIGHT_POLYS - bsp_mesh->num_fog_light_polys;
-		if (bsp_mesh->num_fog_light_polys > 0 && total_lights <= fog_base)
+		if (fog_lights)
 		{
 			for (int nlight = 0; nlight < bsp_mesh->num_fog_light_polys; nlight++)
 			{
@@ -1188,6 +1637,12 @@ vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp
 		{
 			memset(lbo->fog_light_list_offsets, 0, sizeof(uint32_t) * (bsp_mesh->num_clusters + 1));
 		}
+		CPUPROF_DETAIL_END(LIGHT_COPY);
+
+		const int copied_bsp = min(bsp_mesh->num_light_polys, MAX_LIGHT_POLYS);
+		const int copied_model = max(0, min(num_model_lights, MAX_LIGHT_POLYS - model_light_offset));
+		CPUPROF_COUNT_SET(LIGHT_POLYS, copied_bsp + copied_model + (fog_lights ? bsp_mesh->num_fog_light_polys : 0));
+		CPUPROF_COUNT_SET(LIGHT_MODEL, copied_model);
 	}
 	else
 	{
@@ -1197,6 +1652,12 @@ vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp
 		// index 0 up. This list used to be left empty, and the menu model was lit
 		// by nothing but its own emissives.
 		int n = min(num_model_lights, MAX_LIGHT_POLYS);
+		{
+			const pbr_material_t* last_mat = NULL;
+			bool last_ready = false;
+			glow_gather(transformed_model_lights, max(n, 0), &last_mat, &last_ready);
+			glow_run();
+		}
 		for (int nlight = 0; nlight < n; nlight++)
 		{
 			float* vblight = *(lbo->light_polys + nlight * LIGHT_POLY_VEC4S);
@@ -1206,9 +1667,21 @@ vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp
 		lists_written = (uint32_t)max(n, 0);
 		lbo->light_list_offsets[0] = 0;
 		lbo->light_list_offsets[1] = n;
+		lcache_slot_dirty();    // this slot's lists are the menu's now
 		lbo->fog_light_list_offsets[0] = 0;
 		lbo->fog_light_list_offsets[1] = 0;
+		CPUPROF_COUNT_SET(LIGHT_POLYS, max(n, 0));
+		CPUPROF_COUNT_SET(LIGHT_MODEL, max(n, 0));
 	}
+
+	CPUPROF_COUNT_SET(LIGHT_NODES, lists_written);
+	CPUPROF_COUNT_SET(LIST_BUILDS, popcount64(lcache.built_history));
+	CPUPROF_COUNT_SET(LIST_STAGED, popcount64(lcache.staged_history));
+	CPUPROF_COUNT_SET(GLOW_SAMPLES, glow_samples_count);
+	CPUPROF_COUNT_SET(GLOW_INLINE, glow_inline_count);
+	CPUPROF_COUNT_SET(GLOW_RUNS, glow_runs_count);
+	CPUPROF_COUNT_SET(GLOW_IMAGES, vkpt_q3_light_images_made() - images_before);
+	CPUPROF_DETAIL_END(LIGHTS);
 
 	/* effects.c declares this - hence the assert below:
 		typedef struct clightstyle_s {
@@ -2004,6 +2477,8 @@ vkpt_vertex_buffer_init_cvars(void)
 	cvar_pt_fog_scale_model    = Cvar_Get("pt_fog_scale_model",    "0.2", 0);
 	cvar_pt_fog_lava_scale     = Cvar_Get("pt_fog_lava_scale",     "1.0", 0);
 	cvar_pt_fog_q3_map_lights  = Cvar_Get("pt_fog_q3_map_lights",  "0", 0);
+	// THE LIGHT LISTS ARE KEPT; 0 = written whole every frame, as before (issue #31)
+	cvar_pt_light_list_cache   = Cvar_Get("pt_light_list_cache",   "1", 0);
 }
 
 VkResult

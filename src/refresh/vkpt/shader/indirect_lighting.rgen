@@ -205,9 +205,11 @@ vec3 bounce_transparent_glow(Ray ray, float cone_base, float cone_spread, out fl
 			MaterialInfo minfo = get_material_info(t.material_id);
 
 			// across the footprint, no 1/cos: a glow's mip (see the bounce hit's
-			// get_material_emissive_lod)
+			// get_material_emissive_lod). pt_bounce_emissive_lod 0: along the ray,
+			// as before 11-23.
 			float lod = bounce_texture_lod(t, minfo.base_texture,
-				cone_base + cone_spread * hit_t, n, n);
+				cone_base + cone_spread * hit_t,
+				global_ubo.pt_bounce_emissive_lod != 0 ? n : ray.direction, n);
 
 			vec3 q3_albedo;
 			float q3_alpha;
@@ -785,10 +787,13 @@ indirect_lighting(
 			// the pixel footprint's mip, live as in photo mode: a glow is not
 			// prefiltered by the lobe (path_tracer_rgen.h get_material_emissive_lod)
 			float pixel_angle = 2.0 / (abs(global_ubo.P[1][1]) * float(global_ubo.height));
+			// pt_bounce_emissive_lod 0: widened by the lobe, as before 11-23
+			float glow_spread = (global_ubo.pt_bounce_emissive_lod != 0 || global_ubo.temporal_blend_factor > 0.0)
+				? 0.0 : 2.0 * primary_roughness * primary_roughness;
 			float glow_t;
 			bool glow_is_light;
 			vec3 glow = bounce_transparent_glow(bounce_ray,
-				pixel_angle * length(position - global_ubo.cam_pos.xyz), pixel_angle,
+				pixel_angle * length(position - global_ubo.cam_pos.xyz), pixel_angle + glow_spread,
 				glow_t, glow_is_light);
 
 			float glow_weight = (glow_is_light && ray_origin_light_sampled())
@@ -1017,9 +1022,11 @@ indirect_lighting(
 			// lookup's mistake that anisotropic filtering does not make. Took a
 			// Quake lamp's small map past its bright band, and the nailgun's
 			// (bleeding from mip 5) past what pt_bounce_lod_bias -2 could undo.
-			get_material_emissive_lod = bounce_texture_lod(triangle, bounce_minfo.emissive_texture,
-				pixel_angle * (length(position - global_ubo.cam_pos.xyz) + ray_payload_geometry.hit_distance),
-				bounce_geo_normal, bounce_geo_normal);
+			// pt_bounce_emissive_lod 0: left at -1, the emissive map takes `lod` as before 11-23
+			if (global_ubo.pt_bounce_emissive_lod != 0)
+				get_material_emissive_lod = bounce_texture_lod(triangle, bounce_minfo.emissive_texture,
+					pixel_angle * (length(position - global_ubo.cam_pos.xyz) + ray_payload_geometry.hit_distance),
+					bounce_geo_normal, bounce_geo_normal);
 
 			vec3 mapped_normal;
 			float metallic;

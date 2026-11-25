@@ -888,6 +888,7 @@ void CL_Q3Flush(void);
 // q3weapons.c - Quake III Arena's guns (the bot match's g_q3_weapons)
 //
 bool CL_Q3W_Self(void);
+bool CL_Q1W_Self(void);
 void CL_Q3W_Init(void);
 void CL_Q3W_RegisterMedia(void);
 void CL_Q3W_Clear(void);
@@ -905,6 +906,7 @@ void CL_Q3W_Explosion(int type, const vec3_t origin);
 void CL_Q3W_RailImpact(const vec3_t start, const vec3_t end, const vec3_t color);
 void CL_Q3W_RailStart(vec3_t start);
 void CL_Q3W_Lightning(int shooter, bool hit, const vec3_t start, const vec3_t end);
+void CL_Q3W_Grapple(int owner, int hook, const vec3_t pos);
 void CL_Q3W_AddSprite(const entity_state_t *s1, const vec3_t origin);
 void CL_Q3W_Gibs(const vec3_t origin);
 bool CL_Q3W_Bleed(const vec3_t origin);
@@ -1062,6 +1064,8 @@ extern    qhandle_t gun_model;
 extern    bool      cl_load_world_drawn;
 
 void V_Init(void);
+float V_ZoomFov(float fov_x);
+float V_ZoomSensitivity(void);
 void V_Shutdown(void);
 void V_RenderView(void);
 void V_AddEntity(entity_t *ent);

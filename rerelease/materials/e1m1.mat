@@ -15,7 +15,7 @@ textures/q1/tlight02#122e579d:
 #	specular_factor 1
 #	base_factor 1
 #	emissive_factor 0.75
-	light_factor 4
+	light_factor 1
 #	kind REGULAR
 #	is_light 1
 #	light_styles 1
@@ -36,7 +36,7 @@ textures/q1/tlight02#d6d8b07f:
 #	specular_factor 1
 #	base_factor 1
 #	emissive_factor 0.75
-	light_factor 2
+	light_factor 1
 #	kind REGULAR
 #	is_light 1
 #	light_styles 1
@@ -57,7 +57,7 @@ textures/q1/twall2_2#ac964c07:
 #	specular_factor 1
 #	base_factor 1
 #	emissive_factor 1.25
-	light_factor 10
+	light_factor 5
 #	kind REGULAR
 #	is_light 1
 #	light_styles 1

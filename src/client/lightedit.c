@@ -146,6 +146,11 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // Only debug mode makes a dormant map light pickable. With the markers off there
 // is nothing on screen to aim at.
 //
+// light_dormant_markers 0 hides the map lights' markers, dormant and replaced
+// alike, and takes them out of picking, while your own lights stay drawn and
+// pickable. A light placed right on top of a dormant one is otherwise hard to
+// select: the black disc covers it and can win the pick (Matt, 2026-11-24).
+//
 // LIGHTS THE GAME SWITCHES
 //
 // The rerelease switches its baked lighting with lightstyles: every "light"
@@ -276,6 +281,7 @@ static cvar_t   *light_place_dist;
 static cvar_t   *light_pick_size;
 static cvar_t   *light_debug_brightness;
 static cvar_t   *light_marker_opacity;
+static cvar_t   *light_dormant_markers;
 
 // Emitter size for a light that does not name one. 10 is what V_AddLight uses
 // for an ordinary point light.
@@ -1446,6 +1452,14 @@ static float LE_EntityMarkerRadius(const cdynamiclight_t *c)
                        : LE_DORMANT_MARKER_RADIUS;
 }
 
+// Whether the map's own lights are drawn and pickable: debug mode, unless
+// light_dormant_markers 0 has hidden them so the placed lights on top of them
+// can be picked.
+static bool LE_MapMarkersShown(void)
+{
+    return le_debug && light_dormant_markers->integer;
+}
+
 /*
 =================
 LE_Pick
@@ -1483,8 +1497,9 @@ static lepick_t LE_Pick(void)
 
     // Map light entities are only pickable in debug mode. Off, there is nothing
     // on screen to aim at, and silently acting on an invisible one would be a
-    // trap - so debug_on is what arms the map-light half of the tool.
-    if (le_debug) {
+    // trap - so debug_on is what arms the map-light half of the tool, and
+    // light_dormant_markers 0 disarms it again.
+    if (LE_MapMarkersShown()) {
         int count = CL_NumDynamicLights();
 
         for (int i = 0; i < count; i++) {
@@ -2205,6 +2220,9 @@ static void LE_Replace_f(void)
         else if (!le_debug)
             Com_Printf("Map lights are only pickable in debug mode - "
                        "\"light debug_on\" first.\n");
+        else if (!LE_MapMarkersShown())
+            Com_Printf("Map light markers are hidden - "
+                       "\"light_dormant_markers 1\" first.\n");
         else
             Com_Printf("No map light under the crosshair.\n");
         return;
@@ -2888,7 +2906,8 @@ void LE_AddLightsToScene(void)
     // bail on an empty list.
     if (le_debug) {
         pick = LE_Pick();
-        LE_AddEntityMarkers(pick.ent);
+        if (LE_MapMarkersShown())
+            LE_AddEntityMarkers(pick.ent);
     }
 
     for (int i = 0; i < le_num_lights; i++) {
@@ -3029,6 +3048,11 @@ void LE_Init(void)
     // falloff and then clamps, so 1 is a soft translucent blob and 4 is a
     // solid disc with a soft rim. Matt could barely see them at 1.
     light_marker_opacity = Cvar_Get("light_marker_opacity", "4", CVAR_ARCHIVE);
+
+    // 0 hides the map lights' markers (dormant and replaced) and makes them
+    // unpickable, so a placed light sitting on top of one can be selected.
+    // Live; "toggle light_dormant_markers" flips it.
+    light_dormant_markers = Cvar_Get("light_dormant_markers", "1", CVAR_ARCHIVE);
 
     Cmd_Register(c_lightedit);
 }

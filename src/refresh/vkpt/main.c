@@ -126,6 +126,7 @@ cvar_t *cvar_pt_enable_surface_lights_warp = NULL;
 cvar_t* cvar_pt_surface_lights_fake_emissive_algo = NULL;
 cvar_t* cvar_pt_surface_lights_threshold = NULL;
 cvar_t* cvar_pt_bsp_radiance_scale = NULL;
+cvar_t *cvar_pt_light_full_panels = NULL;
 cvar_t *cvar_pt_light_style_reach = NULL;
 cvar_t *cvar_pt_bsp_sky_lights = NULL;
 cvar_t *cvar_pt_q1_sky_lights = NULL;
@@ -4279,6 +4280,7 @@ static void instance_model_lights(int num_light_polys, const light_poly_t* light
 		dst_light->q3_samples = src_light->q3_samples;
 		memcpy(dst_light->q3_uv, src_light->q3_uv, sizeof(dst_light->q3_uv));
 		dst_light->q3_glow_key = 0;     // a copy made every frame: nothing kept
+		dst_light->q3_glow_frame = 0;
 
 		hash.mesh = nlight; //More a light index than a mesh
 		light_entity_ids[entity_frame_num][num_model_lights] = *(uint32_t*)&hash;
@@ -10370,6 +10372,12 @@ vkpt_init_frontend(void)
 	// Multiplier for texinfo radiance field to convert radiance to emissive factors
 	cvar_pt_bsp_radiance_scale = Cvar_Get("pt_bsp_radiance_scale", "0.001", CVAR_FILES);
 
+	// A light face cut down to its texture's glowing rectangle casts light from every
+	// triangle of the cut (1), or from the first only (0: the 2023 speed-up, which
+	// left those lights at about half their light, from one diagonal half) - see
+	// collect_one_light_poly in bsp_mesh.c. Read at map load; changing it reloads.
+	cvar_pt_light_full_panels = Cvar_Get("pt_light_full_panels", "1", CVAR_FILES | CVAR_ARCHIVE);
+
 	// Which of a lamp face's lightmap styles animate the lamp - see get_surf_light_style()
 	// in bsp_mesh.c. A style counts only if a light entity carrying it reaches the face:
 	// within this many times the entity's "light" value. 0 = the face's first style.
@@ -11573,7 +11581,9 @@ R_SetSky_RTX(const char *name, float rotate, int autorotate, const vec3_t axis)
 	if (name[0] == '*' && complete)
 		vkpt_q3_sky_tint(avg_envmap_color);
 
-	vkpt_cpu_trace_set_envmap(complete ? w_prev : 0, h_prev, complete ? data : NULL);
+	// the CPU path tracer gets what the GPU gets: with the clouds drawn per ray
+	// (cpu_trace.c draws them too, from the UBO), the far box alone
+	vkpt_cpu_trace_set_envmap(complete ? w_prev : 0, h_prev, complete ? ((q3_box) ? q3_box : data) : NULL);
 	// through vkpt_prep_backend: the D3D12 renderer runs this function too
 	vkpt_prep_backend->upload_envmap(w_prev, h_prev, (complete && q3_box) ? q3_box : data);
 	Z_Free(data);

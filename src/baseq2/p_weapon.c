@@ -203,9 +203,12 @@ bool Pickup_Weapon(edict_t *ent, edict_t *other)
         }
     }
 
+    // (Quake's Ranger keeps a BFG10K and raises it as Quake raises a better
+    // gun: g_q1weap.c)
     if (other->client->pers.weapon != ent->item &&
         (other->client->pers.inventory[index] == 1) &&
-        (!deathmatch->value || other->client->pers.weapon == FindItem("blaster")))
+        (!deathmatch->value || other->client->pers.weapon == FindItem("blaster") ||
+         Q1W_RaiseOnPickup(other, ent->item)))
         other->client->newweapon = ent->item;
 
     return true;
@@ -316,6 +319,11 @@ NoAmmoWeaponChange
 */
 void NoAmmoWeaponChange(edict_t *ent)
 {
+    // Quake's Ranger with Quake II's BFG10K, in a bot match by player model:
+    // Quake's best gun (g_q1weap.c), not a blaster he doesn't carry
+    if (Q1W_NoAmmoChange(ent))
+        return;
+
     if (ent->client->pers.inventory[ITEM_INDEX(FindItem("slugs"))]
         &&  ent->client->pers.inventory[ITEM_INDEX(FindItem("railgun"))]) {
         ent->client->newweapon = FindItem("railgun");

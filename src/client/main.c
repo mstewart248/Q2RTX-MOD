@@ -2961,6 +2961,7 @@ static const cmdreg_t c_client[] = {
     { "drop" }, { "info" }, { "prog" },
     { "give" }, { "god" }, { "notarget" }, { "noclip" },
     { "invuse" }, { "invprev" }, { "invnext" }, { "invdrop" },
+    { "useitem" }, { "taunt" },
 
     { NULL }
 };
@@ -3862,6 +3863,13 @@ static void CL_CpuStatsFrame(void)
     static uint64_t sum_us[CPUPROF_COUNT + 1], worst_us[CPUPROF_COUNT + 1];
     static uint64_t sum_wall_us, worst_wall_us;
     static int frames, long_frames;
+    // the sections' parts (cpuprof.h CPUPROF_DETAIL_LIST), for the third line
+    static const char *const detail_names[CPUPROF_DETAIL_COUNT] = {
+#define CPUPROF_DD(id, name) name,
+        CPUPROF_DETAIL_LIST
+#undef CPUPROF_DD
+    };
+    static uint64_t sum_detail_us[CPUPROF_DETAIL_COUNT];
 
     const uint64_t now = Sys_Microseconds();
     const uint64_t wall = last_us ? now - last_us : 0;
@@ -3914,6 +3922,8 @@ static void CL_CpuStatsFrame(void)
     sum_wall_us += wall;
     for (int i = 0; i <= CPUPROF_COUNT; i++)
         sum_us[i] += frame_us[i];
+    for (int i = 0; i < CPUPROF_DETAIL_COUNT; i++)
+        sum_detail_us[i] += cpuprof_last.detail_us[i];
     if (wall > worst_wall_us) {
         worst_wall_us = wall;
         memcpy(worst_us, frame_us, sizeof(worst_us));
@@ -3939,6 +3949,16 @@ static void CL_CpuStatsFrame(void)
         len += Q_snprintf(buf + len, sizeof(buf) - len, " %s %.2f",
                           i < CPUPROF_COUNT ? names[i] : "other", worst_us[i] * 1e-3);
     Com_Printf("%s\n", buf);
+
+    /* the parts of those sections, averaged the same way (issue #31: which part
+       of a Quake III map's frame is the CPU's, from the log alone - the
+       profiler's key shows them too, but only on the screen) */
+    len = Q_snprintf(buf, sizeof(buf), "CPUSTATS detail |");
+    for (int i = 0; i < CPUPROF_DETAIL_COUNT && len < sizeof(buf); i++)
+        len += Q_snprintf(buf + len, sizeof(buf) - len, " %s %.2f", detail_names[i],
+                          sum_detail_us[i] * 1e-3 / frames);
+    Com_Printf("%s\n", buf);
+    memset(sum_detail_us, 0, sizeof(sum_detail_us));
 
     // 2: also dump the GPU per-pass averages, so both sides share a timeline
     if (cl_cpustats->integer >= 2)

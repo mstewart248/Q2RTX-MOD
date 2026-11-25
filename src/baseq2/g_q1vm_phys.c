@@ -968,6 +968,11 @@ static void q1_physics_toss(int num)
 
     q1_clip_velocity(ev->velocity, trace.plane.normal, ev->velocity, backoff);
 
+    // Quake II RTX's flare stops dead on whatever it hits (flare_touch), and
+    // a wall's drops it down the wall
+    if (Q1VM_IsFlare(num))
+        VectorClear(ev->velocity);
+
     // stop if on ground (vkQuake's: a grenade on a slope settles as on the flat)
     if (trace.plane.normal[2] > 0.7f) {
         if (mt != Q1_MOVETYPE_BOUNCE || DotProduct(trace.plane.normal, ev->velocity) < 60) {

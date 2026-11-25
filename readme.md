@@ -1064,7 +1064,8 @@ guns while everyone else keeps their own.
 * **Fog**: a map's own `fog` becomes [volumetric fog](#volumetric-fog-and-atmosphere).
 * **Teleporters**: a slipgate shows the place it leads to, with a ripple
   (`pt_q1_teleport_portals`, `pt_q1_teleport_warp`), and the light on the far
-  side comes through it (`pt_portal_light`).
+  side comes through it (`pt_portal_light`). A gate whose view would start under
+  the far floor is raised to `pt_q1_teleport_clearance` (8) units above it.
 * **Materials**: `id1/materials/quake1.mat` gives Quake's textures normal,
   roughness, metal and emissive maps, shaded the way Quake II RTX shades its
   own. Its windows are [stained glass](#stained-glass): the light behind them
@@ -1773,6 +1774,11 @@ puts the entity back to dormant.
 Only debug mode makes a dormant map light pickable — with the markers off there is
 nothing on screen to aim at.
 
+When you have placed lights right on top of dormant ones, the black disc hides
+yours and can win the pick. `light_dormant_markers 0` hides the map lights'
+markers and takes them out of picking, so the crosshair only ever selects your own
+lights. Set it back to `1` to `light replace` a map light.
+
 A **Quake 1** map's lights are map lights the same way: its shadow-casting
 `dynamiclight` entities and every light its compiler baked in (`light`,
 `light_fluoro`, `light_globe`, the torches, `light_candle`...). A replacement
@@ -1815,6 +1821,7 @@ origin is separate, because it is allowed to be somewhere else entirely.
 | `light_pick_size` | `8` | floor on the crosshair pick radius, so a small light is still hittable from across a room |
 | `light_debug_brightness` | `1` | brightness of the debug markers. They are emissive particles, so this is the knob for stopping them washing out the room you are judging |
 | `light_marker_opacity` | `4` | how solid the map lights' black markers read. This is an alpha but is deliberately allowed **above 1**: a radial falloff is applied and then clamped, so `1` is a soft translucent blob and `4` is a solid disc with a soft rim |
+| `light_dormant_markers` | `1` | `0` hides the map lights' black markers (dormant and replaced) and makes them unpickable, so a light you placed on top of one is the one the crosshair selects. Your own lights stay drawn. `toggle light_dormant_markers` flips it |
 
 The renderer's whole frame budget is `MAX_DLIGHTS` (256), shared with the map's
 own `dynamic_light`s, so at most 256 hand-placed lights are kept per map.

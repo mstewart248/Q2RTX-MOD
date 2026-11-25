@@ -169,6 +169,11 @@ typedef struct light_poly_s {
 	// ... and its stage<N>_emissive_factor stages' glow, which the material's
 	// emissive_factor does not scale
 	vec3_t q3_glow_stages_rgb;
+	// a moving program's glow, worked out this frame by vertex_buffer.c's pass on
+	// the workers: q3_glow_rgb and q3_glow_stages_rgb hold it while this equals
+	// that pass's frame number (q3_glow_rgb[0] < 0: no glow this frame, the
+	// images are not in memory). Never set: 0, which no frame is.
+	uint32_t q3_glow_frame;
 } light_poly_t;
 
 typedef struct model_s {

@@ -187,6 +187,11 @@ enum {
 	CPUROW_BLOOD_FILM,
 	CPUROW_RENDER,
 	CPUROW_SCENE,
+	CPUROW_LIGHTS,
+	CPUROW_LIGHT_LISTS,
+	CPUROW_GLOW_SETUP,
+	CPUROW_GLOW_EVAL,
+	CPUROW_LIGHT_COPY,
 	CPUROW_FLOW,
 	CPUROW_TRANSPARENT,
 	CPUROW_BLOOD_MESH,
@@ -228,6 +233,11 @@ static const struct {
 	[CPUROW_BLOOD_FILM]   = { "blood film", 2 },
 	[CPUROW_RENDER]       = { "render", 0 },
 	[CPUROW_SCENE]        = { "scene setup", 1 },
+	[CPUROW_LIGHTS]       = { "lights (q3 glow)", 2 },
+	[CPUROW_LIGHT_LISTS]  = { "light lists", 3 },	// cluster lists copied, model lights put in
+	[CPUROW_GLOW_SETUP]   = { "glow set-up", 3 },	// main thread: gather, programs set up
+	[CPUROW_GLOW_EVAL]    = { "glow eval (workers)", 3 },
+	[CPUROW_LIGHT_COPY]   = { "light copy", 3 },	// inline glows included
 	[CPUROW_FLOW]         = { "nvidia flow", 1 },
 	[CPUROW_TRANSPARENT]  = { "particles to geometry", 1 },
 	[CPUROW_BLOOD_MESH]   = { "blood meshes", 1 },
@@ -265,6 +275,11 @@ cpu_rows_of(const cpuprof_frame_t *f, float *row, uint32_t *count)
 	row[CPUROW_BLOOD_FILM]   = DET(BLOOD_FILM);
 	row[CPUROW_RENDER]       = SECT(R_RENDER);
 	row[CPUROW_SCENE]        = DET(SCENE);
+	row[CPUROW_LIGHTS]       = DET(LIGHTS);
+	row[CPUROW_LIGHT_LISTS]  = DET(LIGHT_LISTS);
+	row[CPUROW_GLOW_SETUP]   = DET(GLOW_SETUP);
+	row[CPUROW_GLOW_EVAL]    = DET(GLOW_EVAL);
+	row[CPUROW_LIGHT_COPY]   = DET(LIGHT_COPY);
 	row[CPUROW_FLOW]         = DET(FLOW);
 	row[CPUROW_TRANSPARENT]  = DET(TRANSPARENT);
 	row[CPUROW_BLOOD_MESH]   = DET(BLOOD_MESH);
@@ -310,6 +325,18 @@ blood_count_text(char *line1, char *line2, size_t size, const uint32_t *c)
 	Q_snprintf(line2, size, "blood meshes: %u moved (%u on the gpu), %u rebuilt, %u still; up %.1f MB in %u regions",
 		c[CPUPROF_C_BLOOD_MOVED], c[CPUPROF_C_BLOOD_GPU_MOVES], c[CPUPROF_C_BLOOD_REBUILT],
 		c[CPUPROF_C_BLOOD_STILL], (float)c[CPUPROF_C_BLOOD_UP_KB] / 1024.f, c[CPUPROF_C_BLOOD_COPIES]);
+}
+
+// "lights: ..." and "q3 glow: ..." - what the lights row's work was (issue #31)
+static void
+lights_count_text(char *line1, char *line2, size_t size, const uint32_t *c)
+{
+	Q_snprintf(line1, size, "lights: %u (%u model); lists %u entries, built %u / staged %u of the last 64 frames",
+		c[CPUPROF_C_LIGHT_POLYS], c[CPUPROF_C_LIGHT_MODEL], c[CPUPROF_C_LIGHT_NODES], c[CPUPROF_C_LIST_BUILDS],
+		c[CPUPROF_C_LIST_STAGED]);
+	Q_snprintf(line2, size, "q3 glow: %u runs, %u on workers (%u samples), %u inline, %u images made",
+		c[CPUPROF_C_GLOW_RUNS], c[CPUPROF_C_GLOW_EVALS], c[CPUPROF_C_GLOW_SAMPLES], c[CPUPROF_C_GLOW_INLINE],
+		c[CPUPROF_C_GLOW_IMAGES]);
 }
 
 static struct {
@@ -831,6 +858,8 @@ capture_take(const char *which, int nth)
 				30 - 2 * max(cpurow_info[r].depth, 0), cpurow_info[r].name, cap.held_cpu_rows[r]);
 	char line1[160], line2[160];
 	blood_count_text(line1, line2, sizeof(line1), cap.held_counts);
+	Com_Printf("PROFCAPTURE   %s\nPROFCAPTURE   %s\n", line1, line2);
+	lights_count_text(line1, line2, sizeof(line1), cap.held_counts);
 	Com_Printf("PROFCAPTURE   %s\nPROFCAPTURE   %s\n", line1, line2);
 	Con_SkipNotify(false);
 }
@@ -1982,6 +2011,12 @@ draw_key_footer(float scale, qhandle_t font, int x, int y, int row, const key_va
 	blood_count_text(line1, line2, sizeof(line1), k->counts);
 	graph_text(scale, x, y, grey, line1, font);
 	graph_text(scale, x, y + row, grey, line2, font);
+	if (k->counts[CPUPROF_C_LIGHT_POLYS] > 0)
+	{
+		lights_count_text(line1, line2, sizeof(line1), k->counts);
+		graph_text(scale, x, y + 2 * row, grey, line1, font);
+		graph_text(scale, x, y + 3 * row, grey, line2, font);
+	}
 	R_ClearColor();
 	R_SetScale(1.0f);
 }
