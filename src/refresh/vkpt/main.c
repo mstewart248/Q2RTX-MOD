@@ -5990,8 +5990,11 @@ sparse_rendering_rate(const reference_mode_t *ref_mode, const QVKUniformBuffer_t
 	if (rate >= 1.f)
 		rate = 0.f;
 
-	if (reason != last_reason || fabsf(rate - last_rate) >= 0.02f)
+	// (the tool's rate is often pt_sparse's own 0.5: going in or out still says so)
+	static bool last_author = false;
+	if (reason != last_reason || fabsf(rate - last_rate) >= 0.02f || (author > 0.f) != last_author)
 	{
+		last_author = author > 0.f;
 		if (author > 0.f)
 			Com_Printf("mat author: photo mode lights %.0f%% of the pixels a frame (%ux%u, mat_author_sparse)\n",
 				rate * 100.f, width, height);
@@ -6877,6 +6880,22 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 	{
 		ubo->sub_pixel_jitter[0] = 0.f;
 		ubo->sub_pixel_jitter[1] = 0.f;
+	}
+
+	/* The jitter the LAST frame was traced with (pt_dlss_reflect_flow: a patch
+	   found in last frame's picture sat at its pixel centres plus this). Kept per frame
+	   counter, so a second call in one frame changes nothing; no record of the
+	   frame before = the same as now. */
+	{
+		static vec2_t jitter_of[2];
+		static uint64_t jitter_frame[2] = { UINT64_MAX, UINT64_MAX };
+		const uint64_t f = qvk.frame_counter;
+		jitter_of[f & 1][0] = ubo->sub_pixel_jitter[0];
+		jitter_of[f & 1][1] = ubo->sub_pixel_jitter[1];
+		jitter_frame[f & 1] = f;
+		const bool have_prev = jitter_frame[(f - 1) & 1] == f - 1;
+		ubo->sub_pixel_jitter_prev_x = have_prev ? jitter_of[(f - 1) & 1][0] : ubo->sub_pixel_jitter[0];
+		ubo->sub_pixel_jitter_prev_y = have_prev ? jitter_of[(f - 1) & 1][1] : ubo->sub_pixel_jitter[1];
 	}
 
 	// also on without a world: the player setup menu's bounce card is a viewer model

@@ -875,6 +875,16 @@ void d3d12_set_write_uav_image(const d3d12_set_t *set, unsigned binding, unsigne
                                            resource_cpu(set->resource_base + b->offset + element));
 }
 
+bool d3d12_set_uav_image_gpu(const d3d12_set_t *set, unsigned binding, unsigned element,
+                             D3D12_GPU_DESCRIPTOR_HANDLE *out)
+{
+    const d3d12_binding_t *b;
+    if (!slot(set, binding, element, D3D12_BIND_UAV_IMAGE, &b))
+        return false;
+    *out = resource_gpu(set->resource_base + b->offset + element);
+    return true;
+}
+
 void d3d12_set_write_srv_image(const d3d12_set_t *set, unsigned binding, unsigned element,
                                ID3D12Resource *image, const D3D12_SHADER_RESOURCE_VIEW_DESC *desc,
                                const D3D12_SAMPLER_DESC *sampler)

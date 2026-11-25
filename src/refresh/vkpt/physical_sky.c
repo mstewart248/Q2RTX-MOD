@@ -268,6 +268,39 @@ static cvar_t *sky_map_sun_animate;
 // grow, which is what a fixed interval would do - 0.28 deg at 1x is 6 deg at 25x.
 static cvar_t *sun_animate_step;
 
+/* A TIME OF DAY ON A LEVEL CHANGE: START OVER, OR CARRY ON (Matt, 2026-11-24:
+   "one option to run continuously where the sun will progress through level
+   changes and another setting for the sun to start at the set time of day on
+   level load every time"). Only for a time of day (night .. dusk, sun_preset
+   3-8) animating under sun_animate, on the Earth and Stroggos skies:
+
+     0  the default, as 11-17 built it: every level starts the day again at
+        the time of day picked
+     1  the day runs on through level changes, from where the last level left
+        it; it starts at the time of day picked on the first level, and again
+        whenever the time of day is changed or the animation is turned on
+
+   Custom carries its sun on from one map to the next already (apply_map_sun),
+   and rerelease sky mode leaves the hour to the map, so neither reads this.
+   See sun_day. */
+static cvar_t *sun_animate_carry;
+
+/* WHERE A TIME OF DAY'S CYCLE HAS GOT TO. Kept as the animation's own
+   parameter - `e` 0..360 and the azimuth before the setting half's 180 degree
+   turn - rather than as the folded elevation / azimuth pair the sun is drawn
+   from, because the pair does not say which way the sun is going: an evening
+   sun at 15 degrees and a morning one at 15 are the same pair, and a cycle
+   picked up from the pair would send a setting sun back up. */
+static struct {
+	bool	running;		// a time of day animated on the last frame...
+	int		preset;			// ... this one
+	float	base_e;			// where the clock running now started from
+	float	base_azimuth;
+	float	e;				// and where it had got to on the last frame
+	float	azimuth;
+	float	time;			// that frame's time
+} sun_day;
+
 // The sun angle the CURRENTLY RENDERED sky was built around, which the one above
 // is measured against. Not the same as last_sun_* - that is where the sun IS,
 // this is where the picture thinks it is.
@@ -283,19 +316,34 @@ static bool  have_rendered_sun_angles = false;
 
    A drift step is tiny (sun_animate_step, a twentieth of the sun's disc), so the
    cube need not change all at once: it is re-rendered in sky_update_slices parts,
-   one a frame, rows of the six faces one after another (sky_first_row in the
-   UBO, physical_sky.comp). The terrain shadow map and the sun colour's sums are
+   one a frame, each a run of 1024-texel rows (sky_first_row in the UBO,
+   physical_sky.comp) - in a dither order since 11-24, see below. The terrain shadow map and the sun colour's sums are
    cleared with the first part; the sums are resolved into the sun and sky colours
    the lighting reads only after the last, so the lighting keeps the last whole
-   sky's colours until the new one is complete. Clouds do not move with time, so
-   rows a few frames apart join without a seam; the sun moves 0.0009 degrees a
-   frame at sun_animate 1.
+   sky's colours until the new one is complete.
+
+   SEAMS AT SUNRISE (Matt 11-24: "flickering and the corners on the skybox" as the
+   sun starts to come up). Twilight is where the sky changes fastest - about 3%
+   in brightness per update, a step of the sun of 0.05 degrees - and the slices
+   had been rows, faces one after another. So the faces took the new sky at
+   different frames: an edge between a new face and an old one showed (his
+   screenshot: a vertical cube edge, 1.5 sRGB levels across), and the faces
+   popped in turn, back to back, since at sun_animate 2 a new step is due before
+   the last update is through. In daytime the same step is ~0.3% and nothing
+   showed. Two fixes:
+     - each part is drawn with the sun the first part drew with (sky_slice_sun),
+       not the sun of its own frame, so a finished update is one sky, not 24
+       slightly different ones;
+     - the parts are not rows but a 4x4 ordered dither over the whole cube
+       (sky_envmap_texel in shader/sky.h), so an update under way is an even mix
+       of old and new texels - a fade, not an edge.
+   The whole sky at once keeps the row order and its cost.
 
    Everything else - a map's first sky, a menu change, a preset, new pipelines,
    a jump of a degree or more - still renders the whole sky in one frame, at
    once, and cancels a sliced update under way: those are changes you can see.
    sky_update_slices 1 is the old behaviour, every update whole. */
-#define SKY_ROWS            (6 * 1024)      // the six faces' rows, one after another
+#define SKY_ROWS            SKY_ENVMAP_ROWS // the six faces' rows (shader/sky.h)
 #define SKY_ROW_GROUP       16              // physical_sky.comp's group height
 #define SKY_SLICE_MAX_JUMP  1.f             // degrees: a sun that moved further is re-rendered whole
 static cvar_t *sky_update_slices;
@@ -304,6 +352,17 @@ static int   sky_slice_next = -1;           // the next part of a sliced update 
 static int   sky_slice_count = 0;           // ... of this many
 static float sky_slice_viewproj[16];        // the terrain shadow map's, as its first part drew it
 static vkpt_sky_work_t sky_work;            // this frame's, planned in vkpt_physical_sky_update_ubo
+
+// The UBO's sun as physical_sky(_space).comp reads it, the two values that move
+// with the sun: held for every part of a sliced update at what the first part
+// drew with (see SEAMS AT SUNRISE above). The path tracer's sun_direction, the
+// one shadows follow, is not held.
+typedef struct {
+	vec3_t direction_envmap;
+	vec3_t ground_radiance;     // physical_sky_ground_radiance (N.L of the sun)
+} sky_sun_t;
+static sky_sun_t sky_work_sun;              // this frame's, when it begins an update
+static sky_sun_t sky_slice_sun;             // the update under way's, as its first part drew it
 
 // Angular distance between two (elevation, azimuth) pairs, in degrees. The
 // spherical law of cosines, so it stays correct through the azimuth flip the
@@ -505,6 +564,59 @@ static bool sun_preset_day_start(int preset, float *e, float *azimuth)
 	case SUN_PRESET_DUSK:    *e = 186.f; *azimuth = 25.f;  return true;    // -6 sinking, 205
 	default:                 return false;
 	}
+}
+
+/* Where a time of day's cycle runs from: *e / *azimuth come in as the time of
+   day's own hour (sun_preset_day_start) and go out as the point the clock in
+   vkpt_evaluate_sun_light counts from start_time. The flags say what moved
+   start_time this frame - a level load, a new speed, a new time of day.
+
+   The hour is where it starts on the first frame, on a new time of day, when
+   the animation has just been turned on, and on every level load under
+   sun_animate_carry 0. Everything else picks the cycle up from where it was:
+   a level load under sun_animate_carry 1, and a new speed (which used to send
+   the sun back to the hour).
+
+   A "level load" whose time did NOT go back is not a new level: it is the same
+   one registered again - vid_restart, a renderer switch - and the day carries on
+   through that in either mode. A real level change puts cl.time back near zero.
+   (One that does not - joining a server whose clock is further on than the last
+   one's - carries on too. Multiplayer only, and harmless.)
+
+   Returns true when the clock starts again from here, which the caller makes
+   so by moving start_time to this frame. Every case that does is one that
+   moved start_time already; returning it keeps the two from coming apart. */
+static bool sun_day_clock_start(int preset, float time, bool new_level, bool new_rate,
+	bool new_preset, float *e, float *azimuth)
+{
+	const bool same_day = sun_day.running && sun_day.preset == preset && !new_preset;
+	bool carry_on;
+
+	if (!same_day)
+		carry_on = false;
+	else if (new_level)
+		carry_on = sun_animate_carry->integer != 0 || time >= sun_day.time;
+	else if (new_rate)
+		carry_on = true;
+	else
+	{
+		// the clock is running as it was
+		*e = sun_day.base_e;
+		*azimuth = sun_day.base_azimuth;
+		return false;
+	}
+
+	if (carry_on)
+	{
+		*e = sun_day.e;
+		*azimuth = sun_day.azimuth;
+	}
+
+	sun_day.running = true;
+	sun_day.preset = preset;
+	sun_day.base_e = *e;
+	sun_day.base_azimuth = *azimuth;
+	return true;
 }
 
 static void change_image_layouts(VkImage image, const VkImageSubresourceRange* subresource_range);
@@ -931,6 +1043,7 @@ void vkpt_physical_sky_work_done(void)
 		skyDriftStep = false;
 		sky_slice_count = w->slices;
 		memcpy(sky_slice_viewproj, w->viewproj, sizeof(sky_slice_viewproj));
+		sky_slice_sun = sky_work_sun;
 	}
 	sky_slice_next = w->resolve ? -1 : w->slice + 1;
 	memset(&sky_work, 0, sizeof(sky_work));
@@ -1079,7 +1192,8 @@ vkpt_physical_sky_record_cmd_buffer(VkCommandBuffer cmd_buf)
 
 		vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE,
 			pipeline_layout_physical_sky, 0, LENGTH(desc_sets), desc_sets, 0, 0);
-		// the rows from global_ubo.sky_first_row, faces one after another
+		// the rows from global_ubo.sky_first_row: the faces' in order, or a
+		// slice's in the dither order (sky_envmap_texel)
 		const int group_size = 16;
 		vkCmdDispatch(cmd_buf, width / group_size, work->row_count / group_size, 1);
 	}
@@ -1616,17 +1730,24 @@ vkpt_evaluate_sun_light(sun_light_t* light, const vec3_t sky_matrix[3], float ti
 	   writes the sun's last position into those two cvars as the new map loads,
 	   so restarting the clock from zero continues the cycle rather than
 	   interrupting it. The map change is then the only place that has to know
-	   anything, and `time` can be read exactly as the client reports it. */
+	   anything, and `time` can be read exactly as the client reports it.
+
+	   A time of day keeps its own position instead, in sun_day, which these
+	   three flags tell where to pick up from - see sun_day_clock_start. */
+	bool clock_new_level = false, clock_new_rate = false, clock_new_preset = false;
+
 	if (sun_cycle_restart || time < start_time)
 	{
 		sun_cycle_restart = false;
 		start_time = time;
+		clock_new_level = true;
 	}
 
 	if (sun_animate_rate != sun_animate_changed)
 	{
 		start_time = time;
 		sun_animate_changed = sun_animate_rate;
+		clock_new_rate = true;
 	}
 
 	const int preset = active_sun_preset();
@@ -1638,6 +1759,7 @@ vkpt_evaluate_sun_light(sun_light_t* light, const vec3_t sky_matrix[3], float ti
 	{
 		start_time = time;
 		clock_preset = preset;
+		clock_new_preset = true;
 	}
 
 	if ((preset == SUN_PRESET_CURRENT_TIME) || (preset == SUN_PRESET_FAST_TIME))
@@ -1661,10 +1783,17 @@ vkpt_evaluate_sun_light(sun_light_t* light, const vec3_t sky_matrix[3], float ti
 	}
 	else
 	{
-		// a time of day under sun_animate: where the cycle below starts
+		// a time of day under sun_animate: where the cycle below starts - its
+		// hour, or where the day had got to (sun_animate_carry)
 		float day_e = 0.f, day_azimuth = 0.f;
 		const bool day_from_preset = sun_animate_rate > 0.f
 			&& sun_preset_day_start(preset, &day_e, &day_azimuth);
+
+		if (!day_from_preset)
+			sun_day.running = false;
+		else if (sun_day_clock_start(preset, time, clock_new_level, clock_new_rate,
+			clock_new_preset, &day_e, &day_azimuth))
+			start_time = time;
 
 		switch (day_from_preset ? SUN_PRESET_NONE : preset)
 		{
@@ -1745,6 +1874,16 @@ vkpt_evaluate_sun_light(sun_light_t* light, const vec3_t sky_matrix[3], float ti
 				azimuth = fmod(base_azimuth + elapsed / (24.f * 60.f * 60.f), 360.0f);
 
 				double e = fmod(base_e + elapsed / (60.f * 60.f), 360.0f);
+
+				// where the day has got to, before the fold below turns it into
+				// a direction - the next level carries on from this
+				if (day_from_preset)
+				{
+					sun_day.e = (float)e;
+					sun_day.azimuth = (float)azimuth;
+					sun_day.time = time;
+				}
+
 				if (e > 270.f)
 					elevation = -(360.f - e);
 				else if (e > 180.0f)
@@ -1967,7 +2106,24 @@ vkpt_physical_sky_update_ubo(QVKUniformBuffer_t * ubo, const sun_light_t* light,
 
 	// after the shadow map's view, which a first part takes with it
 	plan_sky_work(render_world && light->use_physical_sky);
-	ubo->sky_first_row = sky_work.render ? sky_work.first_row : 0;
+
+	// the sun a sliced update is drawn with: its first part's, all through
+	if (sky_work.render && sky_work.begin)
+	{
+		VectorCopy(ubo->sun_direction_envmap, sky_work_sun.direction_envmap);
+		VectorCopy(ubo->physical_sky_ground_radiance, sky_work_sun.ground_radiance);
+	}
+	else if (sky_work.render)
+	{
+		VectorCopy(sky_slice_sun.direction_envmap, ubo->sun_direction_envmap);
+		VectorCopy(sky_slice_sun.ground_radiance, ubo->physical_sky_ground_radiance);
+	}
+
+	// the whole sky in the faces' row order; a slice in the dithered order, the
+	// rows from SKY_ENVMAP_ROWS (sky_envmap_texel)
+	ubo->sky_first_row = !sky_work.render ? 0
+		: sky_work.slices > 1 ? SKY_ENVMAP_ROWS + sky_work.first_row
+		: sky_work.first_row;
 
     return VK_SUCCESS;
 }
@@ -2085,6 +2241,10 @@ void InitialiseSkyCVars()
 	sky_map_sun_animate = Cvar_Get("sky_map_sun_animate", "0", 0);
 
 	sun_animate_step = Cvar_Get("sun_animate_step", "0.05", CVAR_ARCHIVE);
+
+	// 0 = a time of day starts over at its hour on every level, 1 = the day runs
+	// on through level changes. Read at the next level load; needs no callback.
+	sun_animate_carry = Cvar_Get("sun_animate_carry", "0", CVAR_ARCHIVE);
 
 	// a sun drift's re-render spread over this many frames (see sky_slice_next);
 	// 1 = the whole sky in one frame, as before 11-15

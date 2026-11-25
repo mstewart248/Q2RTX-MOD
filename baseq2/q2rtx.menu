@@ -150,13 +150,21 @@ begin environment
         blank
     endif
     // ...and on a time of day (night to dusk, 3-8), which since 11-17 is the hour
-    // the cycle starts from on each map (physical_sky.c sun_preset_day_start).
-    // The same two controls as above: ifeqor takes one pair of tests, and this
-    // case never overlaps that one (sky type not rerelease, preset not Custom).
-    // Current time and 12x current time follow the clock, so neither shows them.
+    // the cycle starts from (physical_sky.c sun_preset_day_start). The same two
+    // controls as above: ifeqor takes one pair of tests, and this case never
+    // overlaps that one (sky type not rerelease, preset not Custom). Current time
+    // and 12x current time follow the clock, so neither shows them.
+    //
+    // Plus what a level change does to that day (11-24, sun_animate_carry): start
+    // it over at the time of day, or carry it on. Only while the sun is moving -
+    // a still sun is at the time of day on every level either way. Custom carries
+    // its sun on already, and rerelease mode leaves the hour to the map.
     ifneq sky_type 0
     ifge sun_preset 3
-        range -f "%.0fx" --status "0 = off. Speed of the day/night cycle, starting from the time of day above on every map - 1x is one full turn every ~86 minutes (sun_animate)" "sun animation speed" sun_animate 0 25 1
+        range -f "%.0fx" --status "0 = off. Speed of the day/night cycle, starting from the time of day above - 1x is one full turn every ~86 minutes (sun_animate)" "sun animation speed" sun_animate 0 25 1
+        ifge sun_animate 1
+            pairs --status "what a level change does to the day/night cycle. Restart puts the sun back at the time of day above on every level; continuous carries the day on from where the last level left it (sun_animate_carry)" "day/night cycle" sun_animate_carry "restart each level" 0 "continuous" 1
+        endif
         pairs --status "how far the sun may move before the sky is re-rendered. Throttled is the old cadence, about a quarter of a degree - cheapest, and you can see it step. Smooth is a twentieth of the sun's disc, sub-pixel, and still only a couple of re-renders a second. Real time re-renders it continuously. Each re-render is spread over several frames (sky_update_slices), so none of them is a spike (sun_animate_step)"             "sky updates" sun_animate_step "throttled" 0.28 "smooth" 0.05 "real time" 0
         blank
     endif
@@ -384,7 +392,7 @@ begin video_reconstruction
     ifeq pt_dlss_available 1
     ifneq pt_dlss 0
     blank
-    pairs --status "shown raw at render resolution: DLSS-RR's inputs, then the path tracer's (pt_dlss_debug)" "DLSS Debug" pt_dlss_debug off 0 "color (RR input)" 16 "diffuse albedo" 2 "specular albedo" 5 normal 4 roughness 3 depth 6 "motion vectors" 7 "reflection motion" 1 "diffuse hit distance" 9 "specular hit distance" 10 "reflected albedo" 22 "responsivity mask" 23 "particle layer" 24 "particle layer motion" 25 "color before transparency" 8 "transparency overlay" 11 "path tracer motion" 12 "primary motion" 17 throughput 19 "bounce throughput" 20 "base color" 32 "metallic / roughness" 34 "view depth" 36 barycentrics 30 "shading position (last bounce)" 15
+    pairs --status "shown raw at render resolution: DLSS-RR's inputs, then the path tracer's (pt_dlss_debug)" "DLSS Debug" pt_dlss_debug off 0 "color (RR input)" 16 "diffuse albedo" 2 "specular albedo" 5 normal 4 roughness 3 depth 6 "motion vectors" 7 "reflection motion" 1"diffuse hit distance" 9 "specular hit distance" 10 "reflected albedo" 22 "responsivity mask" 23 "particle layer" 24 "particle layer motion" 25 "color before transparency" 8 "transparency overlay" 11 "path tracer motion" 12 "primary motion" 17 throughput 19 "bounce throughput" 20 "base color" 32 "metallic / roughness" 34 "view depth" 36 barycentrics 30 "shading position (last bounce)" 15
     endif
     endif
 end

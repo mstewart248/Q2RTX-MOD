@@ -1,0 +1,281 @@
+/*
+Copyright (C) 2026
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along
+with this program; if not, write to the Free Software Foundation, Inc.,
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+*/
+
+/* THE REFLECTION MOTION VECTOR: HOW FAR EACH REFLECTED PIXEL MOVED (pt_dlss_reflect_flow)
+
+   Matt, 2026-11-25, the Q1 well under a torch, two consecutive frames side by side: the
+   torch's reflection jumps and changes shape as the ripples move - "how much the
+   reflected pixel moved between frames". That movement is the reflect motion vector.
+   And: "The torch is a good example because it's animated too."
+
+   Every pixel of the reflection shows one point of the world - a point on the torch, on
+   a brick. reflect_refract.rgen writes, right where it writes the pixel's reflected
+   albedo and stamped with the frame number:
+     PT_REFLECT_FLOW_A       - that point, which the A/B swap hands back next frame as
+                               PT_REFLECT_FLOW_B: where last frame's reflection showed what
+     PT_REFLECT_FLOW_TARGET  - where that point WAS last frame (the triangle's previous
+                               vertex positions): a torch flame's point has moved since,
+                               a brick's has not
+   This pass runs right after checkerboard_interleave.comp and, for every pixel, finds the
+   pixel of LAST frame's reflection that showed the target. The vector is from here to
+   there:
+
+   1. the search, in rings outward from where the flat-mirror vector (what
+      DLSS_REFLECT_MOTION holds here) says the point was - every pixel out to 8, every
+      second one beyond, out to pt_dlss_reflect_flow - stopping at the FIRST ring that
+      holds a pixel whose point is within this frame's pixel size of the target, then
+      the nearest of that pixel and its 8 neighbours. First ring, not nearest overall:
+      a rippled reflection shows the same few bricks over and over, and a copy a dozen
+      pixels off can sit as close as the real one. The smallest move that fits is the
+      one taken. (The 11-25 morning version took the nearest overall over a grid of
+      every third pixel from -16 to +14 - lopsided, so its pick among copies leaned
+      right and down: Matt's #19, "what is constantly moving right or left?")
+   2. a fraction of a pixel: how last frame's points change from that pixel to its
+      neighbours says how far between them the target lies;
+   3. kept as the flat-mirror vector: no reflected point here this frame (the sky,
+      nothing reflected), or last frame's reflection did not show the target anywhere
+      in reach (it just came into view).
+
+   Nothing is compared by appearance and nothing is averaged over neighbours: each
+   pixel's vector belongs to its own point.
+
+   Checked 2026-11-25 against exact vectors on a synthetic rippling reflection
+   (d3d12/tests/rr_probe.c): 0.07 px mean error, and DLSS-RR scores the same with these
+   as with the exact ones. RR ignores vectors that are half a pixel out. */
+
+#version 460
+#extension GL_GOOGLE_include_directive    : enable
+#extension GL_EXT_nonuniform_qualifier    : enable
+
+#define GLOBAL_UBO_DESC_SET_IDX 0
+#include "global_ubo.h"
+
+#define GLOBAL_TEXTURES_DESC_SET_IDX 1
+#include "global_textures.h"
+
+#include "utils.glsl"
+
+#define NEAR_RINGS 8    // every pixel of rings 1..8, every second pixel beyond
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+ivec2 render_size()
+{
+	return ivec2(global_ubo.width, global_ubo.height);
+}
+
+bool on_screen(ivec2 p)
+{
+	return all(greaterThanEqual(p, ivec2(0))) && all(lessThan(p, render_size()));
+}
+
+// reflect_refract.rgen's stamp: the frame number, exact in a float
+float frame_stamp(int frame)
+{
+	return float(frame & 0xffffff);
+}
+
+// the world point this frame's reflection shows at p; false where it shows none
+bool point_now(ivec2 p, out vec3 pos)
+{
+	pos = vec3(0);
+	if(!on_screen(p))
+		return false;
+	vec4 v = imageLoad(IMG_PT_REFLECT_FLOW_A, p);
+	pos = v.xyz;
+	return v.w == frame_stamp(global_ubo.current_frame_idx);
+}
+
+// where that point was last frame
+bool target_now(ivec2 p, out vec3 pos)
+{
+	vec4 v = imageLoad(IMG_PT_REFLECT_FLOW_TARGET, p);
+	pos = v.xyz;
+	return v.w == frame_stamp(global_ubo.current_frame_idx);
+}
+
+// the world point last frame's reflection showed at q; false where it showed none
+bool point_prev(ivec2 q, out vec3 pos)
+{
+	pos = vec3(0);
+	if(!on_screen(q))
+		return false;
+	vec4 v = texelFetch(TEX_PT_REFLECT_FLOW_B, q, 0);
+	pos = v.xyz;
+	return v.w == frame_stamp(global_ubo.current_frame_idx - 1);
+}
+
+/* How last frame's points change per pixel along `axis` around q, whose point is p0.
+   Both neighbours on the same surface (steps alike): the central difference. Only one
+   - across an edge the other side jumps, so the shorter step is the surface's - or only
+   one there at all: the one-sided difference. */
+bool prev_slope(ivec2 q, ivec2 axis, vec3 p0, out vec3 slope)
+{
+	vec3 pa, pb;
+	bool a_ok = point_prev(q + axis, pa);
+	bool b_ok = point_prev(q - axis, pb);
+	slope = vec3(0);
+	if(!a_ok && !b_ok)
+		return false;
+	float da = a_ok ? dot(pa - p0, pa - p0) : 1e30;
+	float db = b_ok ? dot(pb - p0, pb - p0) : 1e30;
+	if(a_ok && b_ok && da <= 4.0 * db && db <= 4.0 * da)
+		slope = 0.5 * (pa - pb);
+	else if(da <= db)
+		slope = pa - p0;
+	else
+		slope = p0 - pb;
+	return true;
+}
+
+// squared size of this frame's pixel at p along `axis` (p shows p0): the shorter step
+float step2_now(ivec2 p, ivec2 axis, vec3 p0)
+{
+	vec3 a, b;
+	float da = point_now(p + axis, a) ? dot(a - p0, a - p0) : 1e30;
+	float db = point_now(p - axis, b) ? dot(b - p0, b - p0) : 1e30;
+	return min(da, db);
+}
+
+// the i-th pixel of the square ring at distance r, clockwise from its top-left corner
+ivec2 ring_offset(int r, int i)
+{
+	if(r == 0)
+		return ivec2(0);
+	int side = i / (2 * r);
+	int t = i - side * 2 * r;
+	if(side == 0) return ivec2(-r + t, -r);
+	if(side == 1) return ivec2(r, -r + t);
+	if(side == 2) return ivec2(r - t, r);
+	return ivec2(-r, r - t);
+}
+
+/* The search, for the pixel p whose reflection shows `here` now and showed `target` last
+   frame. `flat_mv` is what DLSS_REFLECT_MOTION holds (the flat-mirror vector). true and
+   `motion` = where last frame's reflection showed the target; false = not found, the
+   flat vector stays. */
+bool measure(ivec2 p, vec3 here, vec3 target, vec2 flat_mv, int radius, out vec2 motion)
+{
+	motion = flat_mv;
+	vec2 size = vec2(render_size());
+	vec2 jitter_now = global_ubo.sub_pixel_jitter;
+	vec2 jitter_prev = vec2(global_ubo.sub_pixel_jitter_prev_x, global_ubo.sub_pixel_jitter_prev_y);
+
+	// how close counts as the same point: this frame's pixel here, the nearest of a
+	// grid of samples being at most half its diagonal off - with room to spare
+	float sx = step2_now(p, ivec2(1, 0), here);
+	float sy = step2_now(p, ivec2(0, 1), here);
+	if(sx >= 1e29 && sy >= 1e29)
+		return false;   // a lone pixel: no idea how big it is
+	if(sx >= 1e29) sx = sy;
+	if(sy >= 1e29) sy = sx;
+	float tol2 = 0.5 * (sx + sy);
+
+	// Where the flat-mirror vector says this pixel's point was shown last frame, in
+	// pixels from here. A pixel's sample is at its centre plus that frame's jitter.
+	vec2 guess = flat_mv * size + jitter_now - jitter_prev;
+	if(!all(lessThan(abs(guess), size)))
+		guess = vec2(0);    // NaN, or off any screen: search around here instead
+	ivec2 g = p + ivec2(round(guess));
+
+	// 1. the first ring out from the guess with a pixel that showed the target...
+	ivec2 best = g;
+	float best_dist = 1e30;
+	for(int r = 0; r <= radius && best_dist >= 1e30; r++)
+	{
+		int n = (r == 0) ? 1 : 8 * r;
+		int stride = (r <= NEAR_RINGS) ? 1 : 2;
+		for(int i = 0; i < n; i += stride)
+		{
+			ivec2 q = g + ring_offset(r, i);
+			vec3 pos;
+			if(!point_prev(q, pos))
+				continue;
+			float d = dot(pos - target, pos - target);
+			if(d < tol2 && d < best_dist)
+			{
+				best_dist = d;
+				best = q;
+			}
+		}
+	}
+	if(best_dist >= 1e30)
+		return false;   // last frame's reflection did not show it anywhere in reach
+
+	// ...then the nearest of that pixel and its neighbours
+	ivec2 centre = best;
+	for(int oy = -1; oy <= 1; oy++)
+	{
+		for(int ox = -1; ox <= 1; ox++)
+		{
+			ivec2 q = centre + ivec2(ox, oy);
+			vec3 pos;
+			if(!point_prev(q, pos))
+				continue;
+			float d = dot(pos - target, pos - target);
+			if(d < best_dist)
+			{
+				best_dist = d;
+				best = q;
+			}
+		}
+	}
+
+	// 2. between pixels: last frame's points around `best`, linear across one pixel
+	vec3 p0, jx, jy;
+	point_prev(best, p0);
+	vec2 frac = vec2(0);
+	if(prev_slope(best, ivec2(1, 0), p0, jx) && prev_slope(best, ivec2(0, 1), p0, jy))
+	{
+		float xx = dot(jx, jx);
+		float yy = dot(jy, jy);
+		float xy = dot(jx, jy);
+		float det = xx * yy - xy * xy;
+		vec3 r = target - p0;
+		if(det > 0.01 * xx * yy)
+		{
+			// `best` is the nearest pixel, so the target lies within half a pixel of it
+			frac = vec2(yy * dot(jx, r) - xy * dot(jy, r),
+			            xx * dot(jy, r) - xy * dot(jx, r)) / det;
+			frac = clamp(frac, vec2(-0.5), vec2(0.5));
+		}
+		if(any(isnan(frac)))
+			frac = vec2(0);
+	}
+
+	vec2 found = vec2(best - p) + frac;
+	motion = (found + jitter_prev - jitter_now) / size;
+	return true;
+}
+
+void main()
+{
+	ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+	if(!on_screen(p))
+		return;
+
+	int radius = min(int(global_ubo.pt_dlss_reflect_flow), 32);
+	vec3 here, target;
+	if(radius <= 0 || !point_now(p, here) || !target_now(p, target))
+		return;     // nothing reflected here: the vector the interleave wrote stays
+
+	vec2 flat_mv = imageLoad(IMG_DLSS_REFLECT_MOTION, p).xy;
+	vec2 measured;
+	if(measure(p, here, target, flat_mv, radius, measured))
+		imageStore(IMG_DLSS_REFLECT_MOTION, p, vec4(measured, 0, 0));
+}

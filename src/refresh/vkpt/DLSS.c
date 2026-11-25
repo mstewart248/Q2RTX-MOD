@@ -108,8 +108,12 @@ void InitDLSSCvars()
     //   1 - hit distance + matrices, no specular motion vectors: RR derives reflection
     //       motion for every pixel. Glass and water lose their exact mirrored vectors.
     //   2 - both
-    // Not archived: an A/B knob. Ignored for the non-rectilinear projections, which
-    // have no projection matrix.
+    //   3 - neither: no reflection motion at all, RR moves a reflection with the surface
+    //       it is on (the primary motion vectors). 11-25, Matt: "I want to see if it looks
+    //       better with the reflection motion vectors off".
+    // Not archived: a console A/B knob (its menu row was removed 11-25: 0 with
+    // pt_dlss_guide_albedo_share 2 is what Matt settled on). 1 and 2
+    // are ignored for the non-rectilinear projections, which have no projection matrix.
     cvar_pt_dlss_spec_motion = Cvar_Get("pt_dlss_spec_motion", "0", 0);
 
     // The view-to-clip matrix handed over with pt_dlss_spec_motion 1/2 is this tree's
@@ -1072,7 +1076,7 @@ void DLSSDescribeEvaluation(const vec2 jitterOffset, DLSSEvaluation* ev) {
                 ev->view_to_clip[c * 4 + 1] = -ev->view_to_clip[c * 4 + 1];
         }
     }
-    ev->reflection_motion = !(ev->matrices && specMotion == 1);
+    ev->reflection_motion = specMotion != 3 && !(ev->matrices && specMotion == 1);
 
     /* pt_dlss_animated_responsive: RR2's responsivity mask, which checkerboard_interleave.comp
        writes into DLSS_RESPONSIVITY every frame (non-zero only on texinfo animations and

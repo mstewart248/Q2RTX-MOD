@@ -102,6 +102,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	SHADER_MODULE_DO(QVK_MOD_PHYSICAL_SKY_SPACE_COMP)                \
 	SHADER_MODULE_DO(QVK_MOD_SKY_BUFFER_RESOLVE_COMP)                \
 	SHADER_MODULE_DO(QVK_MOD_CHECKERBOARD_INTERLEAVE_COMP)           \
+	SHADER_MODULE_DO(QVK_MOD_REFLECT_FLOW_COMP)                      \
 	SHADER_MODULE_DO(QVK_MOD_GOD_RAYS_COMP)                          \
 	SHADER_MODULE_DO(QVK_MOD_GOD_RAYS_FILTER_COMP)                   \
 	SHADER_MODULE_DO(QVK_MOD_FROXEL_RESERVOIR_COMP)                  \

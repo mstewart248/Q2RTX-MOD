@@ -32,6 +32,7 @@ enum {
 	TAAU,
 	CHECKERBOARD_INTERLEAVE,
 	COMPOSITING,
+	REFLECT_FLOW,
 	ASVGF_NUM_PIPELINES
 };
 
@@ -166,6 +167,11 @@ vkpt_asvgf_create_pipelines()
 		[COMPOSITING] = {
 			.sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
 			.stage  = SHADER_STAGE(QVK_MOD_COMPOSITING_COMP, VK_SHADER_STAGE_COMPUTE_BIT),
+			.layout = pipeline_layout_general,
+		},
+		[REFLECT_FLOW] = {
+			.sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+			.stage  = SHADER_STAGE(QVK_MOD_REFLECT_FLOW_COMP, VK_SHADER_STAGE_COMPUTE_BIT),
 			.layout = pipeline_layout_general,
 		},
 	};
@@ -630,6 +636,31 @@ vkpt_interleave(VkCommandBuffer cmd_buf)
 		(dispatch_size.width + 15) / 16,
 		(dispatch_size.height + 15) / 16,
 		1);
+
+	/* pt_dlss_reflect_flow (reflect_flow.comp): each reflected pixel's motion vector =
+	   where last frame's reflection showed the same world point. The points come from
+	   reflect_refract.rgen (PT_REFLECT_FLOW_A, this frame; _B, last frame's). Timed
+	   with the interleave. */
+	if (vkpt_refdef.uniform_buffer.pt_dlss != 0.f)
+	{
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_DLSS_REFLECT_MOTION]);
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_DLSS_REFLECTED_ALBEDO]);
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_REFLECT_FLOW_TARGET]);
+		// both halves of each pair: which one is _A swaps every frame
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_REFLECT_FLOW_A]);
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_REFLECT_FLOW_B]);
+
+		vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_asvgf[REFLECT_FLOW]);
+		vkCmdDispatch(cmd_buf,
+			(qvk.extent_render.width + 15) / 16,
+			(qvk.extent_render.height + 15) / 16,
+			1);
+
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_DLSS_REFLECT_MOTION]);
+		// both halves of each pair: which one is _A swaps every frame
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_REFLECT_FLOW_A]);
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_REFLECT_FLOW_B]);
+	}
 
 	END_PERF_MARKER(cmd_buf, PROFILER_INTERLEAVE);
 

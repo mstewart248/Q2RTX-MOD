@@ -532,6 +532,7 @@ set(SRC_SHADERS
 	refresh/vkpt/shader/dlss5_convert.comp
 	refresh/vkpt/shader/compositing.comp
 	refresh/vkpt/shader/checkerboard_interleave.comp
+	refresh/vkpt/shader/reflect_flow.comp
 	refresh/vkpt/shader/asvgf_atrous.comp
 	refresh/vkpt/shader/asvgf_gradient_atrous.comp
 	refresh/vkpt/shader/asvgf_gradient_img.comp

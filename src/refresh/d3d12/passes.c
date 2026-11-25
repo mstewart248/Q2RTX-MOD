@@ -44,6 +44,7 @@ const d3d12_pass_info_t d3d12_pass_info[D3D12_NUM_PASSES] = {
     [D3D12_PASS_ATROUS_3]                   = { D3D12_PL_STANDARD, "asvgf_atrous.comp.spec_0_3" },
     [D3D12_PASS_COMPOSITING]                = { D3D12_PL_STANDARD, "compositing.comp" },
     [D3D12_PASS_INTERLEAVE]                 = { D3D12_PL_STANDARD, "checkerboard_interleave.comp" },
+    [D3D12_PASS_REFLECT_FLOW]               = { D3D12_PL_STANDARD, "reflect_flow.comp" },
     [D3D12_PASS_TAAU]                       = { D3D12_PL_STANDARD, "asvgf_taau.comp" },
     [D3D12_PASS_TM_HISTOGRAM]               = { D3D12_PL_STANDARD, "tone_mapping_histogram.comp" },
     [D3D12_PASS_TM_CURVE]                   = { D3D12_PL_STANDARD, "tone_mapping_curve.comp" },
@@ -877,6 +878,19 @@ void d3d12_record_passes(const d3d12_passes_t *p, const d3d12_passes_frame_t *f)
     recorder_t r = { p, -1 };
     const bool fog = f->god_rays && p->god_rays_sets[0];
 
+    // R_RenderFrame_RTX's per-frame clears, ahead of its trace list (passes.h)
+    bool cleared = false;
+    for (int i = 0; i < D3D12_FRAME_CLEARS; i++) {
+        if (!p->frame_clears[i])
+            continue;
+        static const float zero[4] = { 0.f, 0.f, 0.f, 0.f };
+        ID3D12GraphicsCommandList4_ClearUnorderedAccessViewFloat(p->cmd, p->frame_clear_gpu[i], p->frame_clear_cpu[i],
+                                                                 p->frame_clears[i], zero, 0, NULL);
+        cleared = true;
+    }
+    if (cleared)
+        d3d12_barrier_all(p->cmd, p->enhanced_barriers);
+
     // R_RenderFrame_RTX's trace list: with tile lists this view (TILE COMPACTION
     // above), the primary rays fill list 0 and the bounces walk them
     mark(&r, PROFILER_PRIMARY_RAYS, PROFILER_START);
@@ -971,6 +985,10 @@ void d3d12_record_passes(const d3d12_passes_t *p, const d3d12_passes_frame_t *f)
     }
     mark(&r, PROFILER_INTERLEAVE, PROFILER_START);
     pass(&r, D3D12_PASS_INTERLEAVE, NULL, 0, (iw + 15) / 16, (ih + 15) / 16);
+    // pt_dlss_reflect_flow: the reflect motion vector measured on the reflected albedo
+    // the interleave just wrote, against last frame's (vkpt_interleave's, timed with it)
+    if (f->dlss)
+        pass(&r, D3D12_PASS_REFLECT_FLOW, NULL, 0, (f->render_width + 15) / 16, (f->render_height + 15) / 16);
     mark(&r, PROFILER_INTERLEAVE, PROFILER_STOP);
 
     // (an empty span when folded, as vkpt_taa's). In photo mode the dispatch is

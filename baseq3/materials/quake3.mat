@@ -1066,6 +1066,7 @@ models/mapobjects/lamps/bot_light:
 #	texture_height materialDev/models/mapobjects/lamps/bot_light_height.png
 	texture_emissive materialDev/models/mapobjects/lamps/bot_light_emit.png
 	default_radiance 2
+	light_factor 8
 
 models/mapobjects/lamps/bot_wing:
 # scripts/models.shader
@@ -5591,15 +5592,16 @@ textures/base_floor/diamond2:
 	texture_base materialDev/textures/base_floor/diamond2.jpg
 #	texture_normals materialDev/textures/base_floor/diamond2_n.png
 #	texture_roughness materialDev/textures/base_floor/diamond2_rough.png
-#	texture_metallic materialDev/textures/base_floor/diamond2_metal.png
+	texture_metallic materialDev/textures/base_floor/diamond2_metal.png
 #	texture_height materialDev/textures/base_floor/diamond2_height.png
 #	texture_emissive materialDev/textures/base_floor/diamond2_light.png
 
 textures/base_floor/diamond2c:
 	texture_base materialDev/textures/base_floor/diamond2c.jpg
-#	texture_normals materialDev/textures/base_floor/diamond2c_n.png
-#	texture_roughness materialDev/textures/base_floor/diamond2c_rough.png
-#	texture_metallic materialDev/textures/base_floor/diamond2c_metal.png
+	texture_normals materialDev/textures/base_floor/diamond2c_n_4.png
+	texture_roughness materialDev/textures/base_floor/diamond2c_rough.png
+	base_factor 2.5
+	texture_metallic materialDev/textures/base_floor/diamond2c_metal.png
 #	texture_height materialDev/textures/base_floor/diamond2c_height.png
 #	texture_emissive materialDev/textures/base_floor/diamond2c_light.png
 
@@ -5610,6 +5612,10 @@ textures/base_floor/diamond2c_ow:
 #	stage1: map textures/base_floor/diamond2c_ow.tga; blendFunc GL_SRC_ALPHA GL_ONE_MINUS_SRC_ALPHA; rgbGen identity
 	stage1_map materialDev/textures/base_floor/diamond2c_ow.tga
 	stage1_specular_factor 1
+	stage1_texture_roughness materialDev/textures/base_floor/diamond2c_ow_rough.png
+	stage1_texture_metallic materialDev/textures/base_floor/diamond2c_ow_metal.png
+	base_factor 2.5
+	stage1_texture_normals materialDev/textures/base_floor/diamond2c_n_4.png
 #	stage2: map $lightmap; blendFunc GL_DST_COLOR GL_ONE_MINUS_DST_ALPHA; rgbGen identity
 #	texture_normals materialDev/textures/base_floor/diamond2c_ow_n.png
 #	texture_roughness materialDev/textures/base_floor/diamond2c_ow_rough.png

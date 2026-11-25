@@ -83,6 +83,7 @@ typedef enum {
     D3D12_PASS_FLOW_OCCUPANCY,              // flow_occupancy.comp: the bricks the march samples (ubo + textures)
     D3D12_PASS_FLOW_LIGHTS,                 // flow_lights.comp: the glow round each light slot, for the host
     D3D12_PASS_FLOW_AMBIENT,                // flow_ambient.comp: the world's light on the smoke (flow env layout)
+    D3D12_PASS_REFLECT_FLOW,                // reflect_flow.comp: pt_dlss_reflect_flow, right after the interleave
     D3D12_NUM_PASSES
 } d3d12_pass_t;
 
@@ -137,6 +138,9 @@ void d3d12_timer_mark(ID3D12GraphicsCommandList4 *cmd, const d3d12_timers_t *t, 
 // heap for ClearUnorderedAccessViewUint)
 #define D3D12_ZERO_BUFFER_SIZE  (1u << 20)
 
+// R_RenderFrame_RTX's per-frame vkCmdClearColorImage list (world.c's frame_clear_images)
+#define D3D12_FRAME_CLEARS      10
+
 typedef struct {
     ID3D12GraphicsCommandList4  *cmd;               // descriptor heaps already set
     bool                        enhanced_barriers;
@@ -152,6 +156,18 @@ typedef struct {
     ID3D12Resource              *tonemap_buffer;    // ToneMappingBuffer, in COMMON
     uint64_t                    tonemap_size;
     ID3D12Resource              *zero_buffer;       // D3D12_ZERO_BUFFER_SIZE zeros
+    /* vkpt's PER-FRAME CLEARS, zeroed before the primary rays (d3d12_record_passes).
+       R_RenderFrame_RTX clears these G-buffer images every frame and the shaders
+       count on it: they write them only where they have something - the reflection
+       motion vectors and reflected albedo only on a reflection, the sky branch even
+       reads the reflected albedo back and keeps it. This renderer never cleared them,
+       so every pixel nothing wrote that frame kept an older frame's value: trails of
+       old reflections in the reflected albedo and stale guides under DLSS-RR (Matt,
+       11-24). Each: the image, its view's GPU handle in the textures set, and a
+       CPU-only copy of that view. NULL image: skipped (the headless test). */
+    ID3D12Resource              *frame_clears[D3D12_FRAME_CLEARS];
+    D3D12_GPU_DESCRIPTOR_HANDLE frame_clear_gpu[D3D12_FRAME_CLEARS];
+    D3D12_CPU_DESCRIPTOR_HANDLE frame_clear_cpu[D3D12_FRAME_CLEARS];
     // the radiance cache (pt_sharc): keys, accumulators, resolved entries -
     // vertex_buffer.c's, in COMMON - and SHARC_CAPACITY
     ID3D12Resource              *sharc_buffers[3];

@@ -286,6 +286,61 @@ vec2 load_reflect_motion(ivec2 p, int other_side_offset) {
 // provides for exactly that purpose - specular motion vectors, specular hit distance and
 // reflected albedo.
 // ========================================================================== //
+/* pt_dlss_guide_albedo_share: HOW MUCH OF A SPLIT PIXEL'S LIGHT IS ITS REFLECTION.
+
+   DLSS-RR keeps texture detail only where its albedo guide shows that detail: whatever
+   else is in the colour is lighting to it, and lighting is what it denoises. On a split
+   pixel the colour is two pictures summed and the guide (guide field 0) shows one of
+   them, the surface seen THROUGH the water. Over a dark pool the reflection is nearly
+   all of the light, and its bricks were being denoised away as if they were noise on
+   the pool's floor.
+
+   Measured 2026-11-25 against the real nvngx_dlssd.dll (preset F), a rippling reflection
+   of a brick wall over a floor carrying 15% of the light, sharpness against the truth:
+     the floor's albedo (guide field 0)                 0.59, 0.39 without reflection MVs
+     the two albedos mixed by Fresnel (guide field 4)   0.62
+     mixed by each layer's share of the LIGHT           0.86, 0.77 without reflection MVs
+   and with nothing moving 0.70 against 0.95. A share taken from this pixel's own two
+   noisy samples measured nearly as well (0.86, a little more residual noise); over a
+   small neighbourhood it matched the exact share.
+
+   So: the reflection's part of the light over a 9x9 neighbourhood (every second pixel,
+   25 of them), split pixels only. A robust mean - the square of the mean square root -
+   so one firefly does not swing the guide for a frame, and pixels pt_sparse left unlit
+   this frame simply add nothing. Depth, normal, roughness and motion are untouched.
+   Returns `fallback` (the Fresnel weight) where the neighbourhood holds no light. */
+float reflection_light_share(ivec2 opos, float fallback)
+{
+    float sum_reflect = 0.0;
+    float sum_refract = 0.0;
+    for(int oy = -2; oy <= 2; oy++)
+    {
+        for(int ox = -2; ox <= 2; ox++)
+        {
+            ivec2 q = opos + ivec2(ox, oy) * 2;
+            if(q.x < 0 || q.y < 0 || q.x >= global_ubo.width || q.y >= global_ubo.height)
+                continue;
+            // half-resolution fields: a row not traced this frame borrows its neighbour's
+            if(!PT_FIELD_ROW_TRACED(global_ubo, q.y))
+                q.y = (q.y + 1 < global_ubo.height) ? q.y + 1 : q.y - 1;
+
+            vec4 c_a = imageLoad(IMG_ASVGF_COLOR, q);
+            if(bitCount(int(c_a.a) & CHECKERBOARD_FLAG_FIELD_MASK) <= 1)
+                continue;   // not a split pixel: it has no second layer
+            vec3 c_b = imageLoad(IMG_ASVGF_COLOR, q + ivec2(global_ubo.pt_field_offset, 0)).rgb;
+
+            float l_a = luminance(max(c_a.rgb, vec3(0)));
+            float l_b = luminance(max(c_b, vec3(0)));
+            // NaN and Inf fail the comparison and are left out
+            if(l_a >= 0.0 && l_a < 1e6) sum_reflect += sqrt(l_a);
+            if(l_b >= 0.0 && l_b < 1e6) sum_refract += sqrt(l_b);
+        }
+    }
+    float r2 = sum_reflect * sum_reflect;
+    float t2 = sum_refract * sum_refract;
+    return (r2 + t2 > 1e-8) ? r2 / (r2 + t2) : fallback;
+}
+
 void combine_fullres_fields(ivec2 opos)
 {
     ivec2 p_reflect = opos;
@@ -324,6 +379,9 @@ void combine_fullres_fields(ivec2 opos)
     float fresnel_weight = 0.0;
     // pt_dlss_blood_guides: this split is a translucent blood splat's alpha, see below.
     bool blood_split = false;
+    // pt_dlss_guide_albedo_share: a split on a Fresnel term (glass, water), and which
+    bool fresnel_split = false;
+    bool glass_split = false;
 
     /* primary_rays.rgen's RESPONSIVITY CODE for this pixel: the mask value it wants
        (pt_dlss_animated_responsive), plus DLSS_RESPONSIVITY_CAMERA_BIAS on a security-camera
@@ -370,6 +428,8 @@ void combine_fullres_fields(ivec2 opos)
         bool blood_encoded = fresnel_encoded >= REFLECTED_ALBEDO_BLOOD_BIAS;
         bool have_fresnel = fresnel_encoded >= 1.0 && !blood_encoded;
         fresnel_weight = have_fresnel ? clamp(fresnel_encoded - 1.0, 0.0, 1.0) : 0.0;
+        fresnel_split = have_fresnel;
+        glass_split = split_was_glass;
 
         if(guide_field == 2)
             reflection_is_primary = true;
@@ -555,6 +615,20 @@ void combine_fullres_fields(ivec2 opos)
                                     imageLoad(IMG_PT_SPECULAR_ALBEDO, p_reflect).rgb, fresnel_weight);
     }
 
+    /* pt_dlss_guide_albedo_share (see reflection_light_share): the two demodulation
+       guides follow the light. Only where no other mode already mixes them, and never on
+       blood (mixed by its alpha) or a camera screen (its picture is field 0 whole). */
+    int albedo_share_mode = int(global_ubo.pt_dlss_guide_albedo_share);
+    if(paths_split && fresnel_split && !mix_albedo_by_fresnel && !blood_split && !camera_fields
+        && albedo_share_mode != 0 && (albedo_share_mode >= 2 || !glass_split))
+    {
+        float light_share = reflection_light_share(opos, fresnel_weight);
+        guide_albedo.rgb = mix(imageLoad(IMG_PT_ALBEDO, p_refract).rgb,
+                               imageLoad(IMG_PT_ALBEDO, p_reflect).rgb, light_share);
+        guide_spec_albedo.rgb = mix(imageLoad(IMG_PT_SPECULAR_ALBEDO, p_refract).rgb,
+                                    imageLoad(IMG_PT_SPECULAR_ALBEDO, p_reflect).rgb, light_share);
+    }
+
     /* ROUGHNESS IS A PROPERTY OF THE REFLECTOR, NOT OF WHAT THE RAY LANDED ON.
 
        p_primary's roughness belongs to the surface the chosen field hit - the room
@@ -621,10 +695,18 @@ void combine_fullres_fields(ivec2 opos)
     // guides describe, exactly as on a non-split pixel.
     // A camera split's reflection layer is field 1, the black mirror: its mirrored
     // vector, hit distance and reflected albedo (camera_fields above).
+    //
+    // pt_dlss_reflect_mv_surface 0 (Matt, 11-25: this channel is the reflection's motion
+    // and nothing else): a pixel with no split hands over only what reflect_refract.rgen
+    // wrote at its reflection field - chrome's mirrored motion, a screen's - and the
+    // per-frame clear's 0 everywhere nothing was reflected, instead of the surface's own
+    // motion (an animated torch, every wall while the camera turns). 1 = the line above.
     ivec2 p_specular = camera_fields ? p_refract : p_reflect;
     vec2 reflect_motion = (paths_split && !blood_split)
         ? imageLoad(IMG_PT_REFLECT_MOTION, p_specular).xy
-        : primary_motion.xy;
+        : (global_ubo.pt_dlss_reflect_mv_surface != 0 || blood_split)
+            ? primary_motion.xy
+            : imageLoad(IMG_PT_REFLECT_MOTION, p_reflect).xy;
 
     float specular_length = imageLoad(IMG_PT_RAYLENGTH_SPECULAR, p_specular).x;
 

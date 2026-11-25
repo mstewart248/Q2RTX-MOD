@@ -231,6 +231,11 @@ void d3d12_set_write_buffer(const d3d12_set_t *set, unsigned binding, unsigned e
 // a storage image; desc NULL = the resource's own format, mip 0
 void d3d12_set_write_uav_image(const d3d12_set_t *set, unsigned binding, unsigned element,
                                ID3D12Resource *image, const D3D12_UNORDERED_ACCESS_VIEW_DESC *desc);
+// where a storage image's view lives in the shader-visible heap, for
+// ClearUnorderedAccessView* (which also wants a CPU-only copy of the view); false
+// (and a message) when the set has no such storage image binding
+bool d3d12_set_uav_image_gpu(const d3d12_set_t *set, unsigned binding, unsigned element,
+                             D3D12_GPU_DESCRIPTOR_HANDLE *out);
 // a combined image sampler: the view and its sampler; desc NULL = the resource's own format, every mip
 void d3d12_set_write_srv_image(const d3d12_set_t *set, unsigned binding, unsigned element,
                                ID3D12Resource *image, const D3D12_SHADER_RESOURCE_VIEW_DESC *desc,

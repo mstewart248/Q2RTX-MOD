@@ -319,8 +319,8 @@ void d3d12_record_sky(const d3d12_sky_pass_t *s)
         sky_transition(cmd, s->sun_color_buffer, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     }
 
-    // the envmap's rows, faces one after another from the UBO's sky_first_row,
-    // 16x16 groups
+    // the envmap's rows from the UBO's sky_first_row, 16x16 groups: the faces'
+    // in order, or a slice's in the dither order (shader/sky.h sky_envmap_texel)
     ID3D12GraphicsCommandList4_SetPipelineState(cmd, s->sky_pso);
     d3d12_compute_begin(gl, D3D12_PL_PHYSICAL_SKY);
     d3d12_compute_bind_sets(gl, D3D12_PL_PHYSICAL_SKY, s->sets);

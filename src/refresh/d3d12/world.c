@@ -203,6 +203,9 @@ static struct {
     ID3D12Resource      *readback_buffer;   // ReadbackBuffer, written by the shaders
     ID3D12Resource      *tonemap_buffer;    // ToneMappingBuffer: the histogram, the curve
     ID3D12Resource      *zero_buffer;       // D3D12_ZERO_BUFFER_SIZE zeros, the source of buffer clears
+    // CPU-only copies of frame_clear_images' views, for ClearUnorderedAccessViewFloat
+    // (passes.h's frame_clears), rewritten whenever the images are made
+    ID3D12DescriptorHeap *clear_heap;
     ID3D12Resource      *blue_noise;        // textures.c's TEX_BLUE_NOISE (not owned)
     bool                tm_reset;           // clear the tone mapping state next frame
     // the radiance cache (pt_sharc): vertex_buffer.c's keys, accumulators and
@@ -736,6 +739,43 @@ static void write_display_sets(void)
         write_textures_set(&w.display[odd], odd, w.display_image);
 }
 
+/* R_RenderFrame_RTX's per-frame vkCmdClearColorImage list, in its order - see
+   passes.h's frame_clears for why D3D12 needs it too. None is an A/B pair, so
+   each sits at its own binding in both parities' textures sets. */
+static const int frame_clear_images[D3D12_FRAME_CLEARS] = {
+    VKPT_IMG_PT_REFLECT_MOTION, VKPT_IMG_PT_ALBEDO, VKPT_IMG_PT_ROUGHNESS, VKPT_IMG_PT_NORMAL,
+    VKPT_IMG_PT_SPECULAR_ALBEDO, VKPT_IMG_PT_BEFORE_TRANSPARENT, VKPT_IMG_PT_RAYLENGTH_DIFFUSE,
+    VKPT_IMG_PT_RAYLENGTH_SPECULAR, VKPT_IMG_PT_REFLECTED_ALBEDO, VKPT_IMG_DLSS_RAYLENGTH_SPECULAR,
+};
+
+static D3D12_CPU_DESCRIPTOR_HANDLE frame_clear_cpu(int i)
+{
+    D3D12_CPU_DESCRIPTOR_HANDLE h;
+    ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(w.clear_heap, &h);
+    h.ptr += (SIZE_T)i * d3d.srv_increment;
+    return h;
+}
+
+// the CPU-only views, as write_textures_set's (the resource's own format, mip 0)
+static void write_frame_clear_views(void)
+{
+    if (!w.clear_heap) {
+        D3D12_DESCRIPTOR_HEAP_DESC hd = { 0 };
+        hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+        hd.NumDescriptors = D3D12_FRAME_CLEARS;
+        hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+        if (!D3D_CHECK(ID3D12Device5_CreateDescriptorHeap(d3d.device, &hd, &IID_ID3D12DescriptorHeap,
+                                                          (void **)&w.clear_heap))) {
+            w.clear_heap = NULL;    // no clears: the frames run as before
+            return;
+        }
+        d3d12_set_name((ID3D12Object *)w.clear_heap, "per-frame clear views");
+    }
+    for (int i = 0; i < D3D12_FRAME_CLEARS; i++)
+        ID3D12Device5_CreateUnorderedAccessView(d3d.device, w.images[frame_clear_images[i]], NULL, NULL,
+                                                frame_clear_cpu(i));
+}
+
 static void destroy_images(void)
 {
     for (int i = 0; i < NUM_VKPT_IMAGES; i++)
@@ -852,6 +892,7 @@ static bool ensure_images(const d3d12_extents_t *e)
     for (int odd = 0; odd < 2; odd++)
         write_textures_set(&w.textures[odd], odd, -1);
     write_display_sets();
+    write_frame_clear_views();
 
     w.extents = *e;
     w.images_made = true;
@@ -2131,6 +2172,7 @@ void d3d12_world_shutdown(void)
     D3D12_RELEASE(w.readback_buffer);
     D3D12_RELEASE(w.tonemap_buffer);
     D3D12_RELEASE(w.zero_buffer);
+    D3D12_RELEASE(w.clear_heap);
     destroy_tiles();
     w.tiles_failed_size = 0;
     D3D12_RELEASE(w.tile_args);
@@ -3033,6 +3075,20 @@ bool d3d12_world_render(ID3D12GraphicsCommandList4 *cmd, const d3d12_world_frame
     };
     ser_select(&p);
     p.timers = timers;
+
+    // vkpt's per-frame clears (passes.h's frame_clears)
+    if (w.clear_heap) {
+        for (int i = 0; i < D3D12_FRAME_CLEARS; i++) {
+            const int img = frame_clear_images[i];
+            if (d3d12_image_at_binding(img, odd) != img)
+                continue;
+            if (d3d12_set_uav_image_gpu(&w.textures[odd], BINDING_OFFSET_IMAGES + d3d12_image_binding(img), 0,
+                                        &p.frame_clear_gpu[i])) {
+                p.frame_clears[i] = w.images[img];
+                p.frame_clear_cpu[i] = frame_clear_cpu(i);
+            }
+        }
+    }
 
     // the sun's shadow map, its static half (shadow_map_static says why here)
     if (fog) {

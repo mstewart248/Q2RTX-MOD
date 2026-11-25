@@ -118,6 +118,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	IMG_DO(DLSS_PARTICLE_LAYER,       70, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
 	IMG_DO(DLSS_PARTICLE_MOTION,      71, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
 	IMG_DO(AUTHOR_MASK,               72, R16_UINT,            r16ui,   IMG_WIDTH,           IMG_HEIGHT     ) \
+	IMG_DO(PT_REFLECT_FLOW_TARGET,    73, R32G32B32A32_SFLOAT, rgba32f, IMG_WIDTH,           IMG_HEIGHT     ) \
 
 
 /* PT_PRIMARY_DIST: THE DISTANCE TO THE FIRST HIT, KEPT WHERE reflect_refract CANNOT
@@ -182,7 +183,10 @@ with this program; if not, write to the Free Software Foundation, Inc.,
    primary surface shows the map being painted, bit 1 = its texel is inside the brush.
    tone_mapping_apply.comp outlines bit 1 over the finished picture, after the
    accumulation, so moving the brush never restarts it. Nothing reads it otherwise. */
-#define NUM_IMAGES_BASE     73
+/* PT_REFLECT_FLOW_TARGET: where the point each pixel's reflection shows WAS last frame
+   (reflect_refract.rgen's new_pos_prev - an animated torch flame's point moved), the
+   point reflect_flow.comp looks for in last frame's reflection. */
+#define NUM_IMAGES_BASE     74
 
 #define LIST_IMAGES_A_B \
 	IMG_DO(PT_VISBUF_PRIM_A,          NUM_IMAGES_BASE + 0,  R32G32_UINT,         rg32ui,  IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
@@ -225,6 +229,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	IMG_DO(PT_RESTIR_GI_DATA_B,      NUM_IMAGES_BASE + 37, R32G32B32A32_UINT,  rgba32ui, IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
 	IMG_DO(PT_RESTIR_GI_ORIGIN_A,    NUM_IMAGES_BASE + 38, R32G32B32A32_SFLOAT, rgba32f, IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
 	IMG_DO(PT_RESTIR_GI_ORIGIN_B,    NUM_IMAGES_BASE + 39, R32G32B32A32_SFLOAT, rgba32f, IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
+	IMG_DO(PT_REFLECT_FLOW_A,        NUM_IMAGES_BASE + 40, R32G32B32A32_SFLOAT, rgba32f, IMG_WIDTH,           IMG_HEIGHT     ) \
+	IMG_DO(PT_REFLECT_FLOW_B,        NUM_IMAGES_BASE + 41, R32G32B32A32_SFLOAT, rgba32f, IMG_WIDTH,           IMG_HEIGHT     ) \
 
 #define LIST_IMAGES_B_A \
 	IMG_DO(PT_VISBUF_PRIM_B,          NUM_IMAGES_BASE + 0,  R32G32_UINT,         rg32ui,  IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
@@ -267,8 +273,10 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	IMG_DO(PT_RESTIR_GI_DATA_A,      NUM_IMAGES_BASE + 37, R32G32B32A32_UINT,  rgba32ui, IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
 	IMG_DO(PT_RESTIR_GI_ORIGIN_B,    NUM_IMAGES_BASE + 38, R32G32B32A32_SFLOAT, rgba32f, IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
 	IMG_DO(PT_RESTIR_GI_ORIGIN_A,    NUM_IMAGES_BASE + 39, R32G32B32A32_SFLOAT, rgba32f, IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
+	IMG_DO(PT_REFLECT_FLOW_B,        NUM_IMAGES_BASE + 40, R32G32B32A32_SFLOAT, rgba32f, IMG_WIDTH,           IMG_HEIGHT     ) \
+	IMG_DO(PT_REFLECT_FLOW_A,        NUM_IMAGES_BASE + 41, R32G32B32A32_SFLOAT, rgba32f, IMG_WIDTH,           IMG_HEIGHT     ) \
 
-#define NUM_IMAGES (NUM_IMAGES_BASE + 40) /* this really sucks but I don't know how to fix it
+#define NUM_IMAGES (NUM_IMAGES_BASE + 42) /* this really sucks but I don't know how to fix it
                                              counting with enum does not work in GLSL */
 
 // todo: make naming consistent!

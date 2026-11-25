@@ -53,7 +53,7 @@ typedef struct {
 	bool  render;       // the sky pass runs this frame
 	bool  begin;        // the update's first part: the terrain shadow map drawn, the sun colour's sums cleared
 	bool  resolve;      // its last part: the sums resolved into the sun and sky colours
-	int   first_row;    // the rows rendered, of the six faces' 6 x 1024 one after another
+	int   first_row;    // the rows rendered, of 6 x 1024 (a slice's in the dither order, shader/sky.h)
 	int   row_count;    // (whole multiples of physical_sky.comp's 16-row groups)
 	int   slice, slices;    // which part of how many; 1 of 1 = the whole sky at once
 	float viewproj[16];     // the terrain shadow map's, as the update's first part draws it

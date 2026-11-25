@@ -1521,6 +1521,16 @@ main()
 			? 1.0 + fresnel_guide_weight
 			: imageLoad(IMG_PT_REFLECTED_ALBEDO, ipos).a;
 		imageStore(IMG_PT_REFLECTED_ALBEDO, ipos, vec4(primary_base_color, carried_F));
+
+		// pt_dlss_reflect_flow: the world point whose albedo this pixel's reflection
+		// just wrote, stamped with the frame - next frame's reflect_flow.comp finds
+		// where in this frame's reflection each of its points was shown
+		imageStore(IMG_PT_REFLECT_FLOW_A, ipos,
+			vec4(position.xyz, float(global_ubo.current_frame_idx & 0xffffff)));
+		// ...and where that point WAS last frame, which is what to look for in last
+		// frame's reflection: an animated torch flame's point has moved since
+		imageStore(IMG_PT_REFLECT_FLOW_TARGET, ipos,
+			vec4(new_pos_prev, float(global_ubo.current_frame_idx & 0xffffff)));
 	}
 
 	primary_is_weapon = false;
