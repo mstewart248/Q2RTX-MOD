@@ -2063,6 +2063,37 @@ If photo mode accumulates, it keeps accumulating, and every change restarts the
 accumulation the way a camera move does. The console prints a summary of the
 controls when it starts.
 
+There is no round trip through an image editor and no restart: each stroke
+shows in the path-traced picture as you paint it, under the map's own light,
+and **Save** writes the map files and the `.mat` entry that uses them.
+
+### Example: making a Quake ceiling panel glow
+
+![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/QRTX_mat_author1.jpg)
+
+Quake's `textures/q1/mg_tech04_8g` is a light fitting set in the ceiling, but
+nothing marks any of it as glowing, so it sits dark. With the crosshair on it,
+`mat author` pauses into photo mode and opens the panel (left); **Tab** opens
+the map view (right). The panel is on the **normal** map, which this texture
+doesn't have yet (*no normals map: painting makes one*). Under the map
+buttons are the normal's direction dial and intensity, the tools (brush,
+spray, hatch, noise, blur, fill), falloff, the stroke (free, line, rect), the
+lock, the selection shapes with the normals' **out** / **in** lean, the map
+view settings, the flashlight, undo, redo and save, and the keys at the
+bottom. The map view shows the 32 x 32 texture texel for texel, with the map
+laid over it at 60%.
+
+![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/QRTX_mat_author2.jpg)
+
+The same panel on the **emissive** map (**4**), after one **rect** stroke over
+the lamp's bright middle at 100% brightness (as bright as the texture) in its
+own colours. The first stroke made the material its own emissive map,
+`mg_tech04_8g_emit.png`, and the panel now glows in the render and lights the
+ceiling round it. In the map view a purple veil covers everything that doesn't
+glow, so the painted part is the only part left in its own colours. The panel
+counts **1 painted map not saved** until **Save** writes the PNG under
+`materialDev/` and points the material's `.mat` entry at it.
+
 ### Controls
 
 | Input | Does |
