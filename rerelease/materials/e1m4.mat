@@ -1,0 +1,879 @@
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (-327 1747 1513)
+# the model standing at (-424 1640 1514) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#7a95fa97:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 8
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (-234 1705 1511)
+# the model standing at (-88 1640 1514) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#c65eebe8:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 8
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (-263 1560 1206)
+# the model standing at (-248 1464 1154) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#0b3c7b02:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (-251 1707 1069)
+# the model standing at (-256 1808 1046) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#abc4e110:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 8
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (151 1375 1091)
+# the model standing at (158 1308 1064) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#eb10122d:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (376 1077 1064)
+# the model standing at (324 1104 1064) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#cb338a8f:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (1041 1461 1071)
+# the model standing at (1094 1494 1064) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#59b8066f:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame_mdl_00_00
+# e1m4, created at (785 1755 1029)
+# the model standing at (642 1850 1024) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame_mdl_00_00#3fbfbb83:
+#	texture_base materialDev/progs/flame_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_torch_emissive2_crop296x140.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame_mdl_00_00
+# e1m4, created at (798 1746 1029)
+# the model standing at (798 1850 1024) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame_mdl_00_00#2075fbf0:
+#	texture_base materialDev/progs/flame_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_torch_emissive2_crop296x140.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (497 2285 672)
+# the model standing at (408 2304 694) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#66c87968:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 8
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (493 2639 692)
+# the model standing at (488 2712 694) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#4e695a4d:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 8
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (652 2432 602)
+# the model standing at (584 2544 630) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#983afa15:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 8
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (652 2432 602)
+# the model standing at (840 2536 630) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#8ec54e66:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 8
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (696 2772 1043)
+# the model standing at (696 2880 1062) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#94302609:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 8
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (983 2325 1026)
+# the model standing at (1160 2400 1038) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#5ef7e74d:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (242 2228 1023)
+# the model standing at (184 2184 1038) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#4b921d4a:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (445 2062 1027)
+# the model standing at (512 2096 1038) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#1f47ebb4:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (992 218 1013)
+# the model standing at (1016 80 998) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#621f54a2:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame_mdl_00_00
+# e1m4, created at (847 125 987)
+# the model standing at (818 18 948) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame_mdl_00_00#77146758:
+#	texture_base materialDev/progs/flame_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_torch_emissive2_crop296x140.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame_mdl_00_00
+# e1m4, created at (639 71 968)
+# the model standing at (586 18 948) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame_mdl_00_00#4e0cbdcf:
+#	texture_base materialDev/progs/flame_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_torch_emissive2_crop296x140.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (464 155 983)
+# the model standing at (392 80 998) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#acafa7ac:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (1048 -508 945)
+# the model standing at (1112 -576 942) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#9051c002:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (704 -755 925)
+# the model standing at (624 -704 924) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#6fc196fa:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (739 -582 928)
+# the model standing at (624 -448 924) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#1ab8ff73:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (839 -454 1231)
+# the model standing at (1112 -576 1230) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#50485d6b:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (839 -454 1231)
+# the model standing at (768 -800 1230) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#52158351:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (839 -454 1231)
+# the model standing at (456 -576 1230) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#51996c98:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 8
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (839 -454 1231)
+# the model standing at (768 -352 1230) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#ff48431f:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (1000 -446 1249)
+# the model standing at (1072 -272 1262) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#cbcd5b46:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (677 1 1300)
+# the model standing at (560 -112 1374) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#6c99c154:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (677 1 1300)
+# the model standing at (848 -112 1374) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#c34ac9db:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (554 423 1369)
+# the model standing at (489 483 1356) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#0f780a0d:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (1218 811 1559)
+# the model standing at (1294 826 1576) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#397881b8:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/q1/dem5_3
+# e1m4, created at (479 -84 970)
+# Inherits everything from textures/q1/dem5_3; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/dem5_3#582c939e:
+#	texture_base materialDev/textures/q1/dem5_3.png
+#	texture_emissive materialDev/remix/TextureDev2/DemonWall_Glowing_emissive.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+	emissive_factor 1
+	light_factor 8
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (920 2563 1255)
+# the model standing at (998 2534 1228) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#7567809a:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (920 2563 1255)
+# the model standing at (998 2306 1228) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#0790e336:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (920 2563 1255)
+# the model standing at (702 2154 1228) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#8759035a:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (920 2563 1255)
+# the model standing at (426 2306 1228) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#44c647ac:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (920 2563 1255)
+# the model standing at (426 2534 1228) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#bd50ab28:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/id1/progs/flame2_mdl_00_00
+# e1m4, created at (920 2563 1255)
+# the model standing at (698 2860 1228) - keyed on that spot
+# Inherits everything from id1/id1/progs/flame2_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/id1/progs/flame2_mdl_00_00#899cc1b9:
+#	texture_base materialDev/progs/flame2_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_crop300x194.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1

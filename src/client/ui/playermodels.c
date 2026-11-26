@@ -18,6 +18,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #include "ui.h"
 #include "common/files.h"
+#include "shared/ta_characters.h"
 
 /*
 =============================================================================
@@ -53,11 +54,14 @@ static int pmicmpfnc(const void *_a, const void *_b)
     const playerModelInfo_t *b = (const playerModelInfo_t *)_b;
 
     // Quake's, then Quake II's, then Quake III's (Matt, 2026-11-22: "in the
-    // player select quake 1 should come first")
+    // player select quake 1 should come first"), then Team Arena's (Matt,
+    // 2026-11-26: "below q3 and call the section Team Arena")
     if (a->q1 != b->q1)
         return a->q1 ? -1 : 1;
     if (a->q3 != b->q3)
         return a->q3 ? 1 : -1;
+    if (a->ta != b->ta)
+        return a->ta ? 1 : -1;
     if (a->q3 || a->q1)
         return Q_stricmp(a->directory, b->directory);
 
@@ -200,30 +204,88 @@ skip:
 }
 
 /*
+One Quake III model (q3player.c), once: a skin for every lower_<skin>.skin that
+has its icon_<skin>.tga - Quake III's own menu shows no other.
+
+A Team Arena character (shared/ta_characters.h) is a head on a shared body, so
+its skins are not files of its own: it gets its own look and the two team
+colours, each by its head's icon (Q3P_IconPath). Its five teams' uniforms have
+no icon of their own and are the game's to put on, like red and blue.
+
+Team Arena's (pmi->ta) are its characters and the whole models only its paks
+have - Fritzkrieg and Pi. "missionpack/<path>" is looked for in those paks
+alone (files.c).
+*/
+static void PlayerModel_AddQ3(const char *model, char (*skins)[MAX_QPATH])
+{
+    char                name[MAX_QPATH], icon[MAX_QPATH];
+    const bool          character = TA_Character(model) != NULL;
+    playerModelInfo_t   *pmi;
+    int                 j, k, n, numSkins;
+
+    if (uis.numPlayerModels >= MAX_PLAYERMODELS)
+        return;
+    if (Q_strlcpy(name, model, sizeof(name)) >= sizeof(name))
+        return;
+    Q_strlwr(name);
+
+    for (j = 0; j < uis.numPlayerModels; j++)
+        if (!Q_stricmp(uis.pmi[j].directory, name))
+            return;
+    if (!Q3P_ModelExists(name))
+        return;
+
+    if (character) {
+        for (numSkins = 0; numSkins < TA_SKINS_PER_TEAM; numSkins++)
+            Q_strlcpy(skins[numSkins], ta_colors[numSkins], MAX_QPATH);
+    } else {
+        numSkins = Q3P_SkinList(name, skins, Q3P_MAX_SKINS);
+    }
+
+    for (k = n = 0; k < numSkins; k++) {
+        if (character)
+            Q3P_IconPath(name, skins[k], icon, sizeof(icon));
+        else if (Q_concat(icon, sizeof(icon), "models/players/", name, "/icon_", skins[k], ".tga") >= sizeof(icon))
+            continue;
+        if (FS_FileExists(icon))
+            Q_strlcpy(skins[n++], skins[k], MAX_QPATH);
+    }
+    if (!n)
+        return;
+
+    pmi = &uis.pmi[uis.numPlayerModels++];
+    pmi->q3 = true;
+    pmi->ta = character || (Q_concat(icon, sizeof(icon), "missionpack/models/players/", name,
+                                     "/animation.cfg") < sizeof(icon) && FS_FileExists(icon));
+    pmi->nskins = n;
+    pmi->skindisplaynames = UI_Malloc(sizeof(char *) * (n + 1));
+    for (k = 0; k < n; k++)
+        pmi->skindisplaynames[k] = UI_CopyString(skins[k]);
+    pmi->skindisplaynames[n] = NULL;
+    pmi->directory = UI_CopyString(name);
+}
+
+/*
 Quake III's models (baseq3, q3player.c): models/players/<model>/ with its three
-parts and animation.cfg, and a skin for every lower_<skin>.skin that has its
-icon_<skin>.tga - Quake III's own menu shows no other.
+parts and animation.cfg - then Team Arena's characters, most of which are only
+a head (models/players/heads/<name>/) and have no folder of their own to find.
 */
 static void PlayerModel_LoadQ3(void)
 {
     char    scratch[MAX_QPATH];
     char    (*skins)[MAX_QPATH];
     char    **list;
-    int     i, j, k, numFiles, numSkins, n;
+    int     i, numFiles;
 
     if (!CL_Q3PlayersEnabled())
         return;
 
-    list = (char **)FS_ListFiles(NULL, "models/players/*/animation.cfg",
-                                 FS_SEARCH_BYFILTER | FS_SEARCH_SAVEPATH, &numFiles);
-    if (!list)
-        return;
-
     skins = Z_Malloc(sizeof(*skins) * Q3P_MAX_SKINS);
 
-    for (i = 0; i < numFiles && uis.numPlayerModels < MAX_PLAYERMODELS; i++) {
+    list = (char **)FS_ListFiles(NULL, "models/players/*/animation.cfg",
+                                 FS_SEARCH_BYFILTER | FS_SEARCH_SAVEPATH, &numFiles);
+    for (i = 0; list && i < numFiles; i++) {
         char *s, *p;
-        playerModelInfo_t *pmi;
 
         // models/players/<model>/animation.cfg
         if (Q_strlcpy(scratch, list[i], sizeof(scratch)) >= sizeof(scratch))
@@ -235,35 +297,15 @@ static void PlayerModel_LoadQ3(void)
             continue;
         *p = 0;
 
-        for (j = 0; j < uis.numPlayerModels; j++)
-            if (!Q_stricmp(uis.pmi[j].directory, s))
-                break;
-        if (j < uis.numPlayerModels || !Q3P_ModelExists(s))
-            continue;
-
-        numSkins = Q3P_SkinList(s, skins, Q3P_MAX_SKINS);
-        for (k = n = 0; k < numSkins; k++) {
-            char icon[MAX_QPATH];
-
-            if (Q_concat(icon, sizeof(icon), "models/players/", s, "/icon_", skins[k], ".tga") < sizeof(icon)
-                && FS_FileExists(icon))
-                Q_strlcpy(skins[n++], skins[k], MAX_QPATH);
-        }
-        if (!n)
-            continue;
-
-        pmi = &uis.pmi[uis.numPlayerModels++];
-        pmi->q3 = true;
-        pmi->nskins = n;
-        pmi->skindisplaynames = UI_Malloc(sizeof(char *) * (n + 1));
-        for (k = 0; k < n; k++)
-            pmi->skindisplaynames[k] = UI_CopyString(skins[k]);
-        pmi->skindisplaynames[n] = NULL;
-        pmi->directory = UI_CopyString(Q_strlwr(s));
+        PlayerModel_AddQ3(s, skins);
     }
+    if (list)
+        FS_FreeList((void **)list);
+
+    for (i = 0; i < TA_NUM_CHARACTERS; i++)
+        PlayerModel_AddQ3(ta_characters[i].name, skins);
 
     Z_Free(skins);
-    FS_FreeList((void **)list);
 }
 
 /*
@@ -310,16 +352,18 @@ static void PlayerModel_BuildCells(void)
     uis.numPmCells = 0;
     uis.pmQ2First = 0;
     uis.pmQ3First = 0;
+    uis.pmTAFirst = 0;
     if (!q3 || !n)
         return;
 
     uis.pmCells = UI_Mallocz(sizeof(uis.pmCells[0]) * n);
     uis.pmCellNames = UI_Mallocz(sizeof(uis.pmCellNames[0]) * (n + 1));
 
-    // Quake's cells, Quake II's from pmQ2First, Quake III's from pmQ3First
-    // (pmicmpfnc's order)
+    // Quake's cells, Quake II's from pmQ2First, Quake III's from pmQ3First,
+    // Team Arena's from pmTAFirst (pmicmpfnc's order)
     uis.pmQ2First = -1;
     uis.pmQ3First = -1;
+    uis.pmTAFirst = -1;
     for (i = 0; i < uis.numPlayerModels; i++) {
         const playerModelInfo_t *pmi = &uis.pmi[i];
 
@@ -332,6 +376,8 @@ static void PlayerModel_BuildCells(void)
                 uis.pmQ2First = uis.numPmCells;
             if (pmi->q3 && uis.pmQ3First < 0)
                 uis.pmQ3First = uis.numPmCells;
+            if (pmi->ta && uis.pmTAFirst < 0)
+                uis.pmTAFirst = uis.numPmCells;
 
             cell = &uis.pmCells[uis.numPmCells];
             cell->model = i;
@@ -341,8 +387,10 @@ static void PlayerModel_BuildCells(void)
             uis.numPmCells++;
         }
     }
+    if (uis.pmTAFirst < 0)
+        uis.pmTAFirst = uis.numPmCells;
     if (uis.pmQ3First < 0)
-        uis.pmQ3First = uis.numPmCells;
+        uis.pmQ3First = uis.pmTAFirst;
     if (uis.pmQ2First < 0)
         uis.pmQ2First = uis.pmQ3First;
     uis.pmCellNames[uis.numPmCells] = NULL;
@@ -427,9 +475,11 @@ qhandle_t PlayerModel_CellIcon(int cell)
         pmi = &uis.pmi[c->model];
         if (pmi->q1)
             Q_strlcpy(path, Q1P_ICON_PATH, sizeof(path));     // the status bar's face
-        else if (pmi->q3)
-            Q_concat(path, sizeof(path), "/models/players/", pmi->directory, "/icon_",
-                     pmi->skindisplaynames[c->skin], ".tga");
+        else if (pmi->q3) {
+            // a Team Arena character's is its head's (q3player.c)
+            path[0] = '/';
+            Q3P_IconPath(pmi->directory, pmi->skindisplaynames[c->skin], path + 1, sizeof(path) - 1);
+        }
         else
             Q_concat(path, sizeof(path), "/players/", pmi->directory, "/",
                      pmi->skindisplaynames[c->skin], "_i.pcx");
@@ -454,6 +504,7 @@ void PlayerModel_Free(void)
     uis.numPmCells = 0;
     uis.pmQ2First = 0;
     uis.pmQ3First = 0;
+    uis.pmTAFirst = 0;
     uis.pmGrid = false;
 
     for (i = 0, pmi = uis.pmi; i < uis.numPlayerModels; i++, pmi++) {

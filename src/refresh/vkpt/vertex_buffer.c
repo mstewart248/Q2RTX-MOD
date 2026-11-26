@@ -415,6 +415,10 @@ void vkpt_bsp_mesh_set_instance_flags(bsp_mesh_t* bsp_mesh)
 	}
 }
 
+// THE LIGHT STATISTICS' LAYOUT, at vkpt_light_buffers_create
+static uint32_t light_stats_header_words;	// this map's; the per-frame clear starts after it
+static void light_stats_load(VkCommandBuffer cmd_buf, const bsp_mesh_t *bsp_mesh);
+
 VkResult
 vkpt_vertex_buffer_upload_bsp_mesh(bsp_mesh_t* bsp_mesh)
 {
@@ -540,12 +544,7 @@ vkpt_vertex_buffer_upload_bsp_mesh(bsp_mesh_t* bsp_mesh)
 
 	vkpt_bsp_mesh_set_instance_flags(bsp_mesh);
 
-	if (qvk.buf_light_stats[0].buffer)
-	{
-		vkCmdFillBuffer(cmd_buf, qvk.buf_light_stats[0].buffer, 0, qvk.buf_light_stats[0].size, 0);
-		vkCmdFillBuffer(cmd_buf, qvk.buf_light_stats[1].buffer, 0, qvk.buf_light_stats[1].size, 0);
-		vkCmdFillBuffer(cmd_buf, qvk.buf_light_stats[2].buffer, 0, qvk.buf_light_stats[2].size, 0);
-	}
+	light_stats_load(cmd_buf, bsp_mesh);
 
 	vkpt_submit_command_buffer(cmd_buf, qvk.queue_graphics, (1 << qvk.device_count) - 1, 0, NULL, NULL, NULL, 0, NULL, NULL, NULL);
 
@@ -705,9 +704,11 @@ static struct {
 	bool     iqm_tracked;        // main.c has reported its IQM staging writes since creation
 	bool     light_full_pending; // first upload after the buffers were (re)created
 	bool     iqm_full_pending;
+	uint32_t device_lists;       // the kept lists' build the device's light_list_lights holds, 0 = not known
 } upload_ranges;
 
 static void lcache_invalidate(void);
+static uint32_t lcache_staged_build(void);
 
 static void reset_upload_ranges(void)
 {
@@ -739,20 +740,39 @@ void vkpt_upload_ranges_new_map(void)
 	upload_ranges.iqm_tracked = iqm_tracked;
 }
 
+/* THE LISTS ONLY WHEN THEY CHANGED (2026-11-26, Team Arena's demos with the
+   profiler on). light_list_lights went up to the mark every frame, unchanged or
+   not: 1.5 million entries on mpteam1, 6 MB a frame read from D3D12's upload heap
+   over PCIe, ~0.2 of the 0.29 ms UPLOAD_LIGHTS. The device's light buffer is one
+   buffer, and the kept lists (THE LIGHT LISTS ARE KEPT) say which build each frame
+   slot's staging holds. When this slot holds the current build and the device
+   already took that build from a slot that held it, the device's lists are that
+   build entry for entry, so they are not copied. Past the build's last entry the
+   device may then keep an older build's leftovers, where the old copy would have
+   put this slot's: below the mark but past light_list_offsets[num_clusters], which
+   no shader reads. Any other writer of the lists (the menu's, pt_light_list_cache
+   0) leaves its slot holding no build (lcache_slot_dirty), and they are copied. */
 uint32_t
 vkpt_light_upload_regions(uint64_t offsets[2], uint64_t sizes[2])
 {
+	const uint32_t staged = lcache_staged_build();
+
 	if (upload_ranges.light_full_pending || !upload_ranges_enabled())
 	{
 		offsets[0] = 0;
 		sizes[0] = sizeof(LightBuffer);
 		upload_ranges.light_full_pending = false;
+		upload_ranges.device_lists = staged;
 		return 1;
 	}
 
+	const bool lists_held = staged != 0 && upload_ranges.device_lists == staged;
+	upload_ranges.device_lists = staged;
+
 	// material table, light_polys, light_list_offsets, light_list_lights up to the mark
+	// (unless the device holds them already)
 	const uint64_t head_end = offsetof(LightBuffer, light_list_lights)
-		+ (uint64_t)upload_ranges.light_list_hw * sizeof(uint32_t);
+		+ (lists_held ? 0 : (uint64_t)upload_ranges.light_list_hw * sizeof(uint32_t));
 
 	// light_styles, the three masks, fog_light_list_offsets, fog_light_list_lights up to the mark
 	const uint64_t tail_start = offsetof(LightBuffer, light_styles);
@@ -793,10 +813,13 @@ vkpt_light_buffer_upload_staging(VkCommandBuffer cmd_buf)
 
 	vkCmdCopyBuffer(cmd_buf, staging->buffer, qvk.buf_light.buffer, num_regions, regions);
 
+	// this frame's counts start from zero; the header (THE LIGHT STATISTICS' LAYOUT) stays
 	int buffer_idx = qvk.frame_counter % 3;
-	if (qvk.buf_light_stats[buffer_idx].buffer)
+	const VkDeviceSize stats_header_bytes = (VkDeviceSize)light_stats_header_words * sizeof(uint32_t);
+	if (qvk.buf_light_stats[buffer_idx].buffer && qvk.buf_light_stats[buffer_idx].size > stats_header_bytes)
 	{
-		vkCmdFillBuffer(cmd_buf, qvk.buf_light_stats[buffer_idx].buffer, 0, qvk.buf_light_stats[buffer_idx].size, 0);
+		vkCmdFillBuffer(cmd_buf, qvk.buf_light_stats[buffer_idx].buffer, stats_header_bytes,
+		                qvk.buf_light_stats[buffer_idx].size - stats_header_bytes, 0);
 	}
 
 	return VK_SUCCESS;
@@ -1055,6 +1078,16 @@ static void lcache_slot_dirty(void)
 static bool lcache_on(void)
 {
 	return !cvar_pt_light_list_cache || cvar_pt_light_list_cache->integer != 0;
+}
+
+// the build this frame's slot's staging holds, if it is the current one; else 0
+// (THE LISTS ONLY WHEN THEY CHANGED)
+static uint32_t lcache_staged_build(void)
+{
+	const int slot = qvk.current_frame_index;
+	if (!lcache.built || slot < 0 || slot >= LCACHE_SLOTS || !lcache_on())
+		return 0;
+	return lcache.slot_generation[slot] == lcache.generation ? lcache.generation : 0;
 }
 
 static int popcount64(uint64_t v)
@@ -2881,16 +2914,71 @@ vkpt_vertex_buffer_destroy()
 	return VK_SUCCESS;
 }
 
+/* THE LIGHT STATISTICS' LAYOUT (2026-11-26) - shader/light_lists.h's THE LIGHT
+   STATISTICS, ONE SLOT PER LIST ENTRY says why. They were 2 uints (got through,
+   shadowed) per surface orientation (6) per light per cluster: on Team Arena's
+   mpteam1, 864 MB a buffer, one of them zeroed every frame. Now one such slot per
+   entry of the static cluster light lists (72 MB there), behind a header that
+   says where each cluster's slots start (shader/constants.h). D3D12's frontend.c
+   sizes and fills its buffers with these too. */
+static int
+light_stats_clusters(const bsp_mesh_t *bsp_mesh)
+{
+	return bsp_mesh->cluster_light_offsets ? max(bsp_mesh->num_clusters, 0) : 0;
+}
+
+uint64_t
+vkpt_light_stats_words(const bsp_mesh_t *bsp_mesh, uint32_t *header_words)
+{
+	const int clusters = light_stats_clusters(bsp_mesh);
+	const uint32_t header = LIGHT_STATS_HEADER_WORDS(clusters);
+	const uint64_t slots = clusters ? (uint64_t)max(bsp_mesh->cluster_light_offsets[clusters], 0) : 0;
+	if (header_words)
+		*header_words = header;
+	return header + slots * LIGHT_STATS_WORDS_PER_SLOT;
+}
+
+void
+vkpt_light_stats_header(const bsp_mesh_t *bsp_mesh, uint32_t *header)
+{
+	uint32_t words;
+	vkpt_light_stats_words(bsp_mesh, &words);
+	memset(header, 0, words * sizeof(uint32_t));
+	const int clusters = light_stats_clusters(bsp_mesh);
+	header[LIGHT_STATS_HDR_CLUSTERS] = (uint32_t)clusters;
+	for (int c = 0; clusters && c <= clusters; c++)
+		header[LIGHT_STATS_HDR_FIRST + c] = words + (uint32_t)bsp_mesh->cluster_light_offsets[c] * LIGHT_STATS_WORDS_PER_SLOT;
+}
+
+// at map load (vkpt_vertex_buffer_upload_bsp_mesh): the counts zeroed, the header written
+static void
+light_stats_load(VkCommandBuffer cmd_buf, const bsp_mesh_t *bsp_mesh)
+{
+	if (!qvk.buf_light_stats[0].buffer)
+		return;
+	uint32_t words;
+	vkpt_light_stats_words(bsp_mesh, &words);
+	uint32_t *header = Z_Malloc(words * sizeof(uint32_t));
+	vkpt_light_stats_header(bsp_mesh, header);
+	const VkDeviceSize header_bytes = (VkDeviceSize)words * sizeof(uint32_t);
+	for (int i = 0; i < NUM_LIGHT_STATS_BUFFERS; i++)
+	{
+		const BufferResource_t *b = qvk.buf_light_stats + i;
+		if (b->size > header_bytes)
+			vkCmdFillBuffer(cmd_buf, b->buffer, header_bytes, b->size - header_bytes, 0);
+		// vkCmdUpdateBuffer takes at most 65536 bytes a call
+		for (VkDeviceSize at = 0; at < header_bytes && at < b->size; at += 65536)
+			vkCmdUpdateBuffer(cmd_buf, b->buffer, at, min(header_bytes - at, (VkDeviceSize)65536),
+			                  (const byte *)header + at);
+	}
+	Z_Free(header);
+}
+
 VkResult vkpt_light_buffers_create(bsp_mesh_t *bsp_mesh)
 {
 	vkpt_light_buffers_destroy();
 
-	// Light statistics: 2 uints (shadowed, unshadowed) per light per surface orientation (6) per cluster.
-	uint32_t num_stats = bsp_mesh->num_clusters * bsp_mesh->num_light_polys * 6 * 2;
-
-	// Handle rare cases when the map has zero lights
-	if (num_stats == 0)
-		num_stats = 1;
+	uint64_t num_stats = vkpt_light_stats_words(bsp_mesh, &light_stats_header_words);
 
 	for (int frame = 0; frame < NUM_LIGHT_STATS_BUFFERS; frame++)
 	{

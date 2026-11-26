@@ -156,10 +156,11 @@ add_portal_light(ivec2 ipos, inout vec3 high_freq, inout vec3 o_specular)
 	int light_index;
 	float light_pdfw;
 	bool is_sky_light;
+	uint light_stats_addr;	// not counted: the light is seen through the gate
 	vec3 rng = vec3(get_rng(RNG_PORTAL_LIGHT(1)), get_rng(RNG_PORTAL_LIGHT(2)), get_rng(RNG_PORTAL_LIGHT(3)));
 	sample_lights(uint(gate[2].z), far_position, R * normal, R * geo_normal, R * view_direction,
 		phong_exp, phong_scale, phong_weight, get_is_gradient(ipos),
-		pos_on_light, contrib, light_index, light_pdfw, is_sky_light, rng, 2 * M_PI);
+		pos_on_light, contrib, light_index, light_pdfw, is_sky_light, rng, 2 * M_PI, light_stats_addr);
 	if (luminance(abs(contrib)) == 0.0)
 		return;
 
@@ -799,15 +800,21 @@ direct_lighting_restir(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq,
 		// next frame's target function knows which lights reach this cluster. With
 		// ReSTIR on nothing used to write them: the buffers are cleared every frame,
 		// so the prior was simply absent whenever ReSTIR was the one sampling.
+		// The reservoir's light may be one reused from a neighbour that this cluster's
+		// list does not hold: its count would never be read, and has no slot
+		// (light_stats_find is ~0u; THE LIGHT STATISTICS, ONE SLOT PER LIST ENTRY).
 		if(global_ubo.pt_light_stats != 0
 			&& use_shadow_rays
 			&& !null_light
 			&& r.y < global_ubo.num_static_lights
 			&& cluster_idx != ~0u)
 		{
-			uint addr = get_light_stats_addr(cluster_idx, r.y, get_primary_direction(normal));
-			if(vis == 0) addr += 1;
-			atomicAdd(light_stats_bufers[global_ubo.current_frame_idx % NUM_LIGHT_STATS_BUFFERS].stats[addr], 1);
+			uint addr = light_stats_find(cluster_idx, r.y, get_primary_direction(normal));
+			if(addr != ~0u)
+			{
+				if(vis == 0) addr += 1;
+				atomicAdd(light_stats_bufers[global_ubo.current_frame_idx % NUM_LIGHT_STATS_BUFFERS].stats[addr], 1);
+			}
 		}
 
 

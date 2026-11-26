@@ -20,3 +20,107 @@ textures/q1/#lava1#a54da89b:
 #	light_styles 1
 #	bsp_radiance 1
 #	default_radiance 1
+
+# instance of textures/q1/light3_7
+# hip3m2, created at (-461 -222 -233)
+# Inherits everything from textures/q1/light3_7; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/light3_7#9f0d23a0:
+#	texture_base materialDev/textures/q1/light3_7.png
+#	texture_emissive materialDev/remix/TextureDev3/CrossLight_emissive.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1.25
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/q1/light3_6
+# hip3m2, created at (-1025 -77 -447)
+# Inherits everything from textures/q1/light3_6; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/light3_6#55b4b16f:
+#	texture_base materialDev/textures/q1/light3_6.png
+#	texture_emissive materialDev/remix/TextureDev3/BigCrossLight_emissive.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 2.5
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/q1/cop1_1
+# hip3m2, created at (-1022 -92 -451)
+# Inherits everything from textures/q1/cop1_1; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/cop1_1#b8caf670:
+#	texture_base textures/q1/cop1_1.wal
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 0
+#	specular_factor 0
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/q1/light3_6
+# hip3m2, created at (-1016 -82 -449)
+# Inherits everything from textures/q1/light3_6; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/light3_6#168aef3d:
+#	texture_base materialDev/textures/q1/light3_6.png
+#	texture_emissive materialDev/remix/TextureDev3/BigCrossLight_emissive.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 2.5
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/q1/light3_6
+# hip3m2, created at (-987 -39 -452)
+# Inherits everything from textures/q1/light3_6; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/light3_6#13217f9d:
+#	texture_base materialDev/textures/q1/light3_6.png
+#	texture_emissive materialDev/remix/TextureDev3/BigCrossLight_emissive.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 2.5
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1

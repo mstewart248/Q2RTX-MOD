@@ -906,3 +906,45 @@ textures/q1/tlight02#eb4d92f1:
 #	light_styles 1
 #	bsp_radiance 1
 #	default_radiance 1
+
+# instance of textures/q1/mg_tech04_8f
+# start, created at (829 -619 -115)
+# Inherits everything from textures/q1/mg_tech04_8f; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/mg_tech04_8f#89459a7f:
+#	texture_base materialDev/textures/q1/mg_tech04_8f.png
+#	texture_emissive materialDev/textures/q1/mg_tech04_8f_emit.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+	emissive_factor 2
+	light_factor 2
+#	kind REGULAR
+	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/q1/mg_cwall1_3b
+# start, created at (886 -694 -116)
+# Inherits everything from textures/q1/mg_cwall1_3b; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/mg_cwall1_3b#05e7dda4:
+#	texture_base materialDev/textures/q1/mg_cwall1_3b.png
+#	texture_emissive materialDev/textures/q1/mg_cwall1_3b_emit.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+	emissive_factor 10
+	light_factor 4
+#	kind REGULAR
+	is_light 1
+#	light_styles 1
+	bsp_radiance 0
+	default_radiance 10

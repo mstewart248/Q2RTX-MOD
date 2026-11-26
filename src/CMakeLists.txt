@@ -37,6 +37,7 @@ SET(SRC_BASEQ2
 	baseq2/g_q3.c
 	baseq2/g_q1.c
 	baseq2/g_q1demo.c
+	baseq2/g_q3demo.c
 	baseq2/g_q1vm.c
 	baseq2/g_q1vm_cmds.c
 	baseq2/g_q1vm_game.c
@@ -44,6 +45,7 @@ SET(SRC_BASEQ2
 	baseq2/g_q1weap.c
 	baseq2/g_q3weap.c
 	baseq2/g_sp.c
+	baseq2/g_ta.c
 	baseq2/g_xatrix.c
 	baseq2/g_weapon.c
 	baseq2/m_actor.c

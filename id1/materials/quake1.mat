@@ -180,6 +180,8 @@ progs/flame_mdl_00_00:
 # Remix mat_2B89EBD41F4B3D16: progs/g_nail2_00_00.lmp
 progs/g_nail2_00_00:
 	texture_base materialDev/progs/g_nail2_00_00.png
+	texture_metallic materialDev/progs/g_nail2_00_00_metal.png
+	texture_roughness materialDev/progs/g_nail2_00_00_rough.png
 #	Remix roughness constant 0.245 - off, Q2RTX roughness = the maps: texture_roughness 0
 #	roughness_override 0.245
 #	Remix metallic constant 0.89 - off, Q2RTX shades a metal map only:
@@ -488,6 +490,8 @@ progs/v_shot_mdl_00_00:
 # Remix mat_6EE45D9D23B53D7D: progs/w_g_key_00_00.lmp
 progs/w_g_key_00_00:
 	texture_base materialDev/progs/w_g_key_00_00.png
+	texture_roughness materialDev/progs/w_g_key_00_00_rough.png
+	texture_metallic materialDev/progs/w_g_key_00_00_metal.png
 #	Remix roughness constant 0.245 - off, Q2RTX roughness = the maps: texture_roughness 0
 #	roughness_override 0.245
 #	Remix metallic constant 1 - off, Q2RTX shades a metal map only:
@@ -629,6 +633,9 @@ textures/q1/+0basebtn:
 	texture_emissive materialDev/remix/TextureDev/RedDiamondButton_emissive.png
 	is_light 1
 	emissive_factor 1.25
+	texture_metallic materialDev/textures/q1/+0basebtn_metal.png
+	rough_scale 2
+	texture_normals materialDev/textures/q1/+0basebtn_n.png
 
 # Remix mat_1CFDAC80EF57EAA7: +0butnn
 textures/q1/+0butnn:
@@ -1480,7 +1487,8 @@ textures/q1/dem5_3:
 #	texture_metallic materialDev/remix/solid*M1.wal + metalness_factor 0.835
 	texture_emissive materialDev/remix/TextureDev2/DemonWall_Glowing_emissive.png
 	is_light 1
-	emissive_factor 2.5
+	emissive_factor 1
+	light_factor 8
 
 # Remix mat_24935C3212594A58: door03_5
 textures/q1/door03_5:
@@ -1493,6 +1501,8 @@ textures/q1/door03_5:
 # Remix mat_B3715C527AD6D180: door04_2
 textures/q1/door04_2:
 	texture_base materialDev/textures/q1/door04_2.png
+	texture_roughness materialDev/textures/q1/door04_2_rough.png
+	texture_metallic materialDev/textures/q1/door04_2_metal.png
 #	Remix roughness constant 0.49 - off, Q2RTX roughness = the maps: texture_roughness 0
 #	roughness_override 0.49
 #	Remix metallic constant 1 - off, Q2RTX shades a metal map only:
@@ -1657,6 +1667,7 @@ textures/q1/key01_3:
 #	Remix's default roughness 0.5 - off (this material did not set one):
 	texture_roughness materialDev/textures/q1/key01_3_rough.png
 	base_factor 2.5
+	texture_normals materialDev/textures/q1/key01_3_n.png
 #	roughness_override 0.5
 #	Remix metallic constant 0.84 - off, Q2RTX shades a metal map only:
 #	texture_metallic materialDev/remix/solid*M1.wal + metalness_factor 0.84
@@ -1722,7 +1733,7 @@ textures/q1/light1_4:
 #	texture_metallic materialDev/remix/solid*M1.wal + metalness_factor 0.665
 	texture_emissive materialDev/remix/TextureDev2/LightFixtureBlue_emissive.png
 	is_light 1
-	emissive_factor 3.75
+	emissive_factor 1
 
 # Remix mat_40669F5ED3141D0C: light1_5
 textures/q1/light1_5:
@@ -1766,7 +1777,8 @@ textures/q1/light3_8:
 #	texture_metallic materialDev/remix/solid*M1.wal + metalness_factor 1
 	texture_emissive materialDev/remix/TextureDev3/RoundMetalLight_emissive.png
 	is_light 1
-	emissive_factor 5
+	emissive_factor 1
+	volumetric_scale 0.5
 
 # Remix mat_88EC8A68F3BF8F8E: m5_3
 textures/q1/m5_3:
@@ -1934,6 +1946,9 @@ textures/q1/metal4_3:
 # Remix mat_2ECC95D9C3793C87: metal4_4
 textures/q1/metal4_4:
 	texture_base materialDev/textures/q1/metal4_4.png
+	texture_roughness materialDev/textures/q1/metal4_4_rough.png
+	texture_metallic materialDev/textures/q1/metal4_4_metal.png
+	specular_factor 0.25
 #	Remix roughness constant 1 - off, Q2RTX roughness = the maps: texture_roughness 0
 #	roughness_override 1
 #	Remix metallic constant 0.68 - off, Q2RTX shades a metal map only:
@@ -1942,6 +1957,8 @@ textures/q1/metal4_4:
 # Remix mat_BD2A23C7D734D28E: metal4_5
 textures/q1/metal4_5:
 	texture_base materialDev/textures/q1/metal4_5.png
+	texture_roughness materialDev/textures/q1/metal4_5_rough.png
+	texture_metallic materialDev/textures/q1/metal4_5_metal.png
 #	Remix roughness constant 0.915 - off, Q2RTX roughness = the maps: texture_roughness 0
 #	roughness_override 0.915
 #	Remix metallic constant 0.81 - off, Q2RTX shades a metal map only:
@@ -2021,6 +2038,9 @@ textures/q1/metal6_4:
 #	roughness_override 0.305
 #	Remix metallic constant 1 - off, Q2RTX shades a metal map only:
 #	texture_metallic materialDev/remix/solid*M1.wal + metalness_factor 1
+	texture_normals materialDev/textures/q1/metal6_4_n.png
+	texture_roughness materialDev/textures/q1/metal6_4_rough.png
+	texture_metallic materialDev/textures/q1/metal6_4_metal.png
 
 # Remix mat_972EE032D9B3763F: metalt1_1
 textures/q1/metalt1_1:
@@ -2101,6 +2121,7 @@ textures/q1/mmetal1_7:
 #	texture_metallic materialDev/remix/solid*M1.wal + metalness_factor 0.755
 	texture_height materialDev/remix/TextureDev2/PanelFloor_Height.png
 	displace_in 0.025
+	specular_factor 0.3
 
 # Remix mat_E4CE06FEA0885553: muh_bad
 textures/q1/muh_bad:
@@ -2305,7 +2326,10 @@ textures/q1/rune2_4:
 #	texture_metallic materialDev/remix/solid*M1.wal + metalness_factor 1
 	texture_emissive materialDev/remix/TextureDev2/rune2_4_emissive.png
 	is_light 1
-	emissive_factor 1.25
+	emissive_factor 0.5
+	texture_normals materialDev/remix/TextureDev2/rune2_4_n.png
+	texture_roughness materialDev/remix/TextureDev2/rune2_4_rough.png
+	texture_metallic materialDev/remix/TextureDev2/rune2_4_metal.png
 
 # Remix mat_9ABA93D0B0649BDA: rune_a
 textures/q1/rune_a:
@@ -2515,6 +2539,8 @@ textures/q1/tech04_3:
 #	roughness_override 0.755
 #	Remix metallic constant 0.84 - off, Q2RTX shades a metal map only:
 #	texture_metallic materialDev/remix/solid*M1.wal + metalness_factor 0.84
+	texture_normals materialDev/textures/q1/tech04_3_n.png
+	texture_metallic materialDev/textures/q1/tech04_3_metal.png
 
 # Remix mat_7940156114DF9E07: tech04_7
 textures/q1/tech04_7:
@@ -2582,6 +2608,8 @@ textures/q1/tech08_1:
 # Remix mat_D8C04D988025A842: tech09_3
 textures/q1/tech09_3:
 	texture_base materialDev/textures/q1/tech09_3.png
+	emissive_factor 2
+	texture_emissive materialDev/textures/q1/tech09_3_emit.png
 #	Remix roughness constant 0.775 - off, Q2RTX roughness = the maps: texture_roughness 0
 #	roughness_override 0.775
 #	Remix metallic constant 0.745 - off, Q2RTX shades a metal map only:
@@ -3322,6 +3350,11 @@ textures/q1/#lava_tf1:
 #	texture_emissive materialDev/textures/q1/#lava_tf1_light.png
 #	65.3% of it glows (Quake's fullbright colours)
 	is_light 1
+	emissive_factor 4
+	synth_emissive 1
+	emissive_threshold 1
+	default_radiance 5
+	volumetric_scale 10
 
 textures/q1/#lava_tf2:
 	texture_base materialDev/textures/q1/#lava_tf2.png
@@ -4684,8 +4717,9 @@ textures/q1/+a_switch_1:
 textures/q1/+abasebtn:
 	texture_base materialDev/textures/q1/+abasebtn.png
 #	texture_normals materialDev/textures/q1/+abasebtn_n.png
-#	texture_roughness materialDev/textures/q1/+abasebtn_rough.png
-#	texture_metallic materialDev/textures/q1/+abasebtn_metal.png
+	texture_roughness materialDev/textures/q1/+abasebtn_rough.png
+	texture_metallic materialDev/textures/q1/+abasebtn_metal.png
+	rough_scale 1
 #	texture_height materialDev/textures/q1/+abasebtn_height.png
 
 textures/q1/+abaselt_blu:
@@ -8767,13 +8801,15 @@ textures/q1/key01_3b:
 
 textures/q1/key03_1:
 	texture_base materialDev/textures/q1/key03_1.png
-#	texture_normals materialDev/textures/q1/key03_1_n.png
-#	texture_roughness materialDev/textures/q1/key03_1_rough.png
-#	texture_metallic materialDev/textures/q1/key03_1_metal.png
+	texture_normals materialDev/textures/q1/key03_1_n.png
+	texture_roughness materialDev/textures/q1/key03_1_rough.png
+	texture_metallic materialDev/textures/q1/key03_1_metal.png
 #	texture_height materialDev/textures/q1/key03_1_height.png
-#	texture_emissive materialDev/textures/q1/key03_1_light.png
+	texture_emissive materialDev/textures/q1/key03_1_emit.png
 #	7.4% of it glows (Quake's fullbright colours)
 	is_light 1
+	metal_scale 1
+	emissive_factor 2
 
 textures/q1/key03_1b:
 	texture_base materialDev/textures/q1/key03_1b.png
@@ -8888,6 +8924,7 @@ textures/q1/light1_8:
 	texture_base materialDev/textures/q1/light1_8.png
 	emissive_factor 2
 	texture_emissive materialDev/textures/q1/light1_8_emit.png
+	is_light 1
 #	texture_normals materialDev/textures/q1/light1_8_n.png
 #	texture_roughness materialDev/textures/q1/light1_8_rough.png
 #	texture_metallic materialDev/textures/q1/light1_8_metal.png
@@ -8921,6 +8958,7 @@ textures/q1/light3_3:
 	texture_base materialDev/textures/q1/light3_3.png
 	emissive_factor 2
 	texture_emissive materialDev/textures/q1/light3_3_emit.png
+	is_light 1
 #	texture_normals materialDev/textures/q1/light3_3_n.png
 #	texture_roughness materialDev/textures/q1/light3_3_rough.png
 #	texture_metallic materialDev/textures/q1/light3_3_metal.png
@@ -9810,9 +9848,10 @@ textures/q1/metal8_3:
 #	texture_roughness materialDev/textures/q1/metal8_3_rough.png
 #	texture_metallic materialDev/textures/q1/metal8_3_metal.png
 #	texture_height materialDev/textures/q1/metal8_3_height.png
-#	texture_emissive materialDev/textures/q1/metal8_3_light.png
+	texture_emissive materialDev/textures/q1/metal8_3_emit.png
 #	5.7% of it glows (Quake's fullbright colours)
 	is_light 1
+	emissive_factor 2
 
 textures/q1/metal8_4:
 	texture_base materialDev/textures/q1/metal8_4.png
@@ -10169,9 +10208,10 @@ textures/q1/mg_comp1:
 #	texture_roughness materialDev/textures/q1/mg_comp1_rough.png
 #	texture_metallic materialDev/textures/q1/mg_comp1_metal.png
 #	texture_height materialDev/textures/q1/mg_comp1_height.png
-#	texture_emissive materialDev/textures/q1/mg_comp1_light.png
+	texture_emissive materialDev/textures/q1/mg_comp1_emit.png
 #	6.2% of it glows (Quake's fullbright colours)
 	is_light 1
+	emissive_factor 2
 
 textures/q1/mg_comp1_3:
 	texture_base materialDev/textures/q1/mg_comp1_3.png
@@ -10304,6 +10344,8 @@ textures/q1/mg_cwall1_1:
 
 textures/q1/mg_cwall1_1b:
 	texture_base materialDev/textures/q1/mg_cwall1_1b.png
+	emissive_factor 2
+	texture_emissive materialDev/textures/q1/mg_cwall1_1b_emit.png
 #	texture_normals materialDev/textures/q1/mg_cwall1_1b_n.png
 #	texture_roughness materialDev/textures/q1/mg_cwall1_1b_rough.png
 #	texture_metallic materialDev/textures/q1/mg_cwall1_1b_metal.png
@@ -10722,6 +10764,8 @@ textures/q1/mg_edoor01_5:
 
 textures/q1/mg_edoor01_6:
 	texture_base materialDev/textures/q1/mg_edoor01_6.png
+	emissive_factor 2
+	texture_emissive materialDev/textures/q1/mg_edoor01_6_emit.png
 #	texture_normals materialDev/textures/q1/mg_edoor01_6_n.png
 #	texture_roughness materialDev/textures/q1/mg_edoor01_6_rough.png
 #	texture_metallic materialDev/textures/q1/mg_edoor01_6_metal.png
@@ -10758,8 +10802,8 @@ textures/q1/mg_edoor01_8:
 textures/q1/mg_elevate1:
 	texture_base materialDev/textures/q1/mg_elevate1.png
 #	texture_normals materialDev/textures/q1/mg_elevate1_n.png
-#	texture_roughness materialDev/textures/q1/mg_elevate1_rough.png
-#	texture_metallic materialDev/textures/q1/mg_elevate1_metal.png
+	texture_roughness materialDev/textures/q1/mg_elevate1_rough.png
+	texture_metallic materialDev/textures/q1/mg_elevate1_metal.png
 #	texture_height materialDev/textures/q1/mg_elevate1_height.png
 
 textures/q1/mg_enter01:
@@ -10904,6 +10948,8 @@ textures/q1/mg_hatch1_7:
 
 textures/q1/mg_light1:
 	texture_base materialDev/textures/q1/mg_light1.png
+	emissive_factor 2
+	texture_emissive materialDev/textures/q1/mg_light1_emit.png
 #	texture_normals materialDev/textures/q1/mg_light1_n.png
 #	texture_roughness materialDev/textures/q1/mg_light1_rough.png
 #	texture_metallic materialDev/textures/q1/mg_light1_metal.png
@@ -10940,8 +10986,10 @@ textures/q1/mg_metalt1:
 textures/q1/mg_ntech1_1:
 	texture_base materialDev/textures/q1/mg_ntech1_1.png
 #	texture_normals materialDev/textures/q1/mg_ntech1_1_n.png
-#	texture_roughness materialDev/textures/q1/mg_ntech1_1_rough.png
-#	texture_metallic materialDev/textures/q1/mg_ntech1_1_metal.png
+	texture_roughness materialDev/textures/q1/mg_ntech1_1_rough.png
+	texture_metallic materialDev/textures/q1/mg_ntech1_1_metal.png
+	rough_scale 1
+	base_factor 2.5
 #	texture_height materialDev/textures/q1/mg_ntech1_1_height.png
 
 textures/q1/mg_ntech1_2:
@@ -11016,6 +11064,7 @@ textures/q1/mg_scrib2:
 
 textures/q1/mg_sfloor4_2_b1:
 	texture_base materialDev/textures/q1/mg_sfloor4_2_b1.png
+	specular_factor 0
 #	texture_normals materialDev/textures/q1/mg_sfloor4_2_b1_n.png
 #	texture_roughness materialDev/textures/q1/mg_sfloor4_2_b1_rough.png
 #	texture_metallic materialDev/textures/q1/mg_sfloor4_2_b1_metal.png
@@ -11023,6 +11072,7 @@ textures/q1/mg_sfloor4_2_b1:
 
 textures/q1/mg_sfloor4_2_b2:
 	texture_base materialDev/textures/q1/mg_sfloor4_2_b2.png
+	specular_factor 0
 #	texture_normals materialDev/textures/q1/mg_sfloor4_2_b2_n.png
 #	texture_roughness materialDev/textures/q1/mg_sfloor4_2_b2_rough.png
 #	texture_metallic materialDev/textures/q1/mg_sfloor4_2_b2_metal.png
@@ -11100,6 +11150,8 @@ textures/q1/mg_tech04_8e:
 
 textures/q1/mg_tech04_8f:
 	texture_base materialDev/textures/q1/mg_tech04_8f.png
+	emissive_factor 2
+	texture_emissive materialDev/textures/q1/mg_tech04_8f_emit.png
 #	texture_normals materialDev/textures/q1/mg_tech04_8f_n.png
 #	texture_roughness materialDev/textures/q1/mg_tech04_8f_rough.png
 #	texture_metallic materialDev/textures/q1/mg_tech04_8f_metal.png
@@ -11107,6 +11159,8 @@ textures/q1/mg_tech04_8f:
 
 textures/q1/mg_tech04_8g:
 	texture_base materialDev/textures/q1/mg_tech04_8g.png
+	emissive_factor 2
+	texture_emissive materialDev/textures/q1/mg_tech04_8g_emit.png
 #	texture_normals materialDev/textures/q1/mg_tech04_8g_n.png
 #	texture_roughness materialDev/textures/q1/mg_tech04_8g_rough.png
 #	texture_metallic materialDev/textures/q1/mg_tech04_8g_metal.png
@@ -11239,6 +11293,8 @@ textures/q1/mg_tech08_4:
 
 textures/q1/mg_tech08_4b:
 	texture_base materialDev/textures/q1/mg_tech08_4b.png
+	emissive_factor 2
+	texture_emissive materialDev/textures/q1/mg_tech08_4b_emit.png
 #	texture_normals materialDev/textures/q1/mg_tech08_4b_n.png
 #	texture_roughness materialDev/textures/q1/mg_tech08_4b_rough.png
 #	texture_metallic materialDev/textures/q1/mg_tech08_4b_metal.png
@@ -11438,7 +11494,7 @@ textures/q1/mhard:
 
 textures/q1/mhole1_1:
 	texture_base materialDev/textures/q1/mhole1_1.png
-#	texture_normals materialDev/textures/q1/mhole1_1_n.png
+	texture_normals materialDev/textures/q1/mhole1_1_n.png
 	texture_roughness materialDev/textures/q1/mhole1_1_rough.png
 	texture_metallic materialDev/textures/q1/mhole1_1_metal.png
 #	texture_height materialDev/textures/q1/mhole1_1_height.png
@@ -11536,9 +11592,9 @@ textures/q1/mmetal1_7b:
 
 textures/q1/mmetal1_8:
 	texture_base materialDev/textures/q1/mmetal1_8.png
-#	texture_normals materialDev/textures/q1/mmetal1_8_n.png
-#	texture_roughness materialDev/textures/q1/mmetal1_8_rough.png
-#	texture_metallic materialDev/textures/q1/mmetal1_8_metal.png
+	texture_normals materialDev/textures/q1/mmetal1_8_n.png
+	texture_roughness materialDev/textures/q1/mmetal1_8_rough.png
+	texture_metallic materialDev/textures/q1/mmetal1_8_metal.png
 #	texture_height materialDev/textures/q1/mmetal1_8_height.png
 
 textures/q1/mmetal1_81_jm:
@@ -18492,8 +18548,8 @@ progs/boss_mdl_00_00:
 progs/buzzsaw_mdl_00_00:
 	texture_base materialDev/progs/buzzsaw_mdl_00_00.png
 #	texture_normals materialDev/progs/buzzsaw_mdl_00_00_n.png
-#	texture_roughness materialDev/progs/buzzsaw_mdl_00_00_rough.png
-#	texture_metallic materialDev/progs/buzzsaw_mdl_00_00_metal.png
+	texture_roughness materialDev/progs/buzzsaw_mdl_00_00_rough.png
+	texture_metallic materialDev/progs/buzzsaw_mdl_00_00_metal.png
 #	texture_height materialDev/progs/buzzsaw_mdl_00_00_height.png
 
 progs/candle_mdl_00_00:
@@ -18965,10 +19021,11 @@ progs/gold_ring_mdl_00_00:
 progs/grem_mdl_00_00:
 	texture_base materialDev/progs/grem_mdl_00_00.png
 #	texture_normals materialDev/progs/grem_mdl_00_00_n.png
-#	texture_roughness materialDev/progs/grem_mdl_00_00_rough.png
+	texture_roughness materialDev/progs/grem_mdl_00_00_rough.png
 #	texture_metallic materialDev/progs/grem_mdl_00_00_metal.png
 #	texture_height materialDev/progs/grem_mdl_00_00_height.png
-	texture_emissive materialDev/progs/grem_mdl_00_00_light.png
+	texture_emissive materialDev/progs/grem_mdl_00_00_emit.png
+	emissive_factor 2
 
 progs/grenade_mdl_00_00:
 	texture_base materialDev/progs/grenade_mdl_00_00.png
@@ -19173,8 +19230,8 @@ progs/health25_00_03:
 progs/hknight_00_00:
 	texture_base materialDev/progs/hknight_00_00.png
 #	texture_normals materialDev/progs/hknight_00_00_n.png
-#	texture_roughness materialDev/progs/hknight_00_00_rough.png
-#	texture_metallic materialDev/progs/hknight_00_00_metal.png
+	texture_roughness materialDev/progs/hknight_00_00_rough.png
+	texture_metallic materialDev/progs/hknight_00_00_metal.png
 #	texture_height materialDev/progs/hknight_00_00_height.png
 
 progs/hknight_mdl_00_00:
@@ -19260,7 +19317,7 @@ progs/knight_mdl_01_00:
 progs/lantern_mdl_00_00:
 	texture_base materialDev/progs/lantern_mdl_00_00.png
 #	texture_normals materialDev/progs/lantern_mdl_00_00_n.png
-#	texture_roughness materialDev/progs/lantern_mdl_00_00_rough.png
+	texture_roughness materialDev/progs/lantern_mdl_00_00_rough.png
 #	texture_metallic materialDev/progs/lantern_mdl_00_00_metal.png
 #	texture_height materialDev/progs/lantern_mdl_00_00_height.png
 	texture_emissive materialDev/progs/lantern_mdl_00_00_light.png
@@ -19496,6 +19553,8 @@ progs/nailssmall_00_00:
 	texture_metallic materialDev/progs/nailssmall_00_00_metal.png
 	emissive_factor 2
 	texture_emissive materialDev/progs/nailssmall_00_00_emit.png
+	metal_scale 4
+	rough_scale 4
 #	texture_height materialDev/progs/nailssmall_00_00_height.png
 
 progs/ogre_mdl_00_00:
@@ -20302,7 +20361,17 @@ progs/v_shot2_mdl_00_00:
 progs/v_spike_mdl_00_00:
 	texture_base materialDev/progs/v_spike_mdl_00_00.png
 #	texture_normals materialDev/progs/v_spike_mdl_00_00_n.png
-#	texture_roughness materialDev/progs/v_spike_mdl_00_00_rough.png
+	texture_roughness materialDev/progs/v_spike_mdl_00_00_rough.png
+	emissive_factor 8
+	texture_emissive 0
+	is_light 1
+	kind REGULAR
+	volumetric_scale 2
+	stained_glass 1
+	stained_light_distance 0.1
+	stained_light_sun 1
+	stained_light_size 4
+	default_radiance 4
 #	texture_metallic materialDev/progs/v_spike_mdl_00_00_metal.png
 #	texture_height materialDev/progs/v_spike_mdl_00_00_height.png
 

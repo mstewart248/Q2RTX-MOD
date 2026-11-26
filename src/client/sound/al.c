@@ -92,6 +92,9 @@ double AL_GetStreamLatency(void)
 // AL_INVERSE_DISTANCE_CLAMPED's outer clamp: past any map
 #define AL_INVERSE_MAX_DISTANCE 65536
 
+// the music source's most gain: +12 dB, ogg.c's Q1_BOOST_MAX_DB
+#define AL_STREAM_MAX_GAIN      3.982f
+
 static ALuint s_srcnums[MAX_CHANNELS];
 static ALuint streamSource = 0;
 static int s_framecount;
@@ -125,6 +128,9 @@ AL_InitStreamSource(void)
 	qalSourcei(streamSource, AL_BUFFER, 0);
 	qalSourcei(streamSource, AL_LOOPING, AL_FALSE);
 	qalSourcei(streamSource, AL_SOURCE_RELATIVE, AL_TRUE);
+	// a Quake 1 track's ogg_q1_boost takes the music past 1 (ogg.c QUAKE 1
+	// MUSIC LEVEL); OpenAL clamps a source's gain to AL_MAX_GAIN, 1 by default
+	qalSourcef(streamSource, AL_MAX_GAIN, AL_STREAM_MAX_GAIN);
 }
 
 /*
@@ -980,10 +986,10 @@ AL_RawSamples(int samples, int rate, int width, int channels,
 	qalBufferData(buffer, format, (ALvoid *)data,
 		(samples * width * channels), rate);
 
-	/* set volume */
-	if (volume > 1.0f)
+	/* set volume: past 1 only for a Quake 1 track's ogg_q1_boost */
+	if (volume > AL_STREAM_MAX_GAIN)
 	{
-		volume = 1.0f;
+		volume = AL_STREAM_MAX_GAIN;
 	}
 
 	qalSourcef(streamSource, AL_GAIN, volume);

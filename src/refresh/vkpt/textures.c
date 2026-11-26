@@ -526,7 +526,51 @@ vkpt_image_num_miplevels(const image_t *q_img)
 	if (q_img->flags & IF_NO_MIPMAPS)
 		return 1;
 
-	return get_num_miplevels(q_img->upload_width, q_img->upload_height);
+	const int scale = vkpt_image_upload_scale(q_img);
+	return get_num_miplevels(q_img->upload_width * scale, q_img->upload_height * scale);
+}
+
+/* A LOW-RESOLUTION MAP DRAWN NEAREST-NEIGHBOUR UPSCALED (Matt, 2026-11-25). With
+   texture filtering, a 64 x 64 roughness or metallic map read up close ramps
+   across each whole texel into the next, and a shine that is non-linear in it
+   turns that ramp into a blurry, wrong-looking smear - while pt_nearest showed
+   the same map exactly right. An N x N block per texel leaves the filter only a
+   1/N-texel edge between them, and the mips below are the same picture again
+   (2x and 4x exactly), so far away nothing changes. See image_t upload_scale. */
+int
+vkpt_image_upload_scale(const image_t *q_img)
+{
+	int scale = q_img->upload_scale;
+	if (scale <= 1 || (q_img->flags & (IF_NO_MIPMAPS | IF_HEIGHT_MAP | IF_NORMAL_MAP)))
+		return 1;
+	scale = min(scale, VKPT_UPLOAD_SCALE_MAX);
+	const int side = max(q_img->upload_width, q_img->upload_height);
+	while (scale > 1 && side * scale > VKPT_UPLOAD_SCALE_MAX_SIDE)
+		scale--;
+	return max(scale, 1);
+}
+
+void
+vkpt_image_expand_nearest(const byte *src, int w, int h, int bpp, int scale, byte *dst)
+{
+	if (scale <= 1)
+	{
+		memcpy(dst, src, (size_t)w * h * bpp);
+		return;
+	}
+	const size_t row_bytes = (size_t)w * scale * bpp;
+	for (int y = 0; y < h; y++)
+	{
+		// one row widened, then repeated down the block
+		byte *row = dst + (size_t)y * scale * row_bytes;
+		const byte *in = src + (size_t)y * w * bpp;
+		byte *out = row;
+		for (int x = 0; x < w; x++, in += bpp)
+			for (int r = 0; r < scale; r++, out += bpp)
+				memcpy(out, in, bpp);
+		for (int r = 1; r < scale; r++)
+			memcpy(row + r * row_bytes, row, row_bytes);
+	}
 }
 
 /* POM HEIGHT MAPS GET A MIP CHAIN OF MAXIMUM HEIGHTS, NOT AVERAGES.
@@ -1070,6 +1114,65 @@ image_t *vkpt_alpha_mask_texture(image_t *image, int func)
 
 /*
 =================
+vkpt_colour_mask_texture
+
+A mask image like vkpt_alpha_mask_texture's, made from an image's COLOUR:
+kept where its brightest channel is at least (threshold) of 255. For Quake
+III's dark cut-outs (q3shader.c dark_cutout) - an image that darkens what is
+behind it by its colour, so its white is the surface and its black is not
+there (Team Arena's tree branches). A clone named "<image>*MC<threshold>.wal".
+NULL as for vkpt_alpha_mask_texture.
+=================
+*/
+image_t *vkpt_colour_mask_texture(image_t *image, int threshold)
+{
+	if (!image || image == R_NOTEXTURE)
+		return NULL;
+
+	char mask_name[MAX_IMAGE_PATH];
+	char suffix[16];
+	Q_snprintf(suffix, sizeof(suffix), "*MC%d.wal", threshold);
+
+	Q_strlcpy(mask_name, image->name, sizeof(mask_name));
+	char *dot = strrchr(mask_name, '.');
+	if (dot && dot > strrchr(mask_name, '/'))
+		*dot = 0;
+	if (strlen(mask_name) + strlen(suffix) >= sizeof(mask_name))
+		mask_name[sizeof(mask_name) - strlen(suffix) - 1] = 0;
+	Q_strlcat(mask_name, suffix, sizeof(mask_name));
+
+	image_t *prev_image = IMG_FindExisting(mask_name, image->type);
+	if (prev_image != R_NOTEXTURE)
+	{
+		prev_image->registration_sequence = registration_sequence;
+		return prev_image;
+	}
+
+	if (!image->pix_data)
+		return NULL;
+
+	image_t *mask = IMG_Clone(image, mask_name);
+	if (mask == R_NOTEXTURE || !mask->pix_data)
+		return NULL;
+
+	bool any_kept = false;
+	byte *pixel = mask->pix_data;
+	const int count = mask->upload_width * mask->upload_height;
+	for (int i = 0; i < count; i++, pixel += 4)
+	{
+		const int brightest = max(pixel[0], max(pixel[1], pixel[2]));
+		const bool keep = brightest >= threshold;
+		pixel[0] = pixel[1] = pixel[2] = keep ? 255 : 0;
+		pixel[3] = 255;
+		any_kept |= keep;
+	}
+	mask->alpha_mask_empty = !any_kept;
+
+	return mask;
+}
+
+/*
+=================
 vkpt_solid_texture
 
 One colour all over, in a clone of (image) named "<image>*<tag>.wal": the
@@ -1081,7 +1184,9 @@ pixels left to clone.
 */
 image_t *vkpt_solid_texture(image_t *image, const char *tag, byte r, byte g, byte b)
 {
-	if (!image || image == R_NOTEXTURE || !image->pix_data)
+	// no pixels is fine when the stand-in was made at an earlier load:
+	// vkpt_solid_texture_named looks for that first
+	if (!image || image == R_NOTEXTURE)
 		return NULL;
 
 	char name[MAX_IMAGE_PATH];
@@ -2128,8 +2233,9 @@ vkpt_textures_end_registration()
 		if (tex_images[i] != VK_NULL_HANDLE || !q_img->registration_sequence || q_img->pix_data == NULL)
 			continue;
 
-		img_info.extent.width = q_img->upload_width;
-		img_info.extent.height = q_img->upload_height;
+		// a material's rough_scale & co: the texture is pix_data N times over (vkpt_image_upload_scale)
+		img_info.extent.width = q_img->upload_width * vkpt_image_upload_scale(q_img);
+		img_info.extent.height = q_img->upload_height * vkpt_image_upload_scale(q_img);
 		img_info.mipLevels = vkpt_image_num_miplevels(q_img);
 		img_info.format = get_image_format(q_img);
 		if (!q_img->is_srgb)
@@ -2230,8 +2336,10 @@ vkpt_textures_end_registration()
 		offset += mem_req.alignment - 1;
 		offset &= ~(mem_req.alignment - 1);
 
-		int wd = q_img->upload_width;
-		int ht = q_img->upload_height;
+		// level 0 as uploaded: pix_data, N times over for a material's rough_scale & co
+		const int upload_scale = vkpt_image_upload_scale(q_img);
+		int wd = q_img->upload_width * upload_scale;
+		int ht = q_img->upload_height * upload_scale;
 
 		VkImageSubresourceRange subresource_range = {
 			.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -2251,7 +2359,11 @@ vkpt_textures_end_registration()
 		);
 
 		int bytes_per_pixel = image_bytes_per_pixel(q_img);
-		memcpy(staging_buffer + offset, q_img->pix_data, wd * ht * bytes_per_pixel);
+		if (upload_scale > 1)
+			vkpt_image_expand_nearest(q_img->pix_data, q_img->upload_width, q_img->upload_height,
+				bytes_per_pixel, upload_scale, (byte *)staging_buffer + offset);
+		else
+			memcpy(staging_buffer + offset, q_img->pix_data, wd * ht * bytes_per_pixel);
 
 		VkBufferImageCopy cpy_info[32] = { {
 			.bufferOffset = offset,
@@ -2379,15 +2491,17 @@ vkpt_textures_end_registration()
 			// Push constant: image index.
 			vkCmdPushConstants(cmd_buf, normalize_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t), &i);
 
-			vkCmdDispatch(cmd_buf, 
-				(q_img->upload_width + 15) / 16, 
+			vkCmdDispatch(cmd_buf,
+				(q_img->upload_width + 15) / 16,
 				(q_img->upload_height + 15) / 16, 1);
 		}
 
 		int num_mip_levels = vkpt_image_num_miplevels(q_img);
 
-		int wd = q_img->upload_width;
-		int ht = q_img->upload_height;
+		// the texture's own size: N times pix_data's for a material's rough_scale & co
+		// (never a normal map, so the dispatch above is pix_data's size)
+		int wd = q_img->upload_width * vkpt_image_upload_scale(q_img);
+		int ht = q_img->upload_height * vkpt_image_upload_scale(q_img);
 		
 		for (int mip = 1; mip < num_mip_levels; mip++) 
 		{

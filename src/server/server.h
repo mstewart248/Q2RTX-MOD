@@ -216,7 +216,7 @@ typedef enum {
 
 #define ZPACKET_HEADER      5
 
-#define MAX_SOUND_PACKET   14
+#define MAX_SOUND_PACKET   (14 + (msg_write_wide ? 6 : 0))  // positions are longs on a wide map
 
 typedef struct {
     list_t              entry;
@@ -230,7 +230,7 @@ typedef struct {
             uint8_t     volume;
             uint8_t     attenuation;
             uint8_t     timeofs;
-            int16_t     pos[3];     // saved in case entity is freed
+            int32_t     pos[3];     // saved in case entity is freed; 12.3, wide maps need 32 bits
         };
     };
 } message_packet_t;
@@ -558,6 +558,7 @@ extern cvar_t       *map_override_path;
 extern cvar_t       *sv_timeout;
 extern cvar_t       *sv_zombietime;
 extern cvar_t       *sv_ghostime;
+extern cvar_t       *sv_wide_coords;
 
 extern client_t     *sv_client;
 extern edict_t      *sv_player;

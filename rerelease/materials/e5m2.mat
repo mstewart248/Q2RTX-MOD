@@ -15,7 +15,7 @@ textures/q1/twall2_1#d822bfab:
 #	emissive_factor 2
 	light_factor 16
 #	kind REGULAR
-	is_light 0
+	is_light 1
 #	light_styles 1
 #	bsp_radiance 1
 	default_radiance 3
@@ -36,7 +36,7 @@ textures/q1/twall2_1#b720ec8b:
 #	emissive_factor 2
 #	light_factor 1
 #	kind REGULAR
-#	is_light 0
+	is_light 1
 #	light_styles 1
 #	bsp_radiance 1
 	default_radiance 3
@@ -55,9 +55,9 @@ textures/q1/twall2_1#db94e808:
 #	specular_factor 0
 #	base_factor 1
 #	emissive_factor 2
-#	light_factor 1
+	light_factor 4
 #	kind REGULAR
-#	is_light 0
+	is_light 1
 #	light_styles 1
 #	bsp_radiance 1
 	default_radiance 2
@@ -76,9 +76,9 @@ textures/q1/twall2_1#2c526b00:
 #	specular_factor 0
 #	base_factor 1
 #	emissive_factor 2
-#	light_factor 1
+	light_factor 4
 #	kind REGULAR
-#	is_light 0
+	is_light 1
 #	light_styles 1
 #	bsp_radiance 1
 	default_radiance 3

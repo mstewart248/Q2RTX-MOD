@@ -121,6 +121,7 @@ typedef struct {
     vec3_t  xyz;
     vec2_t  st;
     vec3_t  normal;
+    float   alpha;      // the drawvert's colour alpha, 0..1: alphaGen vertex
 } q3vtx_t;
 
 typedef struct {
@@ -594,6 +595,7 @@ static q3vtx_t *tessellate_patch(const q3drawvert_t *ctrl, int width, int height
                     out->st[0] += w * cp->st[0];
                     out->st[1] += w * cp->st[1];
                     VectorMA(out->normal, w, cp->normal, out->normal);
+                    out->alpha += w * cp->color[3] * (1.0f / 255);
                 }
             }
             VectorNormalize(out->normal);
@@ -843,6 +845,7 @@ static void vertex_from_draw(const q3drawvert_t *dv, q3vtx_t *out)
     out->st[0] = dv->st[0];
     out->st[1] = dv->st[1];
     VectorCopy(dv->normal, out->normal);
+    out->alpha = dv->color[3] * (1.0f / 255);
 }
 
 static int build_trisurf(q3load_t *L, int surfnum)
@@ -934,6 +937,7 @@ static void lerp_vertex(const q3vtx_t *a, const q3vtx_t *b, float da, float db, 
     }
     out->st[0] = a->st[0] + f * (b->st[0] - a->st[0]);
     out->st[1] = a->st[1] + f * (b->st[1] - a->st[1]);
+    out->alpha = a->alpha + f * (b->alpha - a->alpha);
 }
 
 static void emit_clipped(q3array_t *out, const q3clippoly_t *p, int shader)
@@ -1822,6 +1826,7 @@ int BSP_LoadQ3(bsp_t *bsp, const byte *buf, size_t filelen)
     memsize += HUNK_SIZE(numfaces * 3, msurfedge_t);
     memsize += HUNK_SIZE(numfaces * 3 * 2, vec3_t);
     memsize += HUNK_SIZE(numfaces * 3, mbasis_t);
+    memsize += HUNK_SIZE(numfaces * 3, byte);
     numfogvolumes = build_fog_volumes(&L, NULL);
     memsize += HUNK_SIZE(max(numfogvolumes, 1), mfogvolume_t);
 #endif
@@ -2105,6 +2110,9 @@ int BSP_LoadQ3(bsp_t *bsp, const byte *buf, size_t filelen)
     bsp->basisvectors = ALLOC(sizeof(vec3_t) * max(numfaces * 3 * 2, 1));
     bsp->numbases = numfaces * 3;
     bsp->bases = ALLOC(sizeof(mbasis_t) * max(numfaces * 3, 1));
+    // each corner's vertex alpha, for alphaGen vertex (Team Arena's terrain
+    // blends one rock into the next by it): indexed as the bases
+    bsp->corner_alpha = ALLOC(max(numfaces * 3, 1));
 
     bsp->numfaces = numfaces;
     bsp->faces = ALLOC(sizeof(mface_t) * max(numfaces, 1));
@@ -2165,6 +2173,9 @@ int BSP_LoadQ3(bsp_t *bsp, const byte *buf, size_t filelen)
             bsp->bases[s].normal = s * 2;
             bsp->bases[s].tangent = s * 2 + 1;
             bsp->bases[s].bitangent = s * 2 + 1;
+
+            float a = min(max(tri->v[k].alpha, 0.0f), 1.0f) * 255;
+            bsp->corner_alpha[s] = (byte)Q_rint(a);
         }
     }
 

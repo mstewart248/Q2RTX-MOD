@@ -265,6 +265,8 @@ static cvar_t   *cl_explosion_water_flame;  // Flow's flame, against the explosi
 static cvar_t   *cl_explosion_water_light;  // the light's strength under water
 static cvar_t   *cl_flow_bfg_zaps;
 static cvar_t   *cl_flow_bfg_particles;
+// a Quake cluster grenade bomblet's Flow fire, against a rocket's (TE_Q1_CLUSTER)
+static cvar_t   *cl_q1_cluster_scale;
 
 
 /*
@@ -347,6 +349,10 @@ void CL_RegisterTEntSounds(void)
 
     // a Quake 1 level run by its progs: Quake's own impact sounds
     CL_Q1RegisterTEntSounds();
+
+    // Quake III's gibs and guns: CL_Q3W_RegisterMedia, in the models' pass
+    // before this one, took their handles; S_EndRegistration would free them
+    CL_Q3W_RegisterSounds();
 }
 
 /*
@@ -3113,6 +3119,35 @@ static void CL_Q1Blast(void)
         ex->light = 200;
 }
 
+/*
+A bomblet from rogue's cluster grenade going off at te.pos1 (TE_Q1_CLUSTER;
+baseq2 g_q1vm_cmds.c tells it apart from other TE_EXPLOSION2s). It is a
+grenade's blast: Flow's fire at cl_q1_cluster_scale of a rocket's, since a
+bomblet does 90 damage to a rocket's 120 and five go off together. Without
+Flow (D3D12, GL, software, cl_flow_explosions 0) the classic explosion and
+its light show instead. cl_flow_explosions 2 hides those once Flow draws.
+Quake's own burst in the colours the progs sent (230-234, orange) stays on top.
+*/
+static void CL_Q1ClusterBlast(void)
+{
+    explosion_t *ex = CL_PlainExplosion(false);
+
+    if (!cl_explosion_sprites->integer) {
+        // Quake II's grenade's run of the model, as TE_GRENADE_EXPLOSION
+        ex->frames = 19;
+        ex->baseframe = 30;
+    }
+    if (cl_disable_explosions->integer & NOEXP_GRENADE)
+        ex->type = ex_light;
+    CL_FlowExplosion(ex, Cvar_ClampValue(cl_q1_cluster_scale, 0.1f, 2.0f), R_FLOW_FIRE);
+    if (!ex->underwater)
+        CL_FlowGibEvent(false, te.pos1, te.pos1);
+    if (!(cl_disable_particles->integer & NOPART_GRENADE_EXPLOSION))
+        CL_Q1ParticleExplosion2(te.pos1, te.color, te.count);
+    if (cl_dlight_hacks->integer & DLHACK_SMALLER_EXPLOSION)
+        ex->light = 200;
+}
+
 static void CL_Q1TempEntity(void)
 {
     cdlight_t   *dl;
@@ -3168,6 +3203,11 @@ static void CL_Q1TempEntity(void)
         dl->die = cl.time + 500;
         dl->decay = 300;
         VectorSet(dl->color, 1.0f, 0.8f, 0.6f);
+        S_StartSound(te.pos1, 0, 0, cl_q1_sfx_r_exp3, 1, ATTN_NORM, 0);
+        break;
+
+    case TE_Q1_CLUSTER:         // a cluster grenade bomblet: TE_EXPLOSION2 as a blast
+        CL_Q1ClusterBlast();
         S_StartSound(te.pos1, 0, 0, cl_q1_sfx_r_exp3, 1, ATTN_NORM, 0);
         break;
 
@@ -3564,7 +3604,18 @@ void CL_ParseTEnt(void)
     case TE_Q3_BULLET:
     case TE_Q3_SHOTGUN:
     case TE_Q3_PLASMA_EXPLOSION:
+    case TE_TA_NAIL:
+    case TE_TA_CHAINGUN:
         CL_Q3W_Impact(te.type, te.pos1, te.dir);
+        break;
+
+    // Team Arena's (q3weapons.c): the kamikaze's sphere and shockwaves, and
+    // the invulnerability sphere a prox mine burst
+    case TE_TA_KAMIKAZE:
+        CL_Q3W_Kamikaze(te.pos1);
+        break;
+    case TE_TA_JUICED:
+        CL_Q3W_Juiced(te.pos1);
         break;
 
     // a plasma ball that went off before we saw it: shown flying there first
@@ -3573,8 +3624,9 @@ void CL_ParseTEnt(void)
         break;
 
     case TE_Q3_ROCKET_EXPLOSION:
-    case TE_Q3_GRENADE_EXPLOSION: {
-        const bool grenade = te.type == TE_Q3_GRENADE_EXPLOSION;
+    case TE_Q3_GRENADE_EXPLOSION:
+    case TE_TA_PROX_EXPLOSION: {     // a prox mine: the grenade's, its own sound
+        const bool grenade = te.type != TE_Q3_ROCKET_EXPLOSION;
 
         ex = CL_PlainExplosion(false);
         if (grenade && !cl_explosion_sprites->integer) {
@@ -4016,6 +4068,7 @@ void CL_InitTEnts(void)
     cl_explosion_water_light = Cvar_Get("cl_explosion_water_light", "1", 0);
     cl_flow_bfg_zaps = Cvar_Get("cl_flow_bfg_zaps", "8", 0);
     cl_flow_bfg_particles = Cvar_Get("cl_flow_bfg_particles", "0.25", 0);
+    cl_q1_cluster_scale = Cvar_Get("cl_q1_cluster_scale", "0.75", 0);
     cl_beam_thirdperson = Cvar_Get("cl_beam_thirdperson", "0", CVAR_ARCHIVE);
     cl_beam_track_view = Cvar_Get("cl_beam_track_view", "1", CVAR_ARCHIVE);
     // NOT archived, exactly like cl_muzzleflash_offset: a dev knob that

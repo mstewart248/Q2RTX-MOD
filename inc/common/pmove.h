@@ -49,8 +49,9 @@ typedef struct {
     // change how the player moves, and the only per-player movement state that
     // reaches client prediction bit-for-bit is pmove_state_t, so the game
     // carries them in s.gravity, which it keeps even on these maps: an ODD
-    // gravity is Haste (x1.3 speed), and a gravity of 0 or 1 is Flight. 1/800
-    // of gravity is the price. Ignored when false, so no other map changes.
+    // gravity is Haste (x1.3 speed), bit 1 is Team Arena's Scout (x1.5, over
+    // Haste), and a gravity of 0 to 3 is Flight. 3/800 of gravity is the
+    // price. Ignored when false, so no other map changes.
     bool        q3;
     // Quake III Arena's player movement (bg_pmove.c) in place of Quake II's -
     // the bot match's "physics: Quake 3" (g_q3_physics). Both sides read it

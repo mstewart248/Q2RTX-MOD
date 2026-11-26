@@ -821,7 +821,8 @@ static void G_SetQ3ScoreStats(edict_t *ent)
 
     stats[STAT_Q3_SCORES] = STAT_Q3_SCORES_TAG | (any ? STAT_Q3_SCORES_OTHER : 0);
     stats[STAT_Q3_OTHER_SCORE] = best;
-    stats[STAT_Q3_FRAGLIMIT] = fraglimit->value > 0 ? (int)fraglimit->value : 0;
+    // the game's own: a campaign level's or a Team Arena skirmish's (g_sp.c)
+    stats[STAT_Q3_FRAGLIMIT] = G_FragLimit() > 0 ? (int)G_FragLimit() : 0;
 }
 
 void G_SetStats(edict_t *ent)
@@ -1057,6 +1058,7 @@ void G_SetStats(edict_t *ent)
     ent->client->hit_marker_damage = 0;
 
     CTF_SetStats(ent);
+    TA_SetStats(ent);   // Team Arena's persistent powerup outside CTF (g_ta.c)
 }
 
 /*

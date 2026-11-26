@@ -192,43 +192,58 @@ scripts/bots.txt names each bot's character file ("aifile bots/crash_c.c");
 failing that, botfiles/bots/<name>_c.c.
 =================
 */
-static void BotChar_AIFile(const char *name, char *out, size_t size)
+// (name)'s "aifile" in the bots.txt at (path), into (file): false if not there
+static bool BotChar_AIFileIn(const char *path, const char *name, char *file, size_t size)
 {
     void        *buf = NULL;
-    char        *text, tok[MAX_QPATH], key[MAX_QPATH], who[MAX_QPATH], file[MAX_QPATH];
+    char        *text, tok[MAX_QPATH], key[MAX_QPATH], who[MAX_QPATH], ai[MAX_QPATH];
     const char  *data;
     int         len;
+    bool        found = false;
 
-    Q_snprintf(out, size, "baseq3/botfiles/bots/%s_c.c", name);
-    Q_strlwr(out);
-
-    len = gi.LoadFile ? gi.LoadFile("baseq3/scripts/bots.txt", &buf) : -1;
+    len = gi.LoadFile ? gi.LoadFile(path, &buf) : -1;
     if (len <= 0 || !buf)
-        return;
+        return false;
     text = gi.TagMalloc(len + 1, TAG_GAME);
     memcpy(text, buf, len);
     text[len] = 0;
     gi.FreeFile(buf);
 
     data = text;
-    while (BotChar_Token(&data, tok, sizeof(tok))) {
+    while (!found && BotChar_Token(&data, tok, sizeof(tok))) {
         if (strcmp(tok, "{"))
             continue;
-        who[0] = file[0] = 0;
+        who[0] = ai[0] = 0;
         while (BotChar_Token(&data, key, sizeof(key)) && strcmp(key, "}")) {
             if (!BotChar_Token(&data, tok, sizeof(tok)))
                 break;
             if (!Q_stricmp(key, "name"))
                 Q_strlcpy(who, tok, sizeof(who));
             else if (!Q_stricmp(key, "aifile"))
-                Q_strlcpy(file, tok, sizeof(file));
+                Q_strlcpy(ai, tok, sizeof(ai));
         }
-        if (who[0] && file[0] && !Q_stricmp(who, name)) {
-            Q_snprintf(out, size, "baseq3/botfiles/%s", file);
-            break;
+        if (who[0] && ai[0] && !Q_stricmp(who, name)) {
+            Q_strlcpy(file, ai, size);
+            found = true;
         }
     }
     gi.TagFree(text);
+    return found;
+}
+
+static void BotChar_AIFile(const char *name, char *out, size_t size)
+{
+    char file[MAX_QPATH];
+
+    Q_snprintf(out, size, "baseq3/botfiles/bots/%s_c.c", name);
+    Q_strlwr(out);
+
+    // Quake III's list, then Team Arena's own copy (files.c "missionpack/"),
+    // which adds its characters: Fritzkrieg, Pi, and the team members on its
+    // james and janet bodies (Neptune, Morgan, Khan, Gaunt, Callisto...)
+    if (BotChar_AIFileIn("baseq3/scripts/bots.txt", name, file, sizeof(file)) ||
+        BotChar_AIFileIn("missionpack/scripts/bots.txt", name, file, sizeof(file)))
+        Q_snprintf(out, size, "baseq3/botfiles/%s", file);
 }
 
 /*

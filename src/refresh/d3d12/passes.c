@@ -180,9 +180,15 @@ bool d3d12_record_blood_upload(ID3D12GraphicsCommandList4 *cmd, const d3d12_bloo
 void d3d12_clear_buffer(ID3D12GraphicsCommandList4 *cmd, ID3D12Resource *buffer, uint64_t size,
                         ID3D12Resource *zeros)
 {
+    d3d12_clear_buffer_range(cmd, buffer, 0, size, zeros);
+}
+
+void d3d12_clear_buffer_range(ID3D12GraphicsCommandList4 *cmd, ID3D12Resource *buffer, uint64_t offset,
+                              uint64_t size, ID3D12Resource *zeros)
+{
     for (uint64_t at = 0; at < size; at += D3D12_ZERO_BUFFER_SIZE) {
         const uint64_t n = size - at < D3D12_ZERO_BUFFER_SIZE ? size - at : D3D12_ZERO_BUFFER_SIZE;
-        ID3D12GraphicsCommandList4_CopyBufferRegion(cmd, buffer, at, zeros, 0, n);
+        ID3D12GraphicsCommandList4_CopyBufferRegion(cmd, buffer, offset + at, zeros, 0, n);
     }
     D3D12_RESOURCE_BARRIER b = { 0 };
     b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;

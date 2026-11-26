@@ -131,6 +131,17 @@ typedef struct pbr_material_s {
 	// how wide the bright bloom round the light is, in degrees: the angle at
 	// which the spread light's forward half falls to half
 	float stained_spread;
+	// rough_scale / metal_scale / emissive_scale 1..4: the roughness, metallic
+	// and emissive maps drawn N times their size, nearest-neighbour - every texel
+	// an N x N block - so texture filtering blends only a thin edge between
+	// texels, not each whole texel into the next. For low-resolution maps
+	// (Quake 1's 64 x 64) that should look pixel-exact up close without
+	// pt_nearest for the whole game (Matt, 2026-11-25). The file and what
+	// `mat author` paints stay at their own size. 1 = as loaded.
+	// image_t upload_scale, MAT_SyncUploadScales.
+	int rough_scale;
+	int metal_scale;
+	int emissive_scale;
 	float roughness_override;
 	float metalness_factor;
 	float emissive_factor;
@@ -208,6 +219,10 @@ typedef struct pbr_material_s {
 	// get alpha 0 (bsp_mesh.c create_poly) and the primary ray goes straight
 	// through, picking up only the glow.
 	bool q3_additive;
+	// A Quake III dark cut-out (q3shader.c dark_cutout, material.c
+	// apply_q3_shader): masked and black, so solid where the mask keeps it -
+	// bsp_mesh.c does not turn its "see-through" faces TRANSPARENT.
+	bool q3_cutout;
 } pbr_material_t;
 
 extern pbr_material_t r_materials[MAX_PBR_MATERIALS];
@@ -293,6 +308,14 @@ void MAT_SaveToSourceFiles(void);
 // its panel - both renderers' R_EndFrame, after MAT_DrawPreview
 void MAT_AuthorCommand(pbr_material_t* crosshair);
 void MAT_AuthorDraw(void);
+
+// rough_scale / metal_scale / emissive_scale: each image's upload_scale made the
+// largest any live material asks of it, and an image whose scale changed made
+// again on the GPU (IMG_PixelsEdited). Does nothing unless something that can
+// change them happened (MAT_UploadScalesChanged). Both renderers' R_BeginFrame,
+// before they make the frame's new textures.
+void MAT_SyncUploadScales(void);
+void MAT_UploadScalesChanged(void);
 
 // update material when a skin is applied
 pbr_material_t* MAT_ForSkin(image_t * image_base);

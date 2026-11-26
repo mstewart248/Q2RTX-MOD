@@ -162,6 +162,12 @@ static void d3d12_load_world(bsp_mesh_t *mesh, bsp_t *bsp)
         blases[i].num_geometries = geoms[i]->num_geometries;
     }
 
+    // vkpt_light_buffers_create's size and header (THE LIGHT STATISTICS' LAYOUT)
+    uint32_t stats_header_words;
+    const uint64_t stats_words = vkpt_light_stats_words(mesh, &stats_header_words);
+    uint32_t *stats_header = Z_Malloc(stats_header_words * sizeof(uint32_t));
+    vkpt_light_stats_header(mesh, stats_header);
+
     d3d12_world_map_t map = {
         .data = data,
         .size = size,
@@ -169,10 +175,12 @@ static void d3d12_load_world(bsp_mesh_t *mesh, bsp_t *bsp)
         .positions_offset = mesh->vertex_data_offset,
         .blases = blases,
         .num_blases = num_geoms,
-        // vkpt_light_buffers_create's size
-        .light_stats_count = max((uint64_t)mesh->num_clusters * (uint64_t)mesh->num_light_polys * 6 * 2, 1),
+        .light_stats_count = stats_words,
+        .light_stats_header = stats_header,
+        .light_stats_header_words = stats_header_words,
     };
     d3d12_world_load(&map);
+    Z_Free(stats_header);
 
     // what vkpt_pt_instance_model_blas reads (vkpt_model_geometry_has_blas:
     // with no Vulkan device, the address alone)

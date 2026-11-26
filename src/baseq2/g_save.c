@@ -498,7 +498,8 @@ static const save_field_t clientfields[] = {
 #define _OFS CLOFS
     I(ps.pmove.pm_type),
 
-    SA(ps.pmove.origin, 3),
+    // an int since the wide coordinates, still a short on disk (F_INT16)
+    _FA(F_INT16, ps.pmove.origin, 3),
     SA(ps.pmove.velocity, 3),
     B(ps.pmove.pm_flags),
     B(ps.pmove.pm_time),
@@ -767,6 +768,11 @@ static void write_field(FILE *f, const save_field_t *field, void *base)
             write_int(f, ((int *)p)[i]);
         }
         break;
+    case F_INT16:
+        for (i = 0; i < field->size; i++) {
+            write_short(f, (short)((int *)p)[i]);
+        }
+        break;
     case F_BOOL:
         for (i = 0; i < field->size; i++) {
             write_int(f, ((bool *)p)[i]);
@@ -972,6 +978,11 @@ static void read_field(game_read_context_t* ctx, const save_field_t *field, void
     case F_INT:
         for (i = 0; i < field->size; i++) {
             ((int *)p)[i] = read_int(ctx->f);
+        }
+        break;
+    case F_INT16:
+        for (i = 0; i < field->size; i++) {
+            ((int *)p)[i] = read_short(ctx->f);
         }
         break;
     case F_BOOL:

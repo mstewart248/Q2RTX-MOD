@@ -19,6 +19,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "material.h"
 #include "vkpt.h"
 #include "q3stages.h"
+#include "texture_mips.h"       // VKPT_UPLOAD_SCALE_MAX, vkpt_image_upload_scale (rough_scale & co)
 #include <common/prompt.h>
 #include <common/q3shader.h>
 #include <format/bsp3.h>
@@ -221,6 +222,10 @@ static void MAT_Reset(pbr_material_t * mat)
 	mat->light_factor = 1.f;
 	mat->specular_factor = 1.f;
 	mat->base_factor = 1.f;
+	// the maps drawn at their own size (no nearest-neighbour upscale)
+	mat->rough_scale = 1;
+	mat->metal_scale = 1;
+	mat->emissive_scale = 1;
 	mat->light_styles = true;
 	mat->bsp_radiance = true;
 	/* Treat absence of SURF_LIGHT flag as "fully emissive" by default.
@@ -480,6 +485,9 @@ enum AttributeIndex
 	MAT_STAINED_SCATTER,
 	MAT_STAINED_SPREAD,
 	MAT_TEXTURE_STAINED_MASK,
+	MAT_ROUGH_SCALE,
+	MAT_METAL_SCALE,
+	MAT_EMISSIVE_SCALE,
 };
 enum AttributeType { ATTR_BOOL, ATTR_FLOAT, ATTR_STRING, ATTR_INT };
 
@@ -535,6 +543,12 @@ static struct MaterialAttribute {
 	// which texels of the stained glass are glass (white) and which are an
 	// ordinary surface (black) - material.h image_stained_mask (Matt, 2026-11-22)
 	{MAT_TEXTURE_STAINED_MASK, "texture_stained_mask", ATTR_STRING},
+	// the roughness / metallic / emissive map drawn 1..4 times its size,
+	// nearest-neighbour: crisp texels up close - material.h rough_scale
+	// (Matt, 2026-11-25). Live: the map is made again on the GPU next frame.
+	{MAT_ROUGH_SCALE, "rough_scale", ATTR_INT},
+	{MAT_METAL_SCALE, "metal_scale", ATTR_INT},
+	{MAT_EMISSIVE_SCALE, "emissive_scale", ATTR_INT},
 };
 
 static int c_NumAttributes = sizeof(c_Attributes) / sizeof(struct MaterialAttribute);
@@ -596,6 +610,7 @@ static const struct {
 	{ "R0",  0,   0,   0   },  // a mirror's roughness
 	{ "R20", 20,  20,  20  },  // chrome's roughness
 	{ "M1",  255, 255, 255 },  // the metallic of both
+	{ "K",   0,   0,   0   },  // a dark cut-out's base (q3shader.c dark_cutout)
 };
 
 // the c_SolidTags entry (name) ends in as "*<tag>.wal", or -1
@@ -766,6 +781,24 @@ static int set_material_attribute(pbr_material_t* mat, const char* attribute, co
 	case MAT_METALNESS_FACTOR: mat->metalness_factor = fvalue; break;
 	case MAT_EMISSIVE_FACTOR: mat->emissive_factor = fvalue; break;
 	case MAT_LIGHT_FACTOR: mat->light_factor = fvalue; break;
+	// the map drawn 1..4 times its size, nearest-neighbour (MAT_SyncUploadScales
+	// makes it again on the GPU before the next frame; no reload)
+	case MAT_ROUGH_SCALE:
+	case MAT_METAL_SCALE:
+	case MAT_EMISSIVE_SCALE: {
+		const int scale = max(1, min(ivalue, VKPT_UPLOAD_SCALE_MAX));
+		if (scale != ivalue)
+		{
+			if (sourceFile)
+				Com_WPrintf("%s:%d: %s is 1 to %d, got %d - %d used\n", sourceFile, lineno, attribute,
+					VKPT_UPLOAD_SCALE_MAX, ivalue, scale);
+			else
+				Com_WPrintf("%s is 1 to %d, got %d - %d used\n", attribute, VKPT_UPLOAD_SCALE_MAX, ivalue, scale);
+		}
+		if (t->index == MAT_ROUGH_SCALE) mat->rough_scale = scale;
+		else if (t->index == MAT_METAL_SCALE) mat->metal_scale = scale;
+		else mat->emissive_scale = scale;
+	} break;
 	case MAT_KIND: {
 		// "kind ALPHA_GLASS": shorthand for kind GLASS + alpha_glass 1. There is
 		// no kind of its own to give it - the 4-bit kind field is full - so it is
@@ -924,6 +957,10 @@ static int set_material_attribute(pbr_material_t* mat, const char* attribute, co
 
 	// remember that this material says this itself - see specified_fields
 	mat->specified_fields |= 1ull << t->index;
+
+	// a map or its rough_scale & co may have changed: each image's upscale is
+	// worked out again before the next frame (MAT_SyncUploadScales)
+	MAT_UploadScalesChanged();
 
 	return Q_ERR_SUCCESS;
 }
@@ -1215,6 +1252,13 @@ static void save_materials(const char* file_name, bool save_all, bool force)
 		if (mat->light_factor != 1.f)
 			FS_FPrintf(file, "\tlight_factor %f\n", mat->light_factor);
 
+		if (mat->rough_scale > 1)
+			FS_FPrintf(file, "\trough_scale %d\n", mat->rough_scale);
+		if (mat->metal_scale > 1)
+			FS_FPrintf(file, "\tmetal_scale %d\n", mat->metal_scale);
+		if (mat->emissive_scale > 1)
+			FS_FPrintf(file, "\temissive_scale %d\n", mat->emissive_scale);
+
 		if (mat->specular_factor != 1.f)
 			FS_FPrintf(file, "\tspecular_factor %f\n", mat->specular_factor);
 
@@ -1399,6 +1443,9 @@ static bool format_attribute_value(const pbr_material_t* mat, enum AttributeInde
 	case MAT_ALBEDO_STRENGTH:    FLOAT_VALUE(mat->albedo_strength);
 	case MAT_EMISSIVE_THRESHOLD: INT_VALUE(mat->emissive_threshold);
 	case MAT_DLSS_GUIDE_FIELD:   INT_VALUE(mat->dlss_guide_field);
+	case MAT_ROUGH_SCALE:        INT_VALUE(mat->rough_scale);
+	case MAT_METAL_SCALE:        INT_VALUE(mat->metal_scale);
+	case MAT_EMISSIVE_SCALE:     INT_VALUE(mat->emissive_scale);
 	case MAT_LIGHT_STYLES:       INT_VALUE(mat->light_styles ? 1 : 0);
 	case MAT_BSP_RADIANCE:       INT_VALUE(mat->bsp_radiance ? 1 : 0);
 	case MAT_SYNTH_EMISSIVE:     INT_VALUE(mat->synth_emissive ? 1 : 0);
@@ -2557,6 +2604,7 @@ static void material_inherit_instance(pbr_material_t* mat, const pbr_material_t*
 	   instance's, as they do everywhere else here. */
 	mat->q3_program = base->q3_program;
 	mat->q3_additive = base->q3_additive;
+	mat->q3_cutout = base->q3_cutout;
 	if (base->q3_program && MAT_IndexOf(mat) >= 0)
 	{
 		const q3shader_t* q3 = q3_shader_for(base->name, base->image_type);
@@ -2612,6 +2660,10 @@ static void material_inherit_instance(pbr_material_t* mat, const pbr_material_t*
 	INHERIT(MAT_VOLUMETRIC_SCALE, volumetric_scale);
 	INHERIT(MAT_DLSS_GUIDE_FIELD, dlss_guide_field);
 	INHERIT(MAT_ALBEDO_STRENGTH, albedo_strength);
+	// the same maps as the base unless it states its own, so the same upscale
+	INHERIT(MAT_ROUGH_SCALE, rough_scale);
+	INHERIT(MAT_METAL_SCALE, metal_scale);
+	INHERIT(MAT_EMISSIVE_SCALE, emissive_scale);
 
 #undef INHERIT_TEXTURE
 #undef INHERIT
@@ -2909,6 +2961,28 @@ static void apply_q3_shader(pbr_material_t* mat, const q3shader_t* q3, imagetype
 		if (mat->image_mask)
 			Q_strlcpy(mat->filename_mask, mat->image_mask->name, sizeof(mat->filename_mask));
 	}
+
+	/* A DARK CUT-OUT (q3shader.c dark_cutout): one image that darkens what is
+	   behind it by its own colour - Team Arena's trees, models/mapobjects/
+	   tree2/branch2, white twigs on black under blendFunc GL_ZERO
+	   GL_ONE_MINUS_SRC_COLOR. Quake III showed black twigs against the sky.
+	   Drawn as the image they came out white twigs on dark 66% see-through
+	   cards, and kind TRANSPARENT or the image fed back as its own mask did not
+	   help (Matt, 2026-11-26). So: cut out where the image is dark - kept from
+	   a quarter of full colour up, as 128 lost the fine twigs Quake III still
+	   darkened - and black where it is kept. The mask is made from the image
+	   before the black base takes its place. bsp_mesh.c keeps the faces solid
+	   (q3_cutout) rather than see-through. */
+	const bool dark_cutout = q3->dark_cutout && !program && mat->image_base != NULL;
+	if (dark_cutout && !MAT_SPECIFIED(mat, MAT_TEXTURE_MASK) && !mat->image_mask)
+	{
+		mat->image_mask = vkpt_colour_mask_texture(mat->image_base, 64);
+		if (mat->image_mask)
+			Q_strlcpy(mat->filename_mask, mat->image_mask->name, sizeof(mat->filename_mask));
+	}
+	if (dark_cutout)
+		q3_solid_slot(mat, mat->image_base, MAT_TEXTURE_BASE, &mat->image_base, mat->filename_base, "K", 0, 0, 0);
+	mat->q3_cutout = dark_cutout && mat->image_mask != NULL;
 
 	/* An alpha test that no pixel passes: Quake III never drew the surface.
 	   models/mapobjects/console/under (q3dm0, the stand under the console) cuts
@@ -3682,6 +3756,11 @@ void MAT_UpdateRegistration(pbr_material_t * mat)
 	if (!mat)
 		return;
 
+	// newly in use (a map load, a model registered mid-game): its maps' upscale
+	// counts again. Not every call - MOD_Reference_RTX runs this for every skin.
+	if (mat->registration_sequence != registration_sequence)
+		MAT_UploadScalesChanged();
+
 	mat->registration_sequence = registration_sequence;
 	if (mat->image_base) mat->image_base->registration_sequence = registration_sequence;
 	if (mat->image_normals) mat->image_normals->registration_sequence = registration_sequence;
@@ -3716,7 +3795,101 @@ int MAT_FreeUnused()
 		MAT_Reset(mat);
 	}
 
+	// a map it drew may now be drawn by nothing that asks for an upscale
+	MAT_UploadScalesChanged();
+
 	return Q_ERR_SUCCESS;
+}
+
+/*
+=================
+ROUGH_SCALE / METAL_SCALE / EMISSIVE_SCALE: THE MAPS DRAWN NEAREST-NEIGHBOUR
+UPSCALED (Matt, 2026-11-25). "When you have texture filtering on the material maps
+aren't pixel accurate because they blend into the next pixel. If we display the
+maps upscaled this won't happen" - a 64 x 64 Quake 1 roughness/metallic map read
+up close ramped half a texel into each neighbour and smeared blurry and wrong,
+where pt_nearest 1 showed it right. The texture made on the GPU is the map with
+every texel an N x N block (image_t upload_scale; both renderers' texture
+upload), so the filter blends only a 1/N-texel edge; the file, pix_data and what
+`mat author` paints stay at the map's own size.
+
+The scale is a material's, the texture an image's - shared by every material
+that names the same file. An image is made at the LARGEST scale any live
+material drawing it asks for. Quake III stage programs' own roughness and
+metallic maps (stage<N>_texture_*) follow the material's rough_scale and
+metal_scale too. Run before each renderer makes the frame's textures, and only
+after something that can change the answer (MAT_UploadScalesChanged): a .mat
+line or a `mat` command, a material newly registered or freed, a stage program
+built.
+=================
+*/
+static bool upload_scales_dirty = true;
+
+void MAT_UploadScalesChanged(void)
+{
+	upload_scales_dirty = true;
+}
+
+static void want_upload_scale(uint8_t* want, const image_t* image, int scale)
+{
+	if (!image || scale <= 1)
+		return;
+	const ptrdiff_t index = image - r_images;
+	if (index > 0 && index < MAX_RIMAGES && want[index] < scale)
+		want[index] = (uint8_t)min(scale, VKPT_UPLOAD_SCALE_MAX);
+}
+
+void MAT_SyncUploadScales(void)
+{
+	if (!upload_scales_dirty)
+		return;
+	upload_scales_dirty = false;
+
+	static uint8_t want[MAX_RIMAGES];
+	memset(want, 0, sizeof(want));
+
+	for (int i = 0; i < MAX_PBR_MATERIALS; i++)
+	{
+		const pbr_material_t* mat = r_materials + i;
+		if (!mat->registration_sequence)
+			continue;
+		want_upload_scale(want, mat->image_roughness, mat->rough_scale);
+		want_upload_scale(want, mat->image_metallic, mat->metal_scale);
+		want_upload_scale(want, mat->image_emissive, mat->emissive_scale);
+
+		// a Quake III stage's own maps (vkpt_q3_stage_image: 1 roughness, 2 metallic)
+		if (mat->q3_program && (mat->rough_scale > 1 || mat->metal_scale > 1))
+		{
+			const int stages = vkpt_q3_paint_stage_count(mat);
+			for (int s = 0; s < stages; s++)
+			{
+				const char* file;
+				want_upload_scale(want, vkpt_q3_stage_image(mat, s, 1, &file), mat->rough_scale);
+				want_upload_scale(want, vkpt_q3_stage_image(mat, s, 2, &file), mat->metal_scale);
+			}
+		}
+	}
+
+	int remade = 0;
+	for (int i = 1; i < r_numImages; i++)
+	{
+		image_t* image = r_images + i;
+		const uint8_t scale = image->registration_sequence ? want[i] : 0;
+		if (image->upload_scale == scale)
+			continue;
+		const int before = vkpt_image_upload_scale(image);
+		image->upload_scale = scale;
+		// a texture already made at the other size is made again (the same slot,
+		// so the materials' and geometry's index stays); one not made yet is made
+		// at this size the first time
+		if (image->pix_data && vkpt_image_upload_scale(image) != before)
+		{
+			IMG_PixelsEdited(image);
+			remade++;
+		}
+	}
+	if (remade)
+		Com_DPrintf("rough_scale & co: %d map texture%s made again at a new size\n", remade, remade == 1 ? "" : "s");
 }
 
 int MAT_IndexOf(const pbr_material_t* mat)
@@ -3797,8 +3970,49 @@ static void material_source_location(const char* file_name, char* out, size_t si
 // prints material properties on the console
 //
 
+/* Matt, 11-25: "On mat print can we leave the textures up top and
+   alphabetize the rest of the fields". The texture lines print straight
+   away; every other field line is collected here and printed sorted by its
+   key (each line is "    key value", so a plain strcmp sorts by the key -
+   ' ' sorts before '_', so "caustic" comes before "caustic_ripple"). The
+   Quake III stages, "defined in" and the notes after it stay at the end. */
+#define PRINT_FIELDS_MAX 96
+static struct {
+	int count;
+	char line[PRINT_FIELDS_MAX][512];
+} print_fields;
+
+static void print_field(const char* fmt, ...)
+{
+	va_list argptr;
+	va_start(argptr, fmt);
+	if (print_fields.count < PRINT_FIELDS_MAX)
+		Q_vsnprintf(print_fields.line[print_fields.count++], sizeof(print_fields.line[0]), fmt, argptr);
+	else
+	{
+		char text[512];
+		Q_vsnprintf(text, sizeof(text), fmt, argptr);
+		Com_Printf("%s", text);
+	}
+	va_end(argptr);
+}
+
+static int print_field_compare(const void* a, const void* b)
+{
+	return strcmp((const char*)a, (const char*)b);
+}
+
+static void print_fields_flush(void)
+{
+	qsort(print_fields.line, print_fields.count, sizeof(print_fields.line[0]), print_field_compare);
+	for (int i = 0; i < print_fields.count; i++)
+		Com_Printf("%s", print_fields.line[i]);
+	print_fields.count = 0;
+}
+
 void MAT_Print(pbr_material_t const * mat)
 {
+	print_fields.count = 0;
 	Com_Printf("%s:\n", mat->name);
 
 	/* A filename with no image behind it renders exactly as if the slot were
@@ -3821,37 +4035,67 @@ void MAT_Print(pbr_material_t const * mat)
 	if (mat->stained_glass || mat->filename_stained_mask[0])
 		PRINT_TEXTURE("texture_stained_mask", filename_stained_mask, image_stained_mask);
 #undef PRINT_TEXTURE
-	Com_Printf("    bump_scale %f\n", mat->bump_scale);
-	Com_Printf("    displace_in %f\n", mat->displace_in);
-	Com_Printf("    displace_out %f\n", mat->displace_out);
-	Com_Printf("    displace_clamp %d\n", mat->displace_clamp ? 1 : 0);
+	print_field("    bump_scale %f\n", mat->bump_scale);
+	print_field("    displace_in %f\n", mat->displace_in);
+	print_field("    displace_out %f\n", mat->displace_out);
+	print_field("    displace_clamp %d\n", mat->displace_clamp ? 1 : 0);
 	if (MAT_IsKind(mat->flags, MATERIAL_KIND_GLASS) || mat->alpha_glass)
-		Com_Printf("    alpha_glass %d%s\n", mat->alpha_glass ? 1 : 0,
+		print_field("    alpha_glass %d%s\n", mat->alpha_glass ? 1 : 0,
 			MAT_SPECIFIED(mat, MAT_ALPHA_GLASS) ? "" : " (auto)");
 	if (MAT_IsKind(mat->flags, MATERIAL_KIND_GLASS) || mat->glass_caustic > 0.f)
-		Com_Printf("    caustic %g%s\n", mat->glass_caustic,
+		print_field("    caustic %g%s\n", mat->glass_caustic,
 			mat->glass_caustic > 0.f && !MAT_IsKind(mat->flags, MATERIAL_KIND_GLASS) ? " (inactive: not GLASS)" : "");
 	if (MAT_IsKind(mat->flags, MATERIAL_KIND_GLASS) || mat->caustic_ripple > 0.f)
-		Com_Printf("    caustic_ripple %g%s\n", mat->caustic_ripple,
+		print_field("    caustic_ripple %g%s\n", mat->caustic_ripple,
 			mat->caustic_ripple > 0.f && !MAT_IsKind(mat->flags, MATERIAL_KIND_GLASS) ? " (inactive: not GLASS)"
 			: mat->caustic_ripple > 0.f ? "   (the light through it thrown in moving water ripples)" : "");
 	if (mat->stained_glass)
 	{
-		Com_Printf("    stained_glass 1   (glows with a made-up light behind it, and casts it into the room)\n");
-		Com_Printf("    stained_light_height %g   (1 = the tile's top, 0 = its bottom)\n", mat->stained_light_height);
-		Com_Printf("    stained_light_distance %g   (tile heights behind the glass)\n", mat->stained_light_distance);
-		Com_Printf("    stained_light_sun %d   (%s)\n", mat->stained_light_sun ? 1 : 0,
+		print_field("    stained_glass 1   (glows with a made-up light behind it, and casts it into the room)\n");
+		print_field("    stained_light_height %g   (1 = the tile's top, 0 = its bottom)\n", mat->stained_light_height);
+		print_field("    stained_light_distance %g   (tile heights behind the glass)\n", mat->stained_light_distance);
+		print_field("    stained_light_sun %d   (%s)\n", mat->stained_light_sun ? 1 : 0,
 			mat->stained_light_sun ? "a sun: parallel light from where the lamp would be" : "a lamp");
-		Com_Printf("    stained_light_size %g   (degrees, its radius seen from the glass: the image's softness)\n", mat->stained_light_size);
-		Com_Printf("    stained_scatter %g   (0 = clear glass, 1 = all spread)\n", mat->stained_scatter);
-		Com_Printf("    stained_spread %g   (degrees: the bloom round the light)\n", mat->stained_spread);
+		print_field("    stained_light_size %g   (degrees, its radius seen from the glass: the image's softness)\n", mat->stained_light_size);
+		print_field("    stained_scatter %g   (0 = clear glass, 1 = all spread)\n", mat->stained_scatter);
+		print_field("    stained_spread %g   (degrees: the bloom round the light)\n", mat->stained_spread);
 	}
-	Com_Printf("    roughness_override %f%s\n", mat->roughness_override,
+	print_field("    roughness_override %f%s\n", mat->roughness_override,
 		mat->roughness_override < 0.f ? "" : MAT_RoughnessIsWhole(mat)
 			? "   (the roughness all over: no roughness map)" : "   (a floor under its maps)");
-	Com_Printf("    metalness_factor %f\n", mat->metalness_factor);
-	Com_Printf("    emissive_factor %f\n", mat->emissive_factor);
-	Com_Printf("    light_factor %f   (the light it casts only)\n", mat->light_factor);
+	print_field("    metalness_factor %f\n", mat->metalness_factor);
+	print_field("    emissive_factor %f\n", mat->emissive_factor);
+	print_field("    light_factor %f   (the light it casts only)\n", mat->light_factor);
+	// the nearest-neighbour upscales: shown for a map the material has, or a scale it states
+	{
+		const struct { const char* key; int scale; const image_t* image; } ups[3] = {
+			{ "rough_scale", mat->rough_scale, mat->image_roughness },
+			{ "metal_scale", mat->metal_scale, mat->image_metallic },
+			{ "emissive_scale", mat->emissive_scale, mat->image_emissive },
+		};
+		for (int i = 0; i < 3; i++)
+		{
+			const image_t* img = ups[i].image;
+			if (!img && ups[i].scale <= 1)
+				continue;
+			if (!img)
+				print_field("    %s %d   (no map to draw)\n", ups[i].key, ups[i].scale);
+			else if (ups[i].scale <= 1 && vkpt_image_upload_scale(img) > 1)
+				print_field("    %s 1   (drawn %dx anyway: another material using the map asks it)\n", ups[i].key,
+					vkpt_image_upload_scale(img));
+			else if (ups[i].scale <= 1)
+				print_field("    %s 1   (%dx%d, filtered; 2-4 = crisp texels)\n", ups[i].key, img->upload_width, img->upload_height);
+			else
+			{
+				// what the GPU has now: the largest any material using the map asks, within the size limit
+				const int now = vkpt_image_upload_scale(img);
+				print_field("    %s %d   (%dx%d drawn %dx%d, nearest%s)\n", ups[i].key, ups[i].scale,
+					img->upload_width, img->upload_height, img->upload_width * now, img->upload_height * now,
+					now < ups[i].scale ? va(" - %dx: %d texels a side at most", now, VKPT_UPLOAD_SCALE_MAX_SIDE)
+					: now > ups[i].scale ? va(" - %dx: another material using it asks more", now) : "");
+			}
+		}
+	}
 	/* The path tracer scales only the NON-metal shine by it (path_tracer_rgen.h:
 	   specular_factor = mix(specular_factor, 1, metallic)), as stock Q2RTX did.
 	   Matt, 11-21: "changing the specular factor of quake 1 textures doesn't
@@ -3859,15 +4103,15 @@ void MAT_Print(pbr_material_t const * mat)
 	   textures/q1/city4_7 (0.56 metal, roughness 1) 0 took off only a dim 4%
 	   reflection from the other 44%. Say so where the number is read. */
 	if (mat->filename_metallic[0] && mat->metalness_factor > 0.f)
-		Com_Printf("    specular_factor %f   (the non-metal part only: up to %.0f%% of it is metal, whose shine stays - "
+		print_field("    specular_factor %f   (the non-metal part only: up to %.0f%% of it is metal, whose shine stays - "
 			"metalness_factor takes that down)\n", mat->specular_factor, 100.f * min(mat->metalness_factor, 1.f));
 	else
-		Com_Printf("    specular_factor %f\n", mat->specular_factor);
-	Com_Printf("    base_factor %f\n", mat->base_factor);
+		print_field("    specular_factor %f\n", mat->specular_factor);
+	print_field("    base_factor %f\n", mat->base_factor);
 	if (mat->flags & MATERIAL_FLAG_CURVED_WATER)
-		Com_Printf("    curved_water 1\n");
+		print_field("    curved_water 1\n");
 	if (mat->flags & MATERIAL_FLAG_DOUBLE_SIDED)
-		Com_Printf("    double_sided 1\n");
+		print_field("    double_sided 1\n");
 	const char * kind = getMaterialKindName(mat->flags);
 	// "kind GLASSCAUSTIC" / "kind ALPHA_GLASS" have no kind of their own (the
 	// kind field is full): GLASS plus a switch, which is what this line shows
@@ -3875,31 +4119,32 @@ void MAT_Print(pbr_material_t const * mat)
 	const bool caustic = glass && mat->glass_caustic > 0.f;
 	const bool alpha = glass && mat->alpha_glass;
 	const bool stained = MAT_IsKind(mat->flags, MATERIAL_KIND_REGULAR) && mat->stained_glass;
-	Com_Printf("    kind %s%s%s%s%s%s%s\n", kind ? kind : "",
+	print_field("    kind %s%s%s%s%s%s%s\n", kind ? kind : "",
 		(caustic || alpha) ? "   (" : "",
 		caustic ? "GLASSCAUSTIC = GLASS + caustic" : "",
 		(caustic && alpha) ? "; " : "",
 		alpha ? "ALPHA_GLASS = GLASS + alpha_glass" : "",
 		(caustic || alpha) ? ")" : "",
 		stained ? "   (STAINEDGLASS = REGULAR + stained_glass + is_light)" : "");
-	Com_Printf("    is_light %d\n", (mat->flags & MATERIAL_FLAG_LIGHT) != 0);
-	Com_Printf("    light_styles %d\n", mat->light_styles ? 1 : 0);
-	Com_Printf("    bsp_radiance %d\n", mat->bsp_radiance ? 1 : 0);
-	Com_Printf("    default_radiance %f\n", mat->default_radiance);
-	Com_Printf("    synth_emissive %d\n", mat->synth_emissive ? 1 : 0);
-	Com_Printf("    emissive_threshold %d\n", mat->emissive_threshold);
+	print_field("    is_light %d\n", (mat->flags & MATERIAL_FLAG_LIGHT) != 0);
+	print_field("    light_styles %d\n", mat->light_styles ? 1 : 0);
+	print_field("    bsp_radiance %d\n", mat->bsp_radiance ? 1 : 0);
+	print_field("    default_radiance %f\n", mat->default_radiance);
+	print_field("    synth_emissive %d\n", mat->synth_emissive ? 1 : 0);
+	print_field("    emissive_threshold %d\n", mat->emissive_threshold);
 	if (mat->volumetric_scale >= 0.f)
-		Com_Printf("    volumetric_scale %f\n", mat->volumetric_scale);
+		print_field("    volumetric_scale %f\n", mat->volumetric_scale);
 	else
-		Com_Printf("    volumetric_scale (class default)\n");
+		print_field("    volumetric_scale (class default)\n");
 	if (mat->dlss_guide_field >= 0)
-		Com_Printf("    dlss_guide_field %d\n", mat->dlss_guide_field);
+		print_field("    dlss_guide_field %d\n", mat->dlss_guide_field);
 	else
-		Com_Printf("    dlss_guide_field (pt_dlss_guide_field)\n");
+		print_field("    dlss_guide_field (pt_dlss_guide_field)\n");
 	if (mat->albedo_strength > 0.f)
-		Com_Printf("    albedo_strength %f\n", mat->albedo_strength);
+		print_field("    albedo_strength %f\n", mat->albedo_strength);
 	else
-		Com_Printf("    albedo_strength (pt_bounce_albedo_power)\n");
+		print_field("    albedo_strength (pt_bounce_albedo_power)\n");
+	print_fields_flush();
 
 	// a Quake III shader drawn stage by stage: what each stage really draws
 	if (mat->q3_program)
@@ -4047,6 +4292,10 @@ static void material_reapply_definition(pbr_material_t* mat, const pbr_material_
 	mat->volumetric_scale   = matdef->volumetric_scale;
 	mat->dlss_guide_field   = matdef->dlss_guide_field;
 	mat->albedo_strength    = matdef->albedo_strength;
+	mat->rough_scale        = matdef->rough_scale;
+	mat->metal_scale        = matdef->metal_scale;
+	mat->emissive_scale     = matdef->emissive_scale;
+	MAT_UploadScalesChanged();
 	// what the definition states ITSELF, which is what the auto-detection and
 	// the inheritance below are gated on
 	mat->specified_fields   = matdef->specified_fields;
@@ -4475,6 +4724,12 @@ static void write_instance_stub_values(qhandle_t file, const pbr_material_t* mat
 	FS_FPrintf(file, "#\tbase_factor %g\n", mat->base_factor);
 	FS_FPrintf(file, "#\temissive_factor %g\n", mat->emissive_factor);
 	FS_FPrintf(file, "#\tlight_factor %g\n", mat->light_factor);
+	if (mat->rough_scale > 1)
+		FS_FPrintf(file, "#\trough_scale %d\n", mat->rough_scale);
+	if (mat->metal_scale > 1)
+		FS_FPrintf(file, "#\tmetal_scale %d\n", mat->metal_scale);
+	if (mat->emissive_scale > 1)
+		FS_FPrintf(file, "#\temissive_scale %d\n", mat->emissive_scale);
 	if (mat->synth_emissive || synthesized) {
 		FS_FPrintf(file, "#\tsynth_emissive 1\n");
 		FS_FPrintf(file, "#\temissive_threshold %d\n", mat->emissive_threshold);
@@ -4527,9 +4782,9 @@ static void material_create_instance(const pbr_material_t* mat)
 
 	if (!instance_hash)
 	{
-		Com_Printf("No static world surface or placed model under the crosshair.\n");
-		Com_Printf("Instances are keyed on BSP geometry, or on where a model stands - not on "
-		           "brush entities such as doors and platforms, the gun in hand, or the sky.\n");
+		Com_Printf("No level surface or placed model under the crosshair.\n");
+		Com_Printf("Instances are keyed on BSP geometry - the world's, or a door's or platform's - "
+		           "or on where a model stands; not on the gun in hand or the sky.\n");
 		return;
 	}
 
@@ -4590,6 +4845,9 @@ static void material_create_instance(const pbr_material_t* mat)
 		FS_FPrintf(file, "# the model standing at (%.0f %.0f %.0f) - keyed on that spot\n",
 		           vkpt_refdef.fd->feedback.view_model_origin[0], vkpt_refdef.fd->feedback.view_model_origin[1],
 		           vkpt_refdef.fd->feedback.view_model_origin[2]);
+	else if (vkpt_refdef.fd->feedback.view_brush_model > 0)
+		FS_FPrintf(file, "# on brush entity *%d (a door, platform, ...) - keyed on its faces, moves with it\n",
+		           vkpt_refdef.fd->feedback.view_brush_model);
 	FS_FPrintf(file, "# Inherits everything from %s; the commented lines are what\n", mat->name);
 	FS_FPrintf(file, "# it inherits now. Uncomment one and change it, then 'mat reload'.\n");
 	FS_FPrintf(file, "%s:\n", instance_name);
@@ -5123,11 +5381,13 @@ static void material_command_help(void)
 	Com_Printf("        'mat author stage <N|mat>' paints a Quake III stage's own maps;\n");
 	Com_Printf("        'mat author free|line|rect [corner radius]' picks the stroke: a rectangle is\n");
 	Com_Printf("        dragged from corner to corner, its corners rounded (texels)\n");
+	Com_Printf("        The panel's 'upscale' sets rough_scale / metal_scale / emissive_scale: that map\n");
+	Com_Printf("        drawn 1-4x its size, nearest-neighbour, so its texels stay crisp up close\n");
 	Com_Printf("    which: tell where the current material is defined\n");
 	Com_Printf("    view_weapon [N] <command>: any of these for the gun in your hands instead of\n");
 	Com_Printf("        the crosshair's material ('mat view_weapon print', 'mat view_weapon\n");
 	Com_Printf("        roughness_override 1'); alone, it lists the gun's materials and their N\n");
-	Com_Printf("    create_instance: give the surface or placed model (a torch) at the crosshair its\n");
+	Com_Printf("    create_instance: give the surface (a door's too) or placed model (a torch) at the crosshair its\n");
 	Com_Printf("        own material, so it can be tuned without affecting other uses of the same texture.\n");
 	Com_Printf("        Writes an empty section to materials/<map>.mat and reloads.\n");
 	Com_Printf("    reload: re-read all .mat files, and any texture saved since it was loaded, from disk and rebuild\n");
@@ -5323,6 +5583,8 @@ static void material_command(void)
 			if (fb->view_on_model)
 				Com_Printf("    (the model at %.0f %.0f %.0f - its instance stays at that spot)\n",
 				           fb->view_model_origin[0], fb->view_model_origin[1], fb->view_model_origin[2]);
+			else if (fb->view_brush_model > 0)
+				Com_Printf("    (on brush entity *%d - its instance moves with it)\n", fb->view_brush_model);
 		}
 		return;
 	}

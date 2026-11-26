@@ -133,6 +133,8 @@ cvar_t *cvar_pt_q1_sky_lights = NULL;
 cvar_t *cvar_pt_q1_sky_brightness = NULL;
 cvar_t *cvar_pt_q1_sky_light = NULL;
 cvar_t *cvar_pt_q1_sky_fog = NULL;
+// a Quake 1 map's pt_water_density, times this (prepare_ubo)
+cvar_t *cvar_pt_q1_water_density = NULL;
 static cvar_t *sky_q1_active;
 // a Quake 1 sky's brightness (q1_sky_faces); 0 = the sky is not a Quake 1 one
 static float q1_sky_scale;
@@ -3677,6 +3679,9 @@ static uint32_t model_entity_ids[2][MAX_MODEL_INSTANCES];
 // placed model: the gun in hand, a brush entity)
 static vec3_t   model_instance_origin[2][MAX_MODEL_INSTANCES];
 static uint32_t model_instance_material[2][MAX_MODEL_INSTANCES];
+// ...and for a brush entity (a door, a platform, a lift), its inline model + 1;
+// 0 = not one. Cleared every frame (prepare_entities), set by process_bsp_entity.
+static uint16_t model_instance_bsp_model[2][MAX_MODEL_INSTANCES];
 static int blood_model_instance_idx = -1;
 
 // Where the blood section starts in the instanced buffers. A HIGH-WATER MARK of
@@ -4391,6 +4396,7 @@ static void process_bsp_entity(const entity_t* entity, int* instance_count)
 
 	memcpy(&model_entity_ids[entity_frame_num][current_instance_idx], &hash, sizeof(uint32_t));
 	model_instance_material[entity_frame_num][current_instance_idx] = 0;
+	model_instance_bsp_model[entity_frame_num][current_instance_idx] = (uint16_t)(~entity->model + 1);
 
 	ModelInstance* mi = uniform_instance_buffer->model_instances + current_instance_idx;
 	memcpy(&mi->transform, transform, sizeof(transform));
@@ -4761,6 +4767,7 @@ static void
 prepare_entities(EntityUploadInfo* upload_info)
 {
 	entity_frame_num = !entity_frame_num;
+	memset(model_instance_bsp_model[entity_frame_num], 0, sizeof(model_instance_bsp_model[entity_frame_num]));
 	model_light_fixture_frame++;
 	vkpt_caustics_begin_frame();
 
@@ -5181,6 +5188,35 @@ static float ubo_mat_sum(const float *m, int absolute)
 	return acc;
 }
 
+/* Whether the readback's material `seen` is what a brush model's primitive
+   `drawn` draws: that material, or any frame of its texture animation
+   (next_frame cycles, and points at itself for none), or of Quake 1's other
+   frame set (alt_frame: a button held in). animate_material picks the frame on
+   the GPU, so the readback has the frame, the primitive the first. */
+static bool brush_prim_draws_material(uint32_t drawn, uint32_t seen)
+{
+	for (int set = 0; set < 2; set++)
+	{
+		uint32_t m = drawn;
+
+		for (int k = 0; k < 64; k++)
+		{
+			if (m == seen)
+				return true;
+			const pbr_material_t *mat = MAT_ForIndex((int)m);
+			if (!mat || (uint32_t)mat->next_frame == m || (uint32_t)mat->next_frame == drawn)
+				break;
+			m = (uint32_t)mat->next_frame;
+		}
+
+		const pbr_material_t *mat = MAT_ForIndex((int)drawn);
+		if (!mat || !mat->alt_frame)
+			break;
+		drawn = (uint32_t)(mat->alt_frame - 1);
+	}
+	return false;
+}
+
 static void
 process_render_feedback(ref_feedback_t *feedback, mleaf_t* viewleaf, bool* sun_visible, float* adapted_luminance)
 {
@@ -5247,6 +5283,49 @@ process_render_feedback(ref_feedback_t *feedback, mleaf_t* viewleaf, bool* sun_v
 					feedback->view_prim_instance_hash = MAT_EntityInstanceHash(feedback->view_model_origin);
 					break;
 				}
+			}
+		}
+
+		/* A brush entity - a door, a platform, a lift (Matt, 2026-11-26: "This
+		   surface is on a moving brush but I wanted create an instance for it").
+		   Its faces carry group hashes like the world's: bsp_mesh.c hashes every
+		   BSP face, keeps each inline model's groups to itself (face_model_owner)
+		   and draws them with the instance (collect_surfaces, face_effective_
+		   material). The hash is of the faces where the map puts them, so it
+		   holds wherever the door has moved to. Its primitives are one range of
+		   the world buffer from render_prim_offset (process_bsp_entity), and the
+		   readback has the one relative to that. Checked against both entity
+		   frames for one whose primitive draws the material seen, as above. */
+		feedback->view_brush_model = 0;
+		if (!feedback->view_on_model && readback.instance != ~0u && readback.instance < MAX_MODEL_INSTANCES
+			&& readback.primitive != ~0u && readback.material != ~0u
+			&& vkpt_refdef.bsp_mesh_world_loaded && vkpt_refdef.bsp_mesh_world.prim_instance_hash)
+		{
+			const bsp_mesh_t *wm = &vkpt_refdef.bsp_mesh_world;
+			const uint32_t seen = readback.material & MATERIAL_INDEX_MASK;
+
+			for (int f = 0; f < 2; f++)
+			{
+				const int slot = f ? !entity_frame_num : entity_frame_num;
+				const int model_idx = (int)model_instance_bsp_model[slot][readback.instance] - 1;
+
+				if (model_idx < 0 || model_idx >= wm->num_models)
+					continue;
+
+				const bsp_model_t *model = wm->models + model_idx;
+
+				if (model->geometry.num_geometries == 0 || readback.primitive >= model->geometry.prim_counts[0])
+					continue;
+
+				const uint32_t prim = model->geometry.prim_offsets[0] + readback.primitive;
+
+				if (prim >= (uint32_t)wm->num_primitives
+					|| !brush_prim_draws_material(wm->primitives[prim].material_id & MATERIAL_INDEX_MASK, seen))
+					continue;
+
+				feedback->view_prim_instance_hash = wm->prim_instance_hash[prim];
+				feedback->view_brush_model = model_idx;
+				break;
 			}
 		}
 
@@ -6679,6 +6758,28 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 #define UBO_CVAR_DO(name, default_value) ubo->name = cvar_##name->value;
 	UBO_CVAR_LIST
 #undef UBO_CVAR_DO
+
+	/* QUAKE 1 WATER, LESS MURKY (Matt, 2026-11-25): "I usually use .35 but that's
+	   way too dark on quake 1 levels because they don't put a lot of light
+	   sources in underwater areas so everything is pitch black. Can we make .35
+	   everywhere else = .10 in quake 1?" On a Quake 1 map the slider's value is
+	   scaled by pt_q1_water_density (0.10 / 0.35), so one slider still sets both.
+
+	   ONLY WHILE THE EYE IS IN THE LIQUID (Matt, same day): "I didn't think that
+	   was going to effect the look of the water from the outside ... if you are
+	   looking down on the water it looks like the value set but if you under the
+	   water there is less extinction". ubo->medium (set above, from the view leaf
+	   and the game's RDF_UNDERWATER) is the liquid the camera is in. Above the
+	   surface it is MEDIUM_NONE, and the water seen from there - the refracted
+	   leg in reflect_refract.rgen, the bounces under the surface, the haze
+	   god_rays.comp marches in it (pt_water_fog_above) - keeps the slider's own
+	   value. Submerged, everything pt_water_density does is scaled: the
+	   extinction (water.glsl) and the light scattered inside the water
+	   (god_rays.comp). It switches as the eye breaks the surface, in the same
+	   frame the medium itself does. Both renderers: D3D12 fills its UBO here
+	   too. */
+	if (vkpt_refdef.bsp_mesh_world_loaded && vkpt_refdef.bsp_mesh_world.q1 && ubo->medium != MEDIUM_NONE)
+		ubo->pt_water_density *= max(0.f, cvar_pt_q1_water_density->value);
 
 	// A Quake 1 sky's three settings. As seen: its texture's own colours times
 	// pt_q1_sky_brightness, whatever it lights the map with (the shader hands
@@ -9152,6 +9253,9 @@ retry:;
 
 	}
 
+	// a material's rough_scale / metal_scale / emissive_scale changed: those maps
+	// are made again at their new size, below (material.c)
+	MAT_SyncUploadScales();
 	vkpt_textures_destroy_unused();
 	vkpt_textures_end_registration();
 	vkpt_textures_update_descriptor_set();
@@ -10473,6 +10577,15 @@ vkpt_init_frontend(void)
 	cvar_pt_q1_sky_brightness = Cvar_Get("pt_q1_sky_brightness", "1", CVAR_ARCHIVE);
 	cvar_pt_q1_sky_light = Cvar_Get("pt_q1_sky_light", "1", CVAR_ARCHIVE);
 	cvar_pt_q1_sky_fog = Cvar_Get("pt_q1_sky_fog", "1", CVAR_ARCHIVE);
+	/* pt_q1_water_density: how murky water, slime and lava are on a Quake 1 map
+	   WHILE THE EYE IS IN THEM, as a multiplier of the "underwater murkiness"
+	   slider (pt_water_density). Seen from above the surface the liquid keeps
+	   the slider's own value (prepare_ubo).
+	   Quake 1 maps put few lights under water, so the slider's 0.35 left it
+	   pitch black there; 0.10 / 0.35 makes that 0.35 act as 0.10 (Matt,
+	   2026-11-25), and any other slider value in the same proportion. 1 = as on
+	   every other map. */
+	cvar_pt_q1_water_density = Cvar_Get("pt_q1_water_density", "0.285714", CVAR_ARCHIVE);
 	/* pt_q1_sky_light_r/g/b: the COLOUR of that light, each a multiplier of
 	   its channel (1 1 1 = the sky's own). The sky as seen keeps its colours.
 	   The sRGB decode (q1_sky_faces) brought the maroon skies' red back - and

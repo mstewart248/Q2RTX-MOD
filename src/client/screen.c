@@ -3771,8 +3771,9 @@ static void SCR_ExecuteLayoutString(const char *s)
             token = COM_Parse(&s);
             index = atoi(token);
             // Quake III's HUD: the powerup timer, and the frags when its
-            // score boxes are up
-            if (scr_q3_hud && (index == STAT_TIMER || (index == STAT_FRAGS && (scr_q3_hud & Q3HUD_SCORES))))
+            // score boxes are up; Team Arena's, CTF's caps and the skulls
+            if (scr_q3_hud && (index == STAT_TIMER || (index == STAT_FRAGS && (scr_q3_hud & Q3HUD_SCORES)) ||
+                               ((scr_q3_hud & Q3HUD_TA) && SCR_Q3HudDrawsStat(index))))
                 continue;
             value = SCR_LayoutStat(index);
             HUD_DrawNumber(x, y, 0, width, value);

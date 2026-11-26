@@ -627,6 +627,7 @@ void player_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage
         ClientObituary(self, inflictor, attacker);
         SP_PlayerKilled(self, inflictor, attacker);    // the campaign's rewards
         CTF_PlayerDied(self, attacker);    // drops the flag and tech, before the inventory goes
+        TA_PlayerDied(self);    // Team Arena: the powerup home, a skull out, a held kamikaze
         TossClientWeapon(self);
         if (deathmatch->value)
             Cmd_Help_f(self);       // show scores
@@ -852,6 +853,9 @@ void InitClientPersistant(gclient_t *client)
     client->pers.max_prox       = 50;
     client->pers.max_q3_lightning = 200;
     client->pers.max_q3_bfg     = 200;
+    client->pers.max_q3_nails   = 200;
+    client->pers.max_q3_mines   = 200;
+    client->pers.max_q3_belt    = 200;
 
     // Quake III's guns: Quake III's spawn (g_q3weap.c). Otherwise, on a
     // Quake III map, the spawn weapons the bot match menu chose (g_q3.c)
@@ -1740,6 +1744,12 @@ void ClientBegin(edict_t *ent)
         return;
     }
 
+    // a Quake III demo: the player sees it through the recorded player's eyes (g_q3demo.c)
+    if (Q3Demo_Active()) {
+        Q3Demo_ClientBegin(ent);
+        return;
+    }
+
     // a Quake 1 level run by its progs: they make the player (g_q1vm_game.c)
     if (Q1VM_Active()) {
         Q1VM_ClientBegin(ent);
@@ -1844,8 +1854,10 @@ void ClientUserinfoChanged(edict_t *ent, char *userinfo)
 
     playernum = ent - g_edicts - 1;
 
-    // combine name and skin into a configstring
-    gi.configstring(CS_PLAYERSKINS + playernum, va("%s\\%s", ent->client->pers.netname, s));
+    // combine name and skin into a configstring - in a Quake III demo the
+    // skins are its players' (g_q3demo.c: the recorded player's is slot 0)
+    if (!Q3Demo_Active())
+        gi.configstring(CS_PLAYERSKINS + playernum, va("%s\\%s", ent->client->pers.netname, s));
 
     // fov
     if (deathmatch->value && ((int)dmflags->value & DF_FIXED_FOV)) {
@@ -1972,6 +1984,12 @@ void ClientDisconnect(edict_t *ent)
         return;
     }
 
+    // the player skins are the demo's players' (g_q3demo.c)
+    if (Q3Demo_Active()) {
+        Q3Demo_ClientDisconnect(ent);
+        return;
+    }
+
     if (Q1VM_Active()) {
         Q1VM_ClientDisconnect(ent);
         gi.configstring(CS_PLAYERSKINS + (int)(ent - g_edicts - 1), "");
@@ -1980,6 +1998,7 @@ void ClientDisconnect(edict_t *ent)
 
     // a flag or tech they held goes back in play
     CTF_PlayerLeft(ent);
+    TA_PlayerLeft(ent);     // ... and Team Arena's persistent powerup
 
     // send effect
     if (ent->inuse) {
@@ -2057,8 +2076,8 @@ void ClientThink(edict_t *ent, usercmd_t *ucmd)
     level.current_entity = ent;
     client = ent->client;
 
-    // a Quake 1 demo: nothing to move (g_q1demo.c)
-    if (Q1Demo_Active())
+    // a Quake 1 or Quake III demo: nothing to move (g_q1demo.c, g_q3demo.c)
+    if (Q1Demo_Active() || Q3Demo_Active())
         return;
 
     // a Quake 1 level run by its progs (g_q1vm_game.c)
@@ -2123,6 +2142,8 @@ void ClientThink(edict_t *ent, usercmd_t *ucmd)
             client->ps.pmove.pm_type = PM_GIB;
         else if (ent->deadflag)
             client->ps.pmove.pm_type = PM_DEAD;
+        else if (TA_Invulnerable(ent))
+            client->ps.pmove.pm_type = PM_FREEZE;   // Team Arena's sphere holds you (PM_InvulnerabilityMove)
         else
             client->ps.pmove.pm_type = PM_NORMAL;
 

@@ -323,26 +323,75 @@ void Q3Shader_Load(void)
         return;
     }
 
-    q3_files = Z_TagMallocz(sizeof(q3file_t) * num_files, TAG_GENERAL);
+    /* Team Arena (files.c, FS_SEARCH_TEAMARENA) shares thirteen script NAMES
+       with Quake III - models.shader, gfx.shader, sfx.shader, ctf.shader... -
+       and an ordinary lookup finds Quake III's, which lacks the shaders Team
+       Arena added to its copy. So each script's Team Arena copy is read too
+       ("missionpack/scripts/<name>"), kept where it differs from the one the
+       lookup found, and indexed FIRST: a shader both define stays Quake III's
+       (a later script replaces an earlier definition, index_file), and the
+       ones only Team Arena's copy has are there for its maps and models. */
+    q3_files = Z_TagMallocz(sizeof(q3file_t) * num_files * 2, TAG_GENERAL);
 
+    char **ta_text = Z_TagMallocz(sizeof(char *) * num_files, TAG_GENERAL);
+    int *ta_len = Z_TagMallocz(sizeof(int) * num_files, TAG_GENERAL);
     for (int i = 0; i < num_files; i++) {
-        q3file_t *f = &q3_files[q3_num_files];
         char *buf = NULL;
-
-        Q_concat(f->path, sizeof(f->path), "scripts/", (const char *)list[i]);
-        int len = FS_LoadFile(f->path, (void **)&buf);
-        if (!buf || len <= 0)
-            continue;
-
-        // FS_LoadFile terminates the buffer
-        f->text = buf;
-        q3_num_files++;
+        int len = FS_LoadFile(va("missionpack/scripts/%s", (const char *)list[i]), (void **)&buf);
+        if (buf && len > 0) {
+            ta_text[i] = buf;
+            ta_len[i] = len;
+        } else if (buf) {
+            FS_FreeFile(buf);
+        }
     }
 
+    // the scripts an ordinary lookup finds, after the Team Arena copies
+    q3file_t *plain = Z_TagMallocz(sizeof(q3file_t) * num_files, TAG_GENERAL);
+    int *plain_len = Z_TagMallocz(sizeof(int) * num_files, TAG_GENERAL);
+    for (int i = 0; i < num_files; i++) {
+        char *buf = NULL;
+
+        Q_concat(plain[i].path, sizeof(plain[i].path), "scripts/", (const char *)list[i]);
+        int len = FS_LoadFile(plain[i].path, (void **)&buf);
+        if (!buf || len <= 0) {
+            if (buf)
+                FS_FreeFile(buf);
+            continue;
+        }
+        // FS_LoadFile terminates the buffer
+        plain[i].text = buf;
+        plain_len[i] = len;
+    }
+
+    int ta_kept = 0;
+    for (int i = 0; i < num_files; i++) {
+        if (!ta_text[i])
+            continue;
+        // the same file (a script only Team Arena has): once is enough
+        if (plain[i].text && plain_len[i] == ta_len[i] && !memcmp(plain[i].text, ta_text[i], ta_len[i])) {
+            FS_FreeFile(ta_text[i]);
+            continue;
+        }
+        q3file_t *f = &q3_files[q3_num_files++];
+        Q_concat(f->path, sizeof(f->path), "missionpack/scripts/", (const char *)list[i]);
+        f->text = ta_text[i];
+        ta_kept++;
+    }
+    for (int i = 0; i < num_files; i++)
+        if (plain[i].text)
+            q3_files[q3_num_files++] = plain[i];
+
+    Z_Free(plain);
+    Z_Free(plain_len);
+    Z_Free(ta_text);
+    Z_Free(ta_len);
     FS_FreeList(list);
 
     for (int i = 0; i < q3_num_files; i++)
         index_file(i);
+    if (ta_kept)
+        Com_DPrintf("Quake III shaders: %d Team Arena copies of shared scripts read first\n", ta_kept);
 
     Com_DPrintf("Indexed %d Quake III shaders from %d scripts\n", q3_num_shaders, q3_num_files);
 }
@@ -626,8 +675,12 @@ static void parse_alphagen(q3stage_t *stage, const char **text)
         stage->alpha_const = parse_float(text);
     } else if (!Q_stricmp(tok, "lightingSpecular")) {
         stage->alphagen = Q3ALPHAGEN_ZERO;
+    } else if (!Q_stricmp(tok, "vertex")) {
+        stage->alphagen = Q3ALPHAGEN_VERTEX;
+    } else if (!Q_stricmp(tok, "oneMinusVertex")) {
+        stage->alphagen = Q3ALPHAGEN_ONE_MINUS_VERTEX;
     }
-    // portal (alpha by distance), vertex, entity: left as the texture's alpha
+    // portal (alpha by distance), entity: left as the texture's alpha
 }
 
 static void parse_stage(q3shader_t *s, q3stage_t *stage, const char **text)
@@ -831,6 +884,23 @@ static void q3_analyze(q3shader_t *s)
         if (st->num_tcmods > 0 || st->num_frames > 1 ||
             st->rgbgen == Q3RGB_WAVE || st->alphagen == Q3ALPHAGEN_WAVE)
             s->animated = true;
+    }
+
+    // A dark cut-out: the whole shader one still image that only darkens what
+    // is behind it, by its colour - models/mapobjects/tree2/branch2 (TA's
+    // mpterra1/2 trees), white twigs on black. Quake III showed black twigs
+    // against the sky; drawn as the image, they were white twigs on dark,
+    // see-through cards (Matt, 2026-11-26).
+    {
+        int images = 0;
+        for (int i = 0; i < s->num_stages; i++) {
+            const q3stage_t *st = &s->stages[i];
+            if (!st->lightmap && !st->white && !st->video && st->map[0])
+                images++;
+        }
+        s->dark_cutout = first && images == 1 && s->diffuse_stage == 0 && !s->animated &&
+                         !first->env_map && !s->sky && !s->portal &&
+                         first->src_blend == Q3BF_ZERO && first->dst_blend == Q3BF_ONE_MINUS_SRC_COLOR;
     }
 
     // Chrome: an opaque reflection map first, then nothing but light added on
@@ -1206,9 +1276,10 @@ static void Q3Shader_Print_f(void)
                    st->num_frames ? " anim" : "", st->rgbgen_wave ? " wave" : "",
                    st->scroll[0], st->scroll[1], st->scale[0], st->scale[1]);
     }
-    Com_Printf("  -> diffuse stage %d, emissive stage %d%s%s%s%s%s%s%s\n", s->diffuse_stage, s->emissive_stage,
+    Com_Printf("  -> diffuse stage %d, emissive stage %d%s%s%s%s%s%s%s%s\n", s->diffuse_stage, s->emissive_stage,
                s->translucent ? ", translucent" : "", s->additive ? ", additive" : "",
-               s->alpha_test ? ", alpha tested" : "", s->animated ? ", animated" : "",
+               s->alpha_test ? ", alpha tested" : "", s->dark_cutout ? ", dark cut-out" : "",
+               s->animated ? ", animated" : "",
                s->chrome ? ", chrome" : "", s->fake_effect ? ", fake flare/beam" : "",
                s->no_draw ? ", NOT DRAWN" : "");
 }

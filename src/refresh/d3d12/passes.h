@@ -297,6 +297,9 @@ void d3d12_barrier_all(ID3D12GraphicsCommandList4 *cmd, bool enhanced);
 // buffer cannot be promoted out of COPY_DEST.
 void d3d12_clear_buffer(ID3D12GraphicsCommandList4 *cmd, ID3D12Resource *buffer, uint64_t size,
                         ID3D12Resource *zeros);
+// the same for [offset, offset + size) only
+void d3d12_clear_buffer_range(ID3D12GraphicsCommandList4 *cmd, ID3D12Resource *buffer, uint64_t offset,
+                              uint64_t size, ID3D12Resource *zeros);
 
 // The primary rays through tone mapping (TAA_OUTPUT holds the picture, or with
 // DLSS DLSS_OUTPUT), each pass followed by a barrier.

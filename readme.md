@@ -85,7 +85,10 @@ existing Quake II RTX install.
 * **[Quake III Arena](#quake-iii-arena-support)** from your own `baseq3` paks,
   path traced: its campaign with the podium and medals, its arenas and CTF
   maps in bot match, its weapons, movement, player models and bots (Quake
-  III's own bot AI), and its shaders, curved surfaces, skies and fog.
+  III's own bot AI), and its shaders, curved surfaces, skies and fog. With
+  **[Team Arena](#team-arena)** too: its skirmish, its maps, its game
+  types (One Flag CTF, Overload, Harvester) and its two demos in the attract
+  loop.
 * **[Quake](#quake-support)**, all of its 2021 remaster's content, from your
   own paks and path traced: the original campaign and all five expansions
   (*Scourge of Armagon*, *Dissolution of Eternity*, *Dimension of the Past*,
@@ -254,6 +257,88 @@ podium with medals and the announcer, and the records it keeps. Each arena is
 played as deathmatch with Quake III's rules. `levelshots` makes the levelshot
 pictures for the menus from your own maps.
 
+### Team Arena
+
+With Team Arena's `pak0.pk3` as well, in `baseq3/missionpack` (`fs_quake3_ta`
+turns on and the console prints *Quake III Team Arena data: 1 pk3 file(s)*),
+**quake iii arena** asks which: **single player**, the campaign above, or
+**team arena**, Team Arena's skirmish on a page laid out like its own, with
+its art and music. Pick the game type (free for all, tournament, team
+deathmatch, capture the flag, one flag CTF, overload or harvester), a map
+from the strip of levelshots, your team and the other one from its five
+(Crusaders, Intruders, Pagans, Stroggs, The Fallen), and the skill. Your
+team's members play beside you on red and the other team's on blue, each as
+its Team Arena character; a tournament puts you against the map's champion.
+A match ends at 10 frags or 5 captures (4 obelisks in Overload, 15 skulls in
+Harvester) and returns to the page.
+
+Its 20 maps play with its own game types and rules: **One Flag CTF** (the
+white flag from the middle into their base), **Overload** (bring down their
+obelisk), **Harvester** (the skulls from the middle obelisk, carried to
+theirs), the Kamikaze and Invulnerability holdables, the persistent powerups
+(Scout, Guard, Doubler, Ammo Regen) and the nailgun, prox launcher and
+chaingun. The bots play its games: they carry the white flag, shoot at the
+obelisk, pick up skulls and bring them in, and some stay back to defend. On
+the bot match and start server pages, the **quake iii arena** map set lists
+Team Arena's maps after Quake III's.
+
+Its three big outdoor maps (*Overdose*, *Distant Screams*, *Final Strike*,
+`mpterra1`-`3`) reach past ±4096 units, where Quake II's 16-bit positions
+wrap around: players were thrown across the map, out of bounds or into
+walls. A map that goes past ±4096 sends its positions as 32-bit instead
+(`sv_wide_coords`: 1 such maps, the default; 2 every map; 0 never), and so
+do demos recorded on one. Maps inside ±4096 keep the stream they had.
+
+On its maps the HUD is Team Arena's own, laid out as its `hud.menu` drew it
+in its own fonts: the bar along the bottom with the flag and items you
+carry, ammo, health with your head, armor and the scores, each panel in your
+team's colour with its scanlines, flashing when your health is low, when you
+carry a flag and over a team's score while the other has its flag; the
+powerup timers at the right. In a team game the teammate picked out at the
+lower left shows their head, name, where they are, health, armor, gun, job
+and powerup (`nextteammember` / `prevteammember` pick another), and where you
+are shows at the lower right. `cl_q3_hud_ta`: 1 on Team Arena's maps (the
+default), 0 Quake III's HUD there too, 2 on every map Quake III's would draw.
+
+The bots talk as Team Arena's did: in CTF they tell you whether they would
+rather attack or defend, and call out when they take a flag, when the enemy
+has yours and when the base is under attack. You hear them in their
+character's voice, their head shows at the top left for a moment and what
+they said is printed. `vsay <line>`, `vsay_team <line>`, `vtell <client
+number> <line>` (and `vosay`, `vosay_team`, `votell`: heard, not printed)
+and `vtaunt` send your own, the line one of the voice files' names
+(`vsay_team getflag`).
+
+Team Arena's own two demos, the CTF matches its menu played (`MPDEMO1` on
+*Base Siege*, `MPDEMO2` on *Inner Sanctums*), join the
+[attract loop](#demo-playback) at the main menu, and `q3demo
+missionpack/demos/MPDEMO1.dm_48` plays one by hand. They are Quake III's
+own recordings (protocol 48, the 1.27 network stream), played back by the
+game on their maps: you watch through Willits's eyes, with the gun in hand,
+Team Arena's HUD and its teammate panel, the players in their Team Arena
+uniforms, the shots, rockets, nails, rails and mines as Quake III's guns draw
+them in a bot match, the items, doors, jump pads and flags, the flag and
+capture announcements, the obituaries and the voice chat.
+
+Its terrain blends one rock into the next by the map's vertex alpha
+(`alphaGen vertex`), as it did, rather than drawing the second rock's
+triangles whole over the grass. Its trees' branches, white twigs on black
+that only darken what is behind them, are cut out as dark twigs against the
+sky. `pt_q3_cloud_shadow 1` makes the red clouds in the outdoor maps' sky
+cast real shadows: where they pass in front of the sun its light, and the
+sky's, dims on everything outside, not only the terrain, and the terrain's
+painted-on cloud layer is left out. The shadows are the sky's own clouds,
+moving as they do: open blue sky casts none, and the orange clouds the
+darkest. `pt_q3_cloud_shadow_strength` (0.6, at most 0.9) is how much of the
+light the thickest cloud takes, `pt_q3_cloud_shadow_sky` (1) how much the
+clouds take of the sky's light as well as the sun's (0 = the sun's only),
+`pt_q3_cloud_shadow_height` (2048) how big the shadows are and how fast they
+cross, and `pt_q3_cloud_shadow_soft` (2) how soft their edges are. The
+switch is **Quake III cloud shadows** on the environment setup page, shown
+when the Quake III paks are installed; it is off by default. It works on
+every Quake III and Team Arena level whose sky has a sun and cloud layers,
+and does nothing under a black, star, nebula or space sky.
+
 ### Bot match
 
 With the paks installed, the bot match page gets a **map set** row:
@@ -399,7 +484,10 @@ Each campaign runs **its own `progs.dat`** in a QuakeC virtual machine
 (`g_q1_progs 1`, the default), so its monsters, weapons, items, doors, lifts,
 secrets, intermissions and end text are Quake's own code rather than a copy of
 it. The add-ons' new monsters, weapons and entities come with them, and so does
-*Dimension of the Machine*'s fog, which changes room by room. The status bar is
+*Dimension of the Machine*'s fog, which changes room by room. So do *Scourge of
+Armagon*'s low-gravity rooms (`trigger_setgravity`, as on its start map and
+`hip1m4`), with the player's own gravity sent to the client so prediction falls
+the same way, and *Ziggurat Vertigo*'s low gravity for the whole level. The status bar is
 Quake's own, drawn from its own graphics; **Tab** shows Quake's scoreboard; and
 saving and loading work. Quake has no crouch, so the crouch key does nothing.
 
@@ -514,7 +602,13 @@ Quake maps use the same tools as Quake II's, from `id1`:
   (`tm_blend_water_enable`, `tm_blend_water_vignette`).
 * **Underwater murkiness** (`pt_water_density`, default `0.5`): how quickly
   light fades travelling through water, slime and lava. Lower sees further and
-  brighter, higher is murkier.
+  brighter, higher is murkier. On Quake 1 maps it is multiplied by
+  `pt_q1_water_density` (default `0.285714`, which is 0.10 / 0.35), so a
+  slider at 0.35 acts as 0.10 there, but only while you are under the surface.
+  Looking down into the water from above, it keeps the slider's own value.
+  Quake 1 maps have few lights under water, and the murkiness that suits other
+  maps leaves theirs pitch black. `1` makes Quake 1 the same as every other
+  map.
 * **Sky system**: `sky_type` selects between the procedural sky and the map's
   own skybox; `sky_use_map_skybox` controls whether rerelease maps show their
   authored skybox (`1`) or always the procedural one (`0`);
@@ -1087,8 +1181,10 @@ verified by parsing every `.dm2` id ships with the remaster end to end with no
 byte left over. A demo whose map differs from the local copy says so and plays
 anyway.
 
-The startup attract loop plays the id logo, then `demo1`, then the rest in
-random order as the remaster does (`cl_attract_random 0` keeps list order);
+The startup attract loop plays the id logo, then one demo from each game in
+turn - Quake II's `demo1`, Quake's first demo, Team Arena's `MPDEMO1`, each
+only when its data is installed - then the rest in random order as the
+remaster does (`cl_attract_random 0` keeps list order);
 `demo <file>` plays one directly, and [photo mode](#photo-mode) works during
 playback, so the free camera can be flown around a paused demo.
 
@@ -1888,6 +1984,7 @@ Attributes marked **(new)** do not exist in upstream Quake II RTX.
 | `roughness_override` | float | forces roughness |
 | `metalness_factor` | float | scales the sampled metallic |
 | `specular_factor` | float | scales the specular lobe |
+| `rough_scale`, `metal_scale`, `emissive_scale` | 1..4 | **(new)** draws the roughness, metallic or emissive map that many times its size, with nearest-neighbour upscaling, so with texture filtering on its texels stay crisp up close instead of blending into the next one. Meant for low-resolution maps (Quake 1's 64 x 64) that should look the way `pt_nearest 1` shows them, without point-sampling the whole game. The file, and what `mat author` paints, stay at their own size. A map that several materials share is drawn at the largest scale any of them asks for, and no side goes past 4096 texels. A Quake III stage's own roughness and metallic maps follow `rough_scale` and `metal_scale`. Live: `mat rough_scale 2` takes effect on the next frame. Also on the `mat author` panel's **upscale** slider. `1` (the default) draws the map as loaded |
 | `volumetric_scale` | float | **(new)** how much every surface using this material scatters into the fog, relative to how much it lights the room. Negative (the default) means "not stated", and the class default applies — see [Volumetric scale](#volumetric-scale-how-much-fog-a-light-makes) |
 | `curved_water` | bool | **(new)** says this `WATER` / `SLIME` surface is a **closed shape** rather than a flat brush face, so *all* of it takes the force-field (glass) path rather than only the part whose normals face sideways. That is both uniform and the only way a water surface shows its own texture |
 | `dlss_guide_field` | 0..3 | **(new)** overrides `pt_dlss_guide_field` for surfaces using this material. Only consulted where the renderer splits a pixel into a reflection and a refraction field — glass, water, slime, chrome — and ignored everywhere else. Same numbering as the cvar, so whichever value looked right in the console is the value to write here |
@@ -2030,7 +2127,7 @@ Materials can be examined and modified at run time.
 | Command | Meaning |
 |---|---|
 | `mat help` | print usage |
-| `mat print [name] [map]` | print the material at the crosshair, or the named one, with every attribute and its current value, and show its albedo in the top-right corner — or the map named: `normals`, `emissive`, `mask`, `roughness`, `metallic`, `height` (`mat print normals`) |
+| `mat print [name] [map]` | print the material at the crosshair, or the named one, with every attribute and its current value (the `texture_*` lines first, the rest alphabetical), and show its albedo in the top-right corner — or the map named: `normals`, `emissive`, `mask`, `roughness`, `metallic`, `height` (`mat print normals`) |
 | `mat view [stage<N>] [map]` | **(new)** only show that picture — or what stage N of a Quake III shader draws, or that stage's own roughness, metallic or normals map (`mat view stage2 roughness`) |
 | `mat which` | **(new)** say **where** the current material is defined — file and line number, or "automatically generated" |
 | `mat author [map]` | **(new)** paint the material's maps with a brush in photo mode. See [Painting material maps](#painting-material-maps-mat-author) |
@@ -2173,6 +2270,18 @@ counts **1 painted map not saved** until **Save** writes the PNG under
   `pt_pom` fix is a console setting for the session.
 * **Under the brush** the panel shows the average of the texels the brush
   covers: 0% and 100% under it read 50%.
+* **Upscale** (roughness, metallic and emissive): the panel's **upscale**
+  slider, 1x to 4x, draws that map 2-4 times its size with nearest-neighbour
+  upscaling. With texture filtering on, a low-resolution map (Quake 1's
+  64 x 64) blends each texel into the next up close, so a shine that changes
+  from texel to texel turns into a blurry smear. Upscaled, each texel becomes a
+  2x2 to 4x4 block and the filter only softens a thin edge between texels. You
+  get what `pt_nearest 1` shows, on this material only. You still paint the map
+  at its own size, and the file stays that size. Only the texture on the GPU is
+  bigger. The line under the slider shows the size it is drawn at. The
+  slider sets the material's `rough_scale`, `metal_scale` or `emissive_scale`,
+  which **Save** writes into its `.mat` entry. A Quake III stage's own roughness
+  and metallic maps follow the material's.
 
 ### Brushes and tools
 

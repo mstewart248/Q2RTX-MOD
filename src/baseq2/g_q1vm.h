@@ -436,7 +436,7 @@ typedef struct {
     int             num_edicts;
 
     // optional fields some progs add, or -1 (word offsets)
-    int             fld_alpha, fld_scale;
+    int             fld_alpha, fld_scale, fld_gravity;
 
     // the interpreter
     qc_stackframe_t stack[QC_MAX_STACK_DEPTH];
@@ -503,6 +503,22 @@ static inline int QC_FromProg(int e)
 static inline qc_eval_t *QC_Field(int num, int ofs)
 {
     return (qc_eval_t *)(qvm.fields + (size_t)num * qvm.edict_size + ofs * 4);
+}
+
+/* Entity (num)'s share of sv_gravity: Quake's SV_AddGravity rule. A progs
+   that declares a float field "gravity" (hipnotic, rogue) sets it per entity,
+   and 0 - every entity that never had it set - means 1. Hipnotic's
+   trigger_setgravity writes it on the player who touches it ("gravity" "11"
+   on the map = 0.1, "101" = 1: the low-gravity room in hipnotic's start.bsp,
+   Matt 11-25), and it stays until another trigger or a respawn sets it. */
+static inline float QC_Gravity(int num)
+{
+    if (qvm.fld_gravity >= 0) {
+        const float g = QC_Field(num, qvm.fld_gravity)->_float;
+        if (g)
+            return g;
+    }
+    return 1.0f;
 }
 
 // g_q1vm.c: the machine

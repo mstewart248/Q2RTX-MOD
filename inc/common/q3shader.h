@@ -103,7 +103,9 @@ enum {
     Q3ALPHAGEN_DEFAULT, // 1, or the texture's own alpha
     Q3ALPHAGEN_CONST,
     Q3ALPHAGEN_WAVE,
-    Q3ALPHAGEN_ZERO     // lightingSpecular: a fake highlight the path tracer makes for real
+    Q3ALPHAGEN_ZERO,    // lightingSpecular: a fake highlight the path tracer makes for real
+    Q3ALPHAGEN_VERTEX,  // the drawverts' alpha (bsp->corner_alpha): Team Arena's terrain blends
+    Q3ALPHAGEN_ONE_MINUS_VERTEX
 };
 
 // tcGen
@@ -231,6 +233,12 @@ typedef struct q3shader_s {
     bool        additive;           // ONLY glow: an additive effect surface
     bool        alpha_test;         // the colour stage has alphaFunc
     bool        no_draw;            // nothing to draw (nodraw, fog, no stages)
+
+    // One still image that DARKENS what is behind it by its own colour
+    // (blendFunc GL_ZERO GL_ONE_MINUS_SRC_COLOR): white on black in the file,
+    // black where it is white on screen - Team Arena's tree branches. Drawn as
+    // a black cut-out (vkpt material.c apply_q3_shader).
+    bool        dark_cutout;
 
     // a FAKE effect the path tracer does for real, so not drawn at all: a lens
     // flare sprite or a light beam/shaft made of additive cards (q3_analyze)

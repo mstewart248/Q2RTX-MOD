@@ -1162,48 +1162,67 @@ files.c): each episode's own, as its quake.rc's startdemos listed them, played
 by the server on their maps ("q1demo", server/commands.c; baseq2 g_q1demo.c).
 Without the data none of them is listed, and the loop is Quake II's alone.
 
+TEAM ARENA'S TWO DEMOS (MPDEMO1 and MPDEMO2, CTF on mpteam1 and mpteam3) join
+too when its data is installed (fs_quake3_ta): Quake III demos played by the
+server on their arenas ("q3demo", server/commands.c; baseq2 g_q3demo.c).
+
 Only demos that are actually installed join the loop, and with none at all
 the logo is skipped too and the player stays on the main menu. A player on
 the shareware demo data had no .dm2 files: there "demo demo1.dm2" failed, the
 "popmenu" after it closed the menu anyway, and they were left at the console.
 
-ORDER (cl_attract_random, default 1). The loop always opens on the first demo
-in the list - demo1 - then, with Quake 1's data installed, Quake's own first
-demo (id1's demo1.dem, or the first Quake demo installed), and after that
-picks at random, the way the remaster does. Random is a shuffle, not a dice
-roll: after demo X, every OTHER demo plays once in a random order before X
-can come round again, so nothing repeats back to back and nothing goes
-missing for a long stretch; the first round leaves out the two openers too.
-cl_attract_random 0 plays them in list order instead. Each demo's nextserver
+ORDER (cl_attract_random, default 1). The loop opens on one demo of each
+game, Quake II, then Quake, then Quake III (Matt, 2026-11-26: "plays the
+quake2 demo quake 1 demo then quake3 demo ... then the rest are random"):
+demo1, then Quake's own first demo (id1's demo1.dem, or the first Quake demo
+installed), then Team Arena's MPDEMO1 (or MPDEMO2 alone). A game that isn't
+installed is left out of the openers, and the next one moves up. After that
+it picks at random, the way the remaster does. Random is a shuffle, not a
+dice roll: after demo X, every OTHER demo plays once in a random order before
+X can come round again, so nothing repeats back to back and nothing goes
+missing for a long stretch; the first round leaves out the openers too.
+cl_attract_random 0 plays the rest in list order instead. Each demo's nextserver
 is the attract_next command rather than a fixed alias chain, so the cvar is
 read every time a demo ends and flipping it takes effect on the next one.
 =================
 */
 #if USE_CLIENT
 static cvar_t      *cl_attract_random;
-static const char  *attract_demos[32];  // a .dm2's name, or a Quake 1 demo's path ("id1/...")
+static const char  *attract_demos[32];  // a .dm2's name, a Quake 1 demo's path ("id1/..."), a Team Arena one's ("missionpack/...")
 static int          attract_count;
 static int          attract_last = -1;  // demo playing now, -1 = still the logo
 static int          attract_bag[q_countof(attract_demos)];
 static int          attract_bag_left;
-static int          attract_quake1;     // Quake 1's first demo, the second played; -1 = none
+static int          attract_openers[3]; // each game's first demo - Quake II, Quake, Quake III - those installed
+static int          attract_num_openers;
 static int          attract_played;     // demos started since the logo
 
+static bool Com_AttractIsOpener(int index)
+{
+    int i;
+
+    for (i = 0; i < attract_num_openers; i++) {
+        if (attract_openers[i] == index)
+            return true;
+    }
+    return false;
+}
+
 // Next pick of the shuffle: everything except the demo that just played, in
-// a random order. The first round leaves out the openers too: demo1, and the
-// Quake 1 demo that played just now.
+// a random order. The first round leaves out the openers too, the demos the
+// loop just started with.
 static int Com_AttractShuffle(void)
 {
     int i, j, t;
 
     if (!attract_bag_left) {
-        const bool first_round = attract_played <= (attract_quake1 > 0 ? 2 : 1);
+        const bool first_round = attract_played <= attract_num_openers;
 
         for (i = 0; i < attract_count; i++) {
-            if (i != attract_last && !(first_round && i == 0))
+            if (i != attract_last && !(first_round && Com_AttractIsOpener(i)))
                 attract_bag[attract_bag_left++] = i;
         }
-        if (!attract_bag_left) {    // just the two openers installed
+        if (!attract_bag_left) {    // just the openers installed
             for (i = 0; i < attract_count; i++) {
                 if (i != attract_last)
                     attract_bag[attract_bag_left++] = i;
@@ -1229,10 +1248,8 @@ static void Com_AttractNext_f(void)
         return;
     }
 
-    if (attract_last < 0) {
-        next = 0;   // always open on demo1
-    } else if (attract_played == 1 && attract_quake1 > 0) {
-        next = attract_quake1;  // then Quake's first demo
+    if (attract_played < attract_num_openers) {
+        next = attract_openers[attract_played]; // one of each game first: Quake II, Quake, Quake III
     } else if (cl_attract_random->integer && attract_count > 1) {
         next = Com_AttractShuffle();
     } else {
@@ -1244,6 +1261,9 @@ static void Com_AttractNext_f(void)
     attract_played++;
     if (!Q_strncasecmp(attract_demos[next], "id1/", 4))
         Cbuf_InsertText(&cmd_buffer, va("q1demo %s; popmenu; set nextserver attract_next\n",
+                                        attract_demos[next]));
+    else if (!Q_strncasecmp(attract_demos[next], "missionpack/", 12))
+        Cbuf_InsertText(&cmd_buffer, va("q3demo %s; popmenu; set nextserver attract_next\n",
                                         attract_demos[next]));
     else
         Cbuf_InsertText(&cmd_buffer, va("demo %s.dm2; popmenu; set nextserver attract_next\n",
@@ -1265,10 +1285,14 @@ static void Com_StartAttractLoop(void)
         "id1/rogue/demo1.dem", "id1/rogue/demo2.dem",
         "id1/dopa/demo1.dem", "id1/dopa/demo2.dem", "id1/dopa/demo3.dem"
     };
+    // the two CTF matches Team Arena's menu played (mpteam1, mpteam3)
+    static const char *const team_arena_demos[] = {
+        "missionpack/demos/MPDEMO1.dm_48", "missionpack/demos/MPDEMO2.dm_48"
+    };
     const char *const *demos = base_demos;
     int num_demos = q_countof(base_demos);
     char path[MAX_QPATH];
-    int i;
+    int i, first;
 
     if (Cvar_VariableInteger("fs_rerelease")) {
         demos = rerelease_demos;
@@ -1278,28 +1302,42 @@ static void Com_StartAttractLoop(void)
     attract_count = 0;
     attract_last = -1;
     attract_bag_left = 0;
-    attract_quake1 = -1;
+    attract_num_openers = 0;
     attract_played = 0;
     for (i = 0; i < num_demos && attract_count < (int)q_countof(attract_demos); i++) {
         Q_snprintf(path, sizeof(path), "demos/%s.dm2", demos[i]);
         if (FS_FileExists(path))
             attract_demos[attract_count++] = demos[i];
     }
+    if (attract_count > 0)
+        attract_openers[attract_num_openers++] = 0;     // demo1
 
     // Quake 1's, an episode's only with that episode installed: "id1/rogue/"
     // would find id1's own demo1.dem without it
+    first = attract_count;
     for (i = 0; i < (int)q_countof(quake1_demos) && attract_count < (int)q_countof(attract_demos); i++) {
         char episode[16];
         const char *s = quake1_demos[i] + 4;
         size_t n = strchr(s, '/') - s;
         memcpy(episode, s, n);
         episode[n] = 0;
-        if (Cvar_VariableInteger(va("fs_quake1_%s", episode)) && FS_FileExists(quake1_demos[i])) {
-            if (attract_quake1 < 0)
-                attract_quake1 = attract_count;
+        if (Cvar_VariableInteger(va("fs_quake1_%s", episode)) && FS_FileExists(quake1_demos[i]))
             attract_demos[attract_count++] = quake1_demos[i];
+    }
+    if (attract_count > first)
+        attract_openers[attract_num_openers++] = first; // Quake's first demo
+
+    // Team Arena's, with its data (fs_quake3_ta): "missionpack/" reads its
+    // paks only
+    first = attract_count;
+    if (Cvar_VariableInteger("fs_quake3") && Cvar_VariableInteger("fs_quake3_ta")) {
+        for (i = 0; i < (int)q_countof(team_arena_demos) && attract_count < (int)q_countof(attract_demos); i++) {
+            if (FS_FileExists(team_arena_demos[i]))
+                attract_demos[attract_count++] = team_arena_demos[i];
         }
     }
+    if (attract_count > first)
+        attract_openers[attract_num_openers++] = first; // Quake III's first demo
 
     if (!attract_count) {
         Com_DPrintf("No demos installed, skipping the attract loop\n");

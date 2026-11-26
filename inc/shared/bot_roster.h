@@ -100,6 +100,32 @@ static const bot_roster_entry_t bot_q3_roster[] = {
     ((int)(sizeof(bot_q3_roster) / sizeof(bot_q3_roster[0])))
 
 /*
+Team Arena's (baseq3/missionpack scripts/bots.txt): two whole models and the
+eleven characters that are a head on a shared body (shared/ta_characters.h).
+Not in a random bot's pool - its skirmish names them (client/ui/q3sp.c), and
+the bot picker lists them - so a Quake III bot match with Team Arena
+installed rolls the same bots as before.
+*/
+static const bot_roster_entry_t bot_ta_roster[] = {
+    { "Fritzkrieg", "fritzkrieg/default" },
+    { "Pi",         "pi/default" },
+    { "James",      "james/default" },
+    { "Janet",      "janet/default" },
+    { "Callisto",   "callisto/default" },
+    { "Gammy",      "gammy/default" },
+    { "Gaunt",      "gaunt/default" },
+    { "Khan",       "khan/default" },
+    { "Megan",      "megan/default" },
+    { "Morgan",     "morgan/default" },
+    { "Neptune",    "neptune/default" },
+    { "Ursula",     "ursula/default" },
+    { "Flayer",     "flayer/default" },
+};
+
+#define BOT_TA_ROSTER_SIZE \
+    ((int)(sizeof(bot_ta_roster) / sizeof(bot_ta_roster[0])))
+
+/*
 bot_models: whose models a random bot wears - 0 Quake II's, 1 Quake III's
 (baseq3), 2 both. Archived, set from the Bot Match menu. Quake III's need
 its data, which the menu checks and the game finds (Bot_SkinExists).
@@ -169,6 +195,12 @@ static inline void Bot_SkinName(const char *skin, char *out, size_t size)
     for (i = 0; i < BOT_Q3_ROSTER_SIZE; i++) {
         if (!Q_stricmp(bot_q3_roster[i].skin, skin)) {
             Q_strlcpy(out, bot_q3_roster[i].name, size);
+            return;
+        }
+    }
+    for (i = 0; i < BOT_TA_ROSTER_SIZE; i++) {
+        if (!Q_stricmp(bot_ta_roster[i].skin, skin)) {
+            Q_strlcpy(out, bot_ta_roster[i].name, size);
             return;
         }
     }

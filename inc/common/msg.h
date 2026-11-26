@@ -26,9 +26,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // comparsion easier
 typedef struct {
     uint16_t    number;
-    int16_t     origin[3];
+    int32_t     origin[3];      // 12.3; 16 bits on the wire unless msg_write_wide
     int16_t     angles[3];
-    int16_t     old_origin[3];
+    int32_t     old_origin[3];
     uint16_t    modelindex;     // MAX_MODELS is 512 - bytes truncated these
     uint16_t    modelindex2;
     uint16_t    modelindex3;
@@ -94,6 +94,10 @@ extern byte         msg_write_buffer[MAX_MSGLEN];
 
 extern sizebuf_t    msg_read;
 extern byte         msg_read_buffer[MAX_MSGLEN];
+
+// wide coordinates (msg.c): 32-bit 12.3 coordinates on a map past +-4096
+extern bool         msg_write_wide;     // server, at map load (SV_SpawnServer)
+extern bool         msg_read_wide;      // client, from the serverdata
 
 extern const entity_packed_t    nullEntityState;
 extern const player_packed_t    nullPlayerState;

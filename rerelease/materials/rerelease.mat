@@ -26311,6 +26311,7 @@ models/monsters/soldier/gibs/chest_sold03:
 	texture_base materialDev/models/monsters/soldier/gibs/chest_sold03.tga
 	texture_normals materialDev/models/monsters/soldier/gibs/chest_sold03_n.tga
 	metalness_factor 0
+	texture_roughness materialDev/models/monsters/soldier/gibs/chest_sold03_rough.png
 
 models/monsters/soldier/gibs/chest_ss:
 	texture_base materialDev/models/monsters/soldier/gibs/chest_ss.tga

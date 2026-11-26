@@ -209,6 +209,13 @@ create_poly(
 	float positions [3 * MAX_FACE_VERTS];
 	float tex_coords[2 * MAX_FACE_VERTS];
 	mbasis_t bases  [    MAX_FACE_VERTS];
+	/* A Quake III map's vertex alpha at each corner (bsp->corner_alpha), for
+	   alphaGen vertex: q3_stages.glsl blends a stage by it - Team Arena's
+	   terrain fades one rock into the next by it (Matt, 11-26: "The rock
+	   texture should blend with the grass"). Stored as 1 - alpha in the spare
+	   half of each corner's custom field (Triangle.custom_w), so 0 - every
+	   other surface - is fully there. */
+	float corner_fade[MAX_FACE_VERTS];
 	mtexinfo_t *texinfo = surf->texinfo;
 
 	if (surf->numsurfedges > MAX_FACE_VERTS)
@@ -271,6 +278,7 @@ create_poly(
 		{
 			bases[i] = *(bsp->bases + surf->firstbasis + i);
 		}
+		corner_fade[i] = bsp->corner_alpha ? 1.0f - bsp->corner_alpha[surf->firstbasis + i] * (1.0f / 255) : 0.0f;
 		
 #if DUMP_WORLD_MESH_TO_OBJ
 		if (obj_dump_file)
@@ -390,6 +398,10 @@ create_poly(
 		primitives_out->emissive_and_alpha = emissive_and_alpha;
 		primitives_out->instance = 0;
 
+		primitives_out->custom0[1] = (uint32_t)floatToHalf(corner_fade[0]) << 16;
+		primitives_out->custom1[1] = (uint32_t)floatToHalf(corner_fade[i1]) << 16;
+		primitives_out->custom2[1] = (uint32_t)floatToHalf(corner_fade[i2]) << 16;
+
 		++primitives_out;
 	}
 
@@ -415,6 +427,8 @@ create_poly(
 		primitives_out->uv1[1] = front[i].uv2[1];
 		primitives_out->uv2[0] = front[i].uv1[0];
 		primitives_out->uv2[1] = front[i].uv1[1];
+		primitives_out->custom1[1] = front[i].custom2[1];
+		primitives_out->custom2[1] = front[i].custom1[1];
 
 		if (write_normals)
 		{
@@ -1309,9 +1323,13 @@ collect_surfaces(uint32_t *prim_ctr, bsp_mesh_t *wm, bsp_t *bsp, int model_idx, 
 		   choosing the kind. An entry that STATES 'kind REGULAR' means a solid
 		   surface: Matt's slamp2 lamp shade, made REGULAR to reflect for real,
 		   went TRANSPARENT here and reflected nothing (2026-11-17). */
+		/* Nor a dark cut-out (material.h q3_cutout): its "see-through" is the
+		   mask, and the rest is solid black - TA's tree branches, see-through
+		   cards at 66% before (2026-11-26). */
 		const bool q3_regular_stated = bsp->q3 && MAT_KindSpecified(surf_material);
+		const bool q3_cutout = bsp->q3 && surf_material && surf_material->q3_cutout;
 		if (MAT_IsKind(material_id, MATERIAL_KIND_REGULAR) && (surf_flags & SURF_TRANS_MASK) && !(material_id & MATERIAL_FLAG_LIGHT)
-			&& !q3_regular_stated)
+			&& !q3_regular_stated && !q3_cutout)
 			material_id = MAT_SetKind(material_id, MATERIAL_KIND_TRANSPARENT);
 
 		if (MAT_IsKind(material_id, MATERIAL_KIND_SCREEN) && (surf_flags & SURF_TRANS_MASK))
@@ -1326,8 +1344,9 @@ collect_surfaces(uint32_t *prim_ctr, bsp_mesh_t *wm, bsp_t *bsp, int model_idx, 
 		/* A Quake 1 teleporter's gate: a window onto where it sends you
 		   (cameras.c, vkpt_cameras_load_q1), solid, with none of its texture's
 		   water, warp or glow. Decided before the filter, so it goes in with the
-		   opaque world rather than the water. */
-		const int q1_gate = bsp->q1 && model_idx < 0 ? vkpt_cameras_q1_face(wm, surf) : -1;
+		   opaque world rather than the water. A brush entity's too: Scourge of
+		   Armagon's and Dissolution of Eternity's gates are mostly func_walls. */
+		const int q1_gate = bsp->q1 ? vkpt_cameras_q1_face(wm, surf) : -1;
 		if (q1_gate >= 0) {
 			material_id &= ~(MATERIAL_FLAG_LIGHT | MATERIAL_FLAG_WARP | MATERIAL_FLAG_FLOWING | MATERIAL_LIGHT_STYLE_MASK);
 			material_id = MAT_SetKind(material_id, MATERIAL_KIND_CAMERA);
@@ -2493,8 +2512,8 @@ collect_light_polys(bsp_mesh_t *wm, bsp_t *bsp, int model_idx, int* num_lights, 
 			continue;
 
 		// a Quake 1 teleporter's gate is a window, without its texture's glow
-		// (collect_surfaces)
-		if (bsp->q1 && model_idx < 0 && vkpt_cameras_q1_face(wm, surf) >= 0)
+		// (collect_surfaces), the world's or a func_wall's
+		if (bsp->q1 && vkpt_cameras_q1_face(wm, surf) >= 0)
 			continue;
 
 		/* Everything below asks about the material on this face, and all of it

@@ -330,6 +330,8 @@ typedef struct playerModelInfo_s {
     char *directory;
     bool q3;        // a Quake III model: models/players/<directory>/ (q3player.c)
     bool q1;        // Quake's Ranger, from the Quake paks (q1player.c)
+    bool ta;        // q3 as well, and Team Arena's (baseq3/missionpack): one of its
+                    // characters (shared/ta_characters.h), Fritzkrieg or Pi
 } playerModelInfo_t;
 
 /*
@@ -337,8 +339,10 @@ THE MODEL GRID. With Quake III models installed there are too many skins to
 step through, so Player Setup and the bot picker choose from a page of
 thumbnails instead (playerconfig.c): every model and skin, one cell each -
 the Quake II ones first, by their 32x32 _i.pcx icons drawn at 64, then the
-Quake III ones by their icon_<skin>.tga. Team uniforms (ctf_r/ctf_b, red/blue)
-and the rerelease's disguise are left out: the game puts those on by itself.
+Quake III ones by their icon_<skin>.tga, then Team Arena's (Matt, 2026-11-26:
+"below q3 and call the section Team Arena"). Team uniforms (ctf_r/ctf_b,
+red/blue, Team Arena's five teams) and the rerelease's disguise are left out:
+the game puts those on by itself.
 Without Quake III models (pmGrid false) the old model and skin spin controls
 stay.
 */
@@ -383,6 +387,7 @@ typedef struct uiStatic_s {
     int numPmCells;
     int pmQ2First;                  // the first Quake II cell, after Quake's
     int pmQ3First;                  // the first Quake III cell, after Quake II's
+    int pmTAFirst;                  // the first Team Arena cell, after Quake III's
     playerModelCell_t *pmCells;
     char **pmCellNames;             // "model / skin", NULL-terminated
 

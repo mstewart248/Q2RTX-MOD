@@ -306,7 +306,9 @@ BEGIN_SHADER_STRUCT( ReadbackBuffer )
 	   mean anything useful here: it is the index into the world primitive
 	   buffer, which is the same index bsp_mesh_t::prim_instance_hash is keyed
 	   on. For a model or a brush entity the pair identifies the instance and
-	   its local primitive instead, and there is no geometry hash to look up. */
+	   its local primitive instead; for a brush entity the CPU adds the model's
+	   render_prim_offset back to get the world primitive (process_render_
+	   feedback in main.c). */
 	uint primitive;
 	uint instance;
 	uint readback_pad0;

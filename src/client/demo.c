@@ -146,6 +146,11 @@ static void emit_delta_frame(server_frame_t *from, server_frame_t *to,
                              int fromnum, int tonum)
 {
     player_packed_t oldpack, newpack;
+    // in this connection's coordinates (common/msg.c): 32-bit when what we
+    // read is, whatever a local server is writing - its map may not be ours
+    bool            wide = msg_write_wide;
+
+    msg_write_wide = msg_read_wide;
 
     MSG_WriteByte(svc_frame);
     MSG_WriteLong(tonum);
@@ -169,6 +174,8 @@ static void emit_delta_frame(server_frame_t *from, server_frame_t *to,
     // delta encode the entities
     MSG_WriteByte(svc_packetentities);
     emit_packet_entities(from, to);
+
+    msg_write_wide = wide;
 }
 
 // frames_written counter starts at 0, but we add 1 to every frame number
@@ -322,6 +329,7 @@ static void CL_Record_f(void)
     entity_packed_t pack;
     char            *s;
     qhandle_t       f;
+    bool            wide;
     unsigned        mode = FS_MODE_WRITE;
     size_t          size = Cvar_ClampInteger(
                                cl_demomsglen,
@@ -399,7 +407,9 @@ static void CL_Record_f(void)
     MSG_WriteByte(svc_serverdata);
     MSG_WriteLong(PROTOCOL_VERSION_DEFAULT);
     MSG_WriteLong(0x10000 + cl.servercount);
-    MSG_WriteByte(1);      // demos are always attract loops
+    // demos are always attract loops; bit 1 marks one recorded on a map past
+    // +-4096, whose coordinates are 32-bit (common/msg.c, CL_ParseServerData)
+    MSG_WriteByte(msg_read_wide ? 3 : 1);
     MSG_WriteString(cl.gamedir);
     MSG_WriteShort(cl.clientNum);
     MSG_WriteString(cl.configstrings[CS_NAME]);
@@ -435,7 +445,10 @@ static void CL_Record_f(void)
 
         MSG_WriteByte(svc_spawnbaseline);
         MSG_PackEntity(&pack, ent, false);
+        wide = msg_write_wide;      // as in emit_delta_frame
+        msg_write_wide = msg_read_wide;
         MSG_WriteDeltaEntity(NULL, &pack, MSG_ES_FORCE);
+        msg_write_wide = wide;
     }
 
     MSG_WriteByte(svc_stufftext);

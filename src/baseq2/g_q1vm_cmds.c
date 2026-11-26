@@ -696,6 +696,23 @@ static int q1_te_length(int kind)
     }
 }
 
+/* Is the entity running the progs now one of rogue's cluster grenades?
+   mult_wpn.qc's MiniGrenadeExplode sends TE_EXPLOSION2 (230, 5) for each
+   bomblet. "MiniGrenade" is a bomblet; an ogre's "MultiGrenade" calls the
+   same function when it lands on a monster or a player. A Quake client drew
+   only a 0.3 s puff of 512 orange dots for it. It showed as no explosion at all
+   (Matt, 11-25: "It's not producing any visible explosions"). The same
+   message is also the shield bash (player.qc), a time core and the plasma gun,
+   so it is told apart by who sends it, not by its colours. */
+static bool q1_cluster_grenade_self(void)
+{
+    int self = QC_FromProg(qvm.g->self);
+    if (self <= 0 || self >= qvm.max_edicts)
+        return false;
+    const char *cn = QC_Str(QC_EV(self)->classname);
+    return !strcmp(cn, "MiniGrenade") || !strcmp(cn, "MultiGrenade");
+}
+
 static void q1_temp_entity(int dest, const q1_msgbuf_t *m)
 {
     int kind = q1_tok_int(m, 1);
@@ -703,7 +720,7 @@ static void q1_temp_entity(int dest, const q1_msgbuf_t *m)
 
     gi.WriteByte(svc_temp_entity);
     gi.WriteByte(TE_Q1);
-    gi.WriteByte(kind);
+    gi.WriteByte(kind == TE_Q1_EXPLOSION2 && q1_cluster_grenade_self() ? TE_Q1_CLUSTER : kind);
 
     switch (kind) {
     case TE_Q1_LIGHTNING1:

@@ -1115,7 +1115,7 @@ static void PM_SnapPosition(void)
 {
     int     sign[3];
     int     i, j, bits;
-    short   base[3];
+    int     base[3];        // pmove origins are 32-bit (wide coordinates)
     // try all single bits first
     static const byte jitterbits[8] = {0, 4, 1, 2, 3, 5, 6, 7};
 
@@ -1159,7 +1159,7 @@ PM_InitialSnapPosition
 static void PM_InitialSnapPosition(void)
 {
     int        x, y, z;
-    short      base[3];
+    int        base[3];
     static const short offset[3] = { 0, -1, 1 };
 
     VectorCopy(pm->s.origin, base);
@@ -2029,12 +2029,16 @@ void Pmove(pmove_t *pmove, pmoveParams_t *params)
 
     pml.frametime = pm->cmd.msec * 0.001f;
 
-    // Quake III Haste and Flight, carried in the gravity (pmoveParams_t.q3)
+    // Quake III Haste and Flight, and Team Arena's Scout, carried in the
+    // gravity (pmoveParams_t.q3): bit 0 Haste, bit 1 Scout (1.5, in place of
+    // Haste's 1.3 - ClientThink_real's else-if), the rest 0 for Flight
     pml.speedscale = 1;
     if (pmp->q3 && pm->s.pm_type == PM_NORMAL) {
-        if (pm->s.gravity & 1)
+        if (pm->s.gravity & 2)
+            pml.speedscale = 1.5f;
+        else if (pm->s.gravity & 1)
             pml.speedscale = 1.3f;
-        pml.q3_flight = (pm->s.gravity & ~1) == 0;
+        pml.q3_flight = (pm->s.gravity & ~3) == 0;
     }
 
     if (pm->s.pm_type >= PM_DEAD) {

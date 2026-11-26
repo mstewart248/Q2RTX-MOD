@@ -753,7 +753,7 @@ void CL_SetServerFrameTime(int fps)
 bool CL_ParseServerData(void)
 {
     char    levelname[MAX_QPATH];
-    int     i, protocol, attractloop q_unused;
+    int     i, protocol, attractloop;
     bool    kex;
 
     Cbuf_Execute(&cl_cmdbuf);          // make sure any stuffed commands are done
@@ -769,6 +769,15 @@ bool CL_ParseServerData(void)
     Com_DPrintf("Serverdata packet received "
                 "(protocol=%d, servercount=%d, attractloop=%d)\n",
                 protocol, cl.servercount, attractloop);
+
+    // Wide coordinates (common/msg.c): bit 1 of the attract loop byte, from an
+    // Overdrive server on a map past +-4096 (SV_WideCoords) or a demo recorded
+    // on one (CL_Record). Every coordinate after this is a long instead of a
+    // short. Stock servers and demos only ever send 0 or 1 there.
+    msg_read_wide = (attractloop & 2) && !KEX_SUPPORTED(protocol) &&
+                    (protocol == PROTOCOL_VERSION_OVERDRIVE || cls.demo.playback);
+    if (msg_read_wide)
+        Com_DPrintf("Wide (32-bit) coordinates\n");
 
     // [rerelease] A KEX demo's serverdata is ours with one extra field - a
     // server frame rate byte, here - and then continues identically, so the
@@ -996,6 +1005,8 @@ static void CL_ParseTEntPacket(void)
     case TE_Q3_BULLET:
     case TE_Q3_SHOTGUN:
     case TE_Q3_PLASMA_EXPLOSION:
+    case TE_TA_NAIL:
+    case TE_TA_CHAINGUN:
         MSG_ReadPos(te.pos1);
         MSG_ReadDir(te.dir);
         break;
@@ -1044,6 +1055,9 @@ static void CL_ParseTEntPacket(void)
     case TE_Q3_GRENADE_EXPLOSION:
     case TE_Q3_BFG_EXPLOSION:
     case TE_Q3_GIBS:
+    case TE_TA_KAMIKAZE:
+    case TE_TA_PROX_EXPLOSION:
+    case TE_TA_JUICED:
         MSG_ReadPos(te.pos1);
         break;
 
@@ -1108,6 +1122,7 @@ static void CL_ParseTEntPacket(void)
             VectorClear(te.offset);
             break;
         case TE_Q1_EXPLOSION2:
+        case TE_Q1_CLUSTER:
             MSG_ReadPos(te.pos1);
             te.color = MSG_ReadByte();
             te.count = MSG_ReadByte();

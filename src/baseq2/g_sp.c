@@ -253,13 +253,19 @@ int SP_Skill(void)
     return sp_skill ? max(1, min(5, sp_skill->integer)) : 2;
 }
 
+// a Team Arena skirmish's are its own as well (ioq3 UI_SetCapFragLimits): a
+// fraglimit of 10 and no time limit - the capture limit is g_ctf.c's
 float G_FragLimit(void)
 {
+    if (TA_SkirmishActive())
+        return 10;
     return sp.active ? sp.fraglimit : fraglimit->value;
 }
 
 float G_TimeLimit(void)
 {
+    if (TA_SkirmishActive())
+        return 0;
     return sp.active ? sp.timelimit : timelimit->value;
 }
 

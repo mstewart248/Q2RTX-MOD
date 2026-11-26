@@ -46,6 +46,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "global_textures.h"
 
 #include "water.glsl"
+#include "q3_sky.glsl"      // q3_cloud_shadow
 
 float GetShadow(vec3 worldPos, out float distanceToWater)
 {
@@ -455,6 +456,8 @@ void main()
 			}
 			shadow = vis / float(sun_substeps);
 		}
+		// the sky's clouds passing between it and the sun (q3_sky.glsl)
+		shadow *= q3_cloud_shadow(currentPos);
 
 		// AMBIENT IN SHADOW.
 		//

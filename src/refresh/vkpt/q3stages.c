@@ -20,6 +20,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #include "vkpt.h"
 #include "q3stages.h"
+#include "physical_sky.h"
 #include "conversion.h"
 #include "shader/vertex_buffer.h"
 #include "format/bsp3.h"
@@ -59,7 +60,10 @@ typedef struct {
     image_t     *prop_images[3];        // roughness, metallic, normals
     float       prop_values[4];         // roughness_override, metalness_factor, specular_factor, bump_scale
     float       glow_factor;            // stage<N>_emissive_factor, 0 = none: Q3P_PROG_STAGE_EMIT
+    bool        fake_clouds;            // Quake III's fake cloud shadows: off under pt_q3_cloud_shadow
 } q3pstage_t;
+
+static bool q3_cloud_shadows_on(void);
 
 typedef struct {
     bool        in_use;
@@ -428,6 +432,23 @@ static bool env_is_highlight(const q3shader_t *q3, int i)
     return st->env_map && !st->lightmap && has_lightmap_stage(q3) && !lightmap_filter_after(q3, i);
 }
 
+/* Quake III faking the shadows of clouds going over: a sky's cloud image
+   multiplied over the surface, scrolling - Team Arena's terrain (textures/
+   terrain/mpterra*: textures/skies2/clouds2.tga, blendfunc filter, tcMod
+   scroll). Left out while pt_q3_cloud_shadow casts real ones from the sky's
+   own clouds (write_stage; Matt, 2026-11-26: "disable the environment map"). */
+static bool stage_fakes_cloud_shadows(const q3stage_t *st)
+{
+    if (st->lightmap || st->white || st->video || st->env_map || st->blend != Q3BLEND_FILTER)
+        return false;
+    if (!Q_stristr(st->map, "skies") && !Q_stristr(st->map, "cloud"))
+        return false;
+    for (int i = 0; i < st->num_tcmods; i++)
+        if (st->tcmods[i].type == Q3TCMOD_SCROLL)
+            return true;
+    return false;
+}
+
 /* A reflection map whose image moves over time - it scrolls, spins, stretches
    or wobbles - is an effect, not Quake III's stand-in for a shine: the orb of
    lightning over q3dm0's console, the CTF banners' shimmer. pt_q3_env_shine
@@ -665,6 +686,10 @@ void vkpt_q3_build_program(pbr_material_t *mat, const q3shader_t *q3, imagetype_
         return;
     }
 
+    // its stages' own roughness / metallic maps follow the material's
+    // rough_scale / metal_scale (material.c MAT_SyncUploadScales)
+    MAT_UploadScalesChanged();
+
     q3program_t *p = NULL;
     if (mat->q3_program && mat->q3_program <= MAX_Q3_PROGRAMS &&
         programs[mat->q3_program - 1].in_use && programs[mat->q3_program - 1].owner == index) {
@@ -792,6 +817,7 @@ void vkpt_q3_build_program(pbr_material_t *mat, const q3shader_t *q3, imagetype_
 
             if (!ps->num_images || !ps->images[0])
                 ps->flags |= Q3P_STAGE_NO_IMAGE;
+            ps->fake_clouds = stage_fakes_cloud_shadows(st);
         }
 
         if (st->env_map) {
@@ -806,6 +832,11 @@ void vkpt_q3_build_program(pbr_material_t *mat, const q3shader_t *q3, imagetype_
         }
         if (st->clamp)
             ps->flags |= Q3P_STAGE_CLAMP;
+        // the map's vertex alpha, per hit (bsp_mesh.c corner_fade)
+        if (st->alphagen == Q3ALPHAGEN_VERTEX)
+            ps->flags |= Q3P_STAGE_VERTEX_ALPHA;
+        else if (st->alphagen == Q3ALPHAGEN_ONE_MINUS_VERTEX)
+            ps->flags |= Q3P_STAGE_ONE_MINUS_VERTEX_ALPHA;
 
         // rgbGen vertex on a glow is how a misc_model's glow was coloured by
         // its baked vertex light; the glow itself is what matters here
@@ -1324,6 +1355,10 @@ static void write_stage(vec4 *out, const q3pstage_t *ps, float time)
     uint32_t flags = ps->flags;
     uint32_t image_index = 0;
 
+    // the fake cloud shadows, while the sky casts real ones
+    if (ps->fake_clouds && q3_cloud_shadows_on())
+        flags |= Q3P_STAGE_NO_IMAGE;
+
     if (!(flags & (Q3P_STAGE_NO_IMAGE | Q3P_STAGE_LIGHTMAP | Q3P_STAGE_WHITE)) && ps->num_images > 0) {
         const image_t *image = stage_frame(ps, time);
         if (image)
@@ -1503,7 +1538,7 @@ void vkpt_q3_print_program(const pbr_material_t *mat)
         stage_colour(ps, last_upload_time, colour);
 
         Com_Printf("      stage%d %s\n", s, what);
-        Com_Printf("        blend %s %s, colour %.2f %.2f %.2f a %.2f%s%s%s%s%s%s%s%s\n",
+        Com_Printf("        blend %s %s, colour %.2f %.2f %.2f a %.2f%s%s%s%s%s%s%s%s%s\n",
                    BLEND_NAME(ps->src_blend), BLEND_NAME(ps->dst_blend),
                    colour[0], colour[1], colour[2], colour[3],
                    ps->alpha_func ? ", alpha test" : "",
@@ -1513,7 +1548,9 @@ void vkpt_q3_print_program(const pbr_material_t *mat)
                    (ps->flags & Q3P_STAGE_HIGHLIGHT) ? " (highlight: not drawn)" : "",
                    (ps->flags & Q3P_STAGE_ENV_EFFECT) ? " (moving: drawn)" : "",
                    (ps->flags & Q3P_STAGE_CLAMP) ? ", clamped" : "",
-                   (ps->flags & Q3P_STAGE_GLOW) ? ", the entry's glow" : "");
+                   (ps->flags & Q3P_STAGE_GLOW) ? ", the entry's glow" : "",
+                   (ps->flags & Q3P_STAGE_VERTEX_ALPHA) ? ", x vertex alpha" :
+                   (ps->flags & Q3P_STAGE_ONE_MINUS_VERTEX_ALPHA) ? ", x 1 - vertex alpha" : "");
 
         // its own surface (stage<N>_* settings), where it covers the material's
         if (ps->prop_flags) {
@@ -2268,7 +2305,17 @@ static struct {
     float       sun_elevation;
     bool        has_hue;
     vec3_t      sky_hue;            // the sky's average colour, brightest channel 1 (vkpt_q3_sky_tint)
+    // the cloud shadows' none and thickest: the warmth of the sky's colour as
+    // drawn, its 10th and 95th percentiles (sky_cloud_warmth)
+    float       warm_lo;
+    float       warm_hi;
 } q3_sky;
+
+static cvar_t *cvar_pt_q3_cloud_shadow;
+static cvar_t *cvar_pt_q3_cloud_shadow_strength;
+static cvar_t *cvar_pt_q3_cloud_shadow_sky;
+static cvar_t *cvar_pt_q3_cloud_shadow_height;
+static cvar_t *cvar_pt_q3_cloud_shadow_soft;
 
 static cvar_t *cvar_pt_q3_sky_clouds;
 static cvar_t *cvar_pt_q3_sun;
@@ -2308,6 +2355,45 @@ static void q3_sky_cvars(void)
        ..." in baseq3/maps/<map>.cfg. Live. (Matt, 2026-11-16: "set the RGB of the
        sun color on certain levels".) */
     cvar_pt_q3_sun_color = Cvar_Get("pt_q3_sun_color", "", 0);
+
+    /* CLOUD SHADOWS (q3_sky.glsl q3_cloud_shadow). Matt, 2026-11-26, on Team
+       Arena's mpterra1: the terrain fakes clouds going over with a scrolling
+       cloud image multiplied on it; "could we really do this effect here with
+       clouds passing by attenuating the light from the sun so it effects
+       everything outside instead of just the terrain and disable the
+       environment map? ... set it as a CVAR option", and "when the red clouds
+       pass over the sun we can attenuate the light based on the thickness of
+       the red clouds", and "it should be the clouds from the skybox when they
+       cover the sun". So: 1 = the sky's clouds, all its layers blended as the
+       sky draws them, laid flat over the world and moving with it, dim the
+       map's own sun (q3map_sun) and the sky's light where they are thick - on
+       every surface, the fog and the Flow smoke - and the terrain's fake
+       (stage_fakes_cloud_shadows) is not drawn. Needs a sun and
+       pt_q3_sky_clouds 1 (the layers). Live. */
+    cvar_pt_q3_cloud_shadow = Cvar_Get("pt_q3_cloud_shadow", "0", CVAR_ARCHIVE);
+    /* How much of the light the thickest cloud takes (open sky takes none),
+       0..0.9: 0.6 leaves it 40%. Never all of it - Matt, 11-26: "we need
+       visible dimming without pitch black shadows". The clouds thin out
+       smoothly to the open sky, so less strength makes the same shadows
+       lighter, not smaller. Live. */
+    cvar_pt_q3_cloud_shadow_strength = Cvar_Get("pt_q3_cloud_shadow_strength", "0.6", 0);
+    /* How much the clouds take of the SKY's light as well as the sun's: 1 = as
+       much (the default), 0 = the sun's only. On Team Arena's terrain most of
+       the light outside is the sky's, so the sun's alone could not be seen -
+       Matt, 2026-11-26, "I set the strength to 1,000 and could not see it ...
+       the effect needs to be much stronger. At least as strong as it was with
+       the fake effect", which multiplied its clouds over all of the terrain's
+       light; and on "all geometry in the sun". Live. */
+    cvar_pt_q3_cloud_shadow_sky = Cvar_Get("pt_q3_cloud_shadow_sky", "1", 0);
+    /* How high the clouds are, in world units: the higher, the bigger their
+       shadows and the faster they cross the ground - as the clouds seen
+       overhead would cast them from there. Matt, 11-26, raising it from 1024:
+       "It's starting to look better the higher I set the height". 2048 makes
+       terrain1's sky repeat every 6000-9000 units on the ground. Live. */
+    cvar_pt_q3_cloud_shadow_height = Cvar_Get("pt_q3_cloud_shadow_height", "2048", 0);
+    // how soft their edges are: the mip level the clouds are read at (0 = as
+    // sharp as the sky's images, each level twice as soft). Live.
+    cvar_pt_q3_cloud_shadow_soft = Cvar_Get("pt_q3_cloud_shadow_soft", "2", 0);
 }
 
 // pt_q3_sun_color as a unit-length colour, false when it is unset or unusable
@@ -2329,6 +2415,113 @@ static bool q3_sun_color_override(vec3_t out)
 void vkpt_q3_sky_register(void)
 {
     q3_sky_cvars();
+}
+
+// a Quake III blendFunc factor for channel c, as q3_blend.glsl's q3_blend_factor
+static float sky_blend_factor(int f, const float src[4], const float dst[4], int c)
+{
+    switch (f) {
+    case Q3BF_ZERO:                 return 0.f;
+    case Q3BF_DST_COLOR:            return dst[c];
+    case Q3BF_ONE_MINUS_DST_COLOR:  return 1.f - dst[c];
+    case Q3BF_SRC_ALPHA:            return src[3];
+    case Q3BF_ONE_MINUS_SRC_ALPHA:  return 1.f - src[3];
+    case Q3BF_DST_ALPHA:            return dst[3];
+    case Q3BF_ONE_MINUS_DST_ALPHA:  return 1.f - dst[3];
+    case Q3BF_SRC_COLOR:            return src[c];
+    case Q3BF_ONE_MINUS_SRC_COLOR:  return 1.f - src[c];
+    case Q3BF_SRC_ALPHA_SATURATE:   return c < 3 ? min(src[3], 1.f - dst[3]) : 1.f;
+    default:                        return 1.f;     // Q3BF_ONE
+    }
+}
+
+static int sky_warmth_cmp(const void *a, const void *b)
+{
+    const float x = *(const float *)a, y = *(const float *)b;
+    return (x > y) - (x < y);
+}
+
+/* HOW THICK THE SKY'S CLOUDS ARE (q3_sky.glsl q3_cloud_thickness). Matt, on
+   Team Arena's terrain1, 2026-11-26: "The blue is the sky. The rest is clouds
+   and the orange parts are the thickest parts". So it is the sky's colour as
+   drawn - its layers blended over black as q3_sky_clouds blends them, in their
+   gamma-encoded values - judged by its warmth, (r + g) / 2 - b: the blue gaps
+   lowest, the orange highest. (The first try took one layer's brightness;
+   terrain1's blue comes from its second layer, topclouds, added over the
+   first, and the brightness picked out only the brightest specks of the red
+   one: small shadows that went from nothing to black.)
+
+   This finds where the warmth runs, sampling the blend at random - each layer
+   at its own texel, as they drift apart at their own speeds: its 10th
+   percentile is no cloud, its 95th the thickest. terrain1: about 0.006 and
+   0.19. From the pixels while they are there (an image kept from an earlier
+   map has had them freed by its upload), so what was found is remembered by
+   the sky's name. False when neither. */
+static bool sky_cloud_warmth(const char *name, float *lo, float *hi)
+{
+    enum { SAMPLES = 4096 };
+    static float warmth[SAMPLES];
+    static struct {
+        char    name[MAX_QPATH];
+        float   lo, hi;
+    } known[16];
+    static int next_known;
+
+    for (int i = 0; i < q_countof(known); i++) {
+        if (known[i].name[0] && !strcmp(known[i].name, name)) {
+            *lo = known[i].lo;
+            *hi = known[i].hi;
+            return true;
+        }
+    }
+
+    if (q3_sky.num_layers <= 0)
+        return false;
+    for (int l = 0; l < q3_sky.num_layers; l++) {
+        const image_t *image = q3_sky.layers[l].images[0];
+        if (!image || !image->pix_data || image->pixel_format != PF_R8G8B8A8_UNORM ||
+            image->upload_width <= 0 || image->upload_height <= 0)
+            return false;
+    }
+
+    uint32_t seed = 0x9e3779b9u;
+    for (int i = 0; i < SAMPLES; i++) {
+        float dst[4] = { 0.f, 0.f, 0.f, 1.f };
+
+        for (int l = 0; l < q3_sky.num_layers; l++) {
+            const q3pstage_t *ps = &q3_sky.layers[l];
+            const image_t *image = ps->images[0];
+            float colour[4], src[4], out[4];
+
+            stage_colour(ps, 0.f, colour);
+            seed = seed * 1664525u + 1013904223u;
+            const int x = (int)((seed >> 8) % (uint32_t)image->upload_width);
+            seed = seed * 1664525u + 1013904223u;
+            const int y = (int)((seed >> 8) % (uint32_t)image->upload_height);
+            const byte *px = image->pix_data + 4 * (y * image->upload_width + x);
+
+            for (int c = 0; c < 4; c++)
+                src[c] = px[c] / 255.f * colour[c];
+            for (int c = 0; c < 4; c++) {
+                const float v = src[c] * sky_blend_factor(ps->src_blend, src, dst, c) +
+                                dst[c] * sky_blend_factor(ps->dst_blend, src, dst, c);
+                out[c] = min(max(v, 0.f), 1.f);
+            }
+            memcpy(dst, out, sizeof(dst));
+        }
+
+        warmth[i] = 0.5f * (dst[0] + dst[1]) - dst[2];
+    }
+
+    qsort(warmth, SAMPLES, sizeof(warmth[0]), sky_warmth_cmp);
+    *lo = warmth[SAMPLES / 10];
+    *hi = max(warmth[SAMPLES * 95 / 100], *lo + 1.f / 255.f);
+
+    Q_strlcpy(known[next_known].name, name, sizeof(known[next_known].name));
+    known[next_known].lo = *lo;
+    known[next_known].hi = *hi;
+    next_known = (next_known + 1) % q_countof(known);
+    return true;
 }
 
 bool vkpt_q3_sky_set(const q3shader_t *sky)
@@ -2391,7 +2584,53 @@ bool vkpt_q3_sky_set(const q3shader_t *sky)
         q3_sky.num_layers++;
     }
 
+    // pixels already freed and never seen: terrain1's range
+    if (q3_sky.num_layers > 0 && !sky_cloud_warmth(sky->name, &q3_sky.warm_lo, &q3_sky.warm_hi)) {
+        Com_DPrintf("%s: no pixels to measure for cloud shadows, guessing\n", sky->name);
+        q3_sky.warm_lo = 0.006f;
+        q3_sky.warm_hi = 0.19f;
+    }
+
     return q3_sky.num_layers > 0;
+}
+
+/* pt_q3_cloud_shadow can act: on, the map's own sun, clouds to cast them - and
+   the Quake III sky is the one being drawn (Matt, 2026-11-26: "the cloud effect
+   should only be on q3 skies"). Under an explicit sky type (earth, stroggos) the
+   procedural sky and its own sun are drawn, without these clouds and without the
+   q3map_sun (vkpt_evaluate_sun_light), so they cast nothing, and the terrain's
+   painted-on clouds (write_stage) come back as Quake III drew them. A space-sky
+   override (sky_override) clears the layers itself (vkpt_q3_sky_set(NULL)). */
+static bool q3_cloud_shadows_on(void)
+{
+    q3_sky_cvars();
+    return cvar_pt_q3_cloud_shadow->integer && q3_sky.has_sun && cvar_pt_q3_sun->integer &&
+           q3_sky.cloud_height > 0.f && q3_sky.num_layers > 0 && vkpt_physical_sky_uses_skybox();
+}
+
+/* This frame's cloud shadows into the UBO: see q3_sky.glsl q3_cloud_thickness.
+   After the sky's layers - the shadows are those layers, as this frame draws
+   them, so they move with the clouds overhead. */
+static void q3_cloud_shadow_upload(QVKUniformBuffer_t *ubo)
+{
+    put_vec4(&ubo->q3_cloud_shadow_k, 0.f, 0.f, 0.f, 0.f);
+    put_vec4(&ubo->q3_cloud_shadow_p, 0.f, 0.f, 0.f, 0.f);
+    if (!q3_cloud_shadows_on() || ubo->q3_sky_num_layers <= 0)
+        return;
+
+    // the dome's cloud height is that many world units up: its s and t per
+    // world unit near its top, as q3_sky_clouds' acos makes them
+    const float h = q3_sky.cloud_height;
+    const float deck = max(cvar_pt_q3_cloud_shadow_height->value, 1.f);
+    const float per_unit = (h / deck) / (4096.f + h);
+    // never all of the light: "visible dimming without pitch black shadows"
+    const float strength = min(max(cvar_pt_q3_cloud_shadow_strength->value, 0.f), 0.9f);
+    const float sky = min(strength * max(cvar_pt_q3_cloud_shadow_sky->value, 0.f), 0.9f);
+    const float soft = min(max(cvar_pt_q3_cloud_shadow_soft->value, 0.f), 8.f);
+
+    // p.x, never 0 here (h > 0, deck >= 1), says they are on
+    put_vec4(&ubo->q3_cloud_shadow_k, strength, soft, 0.f, 0.f);
+    put_vec4(&ubo->q3_cloud_shadow_p, per_unit, q3_sky.warm_lo, q3_sky.warm_hi, sky);
 }
 
 /* A QUAKE 1 SKY's two cloud layers (main.c q1_sky_faces), drawn per ray by
@@ -2455,14 +2694,20 @@ void vkpt_q3_sky_upload(QVKUniformBuffer_t *ubo, float time)
 
         vec4 *out = &ubo->q3_sky_layers[n * Q3_SKY_LAYER_VEC4S];
         put_vec4(&out[0], m1[0], m1[1], m1[2], m1[3]);
+        // Q3_SKY_LAYER_SRGB: the image is read decoded - it can be the copy a
+        // map surface's program loaded first, with IF_SRGB, as the cache finds
+        // an image by its name and type only (the cloud shadows re-encode it)
         put_uvec4(&out[1], float_bits(m1[4]), float_bits(m1[5]), (uint32_t)(image - r_images),
-                  (uint32_t)ps->src_blend | ((uint32_t)ps->dst_blend << 4));
+                  (uint32_t)ps->src_blend | ((uint32_t)ps->dst_blend << 4) |
+                  (image->is_srgb ? Q3_SKY_LAYER_SRGB : 0u));
         put_vec4(&out[2], colour[0], colour[1], colour[2], colour[3]);
         n++;
     }
 
     ubo->q3_sky_num_layers = n;
     ubo->q3_sky_cloud_height = q3_sky.cloud_height;
+
+    q3_cloud_shadow_upload(ubo);
 }
 
 bool vkpt_q3_sky_sun(vec3_t color, float *degrees, float *elevation)

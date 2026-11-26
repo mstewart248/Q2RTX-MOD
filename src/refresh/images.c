@@ -2501,6 +2501,9 @@ image_t *IMG_Clone(image_t *image, const char* new_name)
     memcpy(new_image, image, sizeof(image_t));
 
 #if USE_REF == REF_VKPT
+    // the upscale belongs to the materials that draw an image (material.c
+    // MAT_SyncUploadScales): a copy starts as loaded until one of them asks
+    new_image->upload_scale = 0;
     size_t image_size = image->upload_width * image->upload_height * 4;
     if(image->pix_data != NULL)
     {

@@ -165,7 +165,11 @@ typedef enum {
     // Quake III's Lightning Gun and BFG10K ammo (g_q3weap.c); its other guns
     // share Quake II's bullets, shells, grenades, rockets, slugs and cells
     AMMO_Q3_LIGHTNING,
-    AMMO_Q3_BFG
+    AMMO_Q3_BFG,
+    // Team Arena's nailgun, prox launcher and chaingun (g_q3weap.c)
+    AMMO_Q3_NAILS,
+    AMMO_Q3_MINES,
+    AMMO_Q3_BELT
 } ammo_t;
 
 
@@ -414,8 +418,16 @@ enum {
     Q3W_PLASMA,
     Q3W_BFG,
     Q3W_GRAPPLE,    // WP_GRAPPLING_HOOK: only with g_q3_grapple
+    // Team Arena's three (MISSIONPACK's WP_NAILGUN, WP_PROX_LAUNCHER,
+    // WP_CHAINGUN), placed by its maps (g_ta.c); registered only with its
+    // data (fs_quake3_ta)
+    Q3W_NAILGUN,
+    Q3W_PROX,
+    Q3W_CHAINGUN,
     Q3W_NUM
 };
+
+#define Q3W_FIRST_TA    Q3W_NAILGUN
 
 // Rerelease generic monster spawnflag: the mapper placed this monster off
 // the floor deliberately (a ledge, a pipe, mid-air), so do not drop it.
@@ -462,6 +474,10 @@ enum {
 #define WEAP_Q3_PLASMAGUN       28
 #define WEAP_Q3_BFG             29
 #define WEAP_Q3_GRAPPLE         30      // registered after the BFG10K's (Q3W_Precache)
+// Team Arena's, after the grapple's, with its data only
+#define WEAP_Q3_NAILGUN         31
+#define WEAP_Q3_PROXLAUNCHER    32
+#define WEAP_Q3_CHAINGUN        33
 
 typedef struct gitem_s {
     char        *classname; // spawning name
@@ -587,6 +603,9 @@ typedef struct {
     bool        q1_weapons;         // bot match: Quake's guns for everyone (g_q1weap.c, g_q3_weapons 3)
     bool        q1_by_model;        // bot match by player model: Quake's guns for Quake's Ranger ("quake1/...")
     bool        q3_physics;         // bot match: Quake III's movement and knockback (CS_Q3RULES)
+    bool        ta_map;             // a Team Arena map: from baseq3/missionpack (sv_map_q3 2) - g_ta.c
+    bool        ta_skirmish;        // ... played as Team Arena's skirmish: ta_skirmish as it loaded - g_ta.c
+    int         ta_mode;            // CTF's game: TA_MODE_* (ctf 1-4), 0 when not CTF - g_ta.c
     char        *goals;             // rerelease N64: worldspawn "goals", tab-separated objectives
     int         goal_num;           // index of the current one, advanced by target_goal
     char        *start_items;       // worldspawn "start_items", see Player_GiveStartItems
@@ -754,6 +773,7 @@ typedef struct {
     int         notteam;            // not in the team games
     int         notsingle;
     char        *gametype;          // Team Arena's game type list
+    int         notta;              // not on Team Arena's maps (g_ta.c)
     char        *model2;            // an md3 drawn with a brush entity
     float       phase;              // func_bobbing / func_pendulum, 0..1
     char        *music;             // worldspawn: "intro.wav [loop.wav]"
@@ -1201,6 +1221,12 @@ extern  int snd_fry;
 #define MOD_Q1_R_SPLASH     81
 #define MOD_Q1_LIGHTNING    82
 #define MOD_Q1_DISCHARGE    83
+// Team Arena's (g_q3weap.c, g_ta.c)
+#define MOD_TA_NAIL         84
+#define MOD_TA_CHAINGUN     85
+#define MOD_TA_PROX         86
+#define MOD_TA_KAMIKAZE     87
+#define MOD_TA_JUICED       88      // a prox mine stuck on someone invulnerable
 #define MOD_FRIENDLY_FIRE   0x8000000
 
 extern  int meansOfDeath;
@@ -1331,7 +1357,10 @@ typedef enum {
     F_POINTER,
     F_IGNORE,
 
-    F_FRAMETIME         // speciality for savegame compatibility: float on disk, converted to framenum
+    F_FRAMETIME,        // speciality for savegame compatibility: float on disk, converted to framenum
+    F_INT16             // int in memory, 16-bit short on disk: ps.pmove.origin, widened to
+                        // 32 bits for maps past +-4096 (Team Arena's mpterra*). Saves keep the
+                        // old layout; ClientEndServerFrame rebuilds it from s.origin each frame
 } fieldtype_t;
 
 extern  gitem_t itemlist[];
@@ -1436,6 +1465,9 @@ bool CheckTeamDamage(edict_t *targ, edict_t *attacker);
 // DAMAGE_NO_POWER_ARMOR. The ETF rifle's flechettes use it.
 #define DAMAGE_NO_REG_ARMOR     0x00000080
 #define DAMAGE_NO_POWER_ARMOR   0x00000100  // damage skips power armor (disruptor)
+// Team Arena's kamikaze: teammates are hurt whatever the friendly fire rule
+// (Quake III's DAMAGE_NO_TEAM_PROTECTION, g_ta.c)
+#define DAMAGE_NO_TEAM_PROTECTION 0x00000200
 
 #define DEFAULT_BULLET_HSPREAD  300
 #define DEFAULT_BULLET_VSPREAD  500
@@ -1989,6 +2021,7 @@ const char *Team_Name(int team);
 int  Team_Score(int team);
 void Team_Assign(edict_t *ent);
 const char *Team_Skin(edict_t *ent, const char *skin);
+const char *Team_DemoSkin(const char *skin, int team, const char *team_name);
 void Team_Command(edict_t *ent);
 
 //
@@ -2047,6 +2080,17 @@ void Q1Demo_RunFrame(void);
 void Q1Demo_ClientBegin(edict_t *ent);
 void Q1Demo_ClientDisconnect(edict_t *ent);
 
+//
+// g_q3demo.c - a Quake III demo (protocol 48, .dm_48) played back on its map
+// (the engine's q3demo command: Team Arena's, for the attract loop)
+//
+bool Q3Demo_Active(void);
+void Q3Demo_SpawnEntities(const char *mapname);
+void Q3Demo_LevelStart(void);
+void Q3Demo_RunFrame(void);
+void Q3Demo_ClientBegin(edict_t *ent);
+void Q3Demo_ClientDisconnect(edict_t *ent);
+
 bool Pickup_Q3Powerup(edict_t *ent, edict_t *other);
 bool Pickup_Q3Holdable(edict_t *ent, edict_t *other);
 void Use_Q3Medkit(edict_t *ent, gitem_t *item);
@@ -2055,6 +2099,7 @@ bool Q3_UseHoldable(edict_t *ent);
 bool Q3_PickupHealth(edict_t *ent, edict_t *other);
 int  Q3_HealthSound(const edict_t *ent);
 void Q3_DroppedItem(edict_t *dropped);
+gitem_t *Q3_DemoItem(edict_t *ent, const char *classname);
 bool Q3_PowerupPickupSound(edict_t *ent, edict_t *other);
 int  Q3_QuadUseSound(void);
 int  Q3_QuadFireSound(void);
@@ -2081,12 +2126,14 @@ gitem_t *Q3W_FindItem(edict_t *ent, const char *name);
 gitem_t *Q3W_ItemFor(const edict_t *item_ent, const edict_t *player);
 const char *Q3W_SpawnClassname(edict_t *ent, const char *classname);
 const char *Q3W_MapClassname(edict_t *ent, const char *classname, const char *q2_name);
+gitem_t *Q3W_DemoGun(int weapon, int *flash, const char **shot, const char **ready, const char **firing);
 void Q3W_ItemModel(edict_t *ent);
 void Q3W_DroppedItem(edict_t *dropped);
 bool Pickup_Q3Weapon(edict_t *ent, edict_t *other);
 bool Q3W_PickupAmmo(edict_t *ent, edict_t *other);
 void Q3W_GiveSpawnKit(gclient_t *client);
 void Q3W_Precache(void);
+int  Q3W_Guns(void);    // Q3W_NUM, or Q3W_FIRST_TA without Team Arena's data
 void Q3W_WeaponChanged(edict_t *ent);
 void Weapon_Q3(edict_t *ent);
 void Q3W_Think(edict_t *ent, const usercmd_t *ucmd);
@@ -2142,6 +2189,15 @@ extern  cvar_t  *ctf;
 #define STAT_CTF_JOINED_TEAM1_PIC   29
 #define STAT_CTF_JOINED_TEAM2_PIC   30
 #define STAT_CTF_TECH               31
+// Team Arena's Harvester: the skulls carried, next to STAT_CTF_FLAG_PIC's
+// skull. STAT_FLASHLIGHT's slot: its maps have no trigger_flashlight, and a
+// count never reaches STAT_FLASHLIGHT_ON.
+#define STAT_TA_SKULLS              18
+// Team Arena's persistent powerup outside CTF (TA_SetStats): STAT_CTF_FLAG_PIC's
+// slot, which nothing else writes then - not STAT_CTF_TECH's, which is
+// STAT_Q3_FRAGLIMIT in a free-for-all (G_SetQ3ScoreStats). In CTF's games it
+// stays where the tech goes (CTF_SetStats).
+#define STAT_TA_PERSISTENT          28
 
 #define CTF_GRAPPLE_STATE_FLY       0
 #define CTF_GRAPPLE_STATE_PULL      1
@@ -2182,6 +2238,68 @@ int  CTF_ApplyStrength(edict_t *ent, int dmg);
 bool CTF_HasHaste(edict_t *ent);
 void SP_info_player_team1(edict_t *self);
 void SP_info_player_team2(edict_t *self);
+void CTF_AddTeamScore(int team, int points);    // Team Arena's scores (g_ta.c)
+bool CTF_FlagInGame(const gitem_t *item);
+void CTF_DropCarriedFlag(edict_t *ent);         // the personal teleporter's drop
+
+//
+// g_ta.c - Quake III Team Arena
+//
+// CTF's game on a Team Arena map, `ctf` (level.ta_mode)
+#define TA_MODE_CTF         1
+#define TA_MODE_ONEFLAG     2
+#define TA_MODE_OVERLOAD    3
+#define TA_MODE_HARVESTER   4
+
+// the persistent powerups (TA_Persistent)
+enum {
+    TA_NONE,
+    TA_SCOUT,
+    TA_GUARD,
+    TA_DOUBLER,
+    TA_AMMOREGEN,
+    TA_PERSISTENT_NUM
+};
+
+void TA_Init(void);
+void TA_LevelStart(void);
+void TA_Precache(void);
+int  TA_GameMode(void);
+const char *TA_GametypeName(void);
+bool TA_SpawnFiltered(void);
+bool TA_SpawnEntity(edict_t *ent);
+bool TA_PickupPersistent(edict_t *ent, edict_t *other);
+bool TA_PickupSkull(edict_t *ent, edict_t *other);
+void Use_TAKamikaze(edict_t *ent, gitem_t *item);
+void Use_TAInvulnerability(edict_t *ent, gitem_t *item);
+int  TA_Persistent(const edict_t *ent);
+#define TA_HasPersistent(ent, kind) (TA_Persistent(ent) == (kind))
+bool TA_CanPickup(edict_t *ent, edict_t *other);
+int  TA_HealthCap(const edict_t *other);
+int  TA_ArmorCap(const edict_t *other);
+int  TA_DamageScale(const edict_t *attacker);
+float TA_FireScale(const edict_t *ent);
+bool TA_Invulnerable(const edict_t *ent);
+bool TA_BlockDamage(edict_t *targ, edict_t *attacker, int dflags, int mod);
+void TA_PlayerDied(edict_t *self);
+void TA_BodyGibbed(edict_t *self);
+void TA_PlayerLeft(edict_t *ent);
+void TA_TeleporterDrops(edict_t *ent);
+void TA_ClientFrame(edict_t *ent);
+void TA_SetStats(edict_t *ent);
+bool TA_SkirmishActive(void);
+bool TA_SkirmishBot(int i, const char **skin, int *team, const char **name);
+float TA_SkirmishCaptureLimit(void);
+bool TA_SkirmishExit(void);
+edict_t *TA_Obelisk(int team);
+bool TA_EnemyObelisk(const edict_t *self, const edict_t *ent);
+int TA_SkullTeam(const edict_t *ent);
+const char *TA_StatusBar(const char *dm_statusbar);
+// Team Arena's HUD and voice chats (client hud_q3.c)
+void TA_AddLocation(edict_t *ent);
+void TA_RunFrame(void);
+void TA_FlagTaken(edict_t *player, int team);
+bool TA_VoiceCommand(edict_t *ent, const char *cmd);
 
 //
 // g_sp.c - the Quake III Arena campaign
@@ -2259,6 +2377,7 @@ void Bot_GameRead(void);
 void Bot_LevelStart(void);
 void Bot_RunFrame(void);
 bool Bot_IsBot(const edict_t *ent);
+int  Bot_TeamTask(const edict_t *self);     // Quake III's teamTask: 0 none, 1 offense, 2 defense
 void Bot_Damaged(edict_t *self, edict_t *attacker);
 void Bot_ClientConnecting(edict_t *ent);
 bool Bot_ServerCommand(const char *cmd);
@@ -2391,6 +2510,9 @@ typedef struct {
     int         max_prox;
     int         max_q3_lightning;   // Quake III's Lightning Gun and BFG ammo
     int         max_q3_bfg;
+    int         max_q3_nails;       // Team Arena's
+    int         max_q3_mines;
+    int         max_q3_belt;
 
     gitem_t     *weapon;
     gitem_t     *lastweapon;
@@ -2532,6 +2654,18 @@ struct gclient_s {
     float       q3_haste_accum;         // Haste's extra weapon thinks
     edict_t     *q3_jumppad;            // the pad touched last, and when:
     int         q3_jumppad_framenum;    // it thumps once per jump
+
+    // Team Arena (g_ta.c): the persistent powerup held - the item on the map,
+    // hidden while it is carried and back on its spot at the holder's death -
+    // the skulls carried in Harvester, the invulnerability sphere's end, the
+    // prox mine stuck on this player, and Ammo Regen's ms per ammo kind
+    edict_t     *ta_persistent;
+    int         ta_skulls;
+    int         ta_invul_framenum;
+    edict_t     *ta_stuck_mine;
+    edict_t     *ta_invul_sphere;   // its invulnerability sphere, drawn round it (g_ta.c)
+    int         ta_ammo_ms[16];
+    int         ta_tick_ms;             // the Guard's regeneration, once a second
 
     // Quake III's weapons (g_q3weap.c): bg_pmove.c's weaponTime, run per
     // usercmd in milliseconds, and the shots fired, which the view weapon's
@@ -2814,5 +2948,14 @@ struct edict_s {
     // after its first move (SV_Physics_Toss); a plasma ball that goes off
     // before then is TE_Q3_PLASMA_UNSEEN. pos1 holds its muzzle.
     bool        q3_unseen;
+
+    // Team Arena (g_ta.c): the team a thing belongs to - a persistent
+    // powerup's own team (its map spawnflags 2 red / 4 blue as TEAM_*), an
+    // obelisk's, a skull's colour, a prox mine's owner's
+    int         ta_team;
+    // ... and the kamikaze's blast and shockwave hit each thing once in three
+    // seconds (g_weapon.c kamikazeTime / kamikazeShockTime)
+    int         ta_kami_framenum;
+    int         ta_kami_shock_framenum;
 };
 

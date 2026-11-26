@@ -36,6 +36,17 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #define NUM_LIGHT_STATS_BUFFERS 3
 
+/* THE LIGHT STATISTICS' LAYOUT (2026-11-26) - light_lists.h says why. Each of the
+   three buffers: a header of LIGHT_STATS_HEADER_WORDS(clusters) words - the cluster
+   count, then where each cluster's counts start, as a word of the buffer (clusters
+   + 1 of them, from bsp_mesh cluster_light_offsets) - then the counts: one slot of
+   6 orientations x 2 counts (got through, shadowed) per entry of the static cluster
+   light lists. Only the counts are zeroed each frame. */
+#define LIGHT_STATS_HDR_CLUSTERS    0
+#define LIGHT_STATS_HDR_FIRST       1
+#define LIGHT_STATS_WORDS_PER_SLOT  12
+#define LIGHT_STATS_HEADER_WORDS(clusters) ((((clusters) + 2 + 63) / 64) * 64)
+
 #define PRIMARY_RAY_T_MAX 10000
 
 // security cameras and portals - Quake III's, and Quake 1's teleporters (up to
@@ -118,6 +129,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define Q3P_STAGE_HIGHLIGHT     0x0100  // a reflection map added after the light: never drawn; marks gloss under Q3P_PROG_SHINE
 #define Q3P_STAGE_ENV_EFFECT    0x0200  // a reflection map that scrolls or spins: an effect, drawn as it is even under Q3P_PROG_SHINE
 #define Q3P_STAGE_GLOW          0x0400  // the .mat entry's texture_emissive is this stage's image: what shows of it, fully lit, is emitted too
+#define Q3P_STAGE_VERTEX_ALPHA  0x0800  // alphaGen vertex: alpha x the map's vertex alpha at the hit (q3_vertex_alpha)
+#define Q3P_STAGE_ONE_MINUS_VERTEX_ALPHA 0x1000 // alphaGen oneMinusVertex
 
 // stage word 1: source factor, destination factor (Q3BF_* in q3shader.h), alpha
 // test; top 16 bits stage<N>_emissive_factor as a half float (0 = none)
@@ -139,6 +152,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
    each - the tcMod transform a b c d; e f, image index, blend factors; colour. */
 #define Q3_SKY_MAX_LAYERS   4
 #define Q3_SKY_LAYER_VEC4S  3
+// in a layer's blend word: its image is read decoded (sRGB) - see q3_cloud_thickness
+#define Q3_SKY_LAYER_SRGB   0x100
 
 #define AA_MODE_OFF 0
 #define AA_MODE_TAA 1

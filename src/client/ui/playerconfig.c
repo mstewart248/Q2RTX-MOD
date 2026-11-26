@@ -415,7 +415,8 @@ THE MODEL GRID
 
 Every model and skin as a thumbnail, on the left half of the screen with the
 model turning on the right (see playerModelCell_t in ui.h for what is in it).
-Quake II's come first, then Quake III's, each under its own heading. Arrows,
+Quake's come first, then Quake II's, Quake III's and Team Arena's, each under
+its own heading. Arrows,
 Home/End and Page Up/Down move the choice, the wheel scrolls, a click picks;
 Enter, a double click or Escape goes back with it.
 
@@ -468,23 +469,25 @@ static void Grid_AddRow(playerGrid_t *g, int first, int count, const char *headi
 // there are both
 static void Grid_BuildRows(playerGrid_t *g)
 {
-    static const char *const headings[3] = { "QUAKE", "QUAKE II", "QUAKE III ARENA" };
+    static const char *const headings[4] = { "QUAKE", "QUAKE II", "QUAKE III ARENA", "TEAM ARENA" };
     const int n = uis.numPmCells;
-    // each game's cells: Quake's, Quake II's, Quake III's (playermodels.c)
-    const int start[4] = { 0, uis.pmQ2First, uis.pmQ3First, n };
+    // each game's cells: Quake's, Quake II's, Quake III's, Team Arena's
+    // (playermodels.c)
+    const int start[5] = { 0, uis.pmQ2First, uis.pmQ3First, uis.pmTAFirst, n };
     int i, k, games = 0;
 
-    for (k = 0; k < 3; k++)
+    for (k = 0; k < 4; k++)
         games += start[k + 1] > start[k];
 
-    if (g->maxrows < n / g->cols + 8) {
+    // a heading and a part row at most for each game, past n / cols full rows
+    if (g->maxrows < n / g->cols + 10) {
         Z_Free(g->rows);
-        g->maxrows = n / g->cols + 8;
+        g->maxrows = n / g->cols + 10;
         g->rows = UI_Malloc(sizeof(g->rows[0]) * g->maxrows);
     }
     g->numrows = 0;
 
-    for (k = 0; k < 3; k++) {
+    for (k = 0; k < 4; k++) {
         if (start[k + 1] <= start[k])
             continue;
         if (games > 1)

@@ -420,6 +420,7 @@ void Think_Weapon(edict_t *ent)
         if (ent->client->double_framenum > level.framenum &&
             (deathmatch->value || damage_multiplier == 1))
             damage_multiplier *= 2;
+        damage_multiplier *= TA_DamageScale(ent);   // Team Arena's Doubler
         is_quadfire = (ent->client->quadfire_framenum > level.framenum);
         // CTF's Time Accel: the weapon thinks twice, as the quadfire does
         if (CTF_HasHaste(ent))

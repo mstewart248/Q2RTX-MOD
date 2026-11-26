@@ -53,7 +53,9 @@ these to never despawn unless you are playing an actual network game."
 #include "client.h"
 #include "format/md3.h"
 
-#define Q3W_NUM     11      // the game's Q3W_*: 1 gauntlet .. 9 BFG, 10 grappling hook
+#define Q3W_NUM     14      // the game's Q3W_*: 1 gauntlet .. 9 BFG, 10 grappling hook,
+                            // 11-13 Team Arena's nailgun, prox launcher, chaingun
+#define Q3W_FIRST_TA    11
 
 // the renderer tells meshes apart for motion vectors by entity id (14 bits)
 // and model together: a gun's parts take their gun's id, the brass these
@@ -70,12 +72,13 @@ typedef struct {
 } q3wtag_t;
 
 typedef struct {
-    const char  *dir;           // models/weapons2/<dir>/<dir>.md3
+    const char  *dir;           // models/<root>/<dir>/<dir>.md3
     vec3_t      light;          // the flash's light (cg_weapons.c)
     const char  *q2_vwep;       // what a Quake II body holds instead
     bool        has_barrel;
     bool        continuous;     // the flash stays while firing (LG, gauntlet)
     float       flash_scale;    // its flash model's size (0 = half, q3w_flash_scale)
+    const char  *root;          // NULL: weapons2; Team Arena's are in weapons
 
     qhandle_t   world, barrel, flash;
     q3wtag_t    *hand_tags;     // tag_weapon on each frame of the hand
@@ -98,10 +101,23 @@ static q3wgun_t q3w_guns[Q3W_NUM] = {
     [9] = { "bfg",        { 1.0f, 0.7f, 1.0f  }, "w_bfg.md2",         true,  false },
     // its flash stays up while the trigger is (cg_weapons.c CG_AddPlayerWeapon)
     [10] = { "grapple",   { 0.6f, 0.6f, 1.0f  }, "w_grapple.md2",     false, true  },
+    // Team Arena's (baseq3/missionpack), registered only with its data
+    // (fs_quake3_ta): Quake II's nearest for a Quake II body. The chaingun's
+    // barrel spins as the machinegun's.
+    [11] = { "nailgun",   { 1.0f, 0.75f, 0.0f }, "w_etfrifle.md2",    false, false, 0, "weapons" },
+    [12] = { "proxmine",  { 1.0f, 0.7f, 0.0f  }, "w_plauncher.md2",   false, false, 0, "weapons" },
+    [13] = { "vulcan",    { 1.0f, 1.0f, 0.0f  }, "w_chaingun.md2",    true,  false, 0, "weapons" },
 };
 
 enum { Q3W_GAUNTLET = 1, Q3W_MACHINEGUN, Q3W_SHOTGUN, Q3W_GRENADE, Q3W_ROCKET,
-       Q3W_LIGHTNING, Q3W_RAILGUN, Q3W_PLASMA, Q3W_BFG, Q3W_GRAPPLE };
+       Q3W_LIGHTNING, Q3W_RAILGUN, Q3W_PLASMA, Q3W_BFG, Q3W_GRAPPLE,
+       Q3W_NAILGUN, Q3W_PROX, Q3W_CHAINGUN };
+
+// "models/<root>/<dir>/<dir><suffix>"
+static void q3w_gun_path(char *path, size_t size, const q3wgun_t *g, const char *suffix)
+{
+    Q_snprintf(path, size, "models/%s/%s/%s%s", g->root ? g->root : "weapons2", g->dir, g->dir, suffix);
+}
 
 // a spent case as a cylinder along the model's Z: see "HOW A SHELL FALLS"
 typedef struct {
@@ -116,6 +132,12 @@ static struct {
     qhandle_t   plasma_sprite, plasma_boom, electric, bullet_flash[3];
     qhandle_t   lightning;
     qhandle_t   sfx_ric[3], sfx_lghit[3], sfx_plasmaexp, sfx_rockexp;
+    // Team Arena's (fs_quake3_ta): the nail and chaingun hits, the prox mine's
+    // blast, the chaingun's wind-down, the kamikaze's and the juiced sphere's
+    // models, the kamikaze's implosion
+    bool        ta;
+    qhandle_t   sfx_nailhit, sfx_chghit, sfx_proxexp, sfx_vulwind, sfx_kam_implode;
+    qhandle_t   kam_boom, kam_wave, juicer;
     // Q2RTX's railgun in Quake III's place, view and pickup (0 = Quake III's
     // own): see q3w_want_rtx_rail
     qhandle_t   rtx_rail_view, rtx_rail_world;
@@ -142,6 +164,7 @@ static cvar_t   *cl_q3_gibs_max;
 static cvar_t   *cl_q3_gib_drops;
 
 static void q3p_register(void);         // PREDICTED SHOTS
+static void q3p_register_sounds(void);
 
 // cl_q3_debug 1: what the plasma ball, the marks and the impact flashes did,
 // once a second (q3w_debug_print) - Matt saw none of them on 11-18; the
@@ -564,26 +587,41 @@ void CL_Q3W_RegisterMedia(void)
     if (!cl.q3_weapons)
         return;
 
+    q3w.ta = Cvar_VariableInteger("fs_quake3_ta") != 0;
     for (i = 1; i < Q3W_NUM; i++) {
         q3wgun_t *g = &q3w_guns[i];
 
-        Q_snprintf(path, sizeof(path), "models/weapons2/%s/%s.md3", g->dir, g->dir);
+        if (i >= Q3W_FIRST_TA && !q3w.ta)
+            break;      // no Team Arena data: no Team Arena guns (g_q3weap.c Q3W_Guns)
+
+        q3w_gun_path(path, sizeof(path), g, ".md3");
         g->world = R_RegisterModel(path);
         g->have_barrel_tag = q3w_load_tag0(path, "tag_barrel", &g->barrel_tag);
         g->have_flash_tag = q3w_load_tag0(path, "tag_flash", &g->flash_tag);
 
-        Q_snprintf(path, sizeof(path), "models/weapons2/%s/%s_hand.md3", g->dir, g->dir);
+        q3w_gun_path(path, sizeof(path), g, "_hand.md3");
         // only its tags: it has no surfaces, and the model loaders want some
         g->hand_tags = q3w_load_tags(path, "tag_weapon", &g->hand_frames);
 
         if (g->has_barrel) {
-            Q_snprintf(path, sizeof(path), "models/weapons2/%s/%s_barrel.md3", g->dir, g->dir);
+            q3w_gun_path(path, sizeof(path), g, "_barrel.md3");
             g->barrel = R_RegisterModel(path);
         }
-        Q_snprintf(path, sizeof(path), "models/weapons2/%s/%s_flash.md3", g->dir, g->dir);
+        q3w_gun_path(path, sizeof(path), g, "_flash.md3");
         g->flash = R_RegisterModel(path);
     }
     q3w.guns = true;
+
+    if (q3w.ta) {
+        q3w.sfx_nailhit = q3w_sound("weapons/nailgun/wnalimpd.wav");
+        q3w.sfx_chghit = q3w_sound("weapons/vulcan/wvulimpd.wav");
+        q3w.sfx_proxexp = q3w_sound("weapons/proxmine/wstbexpl.wav");
+        q3w.sfx_vulwind = q3w_sound("weapons/vulcan/wvulwind.wav");
+        q3w.sfx_kam_implode = q3w_sound("items/kam_implode.wav");
+        q3w.kam_boom = R_RegisterModel("models/weaphits/kamboom2.md3");
+        q3w.kam_wave = R_RegisterModel("models/weaphits/kamwave.md3");
+        q3w.juicer = R_RegisterModel("models/powerups/shield/juicer.md3");
+    }
 
     // (cl_classic_railgun is CVAR_FILES: flipping it re-registers, and lands here)
     if (q3w_want_rtx_rail()) {
@@ -617,6 +655,54 @@ void CL_Q3W_RegisterMedia(void)
     q3w.sfx_rockexp = q3w_sound("weapons/rocket/rocklx1a.wav");
 
     q3p_register();
+}
+
+/*
+=================
+CL_Q3W_RegisterSounds
+
+CL_RegisterTEntSounds: every sound handle above, asked for again inside the
+sound registration (CL_RegisterSounds). CL_Q3W_RegisterMedia runs in the
+models' (CL_RegisterTEntModels), before it, and S_EndRegistration frees each
+sound that pass did not ask for - which left these handles on freed slots,
+taken by the next sound registered. The campaign's "You have lost the lead"
+(ui/q3sp.c) was often that, and then played from every Quake III gib and
+impact on another player (Matt, 11-26). snd_restart lands here too.
+=================
+*/
+void CL_Q3W_RegisterSounds(void)
+{
+    int i;
+
+    if (q3w.gibs_ready) {
+        if (!Cvar_VariableInteger("fs_quake3")) {
+            q3w.sfx_gib = S_RegisterSound("misc/udeath.wav");
+        } else {
+            q3w.sfx_gib = q3w_sound("player/gibsplt1.wav");
+            for (i = 0; i < 3; i++)
+                q3w.sfx_gibimp[i] = q3w_sound(va("player/gibimp%d.wav", i + 1));
+        }
+    }
+
+    if (!q3w.guns)
+        return;
+
+    if (q3w.ta) {
+        q3w.sfx_nailhit = q3w_sound("weapons/nailgun/wnalimpd.wav");
+        q3w.sfx_chghit = q3w_sound("weapons/vulcan/wvulimpd.wav");
+        q3w.sfx_proxexp = q3w_sound("weapons/proxmine/wstbexpl.wav");
+        q3w.sfx_vulwind = q3w_sound("weapons/vulcan/wvulwind.wav");
+        q3w.sfx_kam_implode = q3w_sound("items/kam_implode.wav");
+    }
+    for (i = 0; i < 3; i++)
+        q3w.sfx_ric[i] = q3w_sound(va("weapons/machinegun/ric%d.wav", i + 1));
+    q3w.sfx_lghit[0] = q3w_sound("weapons/lightning/lg_hit.wav");
+    q3w.sfx_lghit[1] = q3w_sound("weapons/lightning/lg_hit2.wav");
+    q3w.sfx_lghit[2] = q3w_sound("weapons/lightning/lg_hit3.wav");
+    q3w.sfx_plasmaexp = q3w_sound("weapons/plasma/plasmx1a.wav");
+    q3w.sfx_rockexp = q3w_sound("weapons/rocket/rocklx1a.wav");
+
+    q3p_register_sounds();
 }
 
 static q3wgun_t *q3w_gun_for_model(qhandle_t model)
@@ -682,14 +768,20 @@ const char *CL_Q3W_VWepFallback(const char *vwep)
 {
     int i;
 
-    if (Q_strncasecmp(vwep, "models/weapons2/", 16))
+    if (Q_strncasecmp(vwep, "models/weapons2/", 16) && Q_strncasecmp(vwep, "models/weapons/", 15))
         return NULL;
     for (i = 1; i < Q3W_NUM; i++) {
-        size_t len = strlen(q3w_guns[i].dir);
+        char    stem[MAX_QPATH];
+        size_t  len;
 
-        if (!Q_strncasecmp(vwep + 16, q3w_guns[i].dir, len) && vwep[16 + len] == '/')
+        q3w_gun_path(stem, sizeof(stem), &q3w_guns[i], "");
+        len = strlen(stem) - strlen(q3w_guns[i].dir);   // "models/<root>/<dir>/"
+        if (!Q_strncasecmp(vwep, stem, len))
             return q3w_guns[i].q2_vwep;
     }
+    // models/weapons/ is Quake II's own too (v_*, g_*): only Quake III's here
+    if (!Q_strncasecmp(vwep, "models/weapons/", 15))
+        return NULL;
     return "w_machinegun.md2";
 }
 
@@ -817,10 +909,11 @@ static q3wshooter_t q3w_shooters[MAX_CLIENTS + 1];
 #define Q3W_SPIN_SPEED  0.9f
 #define Q3W_COAST_TIME  1000
 
-static float q3w_spin_angle(q3wspin_t *s, bool firing)
+static float q3w_spin_angle(q3wshooter_t *sh, bool firing)
 {
-    int     delta = cl.time - s->time;
-    float   angle, speed;
+    q3wspin_t   *s = &sh->spin;
+    int         delta = cl.time - s->time;
+    float       angle, speed;
 
     if (delta < 0) {
         s->time = cl.time;
@@ -839,6 +932,9 @@ static float q3w_spin_angle(q3wspin_t *s, bool firing)
         s->time = cl.time;
         s->angle = anglemod(angle);
         s->spinning = firing;
+        // Team Arena's chaingun winds down as it stops
+        if (!firing && sh->weapon == Q3W_CHAINGUN && q3w.sfx_vulwind)
+            S_StartSound(NULL, (int)(sh - q3w_shooters), CHAN_WEAPON, q3w.sfx_vulwind, 1, ATTN_NORM, 0);
     }
     return angle;
 }
@@ -1025,7 +1121,7 @@ bool CL_Q3W_AddViewWeapon(const entity_t *gun, int gunframe)
 
     // the barrel spins while the trigger is down
     if (g->barrel && g->have_barrel_tag) {
-        q3w_roll_axis(sh ? q3w_spin_angle(&sh->spin, firing) : 0, local);
+        q3w_roll_axis(sh ? q3w_spin_angle(sh, firing) : 0, local);
         q3w_on_tag(gun_origin, gun_axis, 1, &g->barrel_tag, local, part_origin, part_axis);
         q3w_part(&e, gun, g->barrel, gun->id, part_origin, part_axis);
         V_AddEntity(&e);
@@ -1084,7 +1180,7 @@ void CL_Q3W_AddGunParts(const entity_t *gun, int entnum)
     firing = sh && sh->weapon == g - q3w_guns && q3w_firing(sh, 150);
 
     if (g->barrel && g->have_barrel_tag) {
-        q3w_roll_axis(sh ? q3w_spin_angle(&sh->spin, firing) : 0, local);
+        q3w_roll_axis(sh ? q3w_spin_angle(sh, firing) : 0, local);
         q3w_on_tag(gun->origin, gun_axis, scale, &g->barrel_tag, local, origin, axis);
         q3w_part(&e, gun, g->barrel, gun->id, origin, axis);
         e.scale = gun->scale;
@@ -1268,6 +1364,7 @@ void CL_Q3W_EjectBrass(int entnum, int mz)
     case MZ_MACHINEGUN:
     case MZ_CHAINGUN1:
     case MZ_Q3_MACHINEGUN:
+    case MZ_Q3_CHAINGUN:    // Team Arena's: CG_MachineGunEjectBrass
         kind = 0; count = 1; break;
     case MZ_CHAINGUN2:
         kind = 0; count = 2; break;
@@ -1997,8 +2094,16 @@ void CL_Q3W_Impact(int type, const vec3_t origin, const vec3_t dir)
     cdlight_t   *dl;
 
     switch (type) {
+    case TE_TA_NAIL:
+        // CG_MissileHitWall's WP_NAILGUN: no flash, a hole and its thud
+        CL_ParticleEffect(origin, dir, 0, 4);
+        q3w_mark(q3w.mark_hole, origin, dir, 12, DECAL_DARKEN, false, q3w_white);
+        q3w_sound_at(origin, q3w.sfx_nailhit);
+        break;
+
     case TE_Q3_BULLET:
     case TE_Q3_SHOTGUN:
+    case TE_TA_CHAINGUN:
         // the flash on the wall (bulletExplosion: three frames of
         // models/weaphits/bullet*), Quake II's puff of dust with it
         fx = q3w_alloc_fx();
@@ -2008,18 +2113,20 @@ void CL_Q3W_Impact(int type, const vec3_t origin, const vec3_t dir)
         vectoangles2(dir, fx->angles);
         fx->angles[ROLL] = frand() * 360;
         fx->flat = true;
-        fx->size0 = fx->size1 = type == TE_Q3_BULLET ? 6 : 4;
+        fx->size0 = fx->size1 = type != TE_Q3_SHOTGUN ? 6 : 4;
         fx->life = 200;
-        CL_ParticleEffect(origin, dir, 0, type == TE_Q3_BULLET ? 8 : 4);
+        CL_ParticleEffect(origin, dir, 0, type != TE_Q3_SHOTGUN ? 8 : 4);
         if (!CL_PathTraced())
             CL_ImpactSmokeAndFlash(origin, dir);
 
-        q3w_mark(q3w.mark_bullet, origin, dir, type == TE_Q3_BULLET ? 8 : 4, DECAL_DARKEN, false, q3w_white);
+        q3w_mark(q3w.mark_bullet, origin, dir, type != TE_Q3_SHOTGUN ? 8 : 4, DECAL_DARKEN, false, q3w_white);
         if (type == TE_Q3_BULLET) {
             // CG_MissileHitWall: ric1 half the time, ric2 and ric3 a quarter
             int r = Q_rand() & 3;
 
             q3w_sound_at(origin, q3w.sfx_ric[r < 2 ? 0 : r - 1]);
+        } else if (type == TE_TA_CHAINGUN) {
+            q3w_sound_at(origin, q3w.sfx_chghit);
         }
         break;
 
@@ -2067,7 +2174,7 @@ void CL_Q3W_Explosion(int type, const vec3_t origin)
     trace_t best;
     int     i;
 
-    q3w_sound_at(origin, q3w.sfx_rockexp);
+    q3w_sound_at(origin, type == TE_TA_PROX_EXPLOSION && q3w.sfx_proxexp ? q3w.sfx_proxexp : q3w.sfx_rockexp);
 
     // the message carries no surface: the nearest one round it, as the blast
     // is drawn a little back from where it hit (g_q3weap.c: 1/50 of a
@@ -2704,6 +2811,10 @@ static const struct {
     [Q3W_PLASMA]     = {  100, "weapons/plasma/hyprbf1a.wav" },
     [Q3W_BFG]        = {  200, "weapons/bfg/bfg_fire.wav" },
     [Q3W_GRAPPLE]    = {  400, NULL },  // never predicted: the hook is the server's
+    // Team Arena's: the chaingun picks one of four (vulcanf1b-4b)
+    [Q3W_NAILGUN]    = { 1000, "weapons/nailgun/wnalfire.wav" },
+    [Q3W_PROX]       = {  800, "weapons/proxmine/wstbfire.wav" },
+    [Q3W_CHAINGUN]   = {   30, NULL },
 };
 
 static cvar_t   *cl_q3_predict_shots;
@@ -2719,19 +2830,28 @@ static struct {
     int         server_shots;   // and the server's count at it
     int         skip_flashes;   // the server's copies of ours in this packet
     int         skip_sounds;
-    qhandle_t   sfx[Q3W_NUM], sfx_mg[4];
+    qhandle_t   sfx[Q3W_NUM], sfx_mg[4], sfx_cg[4];
 } q3p;
 
 static void q3p_register(void)
 {
+    memset(&q3p, 0, sizeof(q3p));
+    q3p_register_sounds();
+}
+
+// q3p's sound handles, again from CL_Q3W_RegisterSounds (see there)
+static void q3p_register_sounds(void)
+{
     int i;
 
-    memset(&q3p, 0, sizeof(q3p));
     for (i = 1; i < Q3W_NUM; i++)
         if (q3p_info[i].sound)
             q3p.sfx[i] = q3w_sound(q3p_info[i].sound);
     for (i = 0; i < 4; i++)
         q3p.sfx_mg[i] = q3w_sound(va("weapons/machinegun/machgf%db.wav", i + 1));
+    if (Cvar_VariableInteger("fs_quake3_ta"))
+        for (i = 0; i < 4; i++)
+            q3p.sfx_cg[i] = q3w_sound(va("weapons/vulcan/vulcanf%db.wav", i + 1));
 }
 
 // the Quake III gun the server has up in our hand, ready or firing; 0 when
@@ -2760,13 +2880,20 @@ static int q3p_weapon(void)
 
 // Q3W_Think's time between shots: haste (g_q3.c Q3_PmoveGravity puts it in
 // the gravity's low bit for prediction) 1.3 times as fast, the CTF Time Accel
-// (stat 31 its icon, g_ctf.c) twice
+// (stat 31 its icon, g_ctf.c) twice. Team Arena's Scout (gravity bit 1) 1.5
+// times, or its Ammo Regen (stat 31 again) 1.3, in Haste's place (g_ta.c
+// TA_FireScale).
 static int q3p_fire_time(int w)
 {
-    int t = q3p_info[w].fire_time;
-    int tech = cl.frame.ps.stats[31];
+    int         t = q3p_info[w].fire_time;
+    int         tech = cl.frame.ps.stats[31];
+    const char  *icon = tech > 0 && tech < MAX_IMAGES ? cl.configstrings[CS_IMAGES + tech] : "";
 
-    if (cl.frame.ps.pmove.gravity & 1)
+    if (cl.frame.ps.pmove.gravity & 2)
+        t = (int)(t / 1.5f);
+    else if (strstr(icon, "ammo_regen"))
+        t = (int)(t / 1.3f);
+    else if (cl.frame.ps.pmove.gravity & 1)
         t = (int)(t / 1.3f);
     if (tech > 0 && tech < MAX_IMAGES && strstr(cl.configstrings[CS_IMAGES + tech], "tech3"))
         t /= 2;
@@ -2792,6 +2919,8 @@ static void q3p_shot(int w, bool was_firing)
     // loops after (the server's weapon sound)
     if (w == Q3W_MACHINEGUN)
         sfx = q3p.sfx_mg[Q_rand() & 3];
+    else if (w == Q3W_CHAINGUN)
+        sfx = q3p.sfx_cg[Q_rand() & 3];
     else if (w == Q3W_LIGHTNING && was_firing)
         sfx = 0;
     else
@@ -2913,7 +3042,7 @@ void CL_Q3W_FrameParsed(void)
 bool CL_Q3W_SkipServerFlash(int entity, int weapon)
 {
     if (q3p.skip_flashes <= 0 || entity != cl.frame.clientNum + 1 ||
-        weapon < MZ_Q3_GAUNTLET || weapon > MZ_Q3_BFG)
+        weapon < MZ_Q3_GAUNTLET || weapon > MZ_Q3_CHAINGUN || weapon == MZ_Q3_GRAPPLE)
         return false;
     q3p.skip_flashes--;
     return true;
@@ -3289,9 +3418,151 @@ static void q3w_debug_print(void)
     q3w_dbg.last = now;
 }
 
+/*
+==============================================================================
+
+TEAM ARENA'S KAMIKAZE AND JUICED SPHERES
+
+The kamikaze (cg_localents.c CG_AddKamikaze): a shockwave out to 1320 units
+over two seconds, fading from 1.5; the blast sphere out to 720 from a quarter
+second to two, then in again by 2.25 with kam_implode; a second shockwave at a
+random tilt from two seconds to three. The models are 88 (wave) and 72
+(sphere) units across, so their scale is radius / that. Its explosion sound
+is the server's, to everyone (g_ta.c).
+
+The juiced sphere (CG_AddInvulnerabilityJuiced): the burst invulnerability
+sphere three seconds, swelling to 1.3 over two more, then gibs.
+
+==============================================================================
+*/
+
+#define Q3W_MAX_KAMIS   4
+#define Q3W_KAMI_ID     0x3400      // ids for motion vectors, past the gibs'
+
+typedef struct {
+    vec3_t  origin, wave2_angles;
+    int     start;
+    bool    juiced, imploded, gibbed;
+} q3wkami_t;
+
+static q3wkami_t q3w_kamis[Q3W_MAX_KAMIS];
+
+static q3wkami_t *q3w_alloc_kami(const vec3_t origin)
+{
+    q3wkami_t   *k = &q3w_kamis[0];
+    int         i;
+
+    // a free one, or the oldest
+    for (i = 0; i < Q3W_MAX_KAMIS; i++) {
+        if (!q3w_kamis[i].start) {
+            k = &q3w_kamis[i];
+            break;
+        }
+        if (q3w_kamis[i].start < k->start)
+            k = &q3w_kamis[i];
+    }
+    memset(k, 0, sizeof(*k));
+    VectorCopy(origin, k->origin);
+    k->start = cl.time ? cl.time : 1;
+    return k;
+}
+
+void CL_Q3W_Kamikaze(const vec3_t origin)
+{
+    q3wkami_t *k = q3w_alloc_kami(origin);
+
+    VectorSet(k->wave2_angles, frand() * 360, frand() * 360, frand() * 360);
+}
+
+void CL_Q3W_Juiced(const vec3_t origin)
+{
+    q3w_alloc_kami(origin)->juiced = true;
+}
+
+static void q3w_kami_model(q3wkami_t *k, qhandle_t model, const vec3_t angles, float scale, float alpha, int id)
+{
+    entity_t e;
+
+    if (!model || scale <= 0 || alpha <= 0)
+        return;
+    memset(&e, 0, sizeof(e));
+    e.model = model;
+    e.id = id;
+    VectorCopy(k->origin, e.origin);
+    VectorCopy(k->origin, e.oldorigin);
+    VectorCopy(angles, e.angles);
+    e.scale = scale;
+    e.flags = RF_FULLBRIGHT | RF_NOSHADOW;
+    if (alpha < 1) {
+        e.flags |= RF_TRANSLUCENT;
+        e.alpha = alpha;
+    }
+    V_AddEntity(&e);
+}
+
+static void q3w_add_kamikazes(void)
+{
+    int i;
+
+    for (i = 0; i < Q3W_MAX_KAMIS; i++) {
+        q3wkami_t   *k = &q3w_kamis[i];
+        int         t = cl.time - k->start;
+        int         id = Q3W_KAMI_ID + i * 4;
+        float       c;
+
+        if (!k->start)
+            continue;
+        if (t < 0 || t >= (k->juiced ? 5000 : 3000)) {
+            k->start = 0;
+            continue;
+        }
+
+        if (k->juiced) {
+            c = t > 3000 ? 1 + 0.3f * (t - 3000) / 2000 : 1;
+            q3w_kami_model(k, q3w.juicer, vec3_origin, c, 1, id);
+            if (t >= 4900 && !k->gibbed) {
+                k->gibbed = true;
+                CL_Q3W_Gibs(k->origin);
+            }
+            continue;
+        }
+
+        // the first shockwave
+        if (t < 2000) {
+            c = t / 2000.0f;
+            q3w_kami_model(k, q3w.kam_wave, vec3_origin, c * 1320 / 88,
+                           t > 1500 ? 1 - (t - 1500) / 500.0f : 1, id);
+        }
+        // the sphere, out and in
+        if (t > 250 && t < 2250) {
+            float fade = (3000 - t) / 3000.0f;
+
+            if (t < 2000) {
+                c = (t - 250) / 1750.0f;
+            } else {
+                if (!k->imploded) {
+                    k->imploded = true;
+                    if (q3w.sfx_kam_implode)
+                        S_StartSound(NULL, cl.frame.clientNum + 1, CHAN_AUTO, q3w.sfx_kam_implode, 1, ATTN_NONE, 0);
+                }
+                c = (2250 - t) / 250.0f;
+            }
+            q3w_kami_model(k, q3w.kam_boom, vec3_origin, c * 720 / 72, fade, id + 1);
+            V_AddLight(k->origin, c * 1000, 1.0f, 1.0f, c);
+        }
+        // the second, tilted
+        if (t > 2000) {
+            c = (t - 2000) / 1000.0f;
+            q3w_kami_model(k, q3w.kam_wave, k->wave2_angles, c * 704 / 88,
+                           t > 2500 ? 1 - (t - 2500) / 500.0f : 1, id + 2);
+        }
+    }
+}
+
 // CL_AddTEnts
 void CL_Q3W_AddEntities(void)
 {
+    q3w_add_kamikazes();
     q3w_add_brass();
     q3w_add_gibs();
     q3w_add_flights();      // before the marks and flashes: one landing now shows now
@@ -3322,6 +3593,7 @@ void CL_Q3W_Clear(void)
     memset(q3w_grapples, 0, sizeof(q3w_grapples));
     memset(q3w_balls, 0, sizeof(q3w_balls));
     memset(q3w_flights, 0, sizeof(q3w_flights));
+    memset(q3w_kamis, 0, sizeof(q3w_kamis));
     memset(q3w_shooters, 0, sizeof(q3w_shooters));
     memset(&q3v, 0, sizeof(q3v));
     // a new server's commands start again from 0; the sounds stay registered

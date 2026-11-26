@@ -170,6 +170,15 @@ begin environment
     endif
     endif
     toggle --status "physical sky only (physical_sky_draw_clouds)" "physical sky clouds" physical_sky_draw_clouds
+    // A Quake III level's sky clouds shading the sun and sky light as they pass
+    // (q3stages.c; Matt, 2026-11-26: "add it as an off and on switch in the
+    // environment menu if q3 assets are available. you can default to off").
+    // Only with Quake III's data (fs_quake3); without it there is no Quake III
+    // level for it to act on. Off by default; strength, height and softness
+    // stay console cvars (pt_q3_cloud_shadow_*).
+    ifeq fs_quake3 1
+        toggle --status "Quake III levels: the sky's own clouds cast shadows - where they pass in front of the sun, its light and the sky's dim on everything outside (pt_q3_cloud_shadow)" "quake iii cloud shadows" pt_q3_cloud_shadow
+    endif
     blank
     range -f "%.1f deg" --status "physical sky only - latitude used to compute the sun position in automatic mode (sun_latitude)" "physical sky latitude" sun_latitude -90 90 2
     blank
@@ -618,6 +627,8 @@ begin sound
     ifge fs_quake1 1
         pairs --status "the Quake campaigns' music is recorded much quieter than Quake II's. Raised measures each track as it starts and plays it at about the loudness of Quake II's music, its peaks held back by a limiter (ogg_q1_loudness)" \
             "quake music level" ogg_q1_loudness "as recorded" 0 "raised to quake ii's" -12
+        range -f "%+.0f dB" --status "extra loudness for the Quake campaigns' music only, over its level above - Quake II's and Quake III's music are not changed (ogg_q1_boost)" \
+            "quake music boost" ogg_q1_boost 0 12 1
     endif
     blank
     values --status "(s_ambient)" "ambient sounds" s_ambient "no" "yes" "only player's own"
@@ -1447,10 +1458,20 @@ begin startserver
     endif
     ifeq bot_mapset 1
     ifeq bot_mode 2
+    ifneq fs_quake3_ta 1
         pairs --levelshot "map" bot_map_q3ctf "Dueling Keeps" q3ctf1 "Troubled Waters" q3ctf2 "The Stronghold" q3ctf3 "Space CTF" q3ctf4 "Across Space" q3tourney6_ctf
     endif
+    ifeq fs_quake3_ta 1
+        pairs --levelshot "map" bot_map_q3ctf "Dueling Keeps" q3ctf1 "Troubled Waters" q3ctf2 "The Stronghold" q3ctf3 "Space CTF" q3ctf4 "Across Space" q3tourney6_ctf "Base Seige" mpteam1 "Fallout Bunker" mpteam2 "Inner Sanctums" mpteam3 "Scornforge" mpteam4 "Teamwerkz" mpteam5 "Vortex Portal" mpteam6 "The Capture Chamber" mpteam7 "Assassin's Roost" mpteam8 "Overdose" mpterra1 "Distant Screams" mpterra2 "Final Strike" mpterra3 "Dueling Keeps 2" mpq3ctf1 "More Trouble" mpq3ctf2 "Stronghold Return" mpq3ctf3 "Chaos in Space" mpq3ctf4 "Beyond Reality" mpq3tourney6
+    endif
+    endif
     ifneq bot_mode 2
+    ifneq fs_quake3_ta 1
         pairs --levelshot "map" bot_map_q3 "Introduction" q3dm0 "Arena Gate" q3dm1 "House Of Pain" q3dm2 "Arena Of Death" q3dm3 "The Place Of Many Deaths" q3dm4 "The Forgotten Place" q3dm5 "The Camping Grounds" q3dm6 "Temple of Retribution" q3dm7 "Brimstone Abbey" q3dm8 "Hero's Keep" q3dm9 "The Nameless Place" q3dm10 "Deva Station" q3dm11 "The Dredwerkz" q3dm12 "Lost World" q3dm13 "Grim Dungeons" q3dm14 "Demon Keep" q3dm15 "The Bouncy Map" q3dm16 "The Longest Yard" q3dm17 "Space Chamber" q3dm18 "Apocalypse Void" q3dm19 "Powerstation 0218" q3tourney1 "The Proving Grounds" q3tourney2 "Hell's Gate" q3tourney3 "Vertical Vengeance" q3tourney4 "Fatal Instinct" q3tourney5 "The Very End Of You" q3tourney6 "The Campgrounds II" pro-q3dm6 "Lost World II" pro-q3dm13 "The Proving Grounds II" pro-q3tourney2 "Vertical Vengeance II" pro-q3tourney4
+    endif
+    ifeq fs_quake3_ta 1
+        pairs --levelshot "map" bot_map_q3 "Introduction" q3dm0 "Arena Gate" q3dm1 "House Of Pain" q3dm2 "Arena Of Death" q3dm3 "The Place Of Many Deaths" q3dm4 "The Forgotten Place" q3dm5 "The Camping Grounds" q3dm6 "Temple of Retribution" q3dm7 "Brimstone Abbey" q3dm8 "Hero's Keep" q3dm9 "The Nameless Place" q3dm10 "Deva Station" q3dm11 "The Dredwerkz" q3dm12 "Lost World" q3dm13 "Grim Dungeons" q3dm14 "Demon Keep" q3dm15 "The Bouncy Map" q3dm16 "The Longest Yard" q3dm17 "Space Chamber" q3dm18 "Apocalypse Void" q3dm19 "Powerstation 0218" q3tourney1 "The Proving Grounds" q3tourney2 "Hell's Gate" q3tourney3 "Vertical Vengeance" q3tourney4 "Fatal Instinct" q3tourney5 "The Very End Of You" q3tourney6 "The Campgrounds II" pro-q3dm6 "Lost World II" pro-q3dm13 "The Proving Grounds II" pro-q3tourney2 "Vertical Vengeance II" pro-q3tourney4 "Base Seige" mpteam1 "Fallout Bunker" mpteam2 "Inner Sanctums" mpteam3 "Scornforge" mpteam4 "Teamwerkz" mpteam5 "Vortex Portal" mpteam6 "The Capture Chamber" mpteam7 "Assassin's Roost" mpteam8 "Overdose" mpterra1 "Distant Screams" mpterra2 "Final Strike" mpterra3 "Dueling Keeps 2" mpq3ctf1 "More Trouble" mpq3ctf2 "Stronghold Return" mpq3ctf3 "Chaos in Space" mpq3ctf4 "Beyond Reality" mpq3tourney6 "The House of Decay" mptourney1 "Death Factory" mptourney2 "Temple of Pain" mptourney3 "Evil Playground" mptourney4
+    endif
     endif
         pairs --status "quake iii: 5 / 25 / 50 / 100 health, 5 / 50 / 100 armor, the battle suit. quake ii: its own, the environment suit" "health and armor" g_q3_items "quake iii arena" 1 "quake ii" 0
     ifneq g_q3_weapons 1
@@ -1600,9 +1621,15 @@ begin singleplayer
         action "quake ii" "set _ui_campaign newgame; pushmenu skill"
     endif
     // Quake III Arena's own single player game, in its own menus
-    // (src/client/ui/q3sp.c, src/baseq2/g_sp.c)
+    // (src/client/ui/q3sp.c, src/baseq2/g_sp.c) - with Team Arena installed
+    // (baseq3/missionpack), its page below: that or Team Arena's skirmish
     ifeq fs_quake3 1
-        action "quake iii arena" levelselect
+        ifeq fs_quake3_ta 1
+            action "quake iii arena" pushmenu quake3
+        endif
+        ifneq fs_quake3_ta 1
+            action "quake iii arena" levelselect
+        endif
     endif
     ifeq fs_rerelease 1
         action "bot match" "bot_lineup; pushmenu botmatch"
@@ -1631,6 +1658,17 @@ begin quake2
     action "quake ii 64" "set _ui_campaign newgame_n64; pushmenu skill"
     blank
     action "load game..." pushmenu loadgame
+end
+
+// Quake III Arena with Team Arena installed: its own campaign (CHOOSE LEVEL),
+// or Team Arena's single player game, its skirmish - a map, a game type and
+// two teams of its characters (src/client/ui/q3sp.c, src/baseq2/g_ta.c).
+begin quake3
+    background #212F3CD0
+    style --compact
+    banner m_banner_game
+    action "single player" levelselect
+    action "team arena" taskirmish
 end
 
 // Quake's campaigns: the game and each expansion the paks under id1/ have
@@ -1721,6 +1759,11 @@ end
 // With Quake III Arena installed (its pak*.pk3 in baseq3, fs_quake3 1), "map
 // set" picks its maps instead (bot_mapset 1): the deathmatch and tourney
 // arenas, or its CTF maps in capture the flag (bot_map_q3, bot_map_q3ctf).
+// With Team Arena too (baseq3/missionpack, fs_quake3_ta 1), both lists go on
+// with its maps (scripts/missionpack.arena's titles) - played as its maps,
+// with its items and guns (src/baseq2/g_ta.c), in the bot match's own modes.
+// Its One Flag, Overload and Harvester are its skirmish's (GAME > quake iii
+// arena > team arena, src/client/ui/q3sp.c).
 // Its items become Quake II's (src/baseq2/g_q3.c), and two more rows say how:
 // Quake III's or Quake II's health and armor amounts (g_q3_items - the
 // Quake III amounts bring its Battle Suit, Quake II's the Environment Suit),
@@ -1778,10 +1821,20 @@ begin botmatch
     endif
     ifeq bot_mapset 1
     ifeq bot_mode 2
+    ifneq fs_quake3_ta 1
         pairs --levelshot "map" bot_map_q3ctf "Dueling Keeps" q3ctf1 "Troubled Waters" q3ctf2 "The Stronghold" q3ctf3 "Space CTF" q3ctf4 "Across Space" q3tourney6_ctf
     endif
+    ifeq fs_quake3_ta 1
+        pairs --levelshot "map" bot_map_q3ctf "Dueling Keeps" q3ctf1 "Troubled Waters" q3ctf2 "The Stronghold" q3ctf3 "Space CTF" q3ctf4 "Across Space" q3tourney6_ctf "Base Seige" mpteam1 "Fallout Bunker" mpteam2 "Inner Sanctums" mpteam3 "Scornforge" mpteam4 "Teamwerkz" mpteam5 "Vortex Portal" mpteam6 "The Capture Chamber" mpteam7 "Assassin's Roost" mpteam8 "Overdose" mpterra1 "Distant Screams" mpterra2 "Final Strike" mpterra3 "Dueling Keeps 2" mpq3ctf1 "More Trouble" mpq3ctf2 "Stronghold Return" mpq3ctf3 "Chaos in Space" mpq3ctf4 "Beyond Reality" mpq3tourney6
+    endif
+    endif
     ifneq bot_mode 2
+    ifneq fs_quake3_ta 1
         pairs --levelshot "map" bot_map_q3 "Introduction" q3dm0 "Arena Gate" q3dm1 "House Of Pain" q3dm2 "Arena Of Death" q3dm3 "The Place Of Many Deaths" q3dm4 "The Forgotten Place" q3dm5 "The Camping Grounds" q3dm6 "Temple of Retribution" q3dm7 "Brimstone Abbey" q3dm8 "Hero's Keep" q3dm9 "The Nameless Place" q3dm10 "Deva Station" q3dm11 "The Dredwerkz" q3dm12 "Lost World" q3dm13 "Grim Dungeons" q3dm14 "Demon Keep" q3dm15 "The Bouncy Map" q3dm16 "The Longest Yard" q3dm17 "Space Chamber" q3dm18 "Apocalypse Void" q3dm19 "Powerstation 0218" q3tourney1 "The Proving Grounds" q3tourney2 "Hell's Gate" q3tourney3 "Vertical Vengeance" q3tourney4 "Fatal Instinct" q3tourney5 "The Very End Of You" q3tourney6 "The Campgrounds II" pro-q3dm6 "Lost World II" pro-q3dm13 "The Proving Grounds II" pro-q3tourney2 "Vertical Vengeance II" pro-q3tourney4
+    endif
+    ifeq fs_quake3_ta 1
+        pairs --levelshot "map" bot_map_q3 "Introduction" q3dm0 "Arena Gate" q3dm1 "House Of Pain" q3dm2 "Arena Of Death" q3dm3 "The Place Of Many Deaths" q3dm4 "The Forgotten Place" q3dm5 "The Camping Grounds" q3dm6 "Temple of Retribution" q3dm7 "Brimstone Abbey" q3dm8 "Hero's Keep" q3dm9 "The Nameless Place" q3dm10 "Deva Station" q3dm11 "The Dredwerkz" q3dm12 "Lost World" q3dm13 "Grim Dungeons" q3dm14 "Demon Keep" q3dm15 "The Bouncy Map" q3dm16 "The Longest Yard" q3dm17 "Space Chamber" q3dm18 "Apocalypse Void" q3dm19 "Powerstation 0218" q3tourney1 "The Proving Grounds" q3tourney2 "Hell's Gate" q3tourney3 "Vertical Vengeance" q3tourney4 "Fatal Instinct" q3tourney5 "The Very End Of You" q3tourney6 "The Campgrounds II" pro-q3dm6 "Lost World II" pro-q3dm13 "The Proving Grounds II" pro-q3tourney2 "Vertical Vengeance II" pro-q3tourney4 "Base Seige" mpteam1 "Fallout Bunker" mpteam2 "Inner Sanctums" mpteam3 "Scornforge" mpteam4 "Teamwerkz" mpteam5 "Vortex Portal" mpteam6 "The Capture Chamber" mpteam7 "Assassin's Roost" mpteam8 "Overdose" mpterra1 "Distant Screams" mpterra2 "Final Strike" mpterra3 "Dueling Keeps 2" mpq3ctf1 "More Trouble" mpq3ctf2 "Stronghold Return" mpq3ctf3 "Chaos in Space" mpq3ctf4 "Beyond Reality" mpq3tourney6 "The House of Decay" mptourney1 "Death Factory" mptourney2 "Temple of Pain" mptourney3 "Evil Playground" mptourney4
+    endif
     endif
         pairs --status "quake iii: 5 / 25 / 50 / 100 health, 5 / 50 / 100 armor, the battle suit. quake ii: its own, the environment suit" "health and armor" g_q3_items "quake iii arena" 1 "quake ii" 0
     ifneq g_q3_weapons 1

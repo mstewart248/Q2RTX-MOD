@@ -225,6 +225,9 @@ void Cmd_Give_f(edict_t *ent)
             // player who plays with them (g_q3weap.c)
             if (!!(it->flags & IT_Q3) != Q3W_PlayerQ3(ent))
                 continue;
+            // Team Arena's three only with its data (Q3W_Guns)
+            if ((it->flags & IT_Q3) && it->tag >= Q3W_FIRST_TA && it->tag >= Q3W_Guns())
+                continue;
             // and Quake's only to a player who plays with them, and then
             // only Quake's (g_q1weap.c): the rest are what they stand in for
             if (!!(it->flags & IT_Q1) != Q1W_PlayerQ1(ent))
@@ -1351,8 +1354,8 @@ void ClientCommand(edict_t *ent)
 
     cmd = gi.argv(0);
 
-    // a Quake 1 demo playing back takes nothing (g_q1demo.c)
-    if (Q1Demo_Active())
+    // a Quake 1 or Quake III demo playing back takes nothing (g_q1demo.c, g_q3demo.c)
+    if (Q1Demo_Active() || Q3Demo_Active())
         return;
 
     // a Quake 1 level run by its progs takes its own commands (weapons by
@@ -1368,6 +1371,9 @@ void ClientCommand(edict_t *ent)
         Cmd_Say_f(ent, false, false);
         return;
     }
+    // Team Arena's voice chats: vsay, vsay_team, vtell, vosay... (g_ta.c)
+    if ((cmd[0] == 'v' || cmd[0] == 'V') && TA_VoiceCommand(ent, cmd))
+        return;
     if (Q_stricmp(cmd, "say_team") == 0) {
         Cmd_Say_f(ent, true, false);
         return;
@@ -1446,6 +1452,11 @@ void ClientCommand(edict_t *ent)
         Team_Command(ent);
     else if (Q_stricmp(cmd, "playerlist") == 0)
         Cmd_PlayerList_f(ent);
-    else    // anything that doesn't match a command will be a chat
-        Cmd_Say_f(ent, false, true);
+    /* Anything else was Quake II's chat: a mistyped console command or cvar
+       went out to everyone as something you said (Matt, 2026-11-26:
+       "pt_q3_cloud_shadow 1" came out as "MinusHuman1: pt_q3_cloud_shadow 1").
+       Now it is unknown, as Quake III had it; chat is say / say_team or the
+       talk keys. */
+    else
+        gi.cprintf(ent, PRINT_HIGH, "Unknown command \"%s\"\n", cmd);
 }

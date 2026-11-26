@@ -274,6 +274,7 @@ void InitGame(void)
 
     // bot match and team deathmatch (g_bot.c); needs game.maxclients
     CTF_Init();
+    TA_Init();
     Q3_InitGame();
     SP_Init();
     Bot_Init();
@@ -575,6 +576,12 @@ void ExitLevel(void)
         return;
     }
 
+    // a Team Arena skirmish goes back to its menu, not on to a map (g_ta.c)
+    if (TA_SkirmishExit()) {
+        level.exitintermission = 0;
+        return;
+    }
+
     Q_snprintf(command, sizeof(command), "gamemap \"%s\"\n", level.changemap);
     gi.AddCommandString(command);
     level.changemap = NULL;
@@ -646,6 +653,12 @@ void G_RunFrame(void)
     // a Quake 1 demo playing back (g_q1demo.c)
     if (Q1Demo_Active()) {
         Q1Demo_RunFrame();
+        return;
+    }
+
+    // a Quake III demo playing back (g_q3demo.c)
+    if (Q3Demo_Active()) {
+        Q3Demo_RunFrame();
         return;
     }
 
@@ -750,6 +763,9 @@ void G_RunFrame(void)
 
     // the Quake III campaign's lead and frags-left calls, its podium (g_sp.c)
     SP_RunFrame();
+
+    // Team Arena's HUD state, team info and the bots' voice chats (g_ta.c)
+    TA_RunFrame();
 
     // see if needpass needs updated
     CheckNeedPass();

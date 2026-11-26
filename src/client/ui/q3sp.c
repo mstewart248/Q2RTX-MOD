@@ -33,6 +33,9 @@ is src/baseq2/g_sp.c.
   sp_video        a Quake III video (roq.c), then maybe CHOOSE LEVEL again.
   sp_event        what the game sends while you play (g_sp.c SP_Event): the
                   reward medals and the announcer, and the result.
+  taskirmish      Team Arena's single player game, its skirmish, with its
+                  data installed (fs_quake3_ta): TEAM ARENA below, and
+                  src/baseq2/g_ta.c.
 
 Progress is kept as Quake III kept it, in archived cvars of info strings:
 sp_scores1..5 the best placing at each skill per arena ("l<num>"), sp_awards
@@ -134,6 +137,7 @@ static bool         sp_loaded;
 
 static cvar_t   *sp_scores[SP_NUM_SKILLS];
 static cvar_t   *sp_awards, *sp_videos, *sp_selection, *sp_times, *sp_skill, *sp_campaign;
+static cvar_t   *ta_skirmish;   // Team Arena's skirmish (below), as the game reads it
 
 static int SP_NumTiers(void)
 {
@@ -1271,7 +1275,12 @@ static qhandle_t SP_PlayerIcon(const char *skin)
     memcpy(model, skin, slash - skin);
     model[slash - skin] = 0;
 
-    pic = SP_PicAs(va("models/players/%s/icon_%s.tga", model, slash + 1), IT_SPRITE);
+    {
+        char path[MAX_QPATH];
+
+        Q3P_IconPath(model, slash + 1, path, sizeof(path));
+        pic = SP_PicAs(path, IT_SPRITE);
+    }
     if (!pic)
         pic = SP_PicAs(va("models/players/%s/icon_default.tga", model), IT_SPRITE);
     if (!pic)
@@ -2256,6 +2265,9 @@ void UI_SP_Frame(void)
     // sp_campaign as a map loads, and every start of an arena sets it again
     if (cls.state == ca_disconnected && sp_campaign && sp_campaign->integer)
         Cvar_SetByVar(sp_campaign, "0", FROM_CODE);
+    // nor Team Arena's skirmish (the game takes ta_skirmish as a map loads)
+    if (cls.state == ca_disconnected && ta_skirmish && ta_skirmish->integer)
+        Cvar_SetByVar(ta_skirmish, "0", FROM_CODE);
 
     // the announcer, one line at a time
     if (sp_hud.out != sp_hud.in && cls.realtime >= sp_hud.sound_time) {
@@ -2336,6 +2348,814 @@ static void SP_Event_f(void)
 }
 
 /*
+==============================================================================
+
+TEAM ARENA: SKIRMISH (missionpack ui/skirmish.menu, ui_main.c)
+
+Team Arena's single player game was its skirmish: one of its maps in one of
+its game types, against a team of its characters, with your own team's on
+red beside you. Its menu was a script (ui/skirmish.menu, run by ui_shared.c);
+here it is the same page in C, in Quake III's 640x480 like the rest of this
+file, with Team Arena's art (ui/assets/, its levelshots) and its game info
+(ui/gameinfo.txt, ui/teaminfo.txt) written in below:
+
+  Type, Opponent, Skill   the bar along the top. A click, Enter or the right
+                          arrow takes the next; the right button or the left
+                          arrow the one before. A Tournament has no opponent
+                          team: the map names who you duel.
+  the maps                the strip of levelshots - the maps of that type -
+                          and the chosen one large below
+  the logos               your team (left) and theirs (right), to change them
+  the arrow               FIGHT (UI_StartSkirmish): the game takes it from
+                          ta_skirmish 1 and the line-up in ta_bot1..N (g_ta.c,
+                          g_bot.c), its limits its own (10 frags; 5 captures,
+                          4 obelisks, 15 skulls)
+
+Team Arena itself offered Free For All and Team Deathmatch on none of its
+maps (no map listed them); here they are played on the team maps. Its
+Intruders' "Whyrlwnd" missed its alias "Whyrlwynd" (and that one's character
+"Ursla") and so went out as James; here as Ursula, as meant.
+
+The choices are kept in archived ta_ui_* cvars, the skill in sp_skill (the
+campaign's); ta_skirmish itself is cleared once you are out of the game. At
+the end of the match the game sends you back here ("taskirmish").
+==============================================================================
+*/
+
+#define TA_GT_FFA           0       // g_gametype's numbers (gameinfo.txt)
+#define TA_GT_TOURNAMENT    1
+#define TA_GT_TEAM          3
+#define TA_GT_CTF           4
+#define TA_GT_1FCTF         5
+#define TA_GT_OBELISK       6
+#define TA_GT_HARVESTER     7
+#define TA_NUM_GT           8
+
+typedef struct {
+    const char  *name;
+    int         gt;
+    int         teamplay, ctf;      // how this game plays it (g_ta.c TA_GameMode)
+} ta_gametype_t;
+
+static const ta_gametype_t ta_gametypes[] = {
+    { "Free For All",       TA_GT_FFA,          0, 0 },
+    { "Tournament",         TA_GT_TOURNAMENT,   0, 0 },
+    { "Team Deathmatch",    TA_GT_TEAM,         1, 0 },
+    { "Capture the Flag",   TA_GT_CTF,          0, 1 },
+    { "One Flag CTF",       TA_GT_1FCTF,        0, 2 },
+    { "Overload",           TA_GT_OBELISK,      0, 3 },
+    { "Harvester",          TA_GT_HARVESTER,    0, 4 },
+};
+
+#define TA_NUM_GAMETYPES    ((int)q_countof(ta_gametypes))
+
+typedef struct {
+    const char  *name, *map;
+    int         members;            // a team's: you and yours against as many
+    const char  *opponent;          // a Tournament's
+    short       par[TA_NUM_GT];     // time to beat, by game type; 0: not played on it
+} ta_map_t;
+
+static const ta_map_t ta_maps[] = {
+    { "Base Siege",           "mpteam1",    3, "Sarge",      { 0, 0, 0, 0, 240, 180, 180, 180 } },
+    { "Fallout Bunker",       "mpteam2",    3, "Sarge",      { 0, 0, 0, 0, 180, 120, 120, 270 } },
+    { "Inner Sanctums",       "mpteam3",    3, "Sarge",      { 0, 0, 0, 0, 240, 210, 210, 210 } },
+    { "Scornforge",           "mpteam4",    4, "Sarge",      { 0, 0, 0, 0, 360, 420, 420, 270 } },
+    { "Teamwerkz",            "mpteam5",    4, "Sarge",      { 0, 0, 0, 0, 420, 300, 360, 300 } },
+    { "Vortex Portal",        "mpteam6",    3, "Sarge",      { 0, 0, 0, 0, 240, 210, 210, 180 } },
+    { "The Capture Chamber",  "mpteam7",    4, "Sarge",      { 0, 0, 0, 0, 240, 240, 240, 270 } },
+    { "Assassins' Roost",     "mpteam8",    4, "Sarge",      { 0, 0, 0, 0, 420, 240, 240, 360 } },
+    { "Overdose",             "mpterra1",   4, "Sarge",      { 0, 0, 0, 0, 330, 240, 270, 420 } },
+    { "The House of Decay",   "mptourney1", 1, "Fritzkrieg", { 0, 180 } },
+    { "Death Factory",        "mptourney2", 1, "Pi",         { 0, 240 } },
+    { "Temple of Pain",       "mptourney3", 1, "Janet",      { 0, 180 } },
+    { "Evil Playground",      "mptourney4", 1, "James",      { 0, 240 } },
+    { "Dueling Keeps 2",      "mpq3ctf1",   3, "Sarge",      { 0, 0, 0, 0, 180, 120, 180, 180 } },
+    { "More Trouble",         "mpq3ctf2",   3, "Sarge",      { 0, 0, 0, 0, 220, 180, 300, 240 } },
+    { "Stronghold Return",    "mpq3ctf3",   3, "Sarge",      { 0, 0, 0, 0, 270, 180, 180, 220 } },
+    { "Chaos in Space",       "mpq3ctf4",   2, "Sarge",      { 0, 0, 0, 0, 120, 120, 180, 180 } },
+};
+
+#define TA_NUM_MAPS         ((int)q_countof(ta_maps))
+
+#define TA_TEAM_MEMBERS     5
+
+// teaminfo.txt's teams in shared/ta_characters.h's order, each member with the
+// character its alias is
+typedef struct {
+    const char  *name;              // g_redTeam / g_blueTeam's, for the uniforms
+    const char  *logo;              // ui/assets/<logo>.tga, <logo>_metal.tga
+    const char  *members[TA_TEAM_MEMBERS];
+    const char  *chars[TA_TEAM_MEMBERS];
+} ta_team_t;
+
+static const ta_team_t ta_teams[] = {
+    { "Crusaders",  "crusaders", { "Darkangel", "Lionheart", "Bradamante", "Furioso", "Aria" },
+                                 { "janet", "morgan", "megan", "neptune", "ursula" } },
+    { "Intruders",  "intruders", { "Morgan", "Punisher", "Gaunt", "November", "Whyrlwnd" },
+                                 { "morgan", "khan", "gaunt", "janet", "ursula" } },
+    { "Pagans",     "pagans",    { "Khan", "Deadeye", "WarLokk", "Callisto", "Gargouille" },
+                                 { "khan", "gaunt", "james", "callisto", "gammy" } },
+    { "Stroggs",    "stroggs",   { "Enforcer", "Icarus", "Gammy", "Gladiator", "Paracyte" },
+                                 { "callisto", "flayer", "gammy", "megan", "neptune" } },
+    { "The Fallen", "thefallen", { "Neptune", "Stalker", "Ursula", "Abominator", "Sinister" },
+                                 { "neptune", "morgan", "ursula", "james", "callisto" } },
+};
+
+#define TA_NUM_TEAMS_UI     ((int)q_countof(ta_teams))
+#define TA_DEFAULT_TEAM     2       // ioq3's ui_teamName, Pagans
+#define TA_DEFAULT_OPPONENT 3       // and ui_opponentName, Stroggs
+
+#define TA_MAPS_SHOWN       4       // the strip's: 403 wide, 100 a map
+
+enum {
+    ID_TA_TYPE = 100, ID_TA_OPPONENT, ID_TA_SKILL, ID_TA_TEAMLOGO,
+    ID_TA_MAPLEFT, ID_TA_MAP0, ID_TA_MAP3 = ID_TA_MAP0 + TA_MAPS_SHOWN - 1, ID_TA_MAPRIGHT,
+    ID_TA_OPPLOGO, ID_TA_BACK, ID_TA_FIGHT
+};
+
+static struct {
+    int     gametype;               // ta_gametypes
+    int     map;                    // ta_maps
+    int     start;                  // the first map the strip shows, of the type's
+    int     team, opponent;         // ta_teams
+    bool    music;                  // its music playing, ours to stop
+} ta_ui;
+
+static sp_page_t    m_ta;
+static cvar_t       *ta_ui_gametype, *ta_ui_map, *ta_ui_team, *ta_ui_opponent;
+
+static const float ta_focus[4]    = { 1, 0.75f, 0, 1 };        // skirmish.menu's focusColor
+static const float ta_border[4]   = { 0.5f, 0.5f, 0.5f, 0.5f };
+static const float ta_bar[4]      = { 0, 0, 0.75f, 0.5f };
+static const float ta_bar_hot[4]  = { 0.75f, 0, 0, 0.5f };
+static const float ta_shade[4]    = { 0, 0, 0, 0.25f };
+static const float ta_label[4]    = { 0.75f, 0.75f, 0.75f, 1 };
+static const float ta_red[4]      = { 1, 0.55f, 0.5f, 1 };
+static const float ta_blue[4]     = { 0.55f, 0.7f, 1, 1 };
+
+// the maps a game type is played on
+static bool TA_MapFor(int gametype, int map)
+{
+    int gt = ta_gametypes[gametype].gt;
+
+    if (gt == TA_GT_FFA || gt == TA_GT_TEAM)
+        gt = TA_GT_CTF;
+    return ta_maps[map].par[gt] != 0;
+}
+
+static int TA_NumMaps(void)
+{
+    int i, n = 0;
+
+    for (i = 0; i < TA_NUM_MAPS; i++)
+        if (TA_MapFor(ta_ui.gametype, i))
+            n++;
+    return n;
+}
+
+// the game type's nth map, -1 none
+static int TA_MapAt(int n)
+{
+    int i;
+
+    for (i = 0; i < TA_NUM_MAPS; i++)
+        if (TA_MapFor(ta_ui.gametype, i) && !n--)
+            return i;
+    return -1;
+}
+
+// where the chosen map is among the game type's
+static int TA_MapSlot(void)
+{
+    int i, n = 0;
+
+    for (i = 0; i < TA_NUM_MAPS; i++) {
+        if (!TA_MapFor(ta_ui.gametype, i))
+            continue;
+        if (i == ta_ui.map)
+            return n;
+        n++;
+    }
+    return -1;
+}
+
+static void TA_ClampStart(void)
+{
+    ta_ui.start = SP_Clip(ta_ui.start, 0, max(0, TA_NumMaps() - TA_MAPS_SHOWN));
+}
+
+// a map of the game type chosen, and in sight
+static void TA_FixMap(void)
+{
+    int slot;
+
+    if (!TA_MapFor(ta_ui.gametype, ta_ui.map))
+        ta_ui.map = max(TA_MapAt(0), 0);
+    slot = max(TA_MapSlot(), 0);
+    if (slot < ta_ui.start)
+        ta_ui.start = slot;
+    else if (slot >= ta_ui.start + TA_MAPS_SHOWN)
+        ta_ui.start = slot - TA_MAPS_SHOWN + 1;
+    TA_ClampStart();
+}
+
+static int TA_TeamByName(const char *name, int def)
+{
+    int i;
+
+    for (i = 0; i < TA_NUM_TEAMS_UI; i++)
+        if (!Q_stricmp(ta_teams[i].name, name))
+            return i;
+    return def;
+}
+
+static void TA_LoadChoices(void)
+{
+    int i;
+
+    ta_ui.gametype = SP_Clip(ta_ui_gametype->integer, 0, TA_NUM_GAMETYPES - 1);
+    ta_ui.map = 0;
+    for (i = 0; i < TA_NUM_MAPS; i++)
+        if (!Q_stricmp(ta_maps[i].map, ta_ui_map->string))
+            ta_ui.map = i;
+    ta_ui.team = TA_TeamByName(ta_ui_team->string, TA_DEFAULT_TEAM);
+    ta_ui.opponent = TA_TeamByName(ta_ui_opponent->string, TA_DEFAULT_OPPONENT);
+    if (ta_ui.opponent == ta_ui.team)
+        ta_ui.opponent = (ta_ui.team + 1) % TA_NUM_TEAMS_UI;
+    ta_ui.start = 0;
+    TA_FixMap();
+}
+
+static void TA_StoreChoices(void)
+{
+    Cvar_SetInteger(ta_ui_gametype, ta_ui.gametype, FROM_CODE);
+    Cvar_SetByVar(ta_ui_map, ta_maps[ta_ui.map].map, FROM_CODE);
+    Cvar_SetByVar(ta_ui_team, ta_teams[ta_ui.team].name, FROM_CODE);
+    Cvar_SetByVar(ta_ui_opponent, ta_teams[ta_ui.opponent].name, FROM_CODE);
+}
+
+static int TA_Skill(void)
+{
+    return SP_Clip(sp_skill->integer, 1, SP_NUM_SKILLS);
+}
+
+static bool TA_Tournament(void)
+{
+    return ta_gametypes[ta_ui.gametype].gt == TA_GT_TOURNAMENT;
+}
+
+// a team, one way or the other round, never the other side's
+static int TA_NextTeam(int team, int other, int dir)
+{
+    do
+        team = (team + dir + TA_NUM_TEAMS_UI) % TA_NUM_TEAMS_UI;
+    while (team == other);
+    return team;
+}
+
+// the fields' ids: what a click changes
+static bool TA_IsField(int id)
+{
+    return id == ID_TA_TYPE || id == ID_TA_OPPONENT || id == ID_TA_SKILL ||
+           id == ID_TA_TEAMLOGO || id == ID_TA_OPPLOGO;
+}
+
+static bool TA_IsMapStrip(int id)
+{
+    return id >= ID_TA_MAPLEFT && id <= ID_TA_MAPRIGHT;
+}
+
+static void TA_Change(int id, int dir)
+{
+    int skill;
+
+    switch (id) {
+    case ID_TA_TYPE:
+        ta_ui.gametype = (ta_ui.gametype + dir + TA_NUM_GAMETYPES) % TA_NUM_GAMETYPES;
+        TA_FixMap();
+        break;
+    case ID_TA_OPPONENT:
+    case ID_TA_OPPLOGO:
+        if (TA_Tournament())
+            return;
+        ta_ui.opponent = TA_NextTeam(ta_ui.opponent, ta_ui.team, dir);
+        break;
+    case ID_TA_TEAMLOGO:
+        if (TA_Tournament())
+            return;
+        ta_ui.team = TA_NextTeam(ta_ui.team, ta_ui.opponent, dir);
+        break;
+    case ID_TA_SKILL:
+        skill = (TA_Skill() - 1 + dir + SP_NUM_SKILLS) % SP_NUM_SKILLS + 1;
+        Cvar_SetInteger(sp_skill, skill, FROM_CODE);
+        if (skill == SP_NUM_SKILLS) {
+            SP_SoundQ3("misc/nightmare.wav");
+            TA_StoreChoices();
+            return;
+        }
+        break;
+    default:
+        return;
+    }
+    TA_StoreChoices();
+    SP_SoundQ3("misc/kcaction.wav");
+}
+
+// the next map of the type, or the one before
+static void TA_StepMap(int dir)
+{
+    int slot = TA_MapSlot() + dir, m;
+
+    m = TA_MapAt(SP_Clip(slot, 0, max(0, TA_NumMaps() - 1)));
+    if (m < 0 || m == ta_ui.map)
+        return;
+    ta_ui.map = m;
+    TA_FixMap();
+    TA_StoreChoices();
+    SP_SoundQ3("misc/kcaction.wav");
+}
+
+static void TA_Scroll(int dir)
+{
+    ta_ui.start += dir;
+    TA_ClampStart();
+}
+
+/*
+=================
+TA_StartSkirmish
+
+UI_StartSkirmish: theirs on blue, then yours on red with a place left for you
+- or in a Tournament the map's own opponent - at the skill, on the map.
+=================
+*/
+static void TA_StartSkirmish(void)
+{
+    const ta_gametype_t *gt = &ta_gametypes[ta_ui.gametype];
+    const ta_map_t      *map = &ta_maps[ta_ui.map];
+    const ta_team_t     *us = &ta_teams[ta_ui.team], *them = &ta_teams[ta_ui.opponent];
+    char                cmd[2048], line[MAX_QPATH * 2], model[MAX_QPATH];
+    int                 i, n = 0, members = SP_Clip(map->members, 1, TA_TEAM_MEMBERS - 1);
+
+    if (!TA_MapFor(ta_ui.gametype, ta_ui.map))
+        return;
+    TA_StoreChoices();
+    ta_ui.music = false;
+    OGG_Stop();
+    UI_ForceMenuOff();
+
+    Q_snprintf(cmd, sizeof(cmd), "set sp_campaign 0; set bot_match 0; set ta_skirmish 1; set ta_gametype %d; "
+               "set sp_skill %d; set g_redTeam \"%s\"; set g_blueTeam \"%s\"; ",
+               gt->gt, TA_Skill(), us->name, them->name);
+
+    if (gt->gt == TA_GT_TOURNAMENT) {
+        Q_strlcpy(model, map->opponent, sizeof(model));
+        Q_strlwr(model);
+        Q_snprintf(line, sizeof(line), "set ta_bot%d \"%s/default 2 %s\"; ", ++n, model, map->opponent);
+        Q_strlcat(cmd, line, sizeof(cmd));
+    } else {
+        for (i = 0; i < members; i++) {
+            Q_snprintf(line, sizeof(line), "set ta_bot%d \"%s/default 2 %s\"; ", ++n, them->chars[i], them->members[i]);
+            Q_strlcat(cmd, line, sizeof(cmd));
+        }
+        for (i = 0; i < members - 1; i++) {
+            Q_snprintf(line, sizeof(line), "set ta_bot%d \"%s/default 1 %s\"; ", ++n, us->chars[i], us->members[i]);
+            Q_strlcat(cmd, line, sizeof(cmd));
+        }
+    }
+
+    Q_snprintf(line, sizeof(line), "set ta_bots %d; set teamplay %d; set ctf %d; set cheats 0; "
+               "deathmatch 1; coop 0; maxclients %d; map %s force\n",
+               n, gt->teamplay, gt->ctf, max(2, n + 1), map->map);
+    Q_strlcat(cmd, line, sizeof(cmd));
+    Cbuf_AddText(&cmd_buffer, cmd);
+}
+
+// ---- drawing ----
+
+static void TA_Frame(float x, float y, float w, float h, float size, const float *c)
+{
+    SP_FillRect(x, y, w, size, c);
+    SP_FillRect(x, y + h - size, w, size, c);
+    SP_FillRect(x, y + size, size, h - 2 * size, c);
+    SP_FillRect(x + w - size, y + size, size, h - 2 * size, c);
+}
+
+// Quake III's proportional font, its shadow under it (textstyle 6), at the
+// scale given or, for a long one, what fits in (maxw)
+static void TA_PropString(float x, float y, const char *s, int align, float scale, float maxw,
+                          const float *color, bool pulse)
+{
+    qhandle_t   font = SP_Pic("menu/art/font1_prop.tga");
+    float       width = SP_PropWidth(s);
+
+    if (!font || width <= 0)
+        return;
+    if (maxw > 0 && width * scale > maxw)
+        scale = maxw / width;
+    width *= scale;
+    if (align == Q3S_CENTER)
+        x -= width / 2;
+    else if (align == Q3S_RIGHT)
+        x -= width;
+    y += (1 - scale) * PROP_HEIGHT * 0.5f;      // centred on the full size's line
+
+    SP_PropString2(x + 2, y + 2, s, c_black, color[3], scale, font);
+    SP_PropString2(x, y, s, color, 1, scale, font);
+    if (pulse) {
+        qhandle_t glow = SP_Pic("menu/art/font1_prop_glo.tga");
+        if (glow)
+            SP_PropString2(x, y, s, color, SP_Pulse(), scale, glow);
+    }
+}
+
+// Quake III's small characters (8x16), squeezed to fit (maxw), shadowed
+static void TA_CharString(float x, float y, const char *s, int align, float maxw, const float *color)
+{
+    qhandle_t   font = SP_Pic("gfx/2d/bigchars.tga");
+    size_t      len = strlen(s), i;
+    float       cw = 8, width;
+    int         pass;
+
+    if (!font || !len)
+        return;
+    if (maxw > 0 && len * cw > maxw)
+        cw = maxw / len;
+    width = len * cw;
+    if (align == Q3S_CENTER)
+        x -= width / 2;
+    else if (align == Q3S_RIGHT)
+        x -= width;
+
+    for (pass = 0; pass < 2; pass++) {
+        float ox = pass ? 0 : 1;
+
+        SP_SetColor(pass ? color : c_black, pass ? 1 : color[3]);
+        for (i = 0; i < len; i++) {
+            int c = s[i] & 255;
+            if (c == ' ')
+                continue;
+            R_DrawStretchSubPic(sp_x0 + (x + ox + i * cw) * sp_s, sp_y0 + (y + ox) * sp_s, cw * sp_s, 16 * sp_s,
+                                (c & 15) * 0.0625f, (c >> 4) * 0.0625f,
+                                (c & 15) * 0.0625f + 0.0625f, (c >> 4) * 0.0625f + 0.0625f, font);
+        }
+    }
+    R_ClearColor();
+}
+
+// one of the top bar's three: a label and its value, the click its
+static void TA_Field(sp_page_t *p, int id, float x, const char *text)
+{
+    bool hot = p->focus == id;
+
+    TA_PropString(x + 20, 12, text, Q3S_LEFT, PROP_SMALL_SCALE, 213 - 30, hot ? ta_focus : c_white, hot);
+    SP_AddHot(p, id, x, 10, 213, 31);
+}
+
+// a team's logo, metal, the plain one pulsing over it with the focus
+static void TA_Logo(sp_page_t *p, int id, float x, float y, int team, const float *color)
+{
+    const ta_team_t *t = &ta_teams[team];
+    char            path[MAX_QPATH];
+
+    Q_snprintf(path, sizeof(path), "ui/assets/%s_metal.tga", t->logo);
+    SP_DrawNamedPic(x, y, 80, 80, path);
+    if (p->focus == id) {
+        float white[4] = { 1, 1, 1, 1 };
+
+        Q_snprintf(path, sizeof(path), "ui/assets/%s.tga", t->logo);
+        SP_SetColor(white, SP_Pulse());
+        SP_DrawNamedPic(x, y, 80, 80, path);
+        R_ClearColor();
+    }
+    TA_CharString(x + 40, y + 84, t->name, Q3S_CENTER, 100, color);
+    SP_AddHot(p, id, x, y, 80, 80);
+}
+
+// a head and a name, for a Tournament's two
+static void TA_Duelist(float x, float y, const char *skin, const char *name)
+{
+    SP_DrawPic(x, y, 80, 80, SP_PlayerIcon(skin));
+    TA_CharString(x + 40, y + 84, name, Q3S_CENTER, 100, c_white);
+}
+
+// a line-up's column: its heading, then its names
+static void TA_Column(float x, float y, const char *heading, const char *const *names, int count,
+                      const char *first, const float *color)
+{
+    int row = 0, i;
+
+    if (heading && *heading)
+        TA_CharString(x, y, heading, Q3S_LEFT, 108, ta_label);
+    if (first)
+        TA_CharString(x + 8, y + 18 * ++row, first, Q3S_LEFT, 100, color);
+    for (i = 0; i < count; i++)
+        TA_CharString(x + 8, y + 18 * ++row, names[i], Q3S_LEFT, 100, color);
+}
+
+static void TA_InfoLine(float y, const char *label, const char *value)
+{
+    TA_CharString(124, y, label, Q3S_RIGHT, 100, ta_label);
+    TA_CharString(132, y, value, Q3S_LEFT, 118, c_white);
+}
+
+static const char *TA_Message(int id)
+{
+    switch (id) {
+    case ID_TA_TYPE:        return "Select Gametype";
+    case ID_TA_OPPONENT:
+    case ID_TA_OPPLOGO:     return "Choose Opponent";
+    case ID_TA_TEAMLOGO:    return "Choose Your Team";
+    case ID_TA_SKILL:       return "Set Skill Level";
+    case ID_TA_BACK:        return "Back";
+    case ID_TA_FIGHT:       return "Enter Arena";
+    default:
+        return TA_IsMapStrip(id) ? "Choose Your Arena" : NULL;
+    }
+}
+
+static void TA_Skirmish_Draw(menuFrameWork_t *self)
+{
+    sp_page_t           *p = &m_ta;
+    const ta_gametype_t *gt = &ta_gametypes[ta_ui.gametype];
+    const ta_map_t      *map = &ta_maps[ta_ui.map];
+    const ta_team_t     *us = &ta_teams[ta_ui.team], *them = &ta_teams[ta_ui.opponent];
+    bool                tourney = gt->gt == TA_GT_TOURNAMENT, team = gt->gt >= TA_GT_TEAM;
+    int                 members = SP_Clip(map->members, 1, TA_TEAM_MEMBERS - 1);
+    int                 i, count, slot, par;
+    char                text[MAX_QPATH * 2], skin[MAX_QPATH];
+    const char          *msg;
+    float               x;
+
+    SP_FillScreen(c_black);
+    SP_Screen(uis.width, uis.height);
+    SP_BeginHot(p);
+
+    SP_DrawNamedPic(0, 0, 640, 480, "ui/assets/menuback_a.tga");
+
+    // the bar along the top: the game type, the opponent, the skill
+    SP_FillRect(0, 5, 640, 40, p->focus == ID_TA_TYPE || p->focus == ID_TA_OPPONENT ||
+                p->focus == ID_TA_SKILL ? ta_bar_hot : ta_bar);
+    SP_FillRect(0, 5, 640, 2, ta_border);
+    SP_FillRect(0, 43, 640, 2, ta_border);
+    Q_snprintf(text, sizeof(text), "Type: %s", gt->name);
+    TA_Field(p, ID_TA_TYPE, 0, text);
+    if (!tourney) {
+        Q_snprintf(text, sizeof(text), "Opponent: %s", them->name);
+        TA_Field(p, ID_TA_OPPONENT, 213, text);
+    }
+    Q_snprintf(text, sizeof(text), "Skill: %s", sp_skill_names[TA_Skill() - 1]);
+    TA_Field(p, ID_TA_SKILL, 426, text);
+
+    // the two sides: the teams' logos, or a Tournament's two heads
+    if (tourney) {
+        Q_strlcpy(skin, map->opponent, sizeof(skin));
+        Q_strlwr(skin);
+        Q_strlcat(skin, "/default", sizeof(skin));
+        TA_Duelist(30, 60, Cvar_VariableString("skin"), Cvar_VariableString("name"));
+        TA_Duelist(530, 60, skin, map->opponent);
+    } else {
+        TA_Logo(p, ID_TA_TEAMLOGO, 30, 60, ta_ui.team, team ? ta_red : c_white);
+    }
+
+    // the strip of the type's maps, a scroll bar under it
+    count = TA_NumMaps();
+    SP_FillRect(120, 61, 401, 89, ta_shade);
+    TA_Frame(119, 60, 403, 91, 1, TA_IsMapStrip(p->focus) ? ta_bar_hot : ta_border);
+    for (i = 0; i < TA_MAPS_SHOWN; i++) {
+        int m = TA_MapAt(ta_ui.start + i);
+
+        if (m < 0)
+            break;
+        x = 120 + i * 100;
+        SP_DrawPic(x + 1, 62, 98, 71, UI_Levelshot(ta_maps[m].map, true));
+        if (m == ta_ui.map) {
+            float c[4] = { ta_focus[0], ta_focus[1], ta_focus[2], 1 };
+            if (p->focus == ID_TA_MAP0 + i)
+                c[3] = 0.5f + 0.5f * SP_Pulse();
+            TA_Frame(x, 61, 100, 73, 2, c);
+        } else if (p->focus == ID_TA_MAP0 + i) {
+            float c[4] = { 1, 1, 1, SP_Pulse() };
+            TA_Frame(x, 61, 100, 73, 1, c);
+        }
+        SP_AddHot(p, ID_TA_MAP0 + i, x, 61, 100, 73);
+    }
+    for (x = 136; x < 505; x += 16)
+        SP_DrawNamedPic(x, 134, min(16, 505 - x), 16, "ui/assets/scrollbar.tga");
+    slot = max(TA_MapSlot(), 0);
+    SP_DrawNamedPic(count > 1 ? 136 + (505 - 136 - 16) * slot / (float)(count - 1) : 136, 134, 16, 16,
+                    "ui/assets/scrollbar_thumb.tga");
+    if (p->focus == ID_TA_MAPLEFT)
+        SP_SetColor(ta_focus, 1);
+    SP_DrawNamedPic(120, 134, 16, 16, "ui/assets/scrollbar_arrow_left.tga");
+    R_ClearColor();
+    if (p->focus == ID_TA_MAPRIGHT)
+        SP_SetColor(ta_focus, 1);
+    SP_DrawNamedPic(505, 134, 16, 16, "ui/assets/scrollbar_arrow_right.tga");
+    R_ClearColor();
+    SP_AddHot(p, ID_TA_MAPLEFT, 120, 134, 16, 16);
+    SP_AddHot(p, ID_TA_MAPRIGHT, 505, 134, 16, 16);
+
+    if (!tourney)
+        TA_Logo(p, ID_TA_OPPLOGO, 530, 60, ta_ui.opponent, team ? ta_blue : c_white);
+
+    // the map: its picture, what is played on it, who
+    TA_Frame(0, 170, 640, 192, 1, ta_border);
+    SP_DrawPic(320, 170, 320, 192, UI_Levelshot(map->map, true));
+    {
+        float grey[4] = { 0.5f, 0.5f, 0.5f, 1 };
+
+        SP_SetColor(grey, 0.5f);
+        SP_DrawNamedPic(0, 172, 20, 82, "ui/assets/mapinfo.tga");
+        SP_DrawNamedPic(0, 260, 20, 100, "ui/assets/score.tga");
+        R_ClearColor();
+    }
+    TA_Frame(0, 255, 320, 5, 1, ta_border);
+
+    // the centre: the console, the opponent's logo faint in it
+    SP_DrawNamedPic(254, 194, 140, 140, "textures/sfx/console01.tga");
+    if (!tourney) {
+        float tint[4] = { 0.7f, 0.7f, 1, 1 };
+
+        Q_snprintf(text, sizeof(text), "ui/assets/%s_metal.tga", them->logo);
+        SP_SetColor(tint, 0.25f);
+        SP_DrawNamedPic(264, 200, 120, 120, text);
+        R_ClearColor();
+    }
+
+    TA_InfoLine(182, "Map:", map->name);
+    if (gt->ctf) {
+        Q_snprintf(text, sizeof(text), "%d", gt->gt == TA_GT_OBELISK ? 4 : gt->gt == TA_GT_HARVESTER ? 15 : 5);
+        TA_InfoLine(200, "Capture limit:", text);
+    } else {
+        TA_InfoLine(200, "Frag limit:", "10");
+    }
+    par = map->par[gt->gt];
+    if (par > 0)
+        Q_snprintf(text, sizeof(text), "%d:%02d", par / 60, par % 60);
+    else
+        Q_strlcpy(text, "--:--", sizeof(text));
+    TA_InfoLine(218, "Time to beat:", text);
+    if (tourney)
+        Q_strlcpy(text, "1 vs 1", sizeof(text));
+    else if (team)
+        Q_snprintf(text, sizeof(text), "%d vs %d", members, members);
+    else
+        Q_snprintf(text, sizeof(text), "%d players", members * 2);
+    TA_InfoLine(236, "Players:", text);
+
+    // who plays: in UI_StartSkirmish's order
+    if (tourney) {
+        TA_Column(28, 266, "OPPONENT", &map->opponent, 1, NULL, c_white);
+    } else if (team) {
+        TA_Column(28, 266, "YOUR TEAM", us->members, members - 1, "You", ta_red);
+        TA_Column(140, 266, "OPPONENTS", them->members, members, NULL, ta_blue);
+    } else {
+        TA_Column(28, 266, "OPPONENTS", them->members, members, NULL, c_white);
+        TA_Column(140, 266, "", us->members, members - 1, NULL, c_white);
+    }
+
+    // the bar along the bottom: back, what the focus does, FIGHT
+    SP_FillRect(0, 430, 640, 30, p->focus == ID_TA_BACK || p->focus == ID_TA_FIGHT ? ta_bar_hot : ta_bar);
+    SP_FillRect(0, 430, 640, 2, ta_border);
+    SP_FillRect(0, 458, 640, 2, ta_border);
+    if (p->focus == ID_TA_BACK)
+        SP_DrawNamedPic(14, 422, 54, 54, "ui/assets/backarrow_alt.tga");
+    else
+        SP_DrawNamedPic(16, 424, 50, 50, "ui/assets/backarrow.tga");
+    SP_AddHot(p, ID_TA_BACK, 16, 424, 50, 50);
+    if (p->focus == ID_TA_FIGHT)
+        SP_DrawNamedPic(572, 422, 54, 54, "ui/assets/forwardarrow_alt.tga");
+    else
+        SP_DrawNamedPic(574, 424, 50, 50, "ui/assets/forwardarrow.tga");
+    SP_AddHot(p, ID_TA_FIGHT, 574, 424, 50, 50);
+
+    msg = TA_Message(p->focus);
+    if (msg)
+        TA_PropString(320, 432, msg, Q3S_CENTER, 0.6f, 0, c_white, false);
+
+    SP_TrackMouse(p);
+}
+
+static menuSound_t TA_Skirmish_Key(menuFrameWork_t *self, int key)
+{
+    sp_page_t   *p = &m_ta;
+    bool        back;
+    int         id;
+
+    switch (key) {
+    // the fields and the strip: the arrows change them, not the focus
+    case K_LEFTARROW:
+    case K_KP_LEFTARROW:
+    case K_RIGHTARROW:
+    case K_KP_RIGHTARROW: {
+        int dir = (key == K_LEFTARROW || key == K_KP_LEFTARROW) ? -1 : 1;
+
+        if (TA_IsField(p->focus)) {
+            TA_Change(p->focus, dir);
+            return QMS_SILENT;
+        }
+        if (TA_IsMapStrip(p->focus)) {
+            TA_StepMap(dir);
+            return QMS_SILENT;
+        }
+        break;
+    }
+    // the right button goes back through a field's values (ui_main.c)
+    case K_MOUSE2:
+        id = SP_HotAtMouse(p);
+        if (TA_IsField(id)) {
+            TA_Change(id, -1);
+            return QMS_SILENT;
+        }
+        break;
+    // the wheel over the strip scrolls it
+    case K_MWHEELUP:
+    case K_MWHEELDOWN:
+        if (TA_IsMapStrip(SP_HotAtMouse(p))) {
+            TA_Scroll(key == K_MWHEELUP ? -1 : 1);
+            return QMS_SILENT;
+        }
+        break;
+    }
+
+    id = SP_PageKey(p, key, &back);
+    if (back || id == ID_TA_BACK) {
+        SP_SoundQ3("misc/menu3.wav");
+        UI_PopMenu();
+        return QMS_SILENT;
+    }
+
+    switch (id) {
+    case ID_TA_FIGHT:
+        TA_StartSkirmish();
+        return QMS_SILENT;
+    case ID_TA_MAPLEFT:
+        TA_Scroll(-1);
+        return QMS_SILENT;
+    case ID_TA_MAPRIGHT:
+        TA_Scroll(1);
+        return QMS_SILENT;
+    default:
+        if (TA_IsField(id)) {
+            TA_Change(id, 1);
+            return QMS_SILENT;
+        }
+        if (id >= ID_TA_MAP0 && id <= ID_TA_MAP3) {
+            int m = TA_MapAt(ta_ui.start + id - ID_TA_MAP0);
+
+            if (m < 0)
+                return QMS_SILENT;
+            // the chosen one again, from the keyboard: play it
+            if (m == ta_ui.map && (key == K_ENTER || key == K_KP_ENTER)) {
+                TA_StartSkirmish();
+                return QMS_SILENT;
+            }
+            ta_ui.map = m;
+            TA_FixMap();
+            TA_StoreChoices();
+            SP_SoundQ3("misc/kcaction.wav");
+            return QMS_SILENT;
+        }
+        return id < 0 ? QMS_SILENT : QMS_NOTHANDLED;
+    }
+}
+
+static bool TA_Skirmish_Push(menuFrameWork_t *self)
+{
+    TA_LoadChoices();
+    SP_PageOpened(&m_ta);
+    m_ta.focus = ID_TA_FIGHT;
+
+    // its music (playlooped), when no map has its own playing
+    ta_ui.music = false;
+    if (cls.state != ca_active) {
+        OGG_PlayMusicFiles("baseq3/music/fla_mp03.wav", "baseq3/music/fla_mp03.wav");
+        ta_ui.music = true;
+    }
+    return true;
+}
+
+static void TA_Skirmish_Pop(menuFrameWork_t *self)
+{
+    if (ta_ui.music) {
+        ta_ui.music = false;
+        OGG_Stop();
+    }
+}
+
+// "taskirmish": Team Arena's skirmish page
+static void TA_Skirmish_f(void)
+{
+    if (Cvar_VariableInteger("fs_quake3_ta") != 1) {
+        Com_Printf("The skirmish needs Quake III Team Arena's data (baseq3/missionpack).\n");
+        return;
+    }
+    UI_PushMenu(&m_ta.menu);
+}
+
+/*
 =================
 SP_LevelSelect_f
 
@@ -2371,6 +3191,7 @@ static const cmdreg_t c_q3sp[] = {
     { "levelselect", SP_LevelSelect_f },
     { "sp_event", SP_Event_f },
     { "sp_video", SP_Video_f },
+    { "taskirmish", TA_Skirmish_f },
     { NULL }
 };
 
@@ -2428,6 +3249,21 @@ void M_Menu_Q3SP(void)
     m_video.menu.keydown = SP_Video_Key;
     m_video.menu.pop = SP_Video_Pop;
     List_Append(&ui_menus, &m_video.menu.entry);
+
+    // Team Arena's skirmish: the choices kept; ta_skirmish is the game's,
+    // cleared out of the game (UI_SP_Frame)
+    ta_ui_gametype = Cvar_Get("ta_ui_gametype", "3", CVAR_ARCHIVE);
+    ta_ui_map = Cvar_Get("ta_ui_map", "mpteam1", CVAR_ARCHIVE);
+    ta_ui_team = Cvar_Get("ta_ui_team", ta_teams[TA_DEFAULT_TEAM].name, CVAR_ARCHIVE);
+    ta_ui_opponent = Cvar_Get("ta_ui_opponent", ta_teams[TA_DEFAULT_OPPONENT].name, CVAR_ARCHIVE);
+    ta_skirmish = Cvar_Get("ta_skirmish", "0", 0);
+
+    SP_InitPage(&m_ta, "taskirmish", false);
+    m_ta.menu.draw = TA_Skirmish_Draw;
+    m_ta.menu.keydown = TA_Skirmish_Key;
+    m_ta.menu.push = TA_Skirmish_Push;
+    m_ta.menu.pop = TA_Skirmish_Pop;
+    List_Append(&ui_menus, &m_ta.menu.entry);
 
     Cmd_Register(c_q3sp);
 }

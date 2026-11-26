@@ -728,6 +728,11 @@ void T_Damage(edict_t *targ, edict_t *inflictor, edict_t *attacker, const vec3_t
     if (!targ->takedamage)
         return;
 
+    // Team Arena: the Invulnerability, and an Overload obelisk its own team
+    // cannot hurt (g_ta.c)
+    if (TA_BlockDamage(targ, attacker, dflags, mod))
+        return;
+
     // easy mode takes half damage
     if (skill->value == 0 && deathmatch->value == 0 && targ->client) {
         damage *= 0.5f;
@@ -742,7 +747,7 @@ void T_Damage(edict_t *targ, edict_t *inflictor, edict_t *attacker, const vec3_t
     // if enabled you can't hurt teammates (but you can hurt yourself)
     // knockback still occurs
     if ((targ != attacker) && ((deathmatch->value && (G_TeamPlay() || ((int)(dmflags->value) & (DF_MODELTEAMS | DF_SKINTEAMS)))) || (coop->value && targ->client))) {
-        if (OnSameTeam(targ, attacker)) {
+        if (OnSameTeam(targ, attacker) && !(dflags & DAMAGE_NO_TEAM_PROTECTION)) {
             if (Team_NoFriendlyFire())  // dmflags, or a bot match's own setting (g_bot.c)
                 damage = 0;
             else

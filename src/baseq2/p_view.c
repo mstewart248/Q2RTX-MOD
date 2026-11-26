@@ -1086,6 +1086,8 @@ void ClientEndServerFrame(edict_t *ent)
 
     // Quake III: Regen, the run-down over 100, powerup wear-off
     Q3_ClientFrame(ent);
+    // Team Arena: the Guard's regeneration, Ammo Regen (g_ta.c)
+    TA_ClientFrame(ent);
 
     //
     // set model angles from view angles so other things in

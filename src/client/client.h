@@ -263,7 +263,7 @@ typedef struct client_state_s {
     usercmd_t    cmd;
     usercmd_t    cmds[CMD_BACKUP];    // each mesage will send several old cmds
     unsigned     cmdNumber;
-    short        predicted_origins[CMD_BACKUP][3];    // for debug comparing against server
+    int          predicted_origins[CMD_BACKUP][3];    // for debug comparing against server (12.3, wide)
     client_history_t    history[CMD_BACKUP];
     int         initialSeq;
 
@@ -891,6 +891,7 @@ bool CL_Q3W_Self(void);
 bool CL_Q1W_Self(void);
 void CL_Q3W_Init(void);
 void CL_Q3W_RegisterMedia(void);
+void CL_Q3W_RegisterSounds(void);
 void CL_Q3W_Clear(void);
 void CL_Q3W_AddEntities(void);
 bool CL_Q3W_IsGun(qhandle_t model);
@@ -909,6 +910,8 @@ void CL_Q3W_Lightning(int shooter, bool hit, const vec3_t start, const vec3_t en
 void CL_Q3W_Grapple(int owner, int hook, const vec3_t pos);
 void CL_Q3W_AddSprite(const entity_state_t *s1, const vec3_t origin);
 void CL_Q3W_Gibs(const vec3_t origin);
+void CL_Q3W_Kamikaze(const vec3_t origin);  // Team Arena's
+void CL_Q3W_Juiced(const vec3_t origin);
 bool CL_Q3W_Bleed(const vec3_t origin);
 void CL_LoadState(load_state_t state);
 void CL_RegisterSounds(void);
@@ -1642,6 +1645,7 @@ void Con_Print(const char *txt);
 void Con_ClearNotify_f(void);
 void Con_ToggleConsole_f(void);
 void Con_ClearTyping(void);
+void Con_SetNotifyIndent(float frac);   // Team Arena's voice chat face (hud_q3.c)
 void Con_Close(bool force);
 void Con_Popup(bool force);
 void Con_SkipNotify(bool skip);
@@ -1692,6 +1696,7 @@ void    SCR_Q1DrawStatusBar(int width, int height);
 // hud_q3.c: Quake III's HUD, for a Quake III character
 #define Q3HUD_ON        1       // SCR_Q3DrawHud drew: the status bar program leaves its pieces out
 #define Q3HUD_SCORES    2       // ... and the score boxes, so the frags too
+#define Q3HUD_TA        4       // ... Team Arena's: CTF's and its own stats too (SCR_Q3HudDrawsStat)
 void    SCR_Q3HudInit(void);
 void    SCR_Q3HudRegisterMedia(void);
 void    SCR_Q3HudClearMedia(void);

@@ -139,6 +139,9 @@ int         Q3P_SkinIndex(const q3player_t *q3, const char *skin);
 int         Q3P_NumSkins(const q3player_t *q3);
 const char  *Q3P_SkinName(const q3player_t *q3, int index);
 int         Q3P_SkinList(const char *model, char (*out)[MAX_QPATH], int max);
+// its head icon's path for (skin), "default"'s when that skin has none; a
+// Team Arena character's is in its heads folder
+void        Q3P_IconPath(const char *model, const char *skin, char *out, size_t size);
 bool        Q3P_Register(q3pmodel_t *m, const char *model, const char *skin);
 
 // models.c: give each mesh of models/players/<model>/{lower,upper,head}.md3

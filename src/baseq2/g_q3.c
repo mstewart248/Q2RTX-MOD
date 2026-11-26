@@ -258,6 +258,11 @@ void Use_Q3Teleporter(edict_t *ent, gitem_t *item)
     ent->client->pers.inventory[ITEM_INDEX(item)]--;
     ValidateSelectedItem(ent);
 
+    // Quake III drops a flag, and Team Arena's skulls, where you were
+    // (g_active.c EV_USE_ITEM1)
+    CTF_DropCarriedFlag(ent);
+    TA_TeleporterDrops(ent);
+
     VectorCopy(spot->s.origin, origin);
     origin[2] += 8;
     Q3_TeleportPlayer(ent, origin, spot->s.angles);
@@ -299,6 +304,8 @@ bool Q3_PickupHealth(edict_t *ent, edict_t *other)
     int max;
 
     max = (amount == 5 || amount == 100) ? other->max_health * 2 : other->max_health;
+    if (TA_HealthCap(other))
+        max = TA_HealthCap(other);  // Team Arena's Guard: its 200 and no more
     if (other->health >= max)
         return false;
 
@@ -318,6 +325,9 @@ bool Q3_PickupArmor(edict_t *ent, edict_t *other)
     gitem_t *body = FindItemByClassname("item_armor_body");
     int     index = ArmorIndex(other);
     int     amount, count, max = other->max_health * 2;
+
+    if (TA_ArmorCap(other))
+        max = TA_ArmorCap(other);   // Team Arena's Guard
 
     if (!strcmp(ent->item->classname, "item_armor_shard"))
         amount = 5;
@@ -403,23 +413,34 @@ short Q3_PmoveGravity(edict_t *ent, short gravity)
     if (!level.q3map)
         return gravity;
 
-    gravity &= ~1;
+    gravity &= ~3;
     if (client->q3_flight_framenum > level.framenum)
         gravity = 0;
     if (client->q3_haste_framenum > level.framenum)
         gravity |= 1;
+    if (TA_HasPersistent(ent, TA_SCOUT))
+        gravity |= 2;   // Team Arena's Scout (g_ta.c)
     return gravity;
 }
 
 // Haste fires 1.3 times as fast: one extra weapon think every ~3 frames
 bool Q3_HasteExtraThink(edict_t *ent)
 {
-    gclient_t *client = ent->client;
+    gclient_t   *client = ent->client;
+    float       scale;
 
-    if (!level.q3map || client->q3_haste_framenum <= level.framenum)
+    if (!level.q3map)
         return false;
 
-    client->q3_haste_accum += 0.3f;
+    // Team Arena's Scout (1.5) or Ammo Regen (1.3), in place of Haste
+    scale = TA_FireScale(ent);
+    if (!scale) {
+        if (client->q3_haste_framenum <= level.framenum)
+            return false;
+        scale = 1.3f;
+    }
+
+    client->q3_haste_accum += scale - 1;
     if (client->q3_haste_accum >= 1) {
         client->q3_haste_accum -= 1;
         return true;
@@ -603,6 +624,9 @@ void Q3_ClientSound(edict_t *ent)
         return;
     if (ent->client->q3_flight_framenum > level.framenum)
         ent->s.sound = Q3_SoundIndex("items/flight.wav");
+    // a Team Arena prox mine stuck on them, over everything (G_SetClientSound)
+    if (ent->client->ta_stuck_mine)
+        ent->s.sound = Q3_SoundIndex("weapons/proxmine/wstbtick.wav");
 }
 
 // the HUD powerup timer: false if none of these is running
@@ -616,6 +640,7 @@ bool Q3_PowerupTimerStat(edict_t *ent)
         { "/icons/regen.tga",       CLOFS(q3_regen_framenum) },
         { "/icons/flight.tga",      CLOFS(q3_flight_framenum) },
         { "/icons/envirosuit.tga",  CLOFS(q3_battlesuit_framenum) },
+        { "/icons/invulnerability.tga", CLOFS(ta_invul_framenum) },     // Team Arena's
     };
     gclient_t   *client = ent->client;
     const char  *icon = NULL;
@@ -707,6 +732,8 @@ bool Q3_GibDeath(int health)
 
 void Q3_GibEntity(edict_t *self)
 {
+    TA_BodyGibbed(self);    // a held kamikaze's timer goes with the body (g_ta.c)
+
     gi.WriteByte(svc_temp_entity);
     gi.WriteByte(TE_Q3_GIBS);
     gi.WritePosition(self->s.origin);
@@ -1422,6 +1449,22 @@ static const struct {
     { "holdable_medkit",        "item_q3_medkit" },
     { "holdable_teleporter",    "item_q3_teleporter" },
 
+    // Team Arena's maps (g_ta.c): its guns and ammo as the Quake II ones
+    // nearest them with Quake II's guns, Quake III's own with Quake III's
+    // (g_q3weap.c q3w_mapnames); its holdables, powerups and white flag
+    { "weapon_nailgun",         "weapon_etf_rifle" },
+    { "weapon_prox_launcher",   "weapon_proxlauncher" },
+    { "ammo_nails",             "ammo_flechettes" },
+    { "ammo_mines",             "ammo_prox" },
+    { "ammo_belt",              "ammo_bullets" },
+    { "holdable_kamikaze",      "item_ta_kamikaze" },
+    { "holdable_invulnerability", "item_ta_invulnerability" },
+    { "item_scout",             "item_ta_scout" },
+    { "item_guard",             "item_ta_guard" },
+    { "item_doubler",           "item_ta_doubler" },
+    { "item_ammoregen",         "item_ta_ammoregen" },
+    { "team_CTF_neutralflag",   "item_flag_neutral" },
+
     { "team_CTF_redflag",       "item_flag_team1" },
     { "team_CTF_blueflag",      "item_flag_team2" },
     { "team_CTF_redplayer",     "info_player_team1" },
@@ -1560,6 +1603,68 @@ void Q3_DroppedItem(edict_t *dropped)
 }
 
 /*
+=================
+Q3_DemoItem
+
+A Quake III demo's item (g_q3demo.c) drawn as one Q3_SpawnEntity placed
+would be: its classname taken the same way (Quake III's guns under
+level.q3_weapons, then q3_renames, the Battle Suit), its model, Quake III's
+health cross and sphere, the quad, the powerups' rings, a gun half as big
+again (Q3W_ItemModel) - with nothing behind it to pick up. NULL, and the
+entity left alone, when this game has no such item.
+=================
+*/
+gitem_t *Q3_DemoItem(edict_t *ent, const char *classname)
+{
+    const char  *cn = classname, *ring;
+    gitem_t     *it;
+    int         i;
+
+    if (!cn)
+        return NULL;
+    if (level.q3_weapons)
+        cn = Q3W_MapClassname(ent, cn, NULL);
+    for (i = 0; i < q_countof(q3_renames); i++) {
+        if (!Q_stricmp(cn, q3_renames[i].from)) {
+            cn = q3_renames[i].to;
+            break;
+        }
+    }
+    // the demo's game is Quake III's, whatever the bot match's g_q3_items says
+    if (!Q_stricmp(cn, "item_enviro"))
+        cn = "item_q3_battlesuit";
+
+    // Quake II's health has no classname (SP_item_health spawns "Health")
+    it = !strncmp(cn, "item_health", 11) ? FindItem("Health") : FindItemByClassname((char *)cn);
+    if (!it)
+        return NULL;
+
+    ent->item = it;
+    ent->q3_alt_item = NULL;
+    ent->s.modelindex = it->world_model ? gi.modelindex(it->world_model) : 0;
+    ent->s.modelindex2 = 0;
+    ent->s.effects = it->world_model_flags;
+    ent->s.renderfx = RF_GLOW;
+    ent->s.scale = 0;
+
+    if (!strncmp(cn, "item_health", 11)) {
+        int size = q3_health_size(cn);
+
+        ent->s.modelindex = gi.modelindex(q3_health_models[size][0]);
+        ent->s.modelindex2 = gi.modelindex(q3_health_models[size][1]);
+        ent->s.effects |= EF_ROTATE;
+    }
+    if (it->classname && !strcmp(it->classname, "item_quad"))
+        ent->s.modelindex = gi.modelindex(Q3_QUAD_MODEL);
+    ring = q3_powerup_ring(it->classname);
+    if (ring)
+        ent->s.modelindex2 = gi.modelindex(ring);
+
+    Q3W_ItemModel(ent);
+    return it;
+}
+
+/*
 ==============================================================================
 
 QUAKE III POWERUP SOUNDS (Matt, 2026-11-17)
@@ -1682,6 +1787,16 @@ void Q3_SpawnEntity(edict_t *ent)
         }
     }
 
+    // ... and "gametype", which Team Arena's maps use, and its "notta"
+    if (TA_SpawnFiltered()) {
+        G_FreeEdict(ent);
+        return;
+    }
+
+    // its name and place for Team Arena's HUD, which names where everyone is
+    if (!Q_stricmp(cn, "target_location"))
+        TA_AddLocation(ent);
+
     for (i = 0; i < q_countof(q3_dropped); i++) {
         if (!Q_stricmp(cn, q3_dropped[i])) {
             G_FreeEdict(ent);
@@ -1721,6 +1836,10 @@ void Q3_SpawnEntity(edict_t *ent)
         cn = "item_q3_battlesuit";
         ent->classname = (char *)cn;
     }
+
+    // Team Arena's obelisks (g_ta.c)
+    if (TA_SpawnEntity(ent))
+        return;
 
     // the Quake III entities with no Quake II counterpart
     if (!Q_stricmp(cn, "trigger_push") && ent->target) {
@@ -1825,7 +1944,13 @@ void Q3_SpawnEntity(edict_t *ent)
     // trigger-spawn, and nothing else is meaningful
     item = q3_is_item(cn);
     if (item) {
+        gitem_t *it = FindItemByClassname((char *)cn);
+
         suspended = (ent->spawnflags & Q3_ITEM_SUSPENDED) != 0;
+        // Team Arena's persistent powerups: 2 for red only, 4 for blue only
+        // (BG_CanItemBeGrabbed's generic1)
+        if (it && it->pickup == TA_PickupPersistent)
+            ent->ta_team = (ent->spawnflags & 2) ? TEAM_RED : (ent->spawnflags & 4) ? TEAM_BLUE : TEAM_NONE;
         ent->spawnflags = 0;
     }
 

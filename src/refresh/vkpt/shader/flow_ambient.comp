@@ -286,7 +286,7 @@ void main()
 			bool front_sky;
 			const float t_sky = flow_env_trace(p, dir, FLOW_ENV_FAR, AS_FLAG_SKY | AS_FLAG_CUSTOM_SKY, front_sky);
 			if (t_sky >= 0.0 && front_sky && !flow_env_blocked(p, dir, t_sky))
-				radiance += SUN_COLOR_RESOLVED * (1.0 / (4.0 * M_PI));
+				radiance += SUN_COLOR_RESOLVED * (q3_cloud_shadow(p) / (4.0 * M_PI));
 		}
 
 		// The cluster's lights.

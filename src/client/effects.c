@@ -246,7 +246,7 @@ void CL_MuzzleFlash(void)
     // the bot match's Quake III guns flash on their own tag_flash
     // (q3weapons.c): in the view, and in a Quake III body's hand. A Quake II
     // body holds Quake II's counterpart, which flashes as Quake II's do.
-    const bool q3gun = mz.weapon >= MZ_Q3_GAUNTLET && mz.weapon <= MZ_Q3_GRAPPLE;
+    const bool q3gun = mz.weapon >= MZ_Q3_GAUNTLET && mz.weapon <= MZ_Q3_CHAINGUN;
     const bool q3body = q3gun && mz.entity >= 1 && mz.entity <= MAX_CLIENTS &&
                         cl.clientinfo[mz.entity - 1].q3.q3;
 
@@ -508,6 +508,9 @@ void CL_MuzzleFlash(void)
     case MZ_Q3_PLASMAGUN:
     case MZ_Q3_BFG:
     case MZ_Q3_GRAPPLE:
+    case MZ_Q3_NAILGUN:     // Team Arena's
+    case MZ_Q3_PROX:
+    case MZ_Q3_CHAINGUN:
         CL_Q3W_MuzzleFlash(mz.entity, mz.weapon, dl);
         break;
     }
@@ -1188,7 +1191,16 @@ bool CL_BloodVoidSurface(const csurface_t *surf)
     if (!surf)
         return false;
 
-    if (surf->flags & (SURF_SKY | SURF_NODRAW))
+    if (surf->flags & SURF_SKY)
+        return true;
+
+    /* On a Quake III map a nodraw face is not empty space: it is the brush the
+       player stands on under what is drawn - Team Arena's terrain collides as
+       textures/common/terrain (nodraw, nomarks) under its drawn blend surfaces,
+       and caulk sits behind every curve. Blood that reached one vanished: no
+       splats on mpterra1's grass (Matt, 2026-11-26). Only the sky is void
+       there, and cl_blood_void's names. */
+    if ((surf->flags & SURF_NODRAW) && !(cl.bsp && cl.bsp->q3))
         return true;
 
     // the map's name need not be terminated - it can fill all 16 bytes

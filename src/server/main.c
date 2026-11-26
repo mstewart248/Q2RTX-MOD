@@ -52,6 +52,7 @@ cvar_t  *sv_timeout;            // seconds without any message
 cvar_t  *sv_zombietime;         // seconds to sink messages after disconnect
 cvar_t  *sv_ghostime;
 cvar_t  *sv_idlekick;
+cvar_t  *sv_wide_coords;        // 0 never, 1 maps past +-4096, 2 every map
 
 cvar_t  *sv_password;
 cvar_t  *sv_reserved_password;
@@ -2233,6 +2234,9 @@ void SV_Init(void)
     sv_ghostime->changed = sv_sec_timeout_changed;
     sv_ghostime->changed(sv_ghostime);
     sv_idlekick = Cvar_Get("sv_idlekick", "0", 0);
+    // wide coordinates (common/msg.c, SV_WideCoords): 1 = maps past +-4096,
+    // 2 = every map (to try the 32-bit path anywhere), 0 = never. Read at map load
+    sv_wide_coords = Cvar_Get("sv_wide_coords", "1", 0);
     sv_idlekick->changed = sv_sec_timeout_changed;
     sv_idlekick->changed(sv_idlekick);
     sv_enforcetime = Cvar_Get("sv_enforcetime", "1", 0);
@@ -2428,6 +2432,7 @@ void SV_Shutdown(const char *finalmsg, error_type_t type)
     CM_FreeMap(&sv.cm);
     SV_FreeFile(sv.entitystring);
     memset(&sv, 0, sizeof(sv));
+    msg_write_wide = false;     // the next map, or none, decides again
 
     // free server static data
     Z_Free(svs.client_pool);

@@ -88,6 +88,13 @@ static const q3w_info_t q3w_info[Q3W_NUM] = {
     // the gauntlet's hum and whir (cg_weapons.c), and no shot sound
     [Q3W_GRAPPLE]   = { "weapon_q3_grapple",          400,   0, MZ_Q3_GRAPPLE,
                         "weapons/melee/fsthum.wav", "weapons/melee/fstrun.wav", NULL },
+    // Team Arena's (g_ta.c), on its maps and with its data
+    [Q3W_NAILGUN]   = { "weapon_q3_nailgun",         1000,  10, MZ_Q3_NAILGUN,
+                        NULL, NULL, "weapons/nailgun/wnalfire.wav" },
+    [Q3W_PROX]      = { "weapon_q3_proxlauncher",     800,   5, MZ_Q3_PROX,
+                        NULL, NULL, "weapons/proxmine/wstbfire.wav" },
+    [Q3W_CHAINGUN]  = { "weapon_q3_chaingun",          30,  80, MZ_Q3_CHAINGUN,
+                        NULL, "weapons/vulcan/wvulfire.wav", NULL },    // one of four, Q3W_Fire
 };
 
 // Quake III's numbers (g_weapon.c, g_missile.c)
@@ -107,6 +114,19 @@ static const q3w_info_t q3w_info[Q3W_NUM] = {
 #define Q3_WEAPON_RESPAWN       5       // g_weaponrespawn
 #define Q3_AMMO_RESPAWN         40
 #define Q3_MISSILE_PRESTEP      0.05f   // MISSILE_PRESTEP_TIME, seconds
+// Team Arena's (MISSIONPACK g_weapon.c, g_missile.c)
+#define TA_NAILGUN_SPREAD       500
+#define TA_NAILGUN_SHOTS        15
+#define TA_NAIL_DAMAGE          20
+#define TA_CHAINGUN_SPREAD      600
+#define TA_CHAINGUN_DAMAGE      7
+#define TA_PROX_SPEED           700
+#define TA_PROX_SPLASH          100
+#define TA_PROX_RADIUS          150
+#define TA_PROX_FLY_TIME        3       // seconds in the air before it goes off
+#define TA_PROX_ARM_TIME        2       // seconds stuck before it is live
+#define TA_PROX_TIMEOUT         20      // g_proxMineTimeout, seconds live
+#define TA_PROX_PLAYER_TIME     10      // seconds stuck on a player
 
 // The other game's gun on a Quake II map (or a Quake II gun dropped in a match
 // by player model): Quake II's on the left, Quake III's on the right. A Quake
@@ -132,6 +152,11 @@ static const struct {
     { "weapon_boomer",          "weapon_q3_plasmagun" },
     { "weapon_plasmabeam",      "weapon_q3_lightning" },
     { "weapon_disintegrator",   "weapon_q3_railgun" },
+    // Team Arena's guns' Quake II counterparts (the Quake II gun's own
+    // Quake III one is the row above that names it first)
+    { "weapon_etf_rifle",       "weapon_q3_nailgun" },
+    { "weapon_proxlauncher",    "weapon_q3_proxlauncher" },
+    { "weapon_chaingun",        "weapon_q3_chaingun" },
 };
 
 // Quake III's map classnames, as its guns and their own ammo; the Quake II
@@ -151,6 +176,13 @@ static const struct {
     { "ammo_lightning",         "ammo_q3_lightning" },
     { "ammo_bfg",               "ammo_q3_bfg" },
     { "weapon_grapplinghook",   "weapon_q3_grapple" },
+    // Team Arena's maps
+    { "weapon_nailgun",         "weapon_q3_nailgun" },
+    { "weapon_prox_launcher",   "weapon_q3_proxlauncher" },
+    { "weapon_chaingun",        "weapon_q3_chaingun" },
+    { "ammo_nails",             "ammo_q3_nails" },
+    { "ammo_mines",             "ammo_q3_mines" },
+    { "ammo_belt",              "ammo_q3_belt" },
 };
 
 /*
@@ -615,12 +647,12 @@ void Q3W_Precache(void)
         "weapons/grenade/hgrenb1a.wav", "weapons/grenade/hgrenb2a.wav",
         "items/damage3.wav",
     };
-    int     i;
+    int     i, num = Q3W_Guns();
 
     if (!level.q3_weapons)
         return;
 
-    for (i = 1; i < Q3W_NUM; i++) {
+    for (i = 1; i < num; i++) {
         const q3w_info_t *w = &q3w_info[i];
 
         PrecacheItem(Q3W_Item(w->classname));
@@ -635,6 +667,15 @@ void Q3W_Precache(void)
         Q3_SoundIndex(sounds[i]);
     PrecacheItem(Q3W_Item("ammo_q3_lightning"));
     PrecacheItem(Q3W_Item("ammo_q3_bfg"));
+    if (num > Q3W_FIRST_TA) {
+        PrecacheItem(Q3W_Item("ammo_q3_nails"));
+        PrecacheItem(Q3W_Item("ammo_q3_mines"));
+        PrecacheItem(Q3W_Item("ammo_q3_belt"));
+        Q3_SoundIndex("weapons/vulcan/vulcanf1b.wav");
+        Q3_SoundIndex("weapons/vulcan/vulcanf2b.wav");
+        Q3_SoundIndex("weapons/vulcan/vulcanf3b.wav");
+        Q3_SoundIndex("weapons/vulcan/vulcanf4b.wav");
+    }
 
     gi.modelindex("models/ammo/rocket/rocket.md3");
     gi.modelindex("models/ammo/grenade1.md3");
@@ -644,8 +685,53 @@ void Q3W_Precache(void)
     // Quake III's guns land on 21..29 either way
     if (!G_CTF())
         gi.modelindex("#w_grapple.md2");
-    for (i = 1; i < Q3W_NUM; i++)
+    for (i = 1; i < num; i++)
         gi.modelindex(va("#%s", Q3W_Item(q3w_info[i].classname)->world_model));
+}
+
+// the guns there are: Team Arena's three only with its data (fs_quake3_ta)
+int Q3W_Guns(void)
+{
+    cvar_t *ta = gi.cvar("fs_quake3_ta", "0", 0);
+
+    return ta->integer ? Q3W_NUM : Q3W_FIRST_TA;
+}
+
+/*
+=================
+Q3W_DemoGun
+
+A Quake III demo's gun (g_q3demo.c): Quake III's weapon number - which the
+Q3W_* tags follow - as this game shows it. Its item (the view model, the
+icon, the vwep), its muzzle flash (MZ_Q3_*), the sound of one shot (one of
+four for the machinegun and the chaingun, as Q3W_Fire picks), and the loops
+of holding it and of the trigger held down (Q3W_WeaponSound). NULL for no
+gun, or one of Team Arena's without its data.
+=================
+*/
+gitem_t *Q3W_DemoGun(int weapon, int *flash, const char **shot, const char **ready, const char **firing)
+{
+    const q3w_info_t *w;
+
+    if (weapon <= Q3W_NONE || weapon >= Q3W_Guns())
+        return NULL;
+    w = &q3w_info[weapon];
+
+    if (flash)
+        *flash = w->flash;
+    if (shot) {
+        if (weapon == Q3W_MACHINEGUN)
+            *shot = va("weapons/machinegun/machgf%db.wav", 1 + (Q_rand() & 3));
+        else if (weapon == Q3W_CHAINGUN)
+            *shot = va("weapons/vulcan/vulcanf%db.wav", 1 + (Q_rand() & 3));
+        else
+            *shot = w->flash_sound;
+    }
+    if (ready)
+        *ready = w->ready_sound;
+    if (firing)
+        *firing = w->firing_sound;
+    return Q3W_Item(w->classname);
 }
 
 /*
@@ -664,6 +750,7 @@ static int Q3W_DamageScale(edict_t *ent)
         scale *= Q3_QUAD_FACTOR;
     if (ent->client->double_framenum > level.framenum)
         scale *= 2;
+    scale *= TA_DamageScale(ent);   // Team Arena's Doubler
     return scale;
 }
 
@@ -1014,6 +1101,226 @@ static void q3_missile_touch(edict_t *self, edict_t *other, cplane_t *plane, csu
 }
 
 /*
+==============================================================================
+
+TEAM ARENA'S NAILS AND PROX MINES
+
+A nail is a plain missile: its damage on what it hits, a hole in a wall. A
+prox mine flies three seconds, sticks to what it meets and is live two
+seconds later for twenty: a player in its 150 units, not of its team, sets
+it off half a second on. Stuck to a player it goes off on them ten seconds
+on - two in an invulnerability sphere, which it bursts (MOD_TA_JUICED) - and
+a second one adds to the first. Shot or blasted it goes off; on a mover it
+goes off when the mover moves (g_missile.c, g_mover.c).
+
+==============================================================================
+*/
+
+static void q3_nail_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf)
+{
+    if (other == self->owner)
+        return;
+
+    if (surf && (surf->flags & SURF_SKY)) {
+        G_FreeEdict(self);
+        return;
+    }
+
+    if (other->takedamage) {
+        if (SP_AccuracyTarget(self->owner, other))
+            SP_AccuracyHit(self->owner);
+        T_Damage(other, self, self->owner, self->velocity, self->s.origin,
+                 plane ? plane->normal : vec3_origin, self->dmg, self->dmg, 0, MOD_TA_NAIL);
+    }
+    if (other->client || (other->svflags & SVF_MONSTER)) {
+        gi.positioned_sound(self->s.origin, g_edicts, CHAN_AUTO,
+                            Q3_SoundIndex("weapons/nailgun/wnalimpl.wav"), 1, ATTN_NORM, 0);
+    } else {
+        vec3_t dir;
+
+        if (plane) {
+            VectorCopy(plane->normal, dir);
+        } else {
+            VectorNormalize2(self->velocity, dir);
+            VectorInverse(dir);
+        }
+        Q3W_TempEntity(TE_TA_NAIL, self->s.origin, dir);
+    }
+    G_FreeEdict(self);
+}
+
+static void Q3W_ProxExplode(edict_t *mine)
+{
+    edict_t *owner = mine->owner;
+
+    mine->takedamage = DAMAGE_NO;   // not into its own blast
+    if (owner && Q3W_RadiusDamage(mine, owner, mine->radius_dmg, mine->dmg_radius, NULL, MOD_TA_PROX))
+        SP_AccuracyHit(owner);
+
+    gi.WriteByte(svc_temp_entity);
+    gi.WriteByte(TE_TA_PROX_EXPLOSION);
+    gi.WritePosition(mine->s.origin);
+    gi.multicast(mine->s.origin, MULTICAST_PHS);
+
+    G_FreeEdict(mine);
+}
+
+static void q3_prox_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point)
+{
+    self->takedamage = DAMAGE_NO;
+    self->think = Q3W_ProxExplode;
+    self->nextthink = level.framenum + 1;
+}
+
+static void Q3W_ProxThink(edict_t *self)
+{
+    edict_t *on = self->enemy;
+    int     i;
+
+    self->nextthink = level.framenum + 1;
+
+    if (level.time >= self->timestamp) {
+        Q3W_ProxExplode(self);
+        return;
+    }
+
+    // what it is stuck to moved (a door, a platform): it comes off and goes off
+    if (on && on != g_edicts && on->solid == SOLID_BSP &&
+        (!on->inuse || !VectorCompare(on->s.origin, self->pos2) || !VectorCompare(on->s.angles, self->move_angles))) {
+        Q3W_ProxExplode(self);
+        return;
+    }
+
+    for (i = 1; i <= game.maxclients; i++) {
+        edict_t *e = g_edicts + i;
+        vec3_t  v;
+
+        if (!e->inuse || !e->client || e->health <= 0 || e->client->resp.spectator)
+            continue;
+        VectorSubtract(e->s.origin, self->s.origin, v);
+        if (VectorLength(v) > self->dmg_radius)
+            continue;
+        // not its own team's, in the team games
+        if (G_TeamPlay() && self->ta_team && e->client->resp.team == self->ta_team)
+            continue;
+        if (!CanDamage(e, self))
+            continue;
+
+        self->s.sound = 0;
+        gi.sound(self, CHAN_AUTO, Q3_SoundIndex("weapons/proxmine/wstbactv.wav"), 1, ATTN_NORM, 0);
+        self->think = Q3W_ProxExplode;
+        self->nextthink = level.framenum + BASE_FRAMERATE / 2;
+        return;
+    }
+}
+
+static void Q3W_ProxActivate(edict_t *self)
+{
+    self->takedamage = DAMAGE_YES;
+    self->health = 1;
+    self->die = q3_prox_die;
+    self->s.sound = Q3_SoundIndex("weapons/proxmine/wstbtick.wav");
+    self->timestamp = level.time + TA_PROX_TIMEOUT;
+    self->think = Q3W_ProxThink;
+    self->nextthink = level.framenum + 1;
+}
+
+// g_missile.c ProximityMine_ExplodeOnPlayer
+static void Q3W_ProxOnPlayerExplode(edict_t *mine)
+{
+    edict_t *player = mine->enemy;
+
+    if (player && player->inuse && player->client) {
+        if (player->client->ta_stuck_mine == mine)
+            player->client->ta_stuck_mine = NULL;
+        if (TA_Invulnerable(player)) {
+            T_Damage(player, mine, mine->owner ? mine->owner : mine, vec3_origin, player->s.origin, vec3_origin,
+                     1000, 0, DAMAGE_NO_KNOCKBACK, MOD_TA_JUICED);
+            player->client->ta_invul_framenum = 0;
+            gi.WriteByte(svc_temp_entity);
+            gi.WriteByte(TE_TA_JUICED);
+            gi.WritePosition(player->s.origin);
+            gi.multicast(player->s.origin, MULTICAST_PVS);
+            gi.sound(player, CHAN_AUTO, Q3_SoundIndex("items/invul_juiced.wav"), 1, ATTN_NORM, 0);
+            G_FreeEdict(mine);
+            return;
+        }
+        VectorCopy(player->s.origin, mine->s.origin);
+    }
+    mine->svflags &= ~SVF_NOCLIENT;
+    Q3W_ProxExplode(mine);
+}
+
+// g_missile.c ProximityMine_Player: on a player, ticking
+static void Q3W_ProxOnPlayer(edict_t *mine, edict_t *player)
+{
+    gclient_t   *cl = player->client;
+    edict_t     *stuck = cl->ta_stuck_mine;
+
+    gi.sound(player, CHAN_AUTO, Q3_SoundIndex("weapons/proxmine/wstbimpl.wav"), 1, ATTN_NORM, 0);
+
+    // a second one makes the first bigger
+    if (stuck && stuck->inuse) {
+        stuck->radius_dmg += mine->radius_dmg;
+        stuck->dmg_radius *= 1.5f;
+        G_FreeEdict(mine);
+        return;
+    }
+
+    cl->ta_stuck_mine = mine;
+    mine->movetype = MOVETYPE_NONE;
+    VectorClear(mine->velocity);
+    VectorClear(mine->avelocity);
+    mine->solid = SOLID_NOT;
+    mine->svflags |= SVF_NOCLIENT;
+    mine->touch = NULL;
+    mine->s.sound = 0;
+    mine->enemy = player;
+    mine->think = Q3W_ProxOnPlayerExplode;
+    mine->nextthink = level.framenum + (TA_Invulnerable(player) ? 2 : TA_PROX_PLAYER_TIME) * BASE_FRAMERATE;
+    gi.linkentity(mine);
+}
+
+static void q3_prox_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf)
+{
+    if (other == self->owner)
+        return;
+
+    if (surf && (surf->flags & SURF_SKY)) {
+        G_FreeEdict(self);
+        return;
+    }
+
+    if (other->client && other->health > 0) {
+        Q3W_ProxOnPlayer(self, other);
+        return;
+    }
+
+    // stuck where it hit, pointing out of the surface; splash can still find it
+    self->movetype = MOVETYPE_NONE;
+    VectorClear(self->velocity);
+    VectorClear(self->avelocity);
+    self->touch = NULL;
+    self->solid = SOLID_TRIGGER;
+    VectorSet(self->mins, -4, -4, -4);
+    VectorSet(self->maxs, 4, 4, 4);
+    if (plane) {
+        vectoangles(plane->normal, self->s.angles);
+        self->s.angles[0] += 90;
+    }
+    self->s.effects &= ~EF_GRENADE;
+    self->enemy = other;
+    VectorCopy(other->s.origin, self->pos2);
+    VectorCopy(other->s.angles, self->move_angles);
+
+    gi.sound(self, CHAN_AUTO, Q3_SoundIndex("weapons/proxmine/wstbimpd.wav"), 1, ATTN_NORM, 0);
+
+    self->think = Q3W_ProxActivate;
+    self->nextthink = level.framenum + TA_PROX_ARM_TIME * BASE_FRAMERATE;
+    gi.linkentity(self);
+}
+
+/*
 =================
 Q3W_Missile
 
@@ -1077,6 +1384,30 @@ static void Q3W_Missile(edict_t *ent, int weapon, const vec3_t muzzle, const vec
         m->s.skinnum = ent->s.number;
         m->s.sound = Q3_SoundIndex("weapons/plasma/lasfly.wav");
         break;
+    case Q3W_NAILGUN:
+        // fire_nail: no prestep, each its own speed
+        speed = 555 + random() * 1800;
+        m->classname = "q3_nail";
+        m->dmg = TA_NAIL_DAMAGE * scale;
+        m->touch = q3_nail_touch;
+        m->think = G_FreeEdict;
+        m->nextthink = level.framenum + 10 * BASE_FRAMERATE;
+        m->s.modelindex = gi.modelindex("models/weaphits/nail.md3");
+        break;
+    case Q3W_PROX:
+        speed = TA_PROX_SPEED;
+        m->classname = "q3_prox";
+        m->movetype = MOVETYPE_TOSS;
+        m->dmg = 0;
+        m->radius_dmg = TA_PROX_SPLASH * scale;
+        m->dmg_radius = TA_PROX_RADIUS;
+        m->ta_team = ent->client ? ent->client->resp.team : TEAM_NONE;
+        m->touch = q3_prox_touch;
+        m->think = Q3W_ProxExplode;
+        m->nextthink = level.framenum + TA_PROX_FLY_TIME * BASE_FRAMERATE;
+        m->s.modelindex = gi.modelindex("models/weaphits/proxmine.md3");
+        m->s.effects = EF_GRENADE;
+        break;
     default:    // Q3W_BFG
         speed = 2000;
         m->dmg = 100 * scale;
@@ -1107,7 +1438,9 @@ static void Q3W_Missile(edict_t *ent, int weapon, const vec3_t muzzle, const vec
     m->q3_unseen = true;
     VectorCopy(muzzle, m->pos1);
 
-    // the prestep
+    // the prestep (not a nail's)
+    if (weapon == Q3W_NAILGUN)
+        return;
     VectorMA(muzzle, Q3_MISSILE_PRESTEP, m->velocity, end);
     tr = gi.trace((vec_t *)muzzle, NULL, NULL, end, ent, MASK_SHOT);
     VectorCopy(tr.endpos, m->s.origin);
@@ -1182,6 +1515,39 @@ static void Q3W_Fire(edict_t *ent, int weapon, int late_ms)
     case Q3W_RAILGUN:
         Q3W_Rail(ent, muzzle, forward, right, up);
         break;
+    case Q3W_NAILGUN:
+        // Weapon_Nailgun_Fire: fifteen nails, each a shot for the accuracy
+        for (i = 0; i < TA_NAILGUN_SHOTS; i++) {
+            float r = random() * M_PI * 2;
+            float u = sinf(r) * crandom() * TA_NAILGUN_SPREAD * 16;
+
+            r = cosf(r) * crandom() * TA_NAILGUN_SPREAD * 16;
+            VectorScale(forward, 8192 * 16, dir);
+            VectorMA(dir, r, right, dir);
+            VectorMA(dir, u, up, dir);
+            VectorNormalize(dir);
+            Q3W_Missile(ent, weapon, muzzle, dir, late_ms);
+            if (i)
+                SP_AccuracyShot(ent);
+        }
+        break;
+    case Q3W_PROX:
+        VectorCopy(forward, dir);
+        dir[2] += 0.2f;
+        VectorNormalize(dir);
+        Q3W_Missile(ent, weapon, muzzle, dir, late_ms);
+        break;
+    case Q3W_CHAINGUN: {
+        float r = random() * M_PI * 2;
+        float u = sinf(r) * crandom() * TA_CHAINGUN_SPREAD * 16;
+
+        r = cosf(r) * crandom() * TA_CHAINGUN_SPREAD * 16;
+        if (Q3W_Bullet(ent, muzzle, forward, right, up, r, u, TA_CHAINGUN_DAMAGE * scale,
+                       MOD_TA_CHAINGUN, TE_TA_CHAINGUN))
+            SP_AccuracyHit(ent);
+        sound = va("weapons/vulcan/vulcanf%db.wav", 1 + (Q_rand() & 3));
+        break;
+    }
     case Q3W_LIGHTNING:
         // the beam and the muzzle light go out once a frame; it fires twice
         flash = Q3W_Lightning(ent, muzzle, forward);
@@ -1263,7 +1629,7 @@ static void Q3W_NoAmmoChange(edict_t *ent)
     if (Q1W_NoAmmoChange(ent))
         return;
 
-    for (i = 1; i < Q3W_NUM; i++) {
+    for (i = 1; i < Q3W_Guns(); i++) {
         it = Q3W_Item(q3w_info[i].classname);
         score = Q3W_SelectableScore(ent, it);
         if (score > best_score) {
@@ -1439,7 +1805,10 @@ void Q3W_Think(edict_t *ent, const usercmd_t *ucmd)
     client->q3_shots++;
 
     add = q3w_info[tag].fire_time;
-    if (client->q3_haste_framenum > level.framenum)
+    // Team Arena's Scout (1.5) or Ammo Regen (1.3) in place of Haste's 1.3
+    if (TA_FireScale(ent))
+        add = (int)(add / TA_FireScale(ent));
+    else if (client->q3_haste_framenum > level.framenum)
         add = (int)(add / 1.3f);
     if (CTF_HasHaste(ent))
         add /= 2;
@@ -1488,6 +1857,11 @@ const char *Q3W_Obituary(int mod, bool self_kill, const char **message2, edict_t
                    IsNeutral(self) ? "melted itself" : "melted himself";
         case MOD_Q3_BFG_SPLASH:
             return "should have used a smaller gun";
+        case MOD_TA_PROX:
+            return IsFemale(self) ? "found her prox mine" :
+                   IsNeutral(self) ? "found its prox mine" : "found his prox mine";
+        case MOD_TA_KAMIKAZE:
+            return "goes out with a bang";
         default:
             return NULL;
         }
@@ -1507,6 +1881,11 @@ const char *Q3W_Obituary(int mod, bool self_kill, const char **message2, edict_t
     case MOD_Q3_LIGHTNING:  return "was electrocuted by";
     case MOD_Q3_BFG:
     case MOD_Q3_BFG_SPLASH: *message2 = "'s BFG"; return "was blasted by";
+    case MOD_TA_NAIL:       return "was nailed by";
+    case MOD_TA_CHAINGUN:   *message2 = "'s Chaingun"; return "got lead poisoning from";
+    case MOD_TA_PROX:       *message2 = "'s Prox Mine"; return "was too close to";
+    case MOD_TA_KAMIKAZE:   *message2 = "'s Kamikaze blast"; return "falls to";
+    case MOD_TA_JUICED:     return "was juiced by";
     default:                return NULL;
     }
 }

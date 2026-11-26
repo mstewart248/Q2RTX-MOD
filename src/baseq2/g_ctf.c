@@ -86,10 +86,12 @@ static struct {
 } ctfgame;
 
 static gitem_t  *flag_items[3];     // [TEAM_RED] item_flag_team1, [TEAM_BLUE] item_flag_team2
+static gitem_t  *neutral_flag;      // Team Arena's One Flag CTF: item_flag_neutral (g_ta.c)
 static gitem_t  *tech_items[4];     // resistance, strength, haste, regeneration
 static gitem_t  *grapple_item;
 
 static int  pic_ctf1, pic_ctf2, pic_ctf1d, pic_ctf2d, pic_ctf1t, pic_ctf2t, pic_ctfj;
+static int  pic_neutral, pic_skull[3];     // Team Arena's (One Flag, Harvester)
 static int  model_flag1, model_flag2;
 
 edict_t *SelectRandomDeathmatchSpawnPoint(void);
@@ -139,7 +141,41 @@ bool CTF_HasFlag(const edict_t *ent)
 
     return cl && G_CTF() &&
            ((CTF_FlagIndex(TEAM_RED) && cl->pers.inventory[CTF_FlagIndex(TEAM_RED)]) ||
-            (CTF_FlagIndex(TEAM_BLUE) && cl->pers.inventory[CTF_FlagIndex(TEAM_BLUE)]));
+            (CTF_FlagIndex(TEAM_BLUE) && cl->pers.inventory[CTF_FlagIndex(TEAM_BLUE)]) ||
+            (neutral_flag && cl->pers.inventory[ITEM_INDEX(neutral_flag)]));
+}
+
+// One Flag CTF: carrying the white flag
+static bool CTF_HasNeutralFlag(const edict_t *ent)
+{
+    return neutral_flag && ent->client && ent->client->pers.inventory[ITEM_INDEX(neutral_flag)];
+}
+
+/*
+=================
+CTF_FlagInGame
+
+SpawnItem, for a flag on the map: Team Arena's white flag is One Flag CTF's
+alone, and its Overload and Harvester have no flags (g_team.c
+Pickup_Team frees them there).
+=================
+*/
+bool CTF_FlagInGame(const gitem_t *item)
+{
+    if (item == neutral_flag)
+        return level.ta_mode == TA_MODE_ONEFLAG;
+    return level.ta_mode != TA_MODE_OVERLOAD && level.ta_mode != TA_MODE_HARVESTER;
+}
+
+// Team Arena's games score the team in CTF's captures: an obelisk brought
+// down, the skulls brought in (g_ta.c)
+void CTF_AddTeamScore(int team, int points)
+{
+    if (team != TEAM_RED && team != TEAM_BLUE)
+        return;
+    ctfgame.caps[team] += points;
+    ctfgame.last_capture_time = level.time;
+    ctfgame.last_capture_team = team;
 }
 
 /*
@@ -156,6 +192,7 @@ void CTF_Init(void)
 
     flag_items[TEAM_RED] = FindItemByClassname("item_flag_team1");
     flag_items[TEAM_BLUE] = FindItemByClassname("item_flag_team2");
+    neutral_flag = FindItemByClassname("item_flag_neutral");
     tech_items[0] = FindItemByClassname("item_tech1");
     tech_items[1] = FindItemByClassname("item_tech2");
     tech_items[2] = FindItemByClassname("item_tech3");
@@ -184,6 +221,12 @@ void CTF_Precache(void)
     pic_ctfj = gi.imageindex("i_ctfj");
     model_flag1 = gi.modelindex("players/male/flag1.md2");
     model_flag2 = gi.modelindex("players/male/flag2.md2");
+    if (level.ta_mode == TA_MODE_ONEFLAG)
+        pic_neutral = gi.imageindex("/icons/iconf_neutral1.tga");
+    if (level.ta_mode == TA_MODE_HARVESTER) {
+        pic_skull[TEAM_RED] = gi.imageindex("/icons/skull_red.tga");
+        pic_skull[TEAM_BLUE] = gi.imageindex("/icons/skull_blue.tga");
+    }
 
     gi.soundindex("ctf/flagcap.wav");
     gi.soundindex("ctf/flagret.wav");
@@ -215,11 +258,16 @@ void CTF_Precache(void)
     "yb -129 " \
     "if 31 xr -26 pic 31 endif "
 
+// Team Arena's Harvester: the skulls carried, by the carried-flag picture
+#define TA_HARVESTER_STATUSBAR \
+    "if 28 yt 26 xr -60 num 2 18 endif "
+
 const char *CTF_StatusBar(const char *dm_statusbar)
 {
     static char sb[1536];
 
-    Q_snprintf(sb, sizeof(sb), "%s%s", dm_statusbar, CTF_STATUSBAR);
+    Q_snprintf(sb, sizeof(sb), "%s%s%s", dm_statusbar, CTF_STATUSBAR,
+               level.ta_mode == TA_MODE_HARVESTER ? TA_HARVESTER_STATUSBAR : "");
     return sb;
 }
 
@@ -290,7 +338,9 @@ edict_t *CTF_SpawnPoint(edict_t *ent)
 
 static void CTF_FlagThink(edict_t *ent)
 {
-    if (ent->solid != SOLID_NOT)
+    // Quake II's flag waves through its md2's frames; Team Arena's white
+    // flag is an md3 that waves in its shader
+    if (ent->solid != SOLID_NOT && ent->item != neutral_flag)
         ent->s.frame = 173 + (((ent->s.frame - 173) + 1) % 16);
     ent->nextthink = level.framenum + 1;
 }
@@ -311,7 +361,7 @@ void CTF_FlagSetup(edict_t *ent)
     ent->solid = SOLID_TRIGGER;
     ent->movetype = MOVETYPE_TOSS;
     ent->touch = Touch_Item;
-    ent->s.frame = 173;
+    ent->s.frame = ent->item == neutral_flag ? 0 : 173;
 
     VectorCopy(ent->s.origin, dest);
     dest[2] -= 128;
@@ -344,14 +394,14 @@ Every flag of a team back on its stand. A dropped one goes - but not at once:
 this is called from inside its own touch (a return), and Touch_Item still
 writes to it afterwards, so it hides now and is freed next frame.
 */
-static void CTF_ResetFlag(int team)
+static void CTF_ResetFlagItem(gitem_t *item)
 {
     edict_t *ent = NULL;
 
-    if (!flag_items[team])
+    if (!item)
         return;
 
-    while ((ent = G_Find(ent, FOFS(classname), flag_items[team]->classname)) != NULL) {
+    while ((ent = G_Find(ent, FOFS(classname), item->classname)) != NULL) {
         if (ent->spawnflags & DROPPED_ITEM) {
             ent->svflags |= SVF_NOCLIENT;
             ent->solid = SOLID_NOT;
@@ -368,10 +418,71 @@ static void CTF_ResetFlag(int team)
     }
 }
 
+static void CTF_ResetFlag(int team)
+{
+    CTF_ResetFlagItem(flag_items[team]);
+}
+
 static void CTF_ResetFlags(void)
 {
     CTF_ResetFlag(TEAM_RED);
     CTF_ResetFlag(TEAM_BLUE);
+    CTF_ResetFlagItem(neutral_flag);
+}
+
+/*
+=================
+CTF_PickupOneFlag
+
+Team Arena's One Flag CTF (g_team.c Pickup_Team, GT_1FCTF): the white flag
+is taken wherever it lies, and brought to the OTHER team's flag stand it is
+a capture. The teams' own flags never leave their stands.
+=================
+*/
+static bool CTF_PickupOneFlag(edict_t *ent, edict_t *other, int mine)
+{
+    int     i, index = ITEM_INDEX(neutral_flag);
+    edict_t *player;
+
+    if (ent->item == neutral_flag) {
+        gi.bprintf(PRINT_HIGH, "%s got the flag!\n", other->client->pers.netname);
+        other->client->pers.inventory[index] = 1;
+        other->client->resp.ctf_flagsince = level.time;
+        TA_FlagTaken(other, TEAM_NONE);     // a bot: "I have the flag"
+        if (!(ent->spawnflags & DROPPED_ITEM)) {
+            ent->flags |= FL_RESPAWN;
+            ent->svflags |= SVF_NOCLIENT;
+            ent->solid = SOLID_NOT;
+            gi.linkentity(ent);
+        }
+        return true;
+    }
+
+    // a team's flag on its stand: theirs, with the white flag, scores
+    if (CTF_FlagTeam(ent->item) == mine || !other->client->pers.inventory[index])
+        return false;
+
+    gi.bprintf(PRINT_HIGH, "%s captured the flag!\n", other->client->pers.netname);
+    other->client->pers.inventory[index] = 0;
+
+    ctfgame.last_capture_time = level.time;
+    ctfgame.last_capture_team = mine;
+    ctfgame.caps[mine]++;
+    gi.sound(ent, CHAN_RELIABLE | CHAN_NO_PHS_ADD | CHAN_ITEM, gi.soundindex("ctf/flagcap.wav"), 1, ATTN_NONE, 0);
+
+    other->client->resp.score += CTF_CAPTURE_BONUS;
+    for (i = 1; i <= game.maxclients; i++) {
+        player = g_edicts + i;
+        if (!player->inuse || !player->client || player == other)
+            continue;
+        if (player->client->resp.team == mine)
+            player->client->resp.score += CTF_TEAM_BONUS;
+        else
+            player->client->resp.ctf_lasthurtcarrier = -5;
+    }
+
+    CTF_ResetFlagItem(neutral_flag);
+    return false;
 }
 
 bool CTFPickup_Flag(edict_t *ent, edict_t *other)
@@ -381,7 +492,11 @@ bool CTFPickup_Flag(edict_t *ent, edict_t *other)
     int     enemy_index, i;
     edict_t *player;
 
-    if (!G_CTF() || team == TEAM_NONE || (mine != TEAM_RED && mine != TEAM_BLUE))
+    if (!G_CTF() || (mine != TEAM_RED && mine != TEAM_BLUE))
+        return false;
+    if (level.ta_mode == TA_MODE_ONEFLAG)
+        return CTF_PickupOneFlag(ent, other, mine);
+    if (team == TEAM_NONE)
         return false;
 
     enemy_index = CTF_FlagIndex(CTF_OtherTeam(team));
@@ -449,6 +564,7 @@ bool CTFPickup_Flag(edict_t *ent, edict_t *other)
 
     other->client->pers.inventory[CTF_FlagIndex(team)] = 1;
     other->client->resp.ctf_flagsince = level.time;
+    TA_FlagTaken(other, team);      // Team Arena's voice chats
 
     // from its stand it only hides, to come back on a capture or a return;
     // a dropped one is freed by Touch_Item
@@ -464,6 +580,12 @@ bool CTFPickup_Flag(edict_t *ent, edict_t *other)
 static void CTF_DropFlagThink(edict_t *ent)
 {
     int team = CTF_FlagTeam(ent->item);
+
+    if (ent->item == neutral_flag) {
+        CTF_ResetFlagItem(neutral_flag);
+        gi.bprintf(PRINT_HIGH, "The flag has returned!\n");
+        return;
+    }
 
     // back to its stand on its own; this frees the dropped one
     CTF_ResetFlag(team);
@@ -485,6 +607,18 @@ static void CTF_DeadDropFlag(edict_t *self)
     edict_t *dropped = NULL;
     int     team;
 
+    if (CTF_HasNeutralFlag(self)) {
+        dropped = Drop_Item(self, neutral_flag);
+        self->client->pers.inventory[ITEM_INDEX(neutral_flag)] = 0;
+        gi.bprintf(PRINT_HIGH, "%s lost the flag!\n", self->client->pers.netname);
+        if (dropped) {
+            dropped->think = CTF_DropFlagThink;
+            dropped->nextthink = level.framenum + CTF_AUTO_FLAG_RETURN_TIMEOUT * BASE_FRAMERATE;
+            dropped->touch = CTF_DropFlagTouch;
+            dropped->count = level.framenum + 2 * BASE_FRAMERATE;
+        }
+    }
+
     for (team = TEAM_RED; team <= TEAM_BLUE; team++) {
         int index = CTF_FlagIndex(team);
 
@@ -504,6 +638,13 @@ static void CTF_DeadDropFlag(edict_t *self)
     }
 }
 
+// Quake III's personal teleporter leaves the flag where you were
+void CTF_DropCarriedFlag(edict_t *ent)
+{
+    if (G_CTF() && ent->client)
+        CTF_DeadDropFlag(ent);
+}
+
 void CTFDrop_Flag(edict_t *ent, gitem_t *item)
 {
     if (Q_rand() & 1)
@@ -512,15 +653,24 @@ void CTFDrop_Flag(edict_t *ent, gitem_t *item)
         gi.cprintf(ent, PRINT_HIGH, "Winners don't drop flags.\n");
 }
 
+// a team's flag; TEAM_NONE: One Flag CTF's white one
+static gitem_t *CTF_FlagOf(int team)
+{
+    if (team == TEAM_RED || team == TEAM_BLUE)
+        return flag_items[team];
+    return team == TEAM_NONE && level.ta_mode == TA_MODE_ONEFLAG ? neutral_flag : NULL;
+}
+
 // for the bots: the flag on its stand (there or not), the one lying
-// somewhere, and who is carrying it
+// somewhere, and who is carrying it - a team's, or (TEAM_NONE) One Flag's
 edict_t *CTF_BaseFlag(int team)
 {
+    gitem_t *item = CTF_FlagOf(team);
     edict_t *ent = NULL;
 
-    if ((team != TEAM_RED && team != TEAM_BLUE) || !flag_items[team])
+    if (!item)
         return NULL;
-    while ((ent = G_Find(ent, FOFS(classname), flag_items[team]->classname)) != NULL)
+    while ((ent = G_Find(ent, FOFS(classname), item->classname)) != NULL)
         if (!(ent->spawnflags & DROPPED_ITEM))
             return ent;
     return NULL;
@@ -528,11 +678,12 @@ edict_t *CTF_BaseFlag(int team)
 
 edict_t *CTF_DroppedFlag(int team)
 {
+    gitem_t *item = CTF_FlagOf(team);
     edict_t *ent = NULL;
 
-    if ((team != TEAM_RED && team != TEAM_BLUE) || !flag_items[team])
+    if (!item)
         return NULL;
-    while ((ent = G_Find(ent, FOFS(classname), flag_items[team]->classname)) != NULL)
+    while ((ent = G_Find(ent, FOFS(classname), item->classname)) != NULL)
         if ((ent->spawnflags & DROPPED_ITEM) && ent->solid == SOLID_TRIGGER)
             return ent;
     return NULL;
@@ -540,7 +691,8 @@ edict_t *CTF_DroppedFlag(int team)
 
 edict_t *CTF_Carrier(int team)
 {
-    int i, index = (team == TEAM_RED || team == TEAM_BLUE) ? CTF_FlagIndex(team) : 0;
+    gitem_t *item = CTF_FlagOf(team);
+    int     i, index = item ? ITEM_INDEX(item) : 0;
 
     if (!index)
         return NULL;
@@ -1312,6 +1464,16 @@ void CTF_ClientEffects(edict_t *player)
         player->s.modelindex3 = model_flag2;
     else
         player->s.modelindex3 = 0;
+
+    // One Flag CTF's white flag: Quake II has no white flag on the back, so
+    // the carrier's own team's colour, which no one carries in that game
+    if (CTF_HasNeutralFlag(player)) {
+        bool red_team = player->client->resp.team == TEAM_RED;
+
+        if (player->health > 0)
+            player->s.effects |= red_team ? EF_FLAG1 : EF_FLAG2;
+        player->s.modelindex3 = red_team ? model_flag1 : model_flag2;
+    }
 }
 
 static int CTF_FlagPic(int team, int home, int dropped, int taken)
@@ -1347,6 +1509,33 @@ void CTF_SetStats(edict_t *ent)
             p2 = 0;
     }
 
+    // One Flag CTF: a team's picture is "taken" while the other team carries
+    // the white flag toward it; Overload and Harvester: just the teams
+    if (level.ta_mode == TA_MODE_ONEFLAG) {
+        edict_t *carrier = NULL;
+        int     i;
+
+        for (i = 1; i <= game.maxclients && !carrier; i++)
+            if (g_edicts[i].inuse && g_edicts[i].health > 0 && CTF_HasNeutralFlag(g_edicts + i))
+                carrier = g_edicts + i;
+        p1 = pic_ctf1;
+        p2 = pic_ctf2;
+        if (carrier && carrier->client->resp.team == TEAM_BLUE)
+            p1 = pic_ctf1t;
+        else if (carrier && carrier->client->resp.team == TEAM_RED)
+            p2 = pic_ctf2t;
+    } else if (level.ta_mode == TA_MODE_OVERLOAD || level.ta_mode == TA_MODE_HARVESTER) {
+        p1 = pic_ctf1;
+        p2 = pic_ctf2;
+    }
+    if (level.ta_mode >= TA_MODE_ONEFLAG && ctfgame.last_capture_time &&
+        level.time - ctfgame.last_capture_time < 5 && !blink) {
+        if (ctfgame.last_capture_team == TEAM_RED)
+            p1 = 0;
+        else
+            p2 = 0;
+    }
+
     cl->ps.stats[STAT_CTF_TEAM1_PIC] = p1;
     cl->ps.stats[STAT_CTF_TEAM2_PIC] = p2;
     cl->ps.stats[STAT_CTF_TEAM1_CAPS] = ctfgame.caps[TEAM_RED];
@@ -1359,6 +1548,16 @@ void CTF_SetStats(edict_t *ent)
             cl->ps.stats[STAT_CTF_FLAG_PIC] = pic_ctf2;
         else if (cl->resp.team == TEAM_BLUE && cl->pers.inventory[CTF_FlagIndex(TEAM_RED)])
             cl->ps.stats[STAT_CTF_FLAG_PIC] = pic_ctf1;
+        else if (CTF_HasNeutralFlag(ent))
+            cl->ps.stats[STAT_CTF_FLAG_PIC] = pic_neutral;
+    }
+    // Harvester: the other colour's skull while carrying any, and how many
+    cl->ps.stats[STAT_TA_SKULLS] = 0;
+    if (level.ta_mode == TA_MODE_HARVESTER && cl->ta_skulls > 0) {
+        int other = cl->resp.team == TEAM_RED ? TEAM_BLUE : TEAM_RED;
+
+        cl->ps.stats[STAT_CTF_FLAG_PIC] = pic_skull[other];
+        cl->ps.stats[STAT_TA_SKULLS] = cl->ta_skulls;
     }
 
     cl->ps.stats[STAT_CTF_JOINED_TEAM1_PIC] = cl->resp.team == TEAM_RED ? pic_ctfj : 0;
@@ -1366,6 +1565,9 @@ void CTF_SetStats(edict_t *ent)
 
     tech = CTF_WhatTech(ent);
     cl->ps.stats[STAT_CTF_TECH] = tech ? gi.imageindex(tech->icon) : 0;
+    // Team Arena's maps have no techs: the persistent powerup is shown there
+    if (level.ta_map && cl->ta_persistent && cl->ta_persistent->item)
+        cl->ps.stats[STAT_CTF_TECH] = gi.imageindex(cl->ta_persistent->item->icon);
 }
 
 // ==========================================================================
@@ -1377,7 +1579,8 @@ void CTF_LevelStart(void)
     edict_t *ent;
 
     memset(&ctfgame, 0, sizeof(ctfgame));
-    if (!G_CTF())
+    // Team Arena's maps have their persistent powerups instead (g_ta.c)
+    if (!G_CTF() || level.ta_map)
         return;
 
     ent = G_Spawn();
@@ -1389,10 +1592,13 @@ void CTF_LevelStart(void)
 // CheckDMRules: the capture limit
 bool CTF_CheckRules(void)
 {
-    if (!G_CTF() || !capturelimit->value)
+    // a Team Arena skirmish has its own (g_ta.c)
+    float limit = TA_SkirmishActive() ? TA_SkirmishCaptureLimit() : capturelimit->value;
+
+    if (!G_CTF() || !limit)
         return false;
 
-    if (ctfgame.caps[TEAM_RED] >= capturelimit->value || ctfgame.caps[TEAM_BLUE] >= capturelimit->value) {
+    if (ctfgame.caps[TEAM_RED] >= limit || ctfgame.caps[TEAM_BLUE] >= limit) {
         gi.bprintf(PRINT_HIGH, "Capturelimit hit.\n");
         return true;
     }

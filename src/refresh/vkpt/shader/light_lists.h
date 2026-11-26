@@ -141,13 +141,67 @@ projected_spotlight_area(mat3 positions, float emission_profile, vec3 p, vec3 n,
 	return projected_spotlight_area(positions, emission_profile, p, n, V, phong_exp, phong_scale, phong_weight, 2 * M_PI);
 }
 
-uint get_light_stats_addr(uint cluster, uint light, uint side)
+/* THE LIGHT STATISTICS, ONE SLOT PER LIST ENTRY (2026-11-26; Matt: "go through the
+   quake3 team arena demo with the profiler on ... long frame setup times").
+
+   The shadow-ray counts (pt_light_stats, path_tracer_rgen.h's get_direct_illumination
+   says what they are for) were laid out for every cluster x every static light,
+   (cluster * num_static_lights + light) * 12, and one of the three buffers is zeroed
+   every frame. On Team Arena's mpteam1 that is 2535 clusters x 7100 lights x 48
+   bytes = 864 MB a buffer, 2.6 GB for the three, and ~1 ms of every GPU frame in
+   the clear (the "list time no row covers" after the uploads). Yet only counts of a
+   cluster's own list are ever read: sample_lights below and the ReSTIR prior
+   (restir.h) look up lights they drew from that list - 1.5 million entries on
+   mpteam1, so 72 MB a buffer now and a clear of ~0.1 ms. Every count that is read
+   is the one it was. The only counts dropped are those of a light outside the
+   cluster's list - ReSTIR shading a light it reused from a neighbour - which were
+   written and never read.
+
+   The layout is constants.h's. The lists the GPU walks are the static lists, each
+   with the model lights that reach the cluster after it (inject_model_lights, and
+   the kept lists the same), so the static part of a cluster's list starts at
+   light_list_offsets[cluster] and its entries are in light order
+   (build_cluster_light_lists). An entry's counts are found by its place in the
+   list, or, for a light alone, by a search of that part (light_stats_find). */
+
+// where the cluster's counts start and how many static entries it has; false if none
+bool light_stats_cluster(uint cluster, out uint first, out uint count)
 {
-	uint addr = cluster;
-	addr = addr * global_ubo.num_static_lights + light;
-	addr = addr * 6 + side;
-	addr = addr * 2;
-	return addr;
+	first = 0;
+	count = 0;
+	if (cluster >= light_stats_bufers[0].stats[LIGHT_STATS_HDR_CLUSTERS])
+		return false;
+	first = light_stats_bufers[0].stats[LIGHT_STATS_HDR_FIRST + cluster];
+	count = (light_stats_bufers[0].stats[LIGHT_STATS_HDR_FIRST + cluster + 1] - first) / LIGHT_STATS_WORDS_PER_SLOT;
+	return count > 0;
+}
+
+// the counts of the entry at `place` in the cluster's list, for one orientation:
+// [addr] got through, [addr + 1] shadowed. ~0u past the list's static part.
+uint light_stats_entry(uint first, uint count, uint place, uint side)
+{
+	return place < count ? first + place * LIGHT_STATS_WORDS_PER_SLOT + side * 2 : ~0u;
+}
+
+// the same for a static light by its index, searched for in the cluster's list;
+// ~0u when the list does not hold it
+uint light_stats_find(uint cluster, uint light, uint side)
+{
+	uint first, count;
+	if (!light_stats_cluster(cluster, first, count))
+		return ~0u;
+	uint base = light_buffer.light_list_offsets[cluster];
+	uint lo = 0, hi = count;
+	while (lo < hi)
+	{
+		uint mid = (lo + hi) >> 1;
+		if (light_buffer.light_list_lights[base + mid] < light)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	return lo < count && light_buffer.light_list_lights[base + lo] == light
+		? light_stats_entry(first, count, lo, side) : ~0u;
 }
 
 void
@@ -167,13 +221,15 @@ sample_lights(
 	out float pdfw,
 	out bool is_sky_light,
 	vec3 rng,
-	float max_dyn_irradiance) // pt_bounce_dlight_cap for bounces, 2 * pi otherwise
+	float max_dyn_irradiance, // pt_bounce_dlight_cap for bounces, 2 * pi otherwise
+	out uint light_stats_addr) // the picked light's counts for n's orientation, ~0u if none (light_stats_entry)
 {
 	position_light = vec3(0);
 	light_index = -1;
 	light_color = vec3(0);
 	pdfw = 0;
 	is_sky_light = false;
+	light_stats_addr = ~0u;
 
 	// pt_light_spherical_tri - see global_ubo.h. Mass and sampler must agree, so both
 	// switch together.
@@ -184,6 +240,12 @@ sample_lights(
 
 	uint list_start = light_buffer.light_list_offsets[list_idx];
 	uint list_end = light_buffer.light_list_offsets[list_idx + 1];
+
+	// the static entries' counts (THE LIGHT STATISTICS, ONE SLOT PER LIST ENTRY)
+	const uint list_base = list_start;
+	const uint stats_side = get_primary_direction(n);
+	uint stats_first, stats_count;
+	const bool stats = global_ubo.pt_light_stats != 0 && light_stats_cluster(list_idx, stats_first, stats_count);
 
 	float partitions = ceil(float(list_end - list_start) / float(MAX_BRUTEFORCE_SAMPLING));
 	rng.x *= partitions;
@@ -249,9 +311,11 @@ sample_lights(
 
 		// Apply CDF adjustment based on light shadowing statistics from one of the previous frames.
 		// See comments in function `get_direct_illumination` in `path_tracer_rgen.h`
-		if (global_ubo.pt_light_stats != 0
-			&& m > 0
-			&& current_idx < global_ubo.num_static_lights)
+		// (a static light is in the list's static part: light_stats_entry is ~0u for
+		// the model lights after it)
+		uint addr = stats && m > 0 && current_idx < global_ubo.num_static_lights
+			? light_stats_entry(stats_first, stats_count, n_idx - list_base, stats_side) : ~0u;
+		if (addr != ~0u)
 		{
 			uint buffer_idx = global_ubo.current_frame_idx;
 			// Regular pixels get shadowing stats from the previous frame;
@@ -259,8 +323,6 @@ sample_lights(
 			// the light sampling from the previous frame.
 			buffer_idx += is_gradient ? (NUM_LIGHT_STATS_BUFFERS - 2) : (NUM_LIGHT_STATS_BUFFERS - 1);
 			buffer_idx = buffer_idx % NUM_LIGHT_STATS_BUFFERS;
-
-			uint addr = get_light_stats_addr(list_idx, current_idx, get_primary_direction(n));
 
 			uint num_hits = light_stats_bufers[buffer_idx].stats[addr];
 			uint num_misses = light_stats_bufers[buffer_idx].stats[addr + 1];
@@ -305,6 +367,8 @@ sample_lights(
 
 	// assert: current_idx >= 0?
 	if (current_idx >= 0) {
+		if (stats)
+			light_stats_addr = light_stats_entry(stats_first, stats_count, uint(current_idx) - list_base, stats_side);
 		current_idx = int(light_buffer.light_list_lights[current_idx]);
 
 		LightPolygon light = get_light_polygon(current_idx);
@@ -365,7 +429,8 @@ sample_lights(
 			}
 			else
 			{
-				light_color = env_map(L, true) * inv_pdfw * global_ubo.pt_env_scale;
+				// less under the clouds (pt_q3_cloud_shadow_sky; q3_sky.glsl)
+				light_color = env_map(L, true) * inv_pdfw * global_ubo.pt_env_scale * q3_cloud_sky_shadow(p);
 				is_sky_light = true;
 			}
 		}

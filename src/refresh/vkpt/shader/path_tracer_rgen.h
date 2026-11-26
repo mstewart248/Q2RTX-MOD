@@ -1752,6 +1752,7 @@ get_direct_illumination(
 	int light_index = -1;
 	float light_pdfw = 0;
 	bool polygonal_light_is_sky = false;
+	uint light_stats_addr = ~0u;	// the picked light's counts (light_lists.h)
 
 	vec3 rng = vec3(
 		get_rng(RNG_NEE_LIGHT_SELECTION(bounce)),
@@ -1782,7 +1783,8 @@ get_direct_illumination(
 			light_pdfw,
 			polygonal_light_is_sky,
 			rng,
-			max_dyn_irradiance);
+			max_dyn_irradiance,
+			light_stats_addr);
 	}
 
 	bool is_polygonal = true;
@@ -1826,12 +1828,16 @@ get_direct_illumination(
 		polygon lights do not have polygonal indices, and it would be difficult to map them
 		between frames.
 	*/
+	// light_stats_addr: sample_lights' entry for the light it picked from this
+	// cluster's list - ~0u unless that is a static light (THE LIGHT STATISTICS,
+	// ONE SLOT PER LIST ENTRY, light_lists.h), the same normal's orientation
 	if (global_ubo.pt_light_stats != 0
 		&& !null_light
 		&& light_index >= 0
-		&& light_index < global_ubo.num_static_lights)
+		&& light_index < global_ubo.num_static_lights
+		&& light_stats_addr != ~0u)
 	{
-		uint addr = get_light_stats_addr(cluster_idx, light_index, get_primary_direction(normal));
+		uint addr = light_stats_addr;
 
 		// Offset 0 is unshadowed rays,
 		// Offset 1 is shadowed rays
@@ -1984,6 +1990,9 @@ get_sunlight(
 
 	vec3 radiance = SUN_COLOR_RESOLVED;
 #endif
+
+	// the sky's clouds passing between it and the sun (q3_sky.glsl)
+	radiance *= q3_cloud_shadow(position);
 
 #ifdef ENABLE_SHADOW_CAUSTICS
 	if (enable_caustics)
@@ -2679,6 +2688,8 @@ get_material(
 	q3_surface_alpha = -1.0;
 	vec3 q3_albedo, q3_emission;
 	float q3_alpha;
+	// alphaGen vertex: the map's vertex alpha here (1 - custom_w, bsp_mesh.c)
+	q3_vertex_alpha = 1.0 - clamp(dot(triangle.custom_w, bary), 0.0, 1.0);
 	bool q3_program = q3_program_material(triangle.material_id, triangle.positions * bary,
 		tex_coord, tex_coord_x, tex_coord_y, mip_level, normalize(triangle.normals * bary),
 		ray_direction, minfo.base_texture, false, q3_albedo, q3_emission, q3_alpha);

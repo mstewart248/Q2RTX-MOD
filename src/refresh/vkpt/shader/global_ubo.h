@@ -649,6 +649,16 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	/* TEXTURE_FLAG_Q3_QUAD. q3_quad_active 0 = not loaded (not a Quake III map). */ \
 	GLOBAL_UBO_VAR_LIST_DO(vec4,            q3_quad_layer[Q3_SKY_LAYER_VEC4S]) \
 	\
+	/* QUAKE III CLOUD SHADOWS (q3stages.c q3_cloud_shadow_upload,             */ \
+	/* pt_q3_cloud_shadow; q3_sky.glsl q3_cloud_thickness): the sky's cloud     */ \
+	/* layers (q3_sky_layers) laid flat over the world. k: how much of the sun  */ \
+	/* the thickest cloud takes, the mip level they are read at; p: dome s/t    */ \
+	/* per world unit (0 = off), the warmth of no cloud and of the thickest     */ \
+	/* (its 10th and 95th percentiles), how much of the sky's light the         */ \
+	/* thickest takes.                                                          */ \
+	GLOBAL_UBO_VAR_LIST_DO(vec4,            q3_cloud_shadow_k) \
+	GLOBAL_UBO_VAR_LIST_DO(vec4,            q3_cloud_shadow_p) \
+	\
 	/* 'MAT AUTHOR' (mat_author.c MAT_AuthorFillUBO): painting a map in photo    */ \
 	/* mode. author_cursor: the brush cursor in render pixels, -1 = off the view;*/ \
 	/* primary_rays.rgen reads back what is under it, tagged author_seq. The    */ \

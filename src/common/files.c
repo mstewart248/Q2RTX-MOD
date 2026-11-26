@@ -158,6 +158,14 @@ typedef struct {
 // "baseq3/<path>" then goes there (open_file_write)
 static cvar_t *fs_quake3;
 
+// Quake III Team Arena (<basedir>/baseq3/missionpack/*.pk3, add_quake3_paths):
+// its paks carry FS_SEARCH_QUAKE3 too, underneath Quake III's own, and this
+// bit as well. "missionpack/<path>" is looked up in them only - Team Arena's
+// own copy of a file Quake III also has (scripts/models.shader and twelve
+// other scripts, scripts/bots.txt). fs_quake3_ta = 1 when any were found.
+#define FS_SEARCH_TEAMARENA 0x00040000
+static cvar_t *fs_quake3_ta;
+
 // The same for Quake 1 (add_quake1_paths): a name starting "id1/" is looked up
 // in the Quake 1 paths only, and written under <basedir>/id1.
 #define FS_SEARCH_QUAKE1    0x00020000
@@ -1466,6 +1474,7 @@ int FS_RealPath(const char *path, unsigned flags, char *out, size_t size)
     unsigned        hash;
     bool            quake3_only = false;
     bool            quake1_only = false;
+    bool            teamarena_only = false;
     int             valid = PATH_NOT_CHECKED;
 
     if (out && size)
@@ -1479,6 +1488,10 @@ int FS_RealPath(const char *path, unsigned flags, char *out, size_t size)
         name += 7;
         namelen -= 7;
         quake3_only = true;
+    } else if (namelen > 12 && !Q_strncasecmp(name, "missionpack/", 12)) {
+        name += 12;
+        namelen -= 12;
+        teamarena_only = true;
     } else if (namelen > 4 && !Q_strncasecmp(name, "id1/", 4)) {
         name += 4;
         namelen -= 4;
@@ -1491,6 +1504,8 @@ int FS_RealPath(const char *path, unsigned flags, char *out, size_t size)
         if ((flags & FS_PATH_MASK) && !(flags & search->mode & FS_PATH_MASK))
             continue;
         if (quake3_only && !(search->mode & FS_SEARCH_QUAKE3))
+            continue;
+        if (teamarena_only && !(search->mode & FS_SEARCH_TEAMARENA))
             continue;
         if (quake1_only && !(search->mode & FS_SEARCH_QUAKE1))
             continue;
@@ -1563,6 +1578,7 @@ static int64_t open_file_read_in(file_t *file, const char *normalized, size_t na
     int64_t         ret;
     int             valid;
     bool            quake3_only = false;
+    bool            teamarena_only = false;
     bool            quake1_only = q1_codes != 0;
 
     FS_COUNT_READ;
@@ -1574,6 +1590,11 @@ static int64_t open_file_read_in(file_t *file, const char *normalized, size_t na
         normalized += 7;
         namelen -= 7;
         quake3_only = true;
+    // "missionpack/<path>": Team Arena's own (FS_SEARCH_TEAMARENA)
+    } else if (namelen > 12 && !Q_strncasecmp(normalized, "missionpack/", 12)) {
+        normalized += 12;
+        namelen -= 12;
+        teamarena_only = true;
     // "id1/<path>": Quake 1's (FS_SEARCH_QUAKE1)
     } else if (namelen > 4 && !Q_strncasecmp(normalized, "id1/", 4)) {
         normalized += 4;
@@ -1595,10 +1616,13 @@ static int64_t open_file_read_in(file_t *file, const char *normalized, size_t na
         if (quake3_only && !(search->mode & FS_SEARCH_QUAKE3)) {
             continue;
         }
+        if (teamarena_only && !(search->mode & FS_SEARCH_TEAMARENA)) {
+            continue;
+        }
         if (quake1_only && !(search->mode & FS_SEARCH_QUAKE1)) {
             continue;
         }
-        if (q1_codes && !(q1_codes & (1u << ((search->mode & FS_Q1_EPISODE_MASK) >> FS_Q1_EPISODE_SHIFT)))) {
+        if (q1_codes &&!(q1_codes & (1u << ((search->mode & FS_Q1_EPISODE_MASK) >> FS_Q1_EPISODE_SHIFT)))) {
             continue;
         }
 
@@ -4014,19 +4038,23 @@ textures/, scripts/, sound/, models/ and maps/. Within baseq3, later packs
 override earlier ones, as they do in Quake III.
 
 fs_quake3 says whether any were found, for the menu (declared up top).
+
+TEAM ARENA (Matt, 11-25): baseq3/missionpack/*.pk3, the expansion's data, go
+on FIRST, so they sit underneath every Quake III pak: Quake III itself plays
+exactly as before, and Team Arena answers only for what Quake III has not got -
+its maps, models, textures, sounds, ui/ and fonts/. The 42 files both have but
+differently are Quake III's for an ordinary lookup; "missionpack/<path>" asks
+for Team Arena's copy (q3shader.c reads its shader scripts that way, so the
+shaders it added to the scripts it shares with Quake III are there too).
+fs_quake3_ta says whether it was found.
 */
-static void add_quake3_paths(void)
+static int add_quake3_packs(const char *dir, unsigned mode)
 {
-    char            dir[MAX_OSPATH], path[MAX_OSPATH];
-    listfiles_t     list;
-    int             count = 0;
-
-    if (Q_concat(dir, sizeof(dir), sys_basedir->string, "/baseq3") >= sizeof(dir) || !Sys_IsDir(dir)) {
-        Cvar_SetByVar(fs_quake3, "0", FROM_CODE);
-        return;
-    }
-
+    int count = 0;
 #if USE_ZLIB
+    char            path[MAX_OSPATH];
+    listfiles_t     list;
+
     memset(&list, 0, sizeof(list));
     list.filter = ".pk3";
     Sys_ListFiles_r(&list, dir, 0);
@@ -4037,7 +4065,7 @@ static void add_quake3_paths(void)
             pack_t *pack = load_pack_file(path);
             if (pack) {
                 searchpath_t *search = FS_Malloc(sizeof(searchpath_t));
-                search->mode = FS_PATH_BASE | FS_PATH_GAME | FS_SEARCH_QUAKE3;
+                search->mode = mode;
                 search->filename[0] = 0;
                 search->pack = pack_get(pack);
                 search->next = fs_searchpaths;
@@ -4051,12 +4079,35 @@ static void add_quake3_paths(void)
     }
     Z_Free(list.files);
 #endif
+    return count;
+}
+
+static void add_quake3_paths(void)
+{
+    char            dir[MAX_OSPATH], tadir[MAX_OSPATH];
+    int             count = 0, ta_count = 0;
+
+    Cvar_SetByVar(fs_quake3_ta, "0", FROM_CODE);
+    if (Q_concat(dir, sizeof(dir), sys_basedir->string, "/baseq3") >= sizeof(dir) || !Sys_IsDir(dir)) {
+        Cvar_SetByVar(fs_quake3, "0", FROM_CODE);
+        return;
+    }
+
+    // Team Arena first: underneath Quake III (above)
+    if (Q_concat(tadir, sizeof(tadir), dir, "/missionpack") < sizeof(tadir) && Sys_IsDir(tadir))
+        ta_count = add_quake3_packs(tadir, FS_PATH_BASE | FS_PATH_GAME | FS_SEARCH_QUAKE3 | FS_SEARCH_TEAMARENA);
+
+    count = add_quake3_packs(dir, FS_PATH_BASE | FS_PATH_GAME | FS_SEARCH_QUAKE3);
 
     add_dir_path(FS_PATH_BASE | FS_PATH_GAME | FS_SEARCH_QUAKE3, dir);
 
     if (count)
         Com_Printf("Quake III Arena data: %d pk3 file(s) in %s\n", count, dir);
+    if (count && ta_count)
+        Com_Printf("Quake III Team Arena data: %d pk3 file(s) in %s\n", ta_count, tadir);
     Cvar_SetByVar(fs_quake3, count ? "1" : "0", FROM_CODE);
+    // Team Arena needs Quake III's own data under it
+    Cvar_SetByVar(fs_quake3_ta, count && ta_count ? "1" : "0", FROM_CODE);
 }
 
 /*
@@ -4472,6 +4523,7 @@ void FS_Init(void)
 	fs_shareware = Cvar_Get("fs_shareware", "0", CVAR_ROM);
 	fs_rerelease = Cvar_Get("fs_rerelease", "0", CVAR_ROM);
     fs_quake3 = Cvar_Get("fs_quake3", "0", CVAR_ROM);
+    fs_quake3_ta = Cvar_Get("fs_quake3_ta", "0", CVAR_ROM);
     fs_quake1 = Cvar_Get("fs_quake1", "0", CVAR_ROM);
     fs_quake1_games = Cvar_Get("fs_quake1_games", "", CVAR_ROM);
 

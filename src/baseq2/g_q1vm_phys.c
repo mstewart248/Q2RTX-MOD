@@ -724,9 +724,10 @@ static int q1_fly_move(int num, float time)
     return blocked;
 }
 
-static void q1_add_gravity(qc_entvars_t *ev)
+// Quake's SV_AddGravity: sv_gravity times the entity's own .gravity (QC_Gravity)
+static void q1_add_gravity(int num, qc_entvars_t *ev)
 {
-    ev->velocity[2] -= (sv_gravity ? sv_gravity->value : 800) * qvm.frametime;
+    ev->velocity[2] -= QC_Gravity(num) * (sv_gravity ? sv_gravity->value : 800) * qvm.frametime;
 }
 
 static q1trace_t q1_push_entity_move(int num, const vec3_t start, const vec3_t end)
@@ -1222,7 +1223,7 @@ One frame of a head (ROLLING HEADS above). False when it can't be done here
 static bool q1_physics_head(int num, const q1_head_mesh_t *m)
 {
     qc_entvars_t *ev = QC_EV(num);
-    const float gravity = sv_gravity ? sv_gravity->value : 800;
+    const float gravity = QC_Gravity(num) * (sv_gravity ? sv_gravity->value : 800);
     const float h = qvm.frametime / HEAD_SUBSTEPS;
     const float slope = DEG2RAD(head_clip(g_q1_head_roll_slope->value, 0, 80));
     const float rest_nz = cosf(slope);
@@ -1441,7 +1442,7 @@ static void q1_physics_toss(int num)
 
     // add gravity
     if (mt != Q1_MOVETYPE_FLY && mt != Q1_MOVETYPE_FLYMISSILE)
-        q1_add_gravity(ev);
+        q1_add_gravity(num, ev);
 
     // move angles
     VectorMA(ev->angles, qvm.frametime, ev->avelocity, ev->angles);
@@ -1492,7 +1493,7 @@ static void q1_physics_step(int num)
         float gravity = sv_gravity ? sv_gravity->value : 800;
         bool hitsound = ev->velocity[2] < gravity * -0.1f;
 
-        q1_add_gravity(ev);
+        q1_add_gravity(num, ev);
         q1_check_velocity(ev);
         q1_fly_move(num, qvm.frametime);
         Q1_LinkEdict(num, true);

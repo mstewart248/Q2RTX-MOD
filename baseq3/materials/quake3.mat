@@ -2349,9 +2349,9 @@ models/players/doom/phobos_f:
 
 models/players/doom/red:
 	texture_base materialDev/models/players/doom/red.tga
-#	texture_normals materialDev/models/players/doom/red_n.png
-#	texture_roughness materialDev/models/players/doom/red_rough.png
-#	texture_metallic materialDev/models/players/doom/red_metal.png
+	texture_normals materialDev/models/players/doom/doom_n.png
+	texture_roughness materialDev/models/players/doom/doom_rough.png
+	texture_metallic materialDev/models/players/doom/doom_metal.png
 #	texture_height materialDev/models/players/doom/red_height.png
 #	texture_emissive materialDev/models/players/doom/red_light.png
 
@@ -4906,7 +4906,7 @@ models/weapons2/rocketl/rocketl:
 	texture_base materialDev/models/weapons2/rocketl/rocketl.jpg
 #	texture_normals materialDev/models/weapons2/rocketl/rocketl_n.png
 	texture_roughness materialDev/models/weapons2/rocketl/rocketl_rough.jpg
-	texture_metallic materialDev/models/weapons2/rocketl/rocketl_metal.jpg
+	texture_metallic materialDev/models/weapons2/rocketl/rocketl_metal.png
 #	texture_height materialDev/models/weapons2/rocketl/rocketl_height.png
 #	texture_emissive materialDev/models/weapons2/rocketl/rocketl_light.png
 

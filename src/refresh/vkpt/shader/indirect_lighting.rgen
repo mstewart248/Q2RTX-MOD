@@ -213,6 +213,10 @@ vec3 bounce_transparent_glow(Ray ray, float cone_base, float cone_spread, out fl
 
 			vec3 q3_albedo;
 			float q3_alpha;
+			// only the glow is wanted here: no vertex alpha (alphaGen vertex
+			// blends Team Arena's terrain, which does not glow), and no value
+			// held over the call (local memory, 11-21)
+			q3_vertex_alpha = 1.0;
 			if (!q3_program_material(t.material_id, t.positions * bary, tex_coord, vec2(0), vec2(0), lod,
 				n, ray.direction, minfo.base_texture, false, q3_albedo, glow, q3_alpha))
 				glow = sample_emissive_texture(t.material_id, minfo, tex_coord, vec2(0), vec2(0), lod);
@@ -901,6 +905,9 @@ indirect_lighting(
 			vec3 env = env_map(bounce_direction, true);
 
 			env *= global_ubo.pt_env_scale;
+			// the sky's light through the clouds over the point it left, as its sky
+			// light polygons give it (pt_q3_cloud_shadow_sky; q3_sky.glsl)
+			env *= q3_cloud_sky_shadow(position);
 			
 			if(!is_analytic_light)
 				bounce_contrib = bounce_throughput * env * indirect_specular_weight;

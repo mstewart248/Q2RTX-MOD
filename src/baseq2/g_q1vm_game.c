@@ -505,7 +505,14 @@ void Q1VM_ClientThink(edict_t *ent, usercmd_t *ucmd)
     }
 
     memset(&pm, 0, sizeof(pm));
-    client->ps.pmove.gravity = sv_gravity->value;
+    /* sv_gravity times the player's own .gravity, as Quake's SV_AddGravity:
+       hipnotic's trigger_setgravity rooms (QC_Gravity). It goes out in the
+       player state, so the client's prediction falls the same way. A short on
+       the wire: clamped, for a mod's extreme values. */
+    {
+        const float g = sv_gravity->value * QC_Gravity(num);
+        client->ps.pmove.gravity = (short)(g > 32767 ? 32767 : g < -32768 ? -32768 : g);
+    }
     pm.s = client->ps.pmove;
 
     for (i = 0; i < 3; i++) {

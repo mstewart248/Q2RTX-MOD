@@ -20,6 +20,7 @@ always executes before the frame's, on the same queue.
 */
 
 #include "d3d12pt.h"
+#include "../vkpt/material.h"   // MAT_SyncUploadScales (R_BeginFrame_D3D12)
 #include "common/cpuprof.h"     // Sys_Microseconds (vid_present_stats)
 #include "../../client/client.h"    // SCR_SetHudAlpha (R_BeginFrame_D3D12), as vkpt/main.c
 
@@ -286,6 +287,9 @@ static void R_BeginFrame_D3D12(void)
 
     // (the copies recorded here are the profiler's TEXTURE_UPLOAD)
     d3d12_timers_mark(PROFILER_TEXTURE_UPLOAD, PROFILER_START);
+    // a material's rough_scale / metal_scale / emissive_scale changed: those maps
+    // are made again at their new size, just below (vkpt/material.c)
+    MAT_SyncUploadScales();
     d3d12_textures_begin_frame();
     mark[marks++] = Sys_Microseconds();     // 7: textures
     // R_BeginFrame_RTX's vkpt_vertex_buffer_upload_models, after the textures

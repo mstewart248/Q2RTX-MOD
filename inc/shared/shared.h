@@ -811,7 +811,9 @@ typedef enum {
 typedef struct {
     pmtype_t    pm_type;
 
-    short       origin[3];      // 12.3
+    int         origin[3];      // 12.3 - an int, not stock's short: maps past +-4096
+                                // (Team Arena's mpterra1-3) wrapped. The wire stays
+                                // 16-bit on every other map (msg.c, MSG_SetWideCoords)
     short       velocity[3];    // 12.3
     byte        pm_flags;       // ducked, jump_held, etc
     byte        pm_time;        // each unit = 8 ms
@@ -1065,6 +1067,10 @@ enum {
 #define MZ_Q3_BFG           50
 // Quake III's grappling hook (g_q3weap.c, g_q3_grapple): appended
 #define MZ_Q3_GRAPPLE       51
+// Team Arena's guns (g_q3weap.c, on its maps): appended
+#define MZ_Q3_NAILGUN       52
+#define MZ_Q3_PROX          53
+#define MZ_Q3_CHAINGUN      54
 // Q2RTX
 
     MZ_SILENCED = 128,  // bit flag ORed with one of the above numbers
@@ -1357,6 +1363,8 @@ typedef enum {
 	//   TE_Q1_PARTICLE (64): the particle() builtin, [pos][char dir * 16 x3]
 	//                        [byte count][byte palette colour]
 	//   TE_Q1_MUZZLEFLASH (65): an EF_MUZZLEFLASH, [short entity]
+	//   TE_Q1_CLUSTER (66): a TE_Q1_EXPLOSION2 that a cluster grenade sent
+	//                       (rogue's multi-grenade bomblets), its payload
 	TE_Q1,
 	// A Quake III plasma ball that hit something before any frame carried it
 	// (g_q3weap.c: within its 100-unit prestep and first 100 ms, up to 300
@@ -1371,6 +1379,18 @@ typedef enum {
 	// bolt from the owner's chest to the hook, and the hook's light
 	// (q3weapons.c). Fork-local: append below, never above.
 	TE_Q3_GRAPPLE,
+	// Team Arena (g_ta.c, g_q3weap.c), fork-local: append below, never above.
+	// KAMIKAZE is the blast's [pos], its sphere and shockwaves drawn by the
+	// client over two seconds; NAIL a nail into a wall, TE_GUNSHOT's
+	// [pos][dir]; PROX_EXPLOSION a prox mine going off, [pos] (the grenade's
+	// look with its own sound); JUICED the invulnerability sphere a prox mine
+	// burst, [pos]. CHAINGUN is a chaingun bullet on a wall, [pos][dir]:
+	// TE_Q3_BULLET with the chaingun's own hit sounds.
+	TE_TA_KAMIKAZE,
+	TE_TA_NAIL,
+	TE_TA_PROX_EXPLOSION,
+	TE_TA_JUICED,
+	TE_TA_CHAINGUN,
 
     TE_NUM_ENTITIES
 } temp_event_t;
@@ -1392,6 +1412,7 @@ typedef enum {
 #define TE_Q1_BEAM          13
 #define TE_Q1_PARTICLE      64
 #define TE_Q1_MUZZLEFLASH   65
+#define TE_Q1_CLUSTER       66
 
 // TE_DAMAGE_INDICATOR: at most this many sources per packet, and the bits of
 // each source's first byte
@@ -1659,6 +1680,17 @@ typedef enum {
 // (Q1_EF_* in entity_state_t below) instead of a model; and TE_Q1 temp
 // entities follow. Empty on every other map.
 #define CS_Q1VM                 (CS_GENERAL + 6)
+
+// Set by this tree's baseq2 game on Team Arena's maps (g_ta.c), for the
+// client's Team Arena HUD (hud_q3.c): "<gametype> <limit> <red score> <blue
+// score> <red flag> <blue flag> <white flag>" - Quake III's gametype numbers,
+// a team flag 0 at its stand, 1 carried, 2 dropped; the white flag 0 at its
+// stand, 2 red has it, 3 blue has it, 4 dropped. Empty on every other map.
+// CS_TA_LOCATIONS + n: the map's target_location names (Quake III's
+// CS_LOCATIONS), which its "ta_tinfo" lines give as n + 1.
+#define CS_TA_HUD               (CS_GENERAL + 7)
+#define CS_TA_LOCATIONS         (CS_GENERAL + 16)
+#define MAX_TA_LOCATIONS        64
 
 // what an entity's modelindex4 means under CS_Q1VM: Quake 1's lights, which
 // Quake II's effects have no room for (its trails take EF_ bits as usual)

@@ -248,6 +248,7 @@ static struct {
     // previous two
     ID3D12Resource      *light_stats[NUM_LIGHT_STATS_BUFFERS];
     uint64_t            light_stats_size;
+    uint64_t            light_stats_header_size;    // bytes at the start never cleared (the layout's header)
     bool                light_stats_fresh;  // a new map: clear all three
 
     // the G-buffer
@@ -2373,6 +2374,16 @@ bool d3d12_world_load(d3d12_world_map_t *map)
     for (int i = 0; i < NUM_LIGHT_STATS_BUFFERS; i++)
         d3d12_set_write_buffer(&w.vertex_buffer_set, LIGHT_STATS_BUFFER_BINDING_IDX, i, w.light_stats[i], 0,
                                w.light_stats[i] ? w.light_stats_size : 0);
+    // THE LIGHT STATISTICS' LAYOUT (vkpt vertex_buffer.c): where each cluster's
+    // counts start, in front of them in each buffer - written once, never cleared
+    w.light_stats_header_size = 0;
+    if (w.light_stats[0] && map->light_stats_header && map->light_stats_header_words) {
+        w.light_stats_header_size = min((uint64_t)map->light_stats_header_words * sizeof(uint32_t), w.light_stats_size);
+        for (int i = 0; i < NUM_LIGHT_STATS_BUFFERS; i++)
+            d3d12_upload_buffer(w.light_stats[i], 0, map->light_stats_header, w.light_stats_header_size);
+        d3d12_upload_flush();
+        d3d12_wait_idle();
+    }
     w.light_stats_fresh = true;
     // a new map: the eye adapts afresh (vkpt_begin_registration's request)
     w.tm_reset = true;
@@ -3026,11 +3037,13 @@ bool d3d12_world_render(ID3D12GraphicsCommandList4 *cmd, const d3d12_world_frame
         transition(cmd, w.tr[D3D12_TR_INDICES], D3D12_RESOURCE_STATE_COMMON,
                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
-    // this frame's light statistics start from zero (vkpt_light_buffer_upload_to_staging's fill)
-    if (w.light_stats[0]) {
+    // this frame's light statistics start from zero (vkpt_light_buffer_upload_to_staging's
+    // fill) - the counts only, after the layout's header (THE LIGHT STATISTICS' LAYOUT)
+    if (w.light_stats[0] && w.light_stats_size > w.light_stats_header_size) {
         for (int i = 0; i < NUM_LIGHT_STATS_BUFFERS; i++)
             if (w.light_stats_fresh || i == (int)(ubo->current_frame_idx % NUM_LIGHT_STATS_BUFFERS))
-                d3d12_clear_buffer(cmd, w.light_stats[i], w.light_stats_size, w.zero_buffer);
+                d3d12_clear_buffer_range(cmd, w.light_stats[i], w.light_stats_header_size,
+                                         w.light_stats_size - w.light_stats_header_size, w.zero_buffer);
         w.light_stats_fresh = false;
     }
 

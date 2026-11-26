@@ -309,6 +309,8 @@ static DXGI_FORMAT image_format(const image_t *image, int *bytes_per_pixel)
    - a linear (not sRGB) normal map (IF_NORMAL_MAP): renormalised first, as
      normalize_normal_map.comp does to vkpt's level 0, so the chain is built from that;
      pix_data keeps what was loaded (materials read it);
+   - a material's rough_scale / metal_scale / emissive_scale (vkpt_image_upload_scale):
+     level 0 is pix_data with every texel an N x N block, pix_data again as loaded;
    - everything else: the linear blit chain (mipgen.c), filtered in linear light for
      sRGB images.
    build_chain makes all of it but level 0 as loaded into one buffer, level after level,
@@ -317,27 +319,32 @@ static DXGI_FORMAT image_format(const image_t *image, int *bytes_per_pixel)
 typedef struct {
     int     w, h, bpp, levels;
     bool    max_mips, normalize, srgb;
+    int     scale;          // vkpt_image_upload_scale: w x h is pix_data's size times this
+    bool    own0;           // level 0 is made (renormalised or upscaled), first in the chain buffer
 } chain_t;
 
 static bool chain_of(const image_t *image, chain_t *c)
 {
     image_format(image, &c->bpp);
-    c->w = image->upload_width;
-    c->h = image->upload_height;
+    c->scale = vkpt_image_upload_scale(image);
+    c->w = image->upload_width * c->scale;
+    c->h = image->upload_height * c->scale;
     if (c->w <= 0 || c->h <= 0)
         return false;
     c->levels = vkpt_image_num_miplevels(image);
     c->max_mips = vkpt_image_has_max_mips(image);
     c->normalize = !c->max_mips && (image->flags & IF_NORMAL_MAP) && !image->is_srgb && c->bpp == 4;
     c->srgb = image->is_srgb && c->bpp == 4;
+    c->own0 = c->normalize || c->scale > 1;
     return true;
 }
 
-// build_chain's buffer: the renormalised level 0 of a normal map, then levels 1 and
-// down, tightly packed. 0 for a texture that is level 0 as loaded and nothing else.
+// build_chain's buffer: a level 0 made from pix_data (a normal map's renormalised,
+// an upscaled map's blocks), then levels 1 and down, tightly packed. 0 for a texture
+// that is level 0 as loaded and nothing else.
 static size_t chain_bytes(const chain_t *c)
 {
-    size_t total = c->normalize ? (size_t)c->w * c->h * 4 : 0;
+    size_t total = c->own0 ? (size_t)c->w * c->h * c->bpp : 0;
     int lw = c->w, lh = c->h;
     for (int mip = 1; mip < c->levels; mip++) {
         lw = lw > 1 ? lw >> 1 : lw;
@@ -352,17 +359,24 @@ static size_t chain_bytes(const chain_t *c)
 static void build_chain(const image_t *image, const chain_t *c, uint8_t *out)
 {
     const uint8_t *level = image->pix_data;
-    if (c->normalize) {
+    if (c->own0) {
         // pix_data keeps what was loaded: the materials read it
-        memcpy(out, level, (size_t)c->w * c->h * 4);
-        d3d12_mip_normalize_normals(out, (size_t)c->w * c->h);
+        vkpt_image_expand_nearest(level, image->upload_width, image->upload_height, c->bpp, c->scale, out);
+        if (c->normalize)
+            d3d12_mip_normalize_normals(out, (size_t)c->w * c->h);
         level = out;
-        out += (size_t)c->w * c->h * 4;
+        out += (size_t)c->w * c->h * c->bpp;
     }
+    // an upscale of 2 or 4: level k is pix_data at scale >> k - exactly what averaging
+    // the blocks above would give, without averaging 16 times the texels
+    const bool pow2 = c->scale > 1 && (c->scale & (c->scale - 1)) == 0 && !c->normalize && !c->max_mips;
     int lw = c->w, lh = c->h;
     for (int mip = 1; mip < c->levels; mip++) {
         const int nw = lw > 1 ? lw >> 1 : lw, nh = lh > 1 ? lh >> 1 : lh;
-        if (c->max_mips)
+        if (pow2 && (c->scale >> mip) >= 1)
+            vkpt_image_expand_nearest(image->pix_data, image->upload_width, image->upload_height, c->bpp,
+                                      c->scale >> mip, out);
+        else if (c->max_mips)
             vkpt_downsample_max(level, lw, lh, out, nw, nh, c->bpp);
         else
             d3d12_mip_downsample(level, lw, lh, out, nw, nh, c->bpp, c->srgb);
@@ -370,6 +384,19 @@ static void build_chain(const image_t *image, const chain_t *c, uint8_t *out)
         out += (size_t)nw * nh * c->bpp;
         lw = nw;
         lh = nh;
+    }
+}
+
+// Level 0 of an upscaled image straight from pix_data into rows (pitch) bytes apart:
+// the way in when there was no memory for its chain (prep_texture)
+static void expand_rows(uint8_t *out, size_t pitch, UINT rows, const image_t *image, const chain_t *c)
+{
+    const size_t in_row = (size_t)image->upload_width * c->bpp;
+    for (UINT y = 0; y < rows && y < (UINT)c->h; y++) {
+        const uint8_t *in = image->pix_data + (size_t)(y / c->scale) * in_row;
+        uint8_t *o = out + (size_t)y * pitch;
+        for (int x = 0; x < c->w; x++, o += c->bpp)
+            memcpy(o, in + (size_t)(x / c->scale) * c->bpp, c->bpp);
     }
 }
 
@@ -381,7 +408,12 @@ static bool upload_levels(ID3D12Resource *res, const image_t *image, const chain
     if (bytes && !chain) {
         own = malloc(bytes);
         if (!own) {
-            // level 0 as loaded beats no texture at all
+            // level 0 as loaded beats no texture at all - but an upscaled texture's
+            // level 0 is not pix_data, and reading it at that size would run off its end
+            if (c->scale > 1) {
+                Com_EPrintf("D3D12: %s: no memory for its %dx upscale\n", image->name, c->scale);
+                return false;
+            }
             const bool ok = d3d12_upload_subresource(res, 0, image->pix_data, c->w, c->h, c->bpp);
             return ok && c->levels == 1;
         }
@@ -389,8 +421,8 @@ static bool upload_levels(ID3D12Resource *res, const image_t *image, const chain
         chain = own;
     }
 
-    const uint8_t *level0 = c->normalize ? chain : image->pix_data;
-    const uint8_t *next = chain ? chain + (c->normalize ? (size_t)c->w * c->h * 4 : 0) : NULL;
+    const uint8_t *level0 = c->own0 ? chain : image->pix_data;
+    const uint8_t *next = chain ? chain + (c->own0 ? (size_t)c->w * c->h * c->bpp : 0) : NULL;
     bool ok = d3d12_upload_subresource(res, 0, level0, c->w, c->h, c->bpp);
     int lw = c->w, lh = c->h;
     for (int mip = 1; mip < c->levels && ok; mip++) {
@@ -581,8 +613,8 @@ static void prep_texture(void *ctx, int k)
     UINT64 row_size[PREP_MAX_LEVELS];
     ID3D12Device5_GetCopyableFootprints(d3d.device, &j->desc, 0, (UINT)c->levels, 0, fp, rows, row_size, NULL);
 
-    const uint8_t *level = c->normalize && chain ? chain : image->pix_data;
-    const uint8_t *next = chain ? chain + (c->normalize ? (size_t)c->w * c->h * 4 : 0) : NULL;
+    const uint8_t *level = c->own0 && chain ? chain : image->pix_data;
+    const uint8_t *next = chain ? chain + (c->own0 ? (size_t)c->w * c->h * c->bpp : 0) : NULL;
     int lw = c->w, lh = c->h;
     for (int mip = 0; mip < j->levels; mip++) {
         if (mip) {
@@ -592,6 +624,11 @@ static void prep_texture(void *ctx, int k)
             next += (size_t)lw * lh * c->bpp;
         }
         uint8_t *out = b->upload + j->upload_at + fp[mip].Offset;
+        if (!mip && level == image->pix_data && c->scale > 1) {
+            // no chain: an upscaled level 0 made straight from pix_data
+            expand_rows(out, (size_t)fp[0].Footprint.RowPitch, rows[0], image, c);
+            continue;
+        }
         const size_t pitch = (size_t)lw * c->bpp;
         const size_t copy = pitch < (size_t)row_size[mip] ? pitch : (size_t)row_size[mip];
         for (UINT y = 0; y < rows[mip] && y < (UINT)lh; y++)

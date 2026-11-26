@@ -51,6 +51,12 @@ colour and texture-coordinate matrices; what is left here depends on the hit.
 // opaque. primary_rays / reflect_refract take it as the triangle's alpha.
 float q3_surface_alpha = -1.0;
 
+// The map's vertex alpha at this hit, set by the caller before
+// q3_program_material from the triangle's corners (Triangle.custom_w holds 1 -
+// it; bsp_mesh.c corner_fade). An alphaGen vertex stage's alpha is multiplied
+// by it - how Team Arena's terrain fades one rock into the next. 1 elsewhere.
+float q3_vertex_alpha = 1.0;
+
 /* Set by q3_program_material under pt_q3_env_shine (Q3P_PROG_SHINE, see
    constants.h): whether it is on for this surface, how much its reflection-map
    stages showed at this hit (0..1), and whether the shader is metal.
@@ -422,6 +428,10 @@ bool q3_program_material(
 
 		vec3 rgb = tex.rgb * color.rgb;
 		float a = tex.a * color.a;
+		if ((flags & Q3P_STAGE_VERTEX_ALPHA) != 0u)
+			a *= q3_vertex_alpha;
+		else if ((flags & Q3P_STAGE_ONE_MINUS_VERTEX_ALPHA) != 0u)
+			a *= 1.0 - q3_vertex_alpha;
 
 		uint alpha_func = (info.y >> 8) & 3u;
 		if (alpha_func == 1u && !(a > 0.0))

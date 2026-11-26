@@ -992,6 +992,7 @@ enum {
 int vkpt_image_sampler_kind(const image_t *q_img, int pt_nearest, int bilerp_chars, int bilerp_pics);
 image_t *vkpt_fake_emissive_texture(image_t *image, int bright_threshold_int);
 image_t *vkpt_alpha_mask_texture(image_t *image, int func);
+image_t *vkpt_colour_mask_texture(image_t *image, int threshold);
 image_t *vkpt_solid_texture(image_t *image, const char *tag, byte r, byte g, byte b);
 image_t *vkpt_solid_texture_named(image_t *like, imagetype_t type, const char *name, byte r, byte g, byte b);
 void vkpt_extract_emissive_texture_info(image_t *image);
@@ -1173,6 +1174,10 @@ bool vkpt_caustics_material(const struct pbr_material_s *mat);
 VkResult vkpt_light_buffer_upload_staging(VkCommandBuffer cmd_buf);
 VkResult vkpt_light_buffers_create(bsp_mesh_t *bsp_mesh);
 VkResult vkpt_light_buffers_destroy(void);
+// the light statistics buffers' layout (shader/constants.h; both renderers): their
+// size in words, and the header to put at the start of each (header_words of it)
+uint64_t vkpt_light_stats_words(const bsp_mesh_t *bsp_mesh, uint32_t *header_words);
+void vkpt_light_stats_header(const bsp_mesh_t *bsp_mesh, uint32_t *header);
 bool vkpt_model_is_static(const model_t* model);
 const model_vbo_t* vkpt_get_model_vbo(const model_t* model);
 

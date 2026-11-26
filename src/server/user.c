@@ -317,7 +317,10 @@ void SV_New_f(void)
     MSG_WriteLong(sv_client->protocol == PROTOCOL_VERSION_Q2PRO ?
                   PROTOCOL_VERSION_OVERDRIVE : sv_client->protocol);
     MSG_WriteLong(sv_client->spawncount);
-    MSG_WriteByte(0);   // no attract loop
+    // never an attract loop. Bit 1 says this map's coordinates are 32-bit
+    // (common/msg.c, SV_WideCoords): clients ignore this byte otherwise, so
+    // every other map's serverdata is what it was
+    MSG_WriteByte(msg_write_wide ? 2 : 0);
     MSG_WriteString(sv_client->gamedir);
     if (sv.state == ss_pic || sv.state == ss_cinematic)
         MSG_WriteShort(-1);

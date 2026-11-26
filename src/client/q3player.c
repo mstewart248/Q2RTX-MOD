@@ -47,6 +47,7 @@ holds it. cl_q3_gun_offset / cl_q3_gun_angles / cl_q3_gun_scale tune it.
 
 #include "client.h"
 #include "format/md3.h"
+#include "shared/ta_characters.h"
 
 static cvar_t   *cl_q3_gun_offset;
 static cvar_t   *cl_q3_gun_angles;
@@ -77,6 +78,7 @@ typedef struct {
 
 struct q3player_s {
     char        name[MAX_QPATH];
+    char        body[MAX_QPATH];    // its folder: its own name, or a Team Arena character's body
     char        sex;                // 'm', 'f', 'n'
     bool        fixedlegs, fixedtorso;
     vec3_t      headoffset;         // the HUD head's nudge (cg_draw.c CG_DrawHead)
@@ -117,11 +119,27 @@ bool Q3P_ModelExists(const char *model)
     static const char *const files[] = { "animation.cfg", "lower.md3", "upper.md3", "head.md3" };
     int i;
 
+    const ta_character_t *ta;
+
     if (!q3p_valid_name(model))
         return false;
 
     if (Q_concat(path, sizeof(path), "players/", model, "/tris.md2") >= sizeof(path) || FS_FileExists(path))
         return false;
+
+    // a Team Arena character: its body's three files, its own head
+    // (shared/ta_characters.h)
+    ta = TA_Character(model);
+    if (ta) {
+        for (i = 0; i < q_countof(files) - 1; i++) {
+            if (Q_concat(path, sizeof(path), "models/players/", ta->body, "/", files[i]) >= sizeof(path))
+                return false;
+            if (!FS_FileExists(path))
+                return false;
+        }
+        Q_snprintf(path, sizeof(path), "models/players/heads/%s/%s.md3", ta->name, ta->name);
+        return FS_FileExists(path);
+    }
 
     for (i = 0; i < q_countof(files); i++) {
         if (Q_concat(path, sizeof(path), "models/players/", model, "/", files[i]) >= sizeof(path))
@@ -150,6 +168,14 @@ int Q3P_SkinList(const char *model, char (*out)[MAX_QPATH], int max)
 
     if (max < 1 || !q3p_valid_name(model))
         return 0;
+
+    // a Team Arena character, or one of their bodies: the same fixed list,
+    // so a body patched once serves every head on it
+    if (TA_Character(model)) {
+        for (i = 0; i < TA_NUM_SKINS && count < max; i++)
+            TA_SkinName(i, out[count++], MAX_QPATH);
+        return count;
+    }
 
     Q_concat(path, sizeof(path), "models/players/", model, "/lower_default.skin");
     if (FS_FileExists(path))
@@ -187,6 +213,23 @@ int Q3P_SkinList(const char *model, char (*out)[MAX_QPATH], int max)
         qsort(out + start, count - start, MAX_QPATH, skincmp);
     }
     return count;
+}
+
+void Q3P_IconPath(const char *model, const char *skin, char *out, size_t size)
+{
+    const ta_character_t *ta = TA_Character(model);
+
+    if (ta) {
+        int team, color;
+
+        if (!TA_ParseSkin(skin, &team, &color))
+            color = 0;
+        Q_snprintf(out, size, "models/players/heads/%s/icon_%s.tga", ta->name, ta_colors[color]);
+        return;
+    }
+    Q_snprintf(out, size, "models/players/%s/icon_%s.tga", model, skin);
+    if (!FS_FileExists(out))
+        Q_snprintf(out, size, "models/players/%s/icon_default.tga", model);
 }
 
 static bool q3p_parse_anims(q3player_t *q3, const char *path, const char *text)
@@ -349,6 +392,8 @@ static q3player_t *q3p_load(const char *model)
     q3 = Z_Mallocz(sizeof(*q3));
     Q_strlcpy(q3->name, model, sizeof(q3->name));
     Q_strlwr(q3->name);
+    Q_strlcpy(q3->body, TA_Character(model) ? TA_Character(model)->body : q3->name, sizeof(q3->body));
+    model = q3->body;   // the files below are the body's
 
     Q_concat(path, sizeof(path), "models/players/", model, "/animation.cfg");
     if (FS_LoadFile(path, (void **)&text) < 0 || !text) {
@@ -384,7 +429,7 @@ static q3player_t *q3p_load(const char *model)
     q3->tag_head = tags[0];
     q3->tag_weapon = tags[1];   // NULL: no gun drawn
 
-    q3->numskins = Q3P_SkinList(model, q3->skins, Q3P_MAX_SKINS);
+    q3->numskins = Q3P_SkinList(q3->name, q3->skins, Q3P_MAX_SKINS);
     if (!q3->numskins) {
         // no .skin at all: the md3s' own shaders
         Q_strlcpy(q3->skins[0], "default", MAX_QPATH);
@@ -488,11 +533,14 @@ bool Q3P_Register(q3pmodel_t *m, const char *model, const char *skin)
     if (!m->q3)
         return false;
 
-    Q_concat(path, sizeof(path), "models/players/", m->q3->name, "/lower.md3");
+    Q_concat(path, sizeof(path), "models/players/", m->q3->body, "/lower.md3");
     m->lower = R_RegisterModel(path);
-    Q_concat(path, sizeof(path), "models/players/", m->q3->name, "/upper.md3");
+    Q_concat(path, sizeof(path), "models/players/", m->q3->body, "/upper.md3");
     m->upper = R_RegisterModel(path);
-    Q_concat(path, sizeof(path), "models/players/", m->q3->name, "/head.md3");
+    if (TA_Character(m->q3->name))
+        Q_snprintf(path, sizeof(path), "models/players/heads/%s/%s.md3", m->q3->name, m->q3->name);
+    else
+        Q_concat(path, sizeof(path), "models/players/", m->q3->name, "/head.md3");
     m->head = R_RegisterModel(path);
 
     if (!m->lower || !m->upper || !m->head) {
@@ -532,13 +580,47 @@ typedef struct {
     char    shader[Q3P_MAX_SURFS][MD3_MAX_PATH];
 } q3pskinfile_t;
 
+/*
+A Team Arena character's .skin for one part (shared/ta_characters.h): the
+head's in its heads folder by colour; the body's in its team's folder, or the
+body's own at the top. A colour a team lacks (The Fallen's blue for Janet)
+takes that team's default, then the body's. False for any other model.
+*/
+static bool q3p_ta_skin_path(const char *model, const char *part, const char *skin, char *path, size_t size)
+{
+    const ta_character_t    *ta = TA_Character(model);
+    int                     team, color;
+
+    if (!ta || !TA_ParseSkin(skin, &team, &color))
+        return false;
+
+    if (!Q_stricmp(part, "head")) {
+        Q_snprintf(path, size, "models/players/heads/%s/head_%s.skin", ta->name, ta_colors[color]);
+        if (!FS_FileExists(path))
+            Q_snprintf(path, size, "models/players/heads/%s/head_default.skin", ta->name);
+        return true;
+    }
+
+    if (team >= 0) {
+        Q_snprintf(path, size, "models/players/%s/%s/%s_%s.skin", ta->body, ta_team_dirs[team], part, ta_colors[color]);
+        if (FS_FileExists(path))
+            return true;
+        Q_snprintf(path, size, "models/players/%s/%s/%s_default.skin", ta->body, ta_team_dirs[team], part);
+        if (FS_FileExists(path))
+            return true;
+    }
+    Q_snprintf(path, size, "models/players/%s/%s_default.skin", ta->body, part);
+    return true;
+}
+
 static void q3p_load_skin(const char *model, const char *part, const char *skin, q3pskinfile_t *sf)
 {
     char    path[MAX_QPATH];
     char    *text, *line, *next;
 
     sf->count = 0;
-    Q_snprintf(path, sizeof(path), "models/players/%s/%s_%s.skin", model, part, skin);
+    if (!q3p_ta_skin_path(model, part, skin, path, sizeof(path)))
+        Q_snprintf(path, sizeof(path), "models/players/%s/%s_%s.skin", model, part, skin);
     if (FS_LoadFile(path, (void **)&text) < 0 || !text)
         return;
 
@@ -603,7 +685,21 @@ bool Q3P_PatchMD3(const char *path, byte **data, int *len)
     memcpy(model, s, slash - s);
     model[slash - s] = 0;
     s = slash + 1;
-    if (!Q_stricmp(s, "lower.md3"))
+    if (!Q_stricmp(model, "heads")) {
+        // a Team Arena character's head: models/players/heads/<name>/<name>.md3
+        const char *dot;
+
+        slash = strchr(s, '/');
+        if (!slash || slash == s || (size_t)(slash - s) >= sizeof(model))
+            return false;
+        memcpy(model, s, slash - s);
+        model[slash - s] = 0;
+        dot = strrchr(slash + 1, '.');
+        if (!TA_Character(model) || !dot || (size_t)(dot - (slash + 1)) != strlen(model) ||
+            Q_strncasecmp(slash + 1, model, strlen(model)) || Q_stricmp(dot, ".md3"))
+            return false;
+        strcpy(part, "head");
+    } else if (!Q_stricmp(s, "lower.md3"))
         strcpy(part, "lower");
     else if (!Q_stricmp(s, "upper.md3"))
         strcpy(part, "upper");
@@ -1450,6 +1546,10 @@ bool Q3P_SexedSound(const char *model, const char *base, char *out, size_t size)
     }
 
     if (Q_snprintf(out, size, "sound/player/%s/%s", q3->name, q3p_sounds[i].q3) < size
+        && FS_FileExists(out))
+        return true;
+    // a Team Arena character speaks in its body's voice (sound/player/james/)
+    if (Q_stricmp(q3->body, q3->name) && Q_snprintf(out, size, "sound/player/%s/%s", q3->body, q3p_sounds[i].q3) < size
         && FS_FileExists(out))
         return true;
 

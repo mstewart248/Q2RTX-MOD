@@ -96,6 +96,15 @@ typedef struct image_s {
 	// a Quake III alpha-test mask (vkpt_alpha_mask_texture) with no pixel that
 	// passes: Quake III never drew the surface
 	bool            alpha_mask_empty;
+	// The GPU texture is this many times pix_data's size, every texel a block of
+	// N x N (nearest-neighbour upscaling); 0 or 1 = as loaded. pix_data - what
+	// the materials, the light extraction and `mat author` read and paint - stays
+	// as loaded. Set from the materials' rough_scale / metal_scale /
+	// emissive_scale (material.c MAT_SyncUploadScales): texture filtering then
+	// blends only a thin edge between texels instead of across whole ones, so a
+	// low-resolution map keeps its texels crisp up close (Matt, 2026-11-25).
+	// vkpt_image_upload_scale (texture_mips.h) is what is actually used.
+	uint8_t         upload_scale;
 #else
     byte            *pixels[4]; // mip levels
 #endif

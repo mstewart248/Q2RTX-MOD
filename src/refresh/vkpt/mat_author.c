@@ -222,6 +222,7 @@ metallic"; and "the default roughness should be 1 and the default metalness 0")
 #include "vkpt.h"
 #include "material.h"
 #include "q3stages.h"
+#include "texture_mips.h"           // VKPT_UPLOAD_SCALE_MAX, vkpt_image_upload_scale: the upscale row
 #include "../../client/client.h"
 #include "../stb/stb_image_write.h"
 
@@ -343,6 +344,7 @@ enum {
 	W_GLASS_PAINT, W_WALL_PAINT,    // the glass mask: paint glass, or the wall round it (X swaps)
 	W_BEVEL,                        // normals out of / into the selection: how far in from its edge they lean
 	W_LEAN_OUT, W_LEAN_IN,          // ... and doing it
+	W_UPSCALE,                      // the map drawn 1..4x, nearest-neighbour (rough_scale & co)
 	W_SEL0,                      // ... W_SEL0 + SEL_*: the selection's shapes
 	W_STROKE0 = W_SEL0 + 4,         // ... W_STROKE0 + STROKE_*
 	W_STAGE_MAT = W_STROKE0 + NUM_STROKES,  // the material's own maps
@@ -712,6 +714,38 @@ static bool slot_offered(const pbr_material_t *mat, int slot)
 	if (slot != SLOT_GLASS)
 		return true;
 	return mat && mat->stained_glass && au.stage < 0;
+}
+
+/* THE MAP DRAWN UPSCALED (Matt, 2026-11-25): roughness, metallic and emissive
+   maps can be drawn 1..4 times their size, nearest-neighbour, so texture
+   filtering leaves their texels crisp up close (material.h rough_scale). The
+   map painted here stays its own size; only the texture on the GPU is bigger.
+   The panel's 'upscale' slider sets the material's rough_scale / metal_scale /
+   emissive_scale like a typed `mat` command, which Save writes into its .mat
+   entry. A Quake III stage's roughness and metallic maps follow the
+   material's. NULL / 1 for the slots without one. */
+static const char *slot_upscale_attr(int slot)
+{
+	switch (slot)
+	{
+	case SLOT_ROUGH:    return "rough_scale";
+	case SLOT_METAL:    return "metal_scale";
+	case SLOT_EMISSIVE: return "emissive_scale";
+	default:            return NULL;
+	}
+}
+
+static int slot_upscale(const pbr_material_t *mat, int slot)
+{
+	if (!mat)
+		return 1;
+	switch (slot)
+	{
+	case SLOT_ROUGH:    return max(mat->rough_scale, 1);
+	case SLOT_METAL:    return max(mat->metal_scale, 1);
+	case SLOT_EMISSIVE: return max(mat->emissive_scale, 1);
+	default:            return 1;
+	}
 }
 
 static int image_index(const image_t *img)
@@ -2793,9 +2827,10 @@ static void author_save(void)
 		saved++;
 	}
 
+	// the .mat entries: the maps made or moved, an upscale set (everything 'mat save' would write)
+	const bool wrote_mat = au.attr_changed;
 	if (au.attr_changed)
 	{
-		// the .mat entries: the maps made or moved (everything 'mat save' would write)
 		MAT_SaveToSourceFiles();
 		au.attr_changed = false;
 	}
@@ -2804,6 +2839,8 @@ static void author_save(void)
 		author_status("saved %d map(s), %d FAILED - see the console", saved, failed);
 	else if (saved)
 		author_status("saved %d map(s)%s", saved, repointed ? ", materials pointed at the new files" : "");
+	else if (wrote_mat)
+		author_status("no map painted - the .mat entry saved (see the console)");
 	else
 		author_status("nothing painted to save");
 }
@@ -5146,6 +5183,32 @@ bool MAT_AuthorMouseOverPanel(void)
 	return au.active && au.right_pan;
 }
 
+/* The 'upscale' slider: the material's rough_scale / metal_scale /
+   emissive_scale for the slot shown, as 'mat <attribute> N' would set it -
+   so Save writes it into the .mat entry (au.attr_changed). The texture is made
+   again at the new size before the next frame (material.c
+   MAT_SyncUploadScales); the map painted stays its own size. */
+static void upscale_set(int scale)
+{
+	const char *attr = slot_upscale_attr(au.slot);
+	if (!attr || !au.mat)
+		return;
+	scale = Q_clip(scale, 1, VKPT_UPLOAD_SCALE_MAX);
+	if (scale == slot_upscale(au.mat, au.slot))
+		return;
+	MAT_CommandFor(au.mat, va("%s %d", attr, scale));
+	au.attr_changed = true;
+	const image_t *img = author_image();
+	if (scale <= 1)
+		author_status("%s map drawn at its own size, filtered - Save writes %s 1", slot_word[au.slot], attr);
+	else if (img && img->upload_width > 0)
+		author_status("%s map drawn %dx: %dx%d texels in blocks of %dx%d - Save writes %s %d", slot_word[au.slot],
+			scale, img->upload_width, img->upload_height, scale, scale, attr, scale);
+	else
+		author_status("%s %d: the %s map is drawn %dx once it has one - Save writes it", attr, scale,
+			slot_word[au.slot], scale);
+}
+
 /* THE PANEL'S NUMBERS. Every slider - and the normal's direction dial - is a
    number in whole units: percent, texels, degrees. Beside each is a box with
    it, to click and type into (edit_*); the slider snaps to it, and the wheel
@@ -5246,6 +5309,16 @@ static bool field_get(int id, field_t *f)
 		f->name = glow_view() ? "purple over what doesn't glow" : "map over the base";
 		f->v = (glow_view() ? au.glow_veil : au.layer_alpha) * 100.f;
 		return true;
+	case W_UPSCALE:
+		// the map drawn 1..4 times its size, nearest-neighbour (rough_scale & co)
+		if (!slot_upscale_attr(au.slot) || !au.mat)
+			return false;
+		f->name = "upscale";
+		f->unit = "x";
+		f->lo = 1.f;
+		f->hi = (float)VKPT_UPLOAD_SCALE_MAX;
+		f->v = (float)slot_upscale(au.mat, au.slot);
+		return true;
 	case W_LIGHT:
 		// the flashlight's brightness: 100% = the game's own flashlight
 		light_cvars();
@@ -5300,6 +5373,7 @@ static void field_set(int id, float v)
 	case W_LAYER:     *(glow_view() ? &au.glow_veil : &au.layer_alpha) = v / 100.f; break;
 	case W_LIGHT:     Cvar_SetValue(mat_author_light_scale, v / 100.f, FROM_CONSOLE); break;
 	case W_DIAL:      au.normal_angle = v * (float)M_PI / 180.f; break;
+	case W_UPSCALE:   upscale_set((int)v); break;
 	default:          break;
 	}
 }
@@ -5596,7 +5670,7 @@ static void panel_press(int id)
 	case W_WALL_PAINT:  glass_paint_set(false); break;
 	case W_VALUE: case W_DIAL: case W_INTENSITY: case W_RED: case W_GREEN: case W_BLUE: case W_SIZE:
 	case W_FALLOFF: case W_TOOLOPT: case W_LAYER: case W_RADIUS: case W_RANGE_LO: case W_RANGE_HI:
-	case W_LIGHT: case W_BEVEL:
+	case W_LIGHT: case W_BEVEL: case W_UPSCALE:
 		au.drag = id;
 		drag_update(id);
 		break;
@@ -6129,6 +6203,30 @@ static float panel_rows(float x0, float y0, const under_t *under, qhandle_t font
 	}
 	}
 
+	/* roughness, metallic, emissive: the map drawn 1..4x its size, nearest-neighbour
+	   (rough_scale & co) - crisp texels up close with texture filtering on. What is
+	   painted stays the map's own size; the line under says what the GPU draws. */
+	if (slot_upscale_attr(au.slot))
+	{
+		const int up = slot_upscale(au.mat, au.slot);
+		const float lw = 11 * CHAR_WIDTH;
+		ui_text(x, y + 1.f, 0, va("upscale %dx", up), 10, font);
+		ui_slider_num(W_UPSCALE, x + lw + 3.f, y, iw - lw - 3.f, font);
+		y += line + 2.f;
+		const image_t *up_img = author_image();
+		const int now = up_img ? vkpt_image_upload_scale(up_img) : 1;
+		if (up_img && up_img->upload_width > 0 && (up > 1 || now > 1))
+		{
+			ui_text(x, y, UI_ALTCOLOR, now == up
+				? va("drawn %dx%d nearest, painted %dx%d", up_img->upload_width * now, up_img->upload_height * now,
+					up_img->upload_width, up_img->upload_height)
+				: now > up ? va("drawn %dx: another material asks it", now)
+				: va("drawn %dx: %d texels a side at most", now, VKPT_UPLOAD_SCALE_MAX_SIDE), max_chars, font);
+			y += line + 2.f;
+		}
+		y += 2.f;
+	}
+
 	// the tools
 	const float tw = (iw - (NUM_TOOLS - 1) * 3.f) / NUM_TOOLS;
 	for (int i = 0; i < NUM_TOOLS; i++)
@@ -6313,7 +6411,8 @@ static float panel_rows(float x0, float y0, const under_t *under, qhandle_t font
 	const int dirty = count_dirty();
 	char save_label[16];
 	Q_snprintf(save_label, sizeof(save_label), dirty ? "save %d" : "save", dirty);
-	ui_button(W_SAVE, x + 2 * (b4 + 4.f), y, b4, save_label, dirty > 0, font);
+	// lit too for a .mat change alone (the upscale slider)
+	ui_button(W_SAVE, x + 2 * (b4 + 4.f), y, b4, save_label, dirty > 0 || au.attr_changed, font);
 	ui_button(W_EXIT, x + 3 * (b4 + 4.f), y, b4, "exit", false, font);
 	y += line + 4.f;
 

@@ -113,3 +113,26 @@ textures/q1/window01_1#1224720c:
 	stained_glass 1
 	stained_light_height 1
 	stained_light_sun 1
+
+# instance of textures/q1/window01_1
+# hip2m2, created at (1066 -95 225)
+# Inherits everything from textures/q1/window01_1; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/q1/window01_1#43f3de18:
+#	texture_base materialDev/textures/q1/window01_1.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	light_factor 1
+	kind REGULAR
+	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+	stained_glass 1
+	stained_light_height 1
+	stained_light_sun 1

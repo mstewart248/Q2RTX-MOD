@@ -1019,6 +1019,7 @@ bool QC_LoadProgs(const char *episode)
     qc_def_t *d;
     qvm.fld_alpha = (d = QC_FindField("alpha")) && (d->type & ~QC_DEF_SAVEGLOBAL) == QC_ev_float ? d->ofs : -1;
     qvm.fld_scale = (d = QC_FindField("scale")) && (d->type & ~QC_DEF_SAVEGLOBAL) == QC_ev_float ? d->ofs : -1;
+    qvm.fld_gravity = (d = QC_FindField("gravity")) && (d->type & ~QC_DEF_SAVEGLOBAL) == QC_ev_float ? d->ofs : -1;
 
     Q1_InitBuiltins();
     QC_LoadLocalization(episode);

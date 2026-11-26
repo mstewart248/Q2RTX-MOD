@@ -569,6 +569,7 @@ static const spawn_field_t temp_fields[] = {
     {"notteam", STOFS(notteam), F_INT},
     {"notsingle", STOFS(notsingle), F_INT},
     {"gametype", STOFS(gametype), F_LSTRING},
+    {"notta", STOFS(notta), F_INT},
     {"model2", STOFS(model2), F_LSTRING},
     {"phase", STOFS(phase), F_FLOAT},
     {"music", STOFS(music), F_LSTRING},
@@ -1348,10 +1349,26 @@ void SpawnEntities(const char *mapname, const char *entities, const char *spawnp
     level.q1map = gi.cvar("sv_map_q1", "0", 0)->integer != 0;
     // the bot match's Quake III weapons and physics, before any item spawns
     Q3_LevelRules();
+    // a Team Arena map - one of baseq3/missionpack's, sv_map_q3 2 - and which
+    // of its games a CTF game is, before its entities pick theirs (g_ta.c)
+    level.ta_map = gi.cvar("sv_map_q3", "0", 0)->integer == 2;
+    // its skirmish, taken as the map loads: the menu clears ta_skirmish
+    // again once you are out of the game (client ui/q3sp.c). Not in a bot
+    // match (bot_match 1 or 2) - one started from the menu mid-skirmish runs
+    // its `map` with no disconnect between, so ta_skirmish is still 1
+    level.ta_skirmish = level.ta_map && deathmatch->value && gi.cvar("ta_skirmish", "0", 0)->integer &&
+                        !gi.cvar("bot_match", "0", 0)->integer;
+    level.ta_mode = TA_GameMode();
+    TA_LevelStart();
 
     // set client fields on player ents
     for (i = 0 ; i < game.maxclients ; i++)
         g_edicts[i + 1].client = game.clients + i;
+
+    // a Quake III map started for one of its demos (the attract loop's
+    // q3demo): only the world spawns, below, and the demo plays on it
+    // (g_q3demo.c). Every map comes through, to clear the last one's.
+    Q3Demo_SpawnEntities(mapname);
 
     // a Quake 1 map started for one of Quake's demos (the attract loop's
     // q1demo): the demo plays on it instead of its entities (g_q1demo.c)
@@ -1434,6 +1451,14 @@ void SpawnEntities(const char *mapname, const char *entities, const char *spawnp
             Q1_SpawnEntity(ent);    // the Quake 1 entities, translated
         else
             ED_CallSpawn(ent);
+
+        // a Quake III demo: the world (its sky, music, status bar, guns) and
+        // nothing else - what moves, the demo says (g_q3demo.c)
+        if (ent == g_edicts && Q3Demo_Active()) {
+            memset(&st, 0, sizeof(st));
+            Q3Demo_LevelStart();
+            return;
+        }
     }
 
     gi.dprintf("%i entities inhibited\n", inhibit);
@@ -1767,6 +1792,8 @@ void SP_worldspawn(edict_t *ent)
     // status bar program
     if (G_CTF())
         gi.configstring(CS_STATUSBAR, CTF_StatusBar(dm_statusbar));
+    else if (deathmatch->value && level.ta_map)
+        gi.configstring(CS_STATUSBAR, TA_StatusBar(dm_statusbar));     // g_ta.c
     else if (deathmatch->value)
         gi.configstring(CS_STATUSBAR, dm_statusbar);
     else
@@ -1865,8 +1892,10 @@ void SP_worldspawn(edict_t *ent)
     // WEAP_GRAPPLE (20): CTF_Precache, in a CTF game only
     if (G_CTF())
         CTF_Precache();
-    // WEAP_Q3_* (21..29): Quake III's guns, in a game with them (g_q3weap.c)
+    // WEAP_Q3_* (21..33): Quake III's guns, in a game with them (g_q3weap.c)
     Q3W_Precache();
+    // what Team Arena's games bring in mid-game (g_ta.c)
+    TA_Precache();
     // Quake's guns, in a game with them: Quake II's third-person models
     Q1W_Precache();
 

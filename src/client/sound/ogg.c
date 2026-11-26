@@ -54,6 +54,7 @@ static cvar_t *ogg_ignoretrack0;  /* Toggle track 0 playing */
 static cvar_t *ogg_volume;        /* Music volume. */
 static cvar_t* ogg_enable;        /* Music enable flag to toggle from the menu. */
 static cvar_t *ogg_q1_loudness;   /* LUFS a Quake 1 track is brought to, 0 = as recorded */
+static cvar_t *ogg_q1_boost;      /* dB a Quake 1 track plays over that, in OpenAL's float mix */
 static int ogg_curfile;           /* Index of currently played file. */
 static int ogg_numbufs;           /* Number of buffers for OpenAL */
 static int ogg_numsamples;        /* Number of sambles read from the current file */
@@ -573,7 +574,16 @@ static bool Q1_FindTrack(const char *episode, int track, char *out, size_t size)
  * track comes out a little under the target: id1's track 2 (-20 LUFS) at
  * -14.9, most at -12 to -13.5. A higher target only squashes them harder
  * (track 2 at -10 comes out at -14.1).
+ *
+ * Matt, 2026-11-25, at -12: "still needs to be a little bit more loud to match
+ * the sound effects". Louder in 16 bits is only more of that squashing, so
+ * ogg_q1_boost (dB, default 3) raises it AFTER the limiter, as the music
+ * source's gain in OpenAL's float mix (al.c lets the stream go past 1 for
+ * this). Peaks then pass full scale by up to the boost less 1 dB, and the
+ * output limiter OpenAL Soft is opened with (qal/fixed.c al_limiter) holds
+ * them there rather than the device clipping them.
  */
+#define Q1_BOOST_MAX_DB         12.0f
 #define Q1_LEVEL_STRETCHES      16
 #define Q1_LEVEL_STRETCH_SEC    2.5
 #define Q1_LEVEL_MAX_BLOCKS     512     // of 100 ms: 16 x 25, or all of a track up to 40 s
@@ -769,6 +779,15 @@ static float Q1_LevelDB(void)
 	return clamp(db, -Q1_LEVEL_MAX_DB, Q1_LEVEL_MAX_DB);
 }
 
+// ogg_q1_boost, in dB: what a Quake 1 track plays at over its level, as gain
+// on the music source (QUAKE 1 MUSIC LEVEL)
+static float Q1_BoostDB(void)
+{
+	float db = ogg_q1_boost->value;
+
+	return clamp(db, 0.0f, Q1_BOOST_MAX_DB);
+}
+
 static struct {
 	int     len;            // look-ahead in frames; 0 starts afresh
 	int     pos;
@@ -945,12 +964,18 @@ static OGG_Read(void)
 	{
 		ogg_numsamples += read_samples;
 
-		// a Quake 1 track at the loudness of Quake II's
+		float volume = S_GetLinearVolume(ogg_volume->value);
+
+		// a Quake 1 track at the loudness of Quake II's, then ogg_q1_boost
+		// over it in the float mix
 		if (ogg_curfile == OGG_Q1_MUSIC)
+		{
 			Q1_Level(samples, read_samples, ogg_file->channels, ogg_file->sample_rate);
+			volume *= powf(10.0f, Q1_BoostDB() / 20.0f);
+		}
 
 		S_RawSamples(read_samples, ogg_file->sample_rate, ogg_file->channels, ogg_file->channels,
-			(byte *)samples, S_GetLinearVolume(ogg_volume->value));
+			(byte *)samples, volume);
 	}
 	else
 	{
@@ -1208,10 +1233,11 @@ OGG_Info(void)
 			ogg_status == PLAY ? "Playing" : "Paused", q1_music.track, q1_music.path,
 			ogg_file ? stb_vorbis_get_sample_offset(ogg_file) : 0);
 		if (q1_music.lufs)
-			Com_Printf("Loudness: %.1f LUFS, played %+.1f dB (ogg_q1_loudness %s).\n",
-				q1_music.lufs, Q1_LevelDB(), ogg_q1_loudness->string);
+			Com_Printf("Loudness: %.1f LUFS, played %+.1f dB (ogg_q1_loudness %s), then %+.1f dB (ogg_q1_boost).\n",
+				q1_music.lufs, Q1_LevelDB(), ogg_q1_loudness->string, Q1_BoostDB());
 		else
-			Com_Printf("Loudness: not measured, played as recorded.\n");
+			Com_Printf("Loudness: not measured, played as recorded, then %+.1f dB (ogg_q1_boost).\n",
+				Q1_BoostDB());
 		return;
 	}
 
@@ -1448,6 +1474,8 @@ OGG_Init(void)
 	ogg_enable->changed = ogg_enable_changed;
 	// Quake II's and Quake III's music measure about -12 (QUAKE 1 MUSIC LEVEL)
 	ogg_q1_loudness = Cvar_Get("ogg_q1_loudness", "-12", CVAR_ARCHIVE);
+	// Matt, 2026-11-25: a little louder than that against the effects
+	ogg_q1_boost = Cvar_Get("ogg_q1_boost", "3", CVAR_ARCHIVE);
 
 	// Commands
 	Cmd_AddCommand("ogg", OGG_Cmd);

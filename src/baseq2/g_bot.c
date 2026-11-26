@@ -58,6 +58,7 @@ The settings file names its knobs but not what they do, so this reads them:
 
 #include "g_local.h"
 #include "shared/bot_roster.h"
+#include "shared/ta_characters.h"
 
 #define BOT_MAX_ROUTE       1024
 #define BOT_STEPS           4           // commands per server frame
@@ -269,6 +270,7 @@ typedef struct {
     bot_goal_t  goal;
     edict_t     *goal_item;
     vec3_t      goal_pos;
+    edict_t     *goal_touch;        // GOAL_CTF: to walk into, not just reach (Harvester's obelisk)
     float       goal_time;          // when it set out
     float       next_goal_time;
     int         route[BOT_MAX_ROUTE];
@@ -708,6 +710,22 @@ const char *Team_Skin(edict_t *ent, const char *skin)
     memcpy(model, skin, len);
     model[len] = 0;
 
+    // a Team Arena character in its team's uniform: the team its side plays
+    // as, g_redTeam / g_blueTeam (its skirmish sets them, client/ui/q3sp.c),
+    // or plain red and blue - Stroggs and Pagans (shared/ta_characters.h)
+    if (model[0] && TA_Character(model)) {
+        int team = TA_TeamIndex(gi.cvar(color == 'r' ? "g_redTeam" : "g_blueTeam", "", 0)->string);
+
+        if (team >= 0) {
+            char token[32];
+
+            TA_TeamToken(team, token, sizeof(token));
+            Q_snprintf(out, sizeof(out), "%s/%s_%s", model, token, color == 'r' ? "red" : "blue");
+            if (Bot_SkinExistsQ3(out))
+                return out;
+        }
+    }
+
     // a Quake III model (baseq3) has its own: red and blue
     if (model[0]) {
         Q_snprintf(out, sizeof(out), "%s/%s", model, color == 'r' ? "red" : "blue");
@@ -726,6 +744,44 @@ const char *Team_Skin(edict_t *ent, const char *skin)
 
     Q_snprintf(out, sizeof(out), "%s/ctf_%c", model, color);
     return out;
+}
+
+/*
+What a Team Arena demo's player wears (g_q3demo.c): the model its
+configstring names ("james/red"), in its team's uniform as Team_Skin dresses
+a Team Arena character - the team its side played as (the demo's g_redteam /
+g_blueteam), else plain red or blue. `team` is Quake III's: 1 red, 2 blue.
+*/
+const char *Team_DemoSkin(const char *skin, int team, const char *team_name)
+{
+    static char out[MAX_QPATH];
+    char        model[MAX_QPATH];
+    const char  *slash = strchr(skin, '/'), *color;
+    size_t      len = slash ? (size_t)(slash - skin) : strlen(skin);
+
+    if ((team != 1 && team != 2) || !len || len >= sizeof(model))
+        return skin;
+    color = team == 1 ? "red" : "blue";
+    memcpy(model, skin, len);
+    model[len] = 0;
+
+    if (TA_Character(model)) {
+        int index = TA_TeamIndex(team_name);
+
+        if (index >= 0) {
+            char token[32];
+
+            TA_TeamToken(index, token, sizeof(token));
+            Q_snprintf(out, sizeof(out), "%s/%s_%s", model, token, color);
+            if (Bot_SkinExistsQ3(out))
+                return out;
+        }
+    }
+
+    Q_snprintf(out, sizeof(out), "%s/%s", model, color);
+    if (Bot_SkinExistsQ3(out))
+        return out;
+    return skin;
 }
 
 /*
@@ -814,6 +870,15 @@ static bool Bot_SkinExistsQ3(const char *skin)
 
     if (gi.LoadFile(va("players/%s/tris.md2", model), NULL) >= 0)
         return false;
+    // a Team Arena character: a head on a shared body, in its fixed skins
+    // (shared/ta_characters.h; the client's q3player.c draws them)
+    if (TA_Character(model)) {
+        int team, color;
+
+        return TA_ParseSkin(slash + 1, &team, &color) &&
+               gi.LoadFile(va("models/players/%s/lower.md3", TA_Character(model)->body), NULL) >= 0 &&
+               gi.LoadFile(va("models/players/heads/%s/%s.md3", model, model), NULL) >= 0;
+    }
     return gi.LoadFile(va("models/players/%s/lower_%s.skin", model, slash + 1), NULL) >= 0;
 }
 
@@ -998,7 +1063,8 @@ static void Bot_ResetBrain(bot_t *b)
     b->q3_hurt = false;
 }
 
-// the Quake III bot this skin is, if any
+// the Quake III bot this skin is, if any (Team Arena's too: their character
+// files are named in its scripts/bots.txt, g_botchar.c)
 static const char *Bot_Q3Character(const char *skin)
 {
     int i;
@@ -1006,6 +1072,9 @@ static const char *Bot_Q3Character(const char *skin)
     for (i = 0; i < BOT_Q3_ROSTER_SIZE; i++)
         if (!Q_stricmp(bot_q3_roster[i].skin, skin))
             return bot_q3_roster[i].name;
+    for (i = 0; i < BOT_TA_ROSTER_SIZE; i++)
+        if (!Q_stricmp(bot_ta_roster[i].skin, skin))
+            return bot_ta_roster[i].name;
     return NULL;
 }
 
@@ -1136,6 +1205,11 @@ static bool Bot_Spawn(int i)
     return true;
 }
 
+// the name the next Bot_Add gives its bot in place of its skin's: Team
+// Arena's skirmish names its bots by their aliases - Darkangel is Janet's
+// model and character (teaminfo.txt, g_ta.c TA_SkirmishBot)
+static const char *bot_add_name;
+
 // q3skill: Quake III's skill for its bots' characters, 0 = skill's match
 static int Bot_Add(const char *want, int skill, int team, float q3skill)
 {
@@ -1163,7 +1237,11 @@ static int Bot_Add(const char *want, int skill, int team, float q3skill)
     }
 
     // named before it joins the bots, or its own name would clash with it
-    Bot_SkinName(skin, base, sizeof(base));
+    if (bot_add_name && *bot_add_name)
+        Q_strlcpy(base, bot_add_name, sizeof(base));
+    else
+        Bot_SkinName(skin, base, sizeof(base));
+    bot_add_name = NULL;
     Bot_UniqueName(base, name, sizeof(name));
 
     memset(&bots[i], 0, sizeof(bots[i]));
@@ -1380,6 +1458,32 @@ void Bot_LevelStart(void)
         }
     }
 
+    // Team Arena's skirmish: its two teams of characters, you on red, at its
+    // skill (g_ta.c; set up by its menu, client/ui/q3sp.c)
+    if (TA_SkirmishActive()) {
+        const char  *skin, *name;
+        int         team, slot;
+
+        roster_built = true;
+        for (i = 0; i < game.maxclients; i++)
+            if (bots[i].active)
+                Bot_Remove(i, NULL);
+        bots_pending = false;
+        bot_player_plan = G_TeamPlay() ? TEAM_RED : TEAM_NONE;
+
+        for (i = 0; TA_SkirmishBot(i, &skin, &team, &name); i++) {
+            bot_add_name = name;
+            slot = Bot_Add(skin, SP_BotSkillLevel(), G_TeamPlay() ? team : TEAM_NONE, SP_Skill());
+            bot_add_name = NULL;
+            if (slot < 0) {
+                gi.dprintf("Skirmish: couldn't add %s (%s)\n", name, skin);
+                continue;
+            }
+            bots[slot].campaign = true;
+            bots[slot].join_delay = 0.5f * (i + 1);
+        }
+    }
+
     if (bot_match->value && !roster_built) {
         int want = bot_match->integer == 2 ? bot_server_count->integer : bot_count->integer;
         int count = Bot_Clamp(want, 0, min(game.maxclients - 1, BOT_MAX_MATCH));
@@ -1434,6 +1538,9 @@ static bool Bot_ValidTarget(edict_t *self, edict_t *other)
     // co-op: the monsters, never a player
     if (Bot_CoopMatch())
         return Bot_ValidMonster(other);
+    // Team Arena's Overload: their obelisk, standing (Bot_PerceiveObelisk)
+    if (TA_EnemyObelisk(self, other))
+        return true;
     if (!other->client)
         return false;
     if (other->health <= 0 || other->deadflag || other->client->resp.spectator)
@@ -1600,6 +1707,47 @@ static void Bot_PerceiveMonsters(edict_t *self, bot_t *b, edict_t **best, float 
     }
 }
 
+/*
+Team Arena's Overload: the other team's obelisk is to be shot down. In view
+and in reach it is a target like a player - but a player as near or a
+little further off comes first.
+*/
+#define BOT_OBELISK_SIGHT   1500
+
+static void Bot_PerceiveObelisk(edict_t *self, bot_t *b, edict_t **best, float *best_dist)
+{
+    const bot_skill_t   *sk = &bot_skills[b->skill];
+    edict_t             *ob;
+    float               dist, rank;
+
+    if (!self->client)
+        return;
+    ob = TA_Obelisk(self->client->resp.team == TEAM_RED ? TEAM_BLUE : TEAM_RED);
+    if (!TA_EnemyObelisk(self, ob))
+        return;
+    dist = Distance(self->s.origin, ob->s.origin);
+    if (dist > BOT_OBELISK_SIGHT && ob != b->enemy)
+        return;
+    if (ob != b->enemy && !Bot_InView(self, b, ob->s.origin, sk->fov))
+        return;
+    if (!Bot_LineOfSight(self, ob))
+        return;
+
+    if (ob == b->enemy) {
+        if (!b->enemy_visible && level.time - b->enemy_seen > 0.5f)
+            b->enemy_visible_since = level.time;
+        b->enemy_visible = true;
+        b->enemy_seen = level.time;
+        VectorCopy(ob->s.origin, b->enemy_pos);
+    }
+
+    rank = dist * 2;
+    if (!*best || rank < *best_dist) {
+        *best = ob;
+        *best_dist = rank;
+    }
+}
+
 static void Bot_Perceive(edict_t *self, bot_t *b)
 {
     const bot_skill_t   *sk = &bot_skills[b->skill];
@@ -1685,6 +1833,8 @@ static void Bot_Perceive(edict_t *self, bot_t *b)
 
     if (Bot_CoopMatch())
         Bot_PerceiveMonsters(self, b, &best, &best_dist);
+    if (level.ta_mode == TA_MODE_OVERLOAD)
+        Bot_PerceiveObelisk(self, b, &best, &best_dist);
 
     // forget an enemy long out of sight
     if (b->enemy && (!Bot_ValidTarget(self, b->enemy) || level.time - b->enemy_seen > sk->forget)) {
@@ -1871,6 +2021,9 @@ static int Bot_MaxAmmo(const gclient_t *cl, int tag)
     case AMMO_PROX:         return cl->pers.max_prox;
     case AMMO_Q3_LIGHTNING: return cl->pers.max_q3_lightning;
     case AMMO_Q3_BFG:       return cl->pers.max_q3_bfg;
+    case AMMO_Q3_NAILS:     return cl->pers.max_q3_nails;
+    case AMMO_Q3_MINES:     return cl->pers.max_q3_mines;
+    case AMMO_Q3_BELT:      return cl->pers.max_q3_belt;
     }
     return 100;
 }
@@ -2470,6 +2623,15 @@ static bool Bot_CTFDefender(const edict_t *self)
     return rank % 3 == 1;
 }
 
+// Team Arena's HUD and voice chats (g_ta.c): a bot's job in CTF's games -
+// Quake III's teamTask, 1 offense, 2 defense; 0 for a player, or elsewhere
+int Bot_TeamTask(const edict_t *self)
+{
+    if (!self || !self->client || !Bot_IsBot(self) || !G_CTF())
+        return 0;
+    return Bot_CTFDefender(self) ? 2 : 1;
+}
+
 // something better than the blaster, with the ammo to fire it
 static bool Bot_Armed(const edict_t *self)
 {
@@ -2506,6 +2668,7 @@ static bool Bot_CTFObjective(edict_t *self, bot_t *b, edict_t *item, const vec3_
         return true;
     }
 
+    b->goal_touch = NULL;
     if (Bot_Dist2D(self->s.origin, pos) < 96 && fabsf(self->s.origin[2] - pos[2]) < 64)
         return false;
 
@@ -2515,6 +2678,139 @@ static bool Bot_CTFObjective(edict_t *self, bot_t *b, edict_t *item, const vec3_
         Bot_PlanTo(self, b, pos);
     }
     return true;
+}
+
+// walk right into (ent) - what scores on touch, as Harvester's obelisks do
+static bool Bot_TouchObjective(edict_t *self, bot_t *b, edict_t *ent)
+{
+    b->next_goal_time = level.time + 1;
+    if (b->goal != GOAL_CTF || b->goal_touch != ent || Distance(b->goal_pos, ent->s.origin) > 128) {
+        b->goal = GOAL_CTF;
+        b->goal_item = NULL;
+        Bot_PlanTo(self, b, ent->s.origin);
+    }
+    b->goal_touch = ent;
+    return true;
+}
+
+// a defender: about (spot), fighting what comes; close by, false
+static bool Bot_Guard(edict_t *self, bot_t *b, const vec3_t spot)
+{
+    VectorCopy(spot, b->leash);
+    b->leash_radius = 768;
+    if (Distance(self->s.origin, spot) > b->leash_radius)
+        return Bot_CTFObjective(self, b, NULL, spot);
+    return false;
+}
+
+// not with a blaster and a scratch: a gun and some health first
+static bool Bot_ReadyToAttack(edict_t *self, bot_t *b, bool fighting)
+{
+    return fighting || !bot_skills[b->skill].items ||
+           (Bot_Armed(self) && self->health >= self->max_health * 0.35f);
+}
+
+/*
+Team Arena's One Flag CTF (g_ctf.c CTF_PickupOneFlag): the white flag from
+the middle into their base, where their flag takes it. Carrying it, there;
+one of ours has it, with them; one of theirs, after them - the defenders
+waiting at our flag, where it is going. Lying about, it is whoever is near's.
+*/
+static bool Bot_OneFlagGoal(edict_t *self, bot_t *b, bool fighting, int team, int enemy)
+{
+    edict_t *stand = CTF_BaseFlag(TEAM_NONE), *dropped = CTF_DroppedFlag(TEAM_NONE);
+    edict_t *carrier = CTF_Carrier(TEAM_NONE);
+    edict_t *our_stand = CTF_BaseFlag(team), *their_stand = CTF_BaseFlag(enemy);
+    bool    defender = Bot_CTFDefender(self);
+
+    if (carrier == self) {
+        if (!their_stand)
+            return false;
+        if (Bot_ItemAvailable(their_stand))
+            return Bot_CTFObjective(self, b, their_stand, NULL);
+        return Bot_TouchObjective(self, b, their_stand);
+    }
+
+    if (carrier) {
+        if (defender && our_stand)
+            return Bot_Guard(self, b, our_stand->s.origin);
+        return Bot_CTFObjective(self, b, NULL, carrier->s.origin);
+    }
+
+    if (dropped && (!defender || Distance(self->s.origin, dropped->s.origin) < 1200))
+        return Bot_CTFObjective(self, b, dropped, NULL);
+
+    if (defender)
+        return our_stand ? Bot_Guard(self, b, our_stand->s.origin) : false;
+
+    if (!Bot_ReadyToAttack(self, b, fighting))
+        return false;
+    if (stand && Bot_ItemAvailable(stand))
+        return Bot_CTFObjective(self, b, stand, NULL);
+    return false;
+}
+
+// Harvester: the nearest skull lying about within (range) - one of theirs,
+// to bring in, before one of ours, to take away
+static edict_t *Bot_NearSkull(edict_t *self, bot_t *b, float range)
+{
+    int     team = self->client->resp.team, i;
+    edict_t *best = NULL;
+    float   best_rank = 0;
+
+    for (i = game.maxclients + 1; i < globals.num_edicts; i++) {
+        edict_t *it = g_edicts + i;
+        int     colour = TA_SkullTeam(it);
+        float   dist, rank;
+
+        if (colour == TEAM_NONE || !Bot_ItemAvailable(it) || Bot_Avoiding(b, it))
+            continue;
+        dist = Distance(self->s.origin, it->s.origin);
+        if (dist > range)
+            continue;
+        rank = colour == team ? dist * 2 : dist;
+        if (!best || rank < best_rank) {
+            best = it;
+            best_rank = rank;
+        }
+    }
+    return best;
+}
+
+/*
+Team Arena's Overload and Harvester: the obelisks. Defenders keep by ours.
+The rest go to theirs: in Overload to shoot it down (Bot_PerceiveObelisk
+makes it the target); in Harvester with the skulls they carry, picking up
+those lying about first - and with none, to the middle, where they come out.
+*/
+static bool Bot_ObeliskGoal(edict_t *self, bot_t *b, bool fighting, int team, int enemy)
+{
+    edict_t *ours = TA_Obelisk(team), *theirs = TA_Obelisk(enemy);
+    bool    defender = Bot_CTFDefender(self);
+
+    if (level.ta_mode == TA_MODE_HARVESTER) {
+        int     carried = self->client->ta_skulls;
+        edict_t *skull = Bot_NearSkull(self, b, carried ? 400 : defender ? 800 : 1500);
+
+        if (skull)
+            return Bot_CTFObjective(self, b, skull, NULL);
+        if (carried && theirs)
+            return Bot_TouchObjective(self, b, theirs);
+    }
+
+    if (defender)
+        return ours ? Bot_Guard(self, b, ours->s.origin) : false;
+    if (!Bot_ReadyToAttack(self, b, fighting))
+        return false;
+
+    if (level.ta_mode == TA_MODE_HARVESTER) {
+        edict_t *middle = TA_Obelisk(TEAM_NONE);
+
+        return middle ? Bot_CTFObjective(self, b, NULL, middle->s.origin) : false;
+    }
+    if (TA_EnemyObelisk(self, theirs))
+        return Bot_CTFObjective(self, b, NULL, theirs->s.origin);
+    return false;
 }
 
 static bool Bot_CTFGoal(edict_t *self, bot_t *b, bool fighting)
@@ -2529,6 +2825,12 @@ static bool Bot_CTFGoal(edict_t *self, bot_t *b, bool fighting)
     if (team != TEAM_RED && team != TEAM_BLUE)
         return false;
     enemy = team == TEAM_RED ? TEAM_BLUE : TEAM_RED;
+
+    // Team Arena's games (g_ta.c)
+    if (level.ta_mode == TA_MODE_ONEFLAG)
+        return Bot_OneFlagGoal(self, b, fighting, team, enemy);
+    if (level.ta_mode == TA_MODE_OVERLOAD || level.ta_mode == TA_MODE_HARVESTER)
+        return Bot_ObeliskGoal(self, b, fighting, team, enemy);
 
     our_stand = CTF_BaseFlag(team);         // our flag's stand, flag there or not
     our_dropped = CTF_DroppedFlag(team);    // our flag, lying out there
@@ -2862,6 +3164,9 @@ static bool Bot_GoalReached(edict_t *self, bot_t *b)
         return !b->goal_item || !Bot_ItemAvailable(b->goal_item);
     if (b->goal == GOAL_NONE)
         return true;
+    // something to walk into: until the errand changes (Bot_TouchObjective)
+    if (b->goal == GOAL_CTF && b->goal_touch)
+        return !b->goal_touch->inuse;
     // somewhere to wander or someone to chase: the end of the route will do
     if (b->route_len && b->route_pos >= b->route_len)
         return true;
@@ -3809,6 +4114,12 @@ static void Bot_Think(edict_t *self, bot_t *b)
         if (!moving && b->goal == GOAL_ITEM && b->goal_item && Bot_ItemAvailable(b->goal_item) &&
             Bot_Dist2D(self->s.origin, b->goal_item->s.origin) < 160) {
             Bot_Steer(self, b->goal_item->s.origin, wish);
+            moving = true;
+        }
+        // ... and into what an errand has to touch
+        if (!moving && b->goal == GOAL_CTF && b->goal_touch && b->goal_touch->inuse &&
+            Bot_Dist2D(self->s.origin, b->goal_touch->s.origin) < 160) {
+            Bot_Steer(self, b->goal_touch->s.origin, wish);
             moving = true;
         }
         // no mesh at all: straight at it

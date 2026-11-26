@@ -266,20 +266,28 @@ static bool SV_SinglePlayerMode(void)
     return !atoi(dm_s) && !atoi(co_s);
 }
 
-// the map SV_Q1Demo_f is starting is for a demo
+// the map SV_Q1Demo_f / SV_Q3Demo_f is starting is for a demo
 static bool sv_q1demo_next;
+static bool sv_q3demo_next;
 
 static void SV_Map(bool restart)
 {
     mapcmd_t    cmd;
     const bool  q1demo = sv_q1demo_next;
+    const bool  q3demo = sv_q3demo_next;
 
     sv_q1demo_next = false;
+    sv_q3demo_next = false;
     if (!q1demo) {
         // a demo that never got to its map is not this map's
         cvar_t *demo = Cvar_FindVar("g_q1_demo");
         if (demo && demo->string[0])
             Cvar_Set("g_q1_demo", "");
+    }
+    if (!q3demo) {
+        cvar_t *demo = Cvar_FindVar("g_q3_demo");
+        if (demo && demo->string[0])
+            Cvar_Set("g_q3_demo", "");
     }
 
     memset(&cmd, 0, sizeof(cmd));
@@ -316,6 +324,16 @@ static void SV_Map(bool restart)
         if (q1demo) {
             Cmd_SetGameCvar("deathmatch", "0");
             Cmd_SetGameCvar("coop", "0");
+            Cmd_SetGameCvar("maxclients", "1");
+        }
+
+        // a Quake III demo plays on its arena as a deathmatch - Quake III's
+        // guns, Team Arena's HUD - with no one else in it (SV_Q3Demo_f;
+        // maxclients 1 becomes deathmatch's least, 8)
+        if (q3demo) {
+            Cmd_SetGameCvar("deathmatch", "1");
+            Cmd_SetGameCvar("coop", "0");
+            Cmd_SetGameCvar("ctf", "0");
             Cmd_SetGameCvar("maxclients", "1");
         }
 
@@ -583,6 +601,102 @@ static void SV_Q1Demo_f(void)
     Cvar_Set("g_q1_demo", path);
     sv_q1demo_next = true;
     Cmd_TokenizeString(va("map %s force", q2map), false);
+    SV_Map(true);
+}
+
+/*
+==================
+SV_Q3Demo_f
+
+q3demo <path>.dm_48
+
+A Quake III demo - protocol 48, as Team Arena's own MPDEMO1 and MPDEMO2
+(missionpack/demos) are - played on the arena it was recorded on: the map is
+the "mapname" in the serverinfo, the first configstring of the demo's first
+message (the gamestate), started as a deathmatch with no one else in it, and
+the game plays the demo back on it (baseq2 g_q3demo.c). The attract loop's
+Team Arena entries (Com_StartAttractLoop). When it ends, nextserver runs, as
+after a .dm2.
+==================
+*/
+static void SV_Q3Demo_f(void)
+{
+    char        path[MAX_QPATH], map[MAX_QPATH];
+    byte        *buf;
+    int         len;
+
+    if (Cmd_Argc() != 2) {
+        Com_Printf("Usage: %s <demo>.dm_48\n", Cmd_Argv(0));
+        return;
+    }
+
+    Q_strlcpy(path, Cmd_Argv(1), sizeof(path));
+    if (!*COM_FileExtension(path))
+        Q_strlcat(path, ".dm_48", sizeof(path));
+    if (!Cvar_VariableInteger("fs_quake3")) {
+        Com_Printf("%s: Quake III Arena is not installed\n", Cmd_Argv(0));
+        return;
+    }
+    if (!Q_strncasecmp(path, "missionpack/", 12) && !Cvar_VariableInteger("fs_quake3_ta")) {
+        Com_Printf("%s: Quake III Team Arena is not installed\n", Cmd_Argv(0));
+        return;
+    }
+
+    len = FS_LoadFile(path, (void **)&buf);
+    if (len < 0 || !buf) {
+        Com_Printf("%s: couldn't load %s\n", Cmd_Argv(0), path);
+        return;
+    }
+
+    // the first block: [sequence][length], then the message - not Huffman
+    // coded in protocol 48, and every read up to the first entity baseline
+    // starts on a byte, so it reads as bytes: the reliable acknowledge,
+    // svc_gamestate (2), the command sequence, then svc_configstring (3)
+    // [short index][string]... from 0, the serverinfo
+    map[0] = 0;
+    if (len >= 8 + 9) {
+        int msglen = buf[4] | (buf[5] << 8) | (buf[6] << 16) | ((unsigned)buf[7] << 24);
+        const byte *m = buf + 8, *end = m + msglen;
+
+        if (msglen > 9 && end <= buf + len && m[4] == 2) {
+            m += 9;
+            while (m + 3 <= end && *m == 3) {
+                int index = (short)(m[1] | (m[2] << 8));
+                const byte *s = m + 3;
+
+                m = s;
+                while (m < end && *m)
+                    m++;
+                if (m >= end)
+                    break;
+                if (index == 0) {
+                    char info[MAX_INFO_STRING];
+                    size_t n = min((size_t)(m - s), sizeof(info) - 1);
+
+                    memcpy(info, s, n);
+                    info[n] = 0;
+                    Q_strlcpy(map, Info_ValueForKey(info, "mapname"), sizeof(map));
+                    break;
+                }
+                m++;
+            }
+        }
+    }
+    FS_FreeFile(buf);
+
+    if (!map[0] || strchr(map, '/') || strchr(map, '\\') || strstr(map, "..")) {
+        Com_Printf("%s: %s is not a Quake III demo this can play\n", Cmd_Argv(0), path);
+        return;
+    }
+    if (!FS_FileExistsEx(va("maps/%s.bsp", map), 0)) {
+        Com_Printf("%s: %s's map %s isn't there\n", Cmd_Argv(0), path, map);
+        return;
+    }
+
+    Com_Printf("Quake III demo %s on %s\n", path, map);
+    Cvar_Set("g_q3_demo", path);
+    sv_q3demo_next = true;
+    Cmd_TokenizeString(va("map %s force", map), false);
     SV_Map(true);
 }
 
@@ -1915,6 +2029,7 @@ static const cmdreg_t c_server[] = {
     { "printall", SV_PrintAll_f },
     { "map", SV_Map_f, SV_Map_c },
     { "q1demo", SV_Q1Demo_f },
+    { "q3demo", SV_Q3Demo_f },
     { "demomap", SV_DemoMap_f },
     { "gamemap", SV_GameMap_f, SV_Map_c },
     { "dumpents", SV_DumpEnts_f },

@@ -20,3 +20,91 @@ id1/rogue/progs/flame_mdl_00_00#31799c3a:
 #	light_styles 1
 #	bsp_radiance 1
 #	default_radiance 1
+
+# instance of id1/rogue/progs/flame_mdl_00_00
+# r2m7, created at (-1801 -91 47)
+# the model standing at (-1606 -62 60) - keyed on that spot
+# Inherits everything from id1/rogue/progs/flame_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/rogue/progs/flame_mdl_00_00#5a17a6cd:
+#	texture_base materialDev/progs/flame_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_torch_emissive2_crop296x140.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/rogue/progs/flame_mdl_00_00
+# r2m7, created at (-1401 -533 60)
+# the model standing at (-1350 -702 60) - keyed on that spot
+# Inherits everything from id1/rogue/progs/flame_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/rogue/progs/flame_mdl_00_00#d8af60ba:
+#	texture_base materialDev/progs/flame_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_torch_emissive2_crop296x140.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/rogue/progs/flame_mdl_00_00
+# r2m7, created at (-1538 -568 42)
+# the model standing at (-1574 -462 60) - keyed on that spot
+# Inherits everything from id1/rogue/progs/flame_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/rogue/progs/flame_mdl_00_00#115f307a:
+#	texture_base materialDev/progs/flame_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_torch_emissive2_crop296x140.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of id1/rogue/progs/flame_mdl_00_00
+# r2m7, created at (-881 -496 45)
+# the model standing at (-886 -326 60) - keyed on that spot
+# Inherits everything from id1/rogue/progs/flame_mdl_00_00; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+id1/rogue/progs/flame_mdl_00_00#d451e9d5:
+#	texture_base materialDev/progs/flame_mdl_00_00.png
+#	texture_emissive materialDev/remix/TextureDev/Fire_torch_emissive2_crop296x140.png
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+	light_factor 4
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1

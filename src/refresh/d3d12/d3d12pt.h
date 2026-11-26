@@ -408,8 +408,11 @@ typedef struct {
     uint64_t            positions_offset;   // float3 x 3 per primitive
     d3d12_world_blas_t  *blases;
     int                 num_blases;
-    // light_stats_bufers[]: 2 uints per light poly, per orientation (6), per cluster
+    // light_stats_bufers[]: vkpt_light_stats_words (THE LIGHT STATISTICS' LAYOUT,
+    // vertex_buffer.c), its header at the start of each buffer, never cleared
     uint64_t            light_stats_count;
+    const uint32_t      *light_stats_header;
+    uint32_t            light_stats_header_words;
 } d3d12_world_map_t;
 
 // What frontend.c hands the frame, from vkpt_prepare_frame

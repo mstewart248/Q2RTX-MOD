@@ -88,6 +88,30 @@ static void resolve_masters(void)
 #endif
 }
 
+// Wide coordinates (common/msg.c): a map whose world reaches past +-4096 -
+// Team Arena's mpterra1-3 - has every coordinate sent as a long. A 12.3 short
+// wraps there: players teleported across the map, out of bounds or into walls,
+// items and pickups somewhere other than where they are. sv_wide_coords 0
+// never, 1 such maps (default), 2 every map. Normal maps stay 16-bit, so their
+// stream is byte for byte what it was.
+static bool SV_WideCoords(const cm_t *cm)
+{
+    const mmodel_t *world;
+    int i;
+
+    if (sv_wide_coords->integer <= 0 || !cm->cache || cm->cache->nummodels < 1)
+        return false;
+    if (sv_wide_coords->integer >= 2)
+        return true;
+
+    world = &cm->cache->models[0];
+    for (i = 0; i < 3; i++) {
+        if (world->mins[i] < -4096 || world->maxs[i] > 4096)
+            return true;
+    }
+    return false;
+}
+
 // the highest model index SV_SpawnServer gives a map's brush models: one per
 // model, world included, stepping over MODELINDEX_PLAYER
 static int SV_InlineModelSlots(int nummodels)
@@ -258,6 +282,12 @@ void SV_SpawnServer(mapcmd_t *cmd, qboolean isMguMap)
 
     resolve_masters();
 
+    // every message from here on is the new map's; the client is told in the
+    // serverdata (SV_New), before any entity or position reaches it
+    msg_write_wide = cmd->state == ss_game && SV_WideCoords(&cmd->cm);
+    if (msg_write_wide)
+        Com_Printf("Map reaches past +-4096: 32-bit coordinates.\n");
+
     if (cmd->state == ss_game) {
         override_entity_string(cmd->server);
 
@@ -300,8 +330,15 @@ void SV_SpawnServer(mapcmd_t *cmd, qboolean isMguMap)
     // A Quake III map (common/bsp_q3.c) is told to the game this way rather
     // than through the game API, which stays the stock one: the game reads
     // sv_map_q3 in SpawnEntities to translate the map's Quake III entities.
-    Cvar_FullSet("sv_map_q3", (cmd->state == ss_game && sv.cm.cache && sv.cm.cache->q3) ? "1" : "0",
-                 CVAR_ROM, FROM_CODE);
+    // 2: a Team Arena map, one of baseq3/missionpack's - its own game types,
+    // items and guns (g_ta.c). "missionpack/<path>" looks in its paks alone.
+    {
+        const char *q3 = "0";
+
+        if (cmd->state == ss_game && sv.cm.cache && sv.cm.cache->q3)
+            q3 = FS_FileExists(va("missionpack/maps/%s.bsp", sv.name)) ? "2" : "1";
+        Cvar_FullSet("sv_map_q3", q3, CVAR_ROM, FROM_CODE);
+    }
     // a Quake 1 map (common/bsp_q1.c), the same way (game g_q1.c)
     Cvar_FullSet("sv_map_q1", (cmd->state == ss_game && sv.cm.cache && sv.cm.cache->q1) ? "1" : "0",
                  CVAR_ROM, FROM_CODE);
@@ -478,6 +515,7 @@ void SV_InitGame(unsigned mvd_spawn)
         CM_FreeMap(&sv.cm);
         SV_FreeFile(sv.entitystring);
         memset(&sv, 0, sizeof(sv));
+        msg_write_wide = false;
 
 #if USE_FPS
         // set up default frametime for main loop

@@ -42,6 +42,17 @@ const entity_packed_t   nullEntityState;
 const player_packed_t   nullPlayerState;
 const usercmd_t         nullUserCmd;
 
+// Wide coordinates: on a map past +-4096 (Team Arena's mpterra1-3) every
+// coordinate on the wire is the 12.3 value in a long instead of a short -
+// entity origins, the player's pmove origin, MSG_WritePos / MSG_ReadPos
+// (sounds, temp entities, the game's gi.WritePosition). One flag per
+// direction, since one process can be both ends (a listen server): the
+// server sets the writer's at map load (SV_SpawnServer), the client the
+// reader's from the serverdata or a demo's header (CL_ParseServerData).
+// Every other map stays 16-bit, byte for byte the old stream.
+bool        msg_write_wide;
+bool        msg_read_wide;
+
 /*
 =============
 MSG_Init
@@ -176,9 +187,18 @@ MSG_WriteCoord
 =============
 */
 
+// a 12.3 fixed point coordinate: 16 bits, or 32 on a wide map (msg_write_wide)
+static inline void MSG_WriteCoordInt(int c)
+{
+    if (msg_write_wide)
+        MSG_WriteLong(c);
+    else
+        MSG_WriteShort((int16_t)c);
+}
+
 static inline void MSG_WriteCoord(float f)
 {
-    MSG_WriteShort(COORD2SHORT(f));
+    MSG_WriteCoordInt(COORD2SHORT(f));
 }
 
 /*
@@ -733,11 +753,11 @@ void MSG_WriteDeltaEntity(const entity_packed_t *from,
         MSG_WriteShort(to->renderfx);
 
     if (bits & U_ORIGIN1)
-        MSG_WriteShort(to->origin[0]);
+        MSG_WriteCoordInt(to->origin[0]);
     if (bits & U_ORIGIN2)
-        MSG_WriteShort(to->origin[1]);
+        MSG_WriteCoordInt(to->origin[1]);
     if (bits & U_ORIGIN3)
-        MSG_WriteShort(to->origin[2]);
+        MSG_WriteCoordInt(to->origin[2]);
 
     if ((flags & MSG_ES_SHORTANGLES) && (bits & U_ANGLE16)) {
         if (bits & U_ANGLE1)
@@ -756,9 +776,9 @@ void MSG_WriteDeltaEntity(const entity_packed_t *from,
     }
 
     if (bits & U_OLDORIGIN) {
-        MSG_WriteShort(to->old_origin[0]);
-        MSG_WriteShort(to->old_origin[1]);
-        MSG_WriteShort(to->old_origin[2]);
+        MSG_WriteCoordInt(to->old_origin[0]);
+        MSG_WriteCoordInt(to->old_origin[1]);
+        MSG_WriteCoordInt(to->old_origin[2]);
     }
 
     if (bits & U_SOUND)
@@ -895,9 +915,9 @@ void MSG_WriteDeltaPlayerstate_Default(const player_packed_t *from, const player
         MSG_WriteByte(to->pmove.pm_type);
 
     if (pflags & PS_M_ORIGIN) {
-        MSG_WriteShort(to->pmove.origin[0]);
-        MSG_WriteShort(to->pmove.origin[1]);
-        MSG_WriteShort(to->pmove.origin[2]);
+        MSG_WriteCoordInt(to->pmove.origin[0]);
+        MSG_WriteCoordInt(to->pmove.origin[1]);
+        MSG_WriteCoordInt(to->pmove.origin[2]);
     }
 
     if (pflags & PS_M_VELOCITY) {
@@ -1118,12 +1138,12 @@ int MSG_WriteDeltaPlayerstate_Enhanced(const player_packed_t    *from,
         MSG_WriteByte(to->pmove.pm_type);
 
     if (pflags & PS_M_ORIGIN) {
-        MSG_WriteShort(to->pmove.origin[0]);
-        MSG_WriteShort(to->pmove.origin[1]);
+        MSG_WriteCoordInt(to->pmove.origin[0]);
+        MSG_WriteCoordInt(to->pmove.origin[1]);
     }
 
     if (eflags & EPS_M_ORIGIN2)
-        MSG_WriteShort(to->pmove.origin[2]);
+        MSG_WriteCoordInt(to->pmove.origin[2]);
 
     if (pflags & PS_M_VELOCITY) {
         MSG_WriteShort(to->pmove.velocity[0]);
@@ -1322,12 +1342,12 @@ void MSG_WriteDeltaPlayerstate_Packet(const player_packed_t *from,
         MSG_WriteByte(to->pmove.pm_type);
 
     if (pflags & PPS_M_ORIGIN) {
-        MSG_WriteShort(to->pmove.origin[0]);
-        MSG_WriteShort(to->pmove.origin[1]);
+        MSG_WriteCoordInt(to->pmove.origin[0]);
+        MSG_WriteCoordInt(to->pmove.origin[1]);
     }
 
     if (pflags & PPS_M_ORIGIN2)
-        MSG_WriteShort(to->pmove.origin[2]);
+        MSG_WriteCoordInt(to->pmove.origin[2]);
 
     //
     // write the rest of the player_state_t
@@ -1541,9 +1561,15 @@ size_t MSG_ReadStringLine(char *dest, size_t size)
     return len;
 }
 
+// a 12.3 fixed point coordinate: 16 bits, or 32 on a wide map (msg_read_wide)
+static inline int MSG_ReadCoordInt(void)
+{
+    return msg_read_wide ? MSG_ReadLong() : MSG_ReadShort();
+}
+
 static inline float MSG_ReadCoord(void)
 {
-    return SHORT2COORD(MSG_ReadShort());
+    return SHORT2COORD(MSG_ReadCoordInt());
 }
 
 void MSG_ReadPos(vec3_t pos)
@@ -2008,9 +2034,9 @@ void MSG_ParseDeltaPlayerstate_Default(const player_state_t *from,
         to->pmove.pm_type = MSG_ReadByte();
 
     if (flags & PS_M_ORIGIN) {
-        to->pmove.origin[0] = MSG_ReadShort();
-        to->pmove.origin[1] = MSG_ReadShort();
-        to->pmove.origin[2] = MSG_ReadShort();
+        to->pmove.origin[0] = MSG_ReadCoordInt();
+        to->pmove.origin[1] = MSG_ReadCoordInt();
+        to->pmove.origin[2] = MSG_ReadCoordInt();
     }
 
     if (flags & PS_M_VELOCITY) {
@@ -2123,12 +2149,12 @@ void MSG_ParseDeltaPlayerstate_Enhanced(const player_state_t    *from,
         to->pmove.pm_type = MSG_ReadByte();
 
     if (flags & PS_M_ORIGIN) {
-        to->pmove.origin[0] = MSG_ReadShort();
-        to->pmove.origin[1] = MSG_ReadShort();
+        to->pmove.origin[0] = MSG_ReadCoordInt();
+        to->pmove.origin[1] = MSG_ReadCoordInt();
     }
 
     if (extraflags & EPS_M_ORIGIN2) {
-        to->pmove.origin[2] = MSG_ReadShort();
+        to->pmove.origin[2] = MSG_ReadCoordInt();
     }
 
     if (flags & PS_M_VELOCITY) {
@@ -2259,12 +2285,12 @@ void MSG_ParseDeltaPlayerstate_Packet(const player_state_t *from,
         to->pmove.pm_type = MSG_ReadByte();
 
     if (flags & PPS_M_ORIGIN) {
-        to->pmove.origin[0] = MSG_ReadShort();
-        to->pmove.origin[1] = MSG_ReadShort();
+        to->pmove.origin[0] = MSG_ReadCoordInt();
+        to->pmove.origin[1] = MSG_ReadCoordInt();
     }
 
     if (flags & PPS_M_ORIGIN2) {
-        to->pmove.origin[2] = MSG_ReadShort();
+        to->pmove.origin[2] = MSG_ReadCoordInt();
     }
 
     //

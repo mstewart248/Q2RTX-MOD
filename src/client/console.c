@@ -705,13 +705,24 @@ DRAWING
 ==============================================================================
 */
 
+// Team Arena's HUD: while a voice chat's face is up at the top left, the
+// notify lines move right of it (cg_newdraw.c CG_ShowResponseHead's
+// cl_conXOffset); a fraction of the screen's width, 0 = none
+static float    con_notify_indent;
+static int      con_line_indent;
+
+void Con_SetNotifyIndent(float frac)
+{
+    con_notify_indent = frac;
+}
+
 static int Con_DrawLine(int v, int row, float alpha)
 {
     consoleLine_t *line = &con.text[row & CON_TOTALLINES_MASK];
     char *s = line->text;
     int flags = 0;
-    int x = CHAR_WIDTH;
-    int w = con.linewidth;
+    int x = CHAR_WIDTH + con_line_indent;
+    int w = con.linewidth - con_line_indent / CHAR_WIDTH;
 
     if (line->ts_len) {
         R_SetColor(con.ts_color.u32);
@@ -777,6 +788,7 @@ static void Con_DrawNotify(void)
     }
 
     v = 0;
+    con_line_indent = (int)(min(max(con_notify_indent, 0.0f), 0.5f) * con.vidWidth);
     for (i = con.current - j + 1; i <= con.current; i++) {
         if (i < 0)
             continue;
@@ -795,6 +807,7 @@ static void Con_DrawNotify(void)
 
         v += CHAR_HEIGHT;
     }
+    con_line_indent = 0;
 
     R_ClearColor();
 

@@ -71,6 +71,7 @@ the grid provides for free.
 
 #define GLOBAL_TEXTURES_DESC_SET_IDX 3
 #include "global_textures.h"
+#include "q3_sky.glsl"      // q3_cloud_shadow
 
 #include "froxel_shared.h"
 
@@ -405,6 +406,8 @@ void froxel_cell_scatter(
 		float distanceToWater;
 		float shadow = GetShadow(world_pos - global_ubo.sun_direction * 20,
 		                         distanceToWater);
+		// the sky's clouds passing between it and the sun (q3_sky.glsl)
+		shadow *= q3_cloud_shadow(world_pos);
 
 		float scatter = shadow * phase;
 #if FOG_DEBUG_SAMPLE

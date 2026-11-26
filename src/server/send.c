@@ -567,7 +567,10 @@ static void emit_snd(client_t *client, message_packet_t *msg)
 
     if (flags & SND_POS) {
         for (i = 0; i < 3; i++) {
-            MSG_WriteShort(msg->pos[i]);
+            if (msg_write_wide)     // a map past +-4096 (common/msg.c)
+                MSG_WriteLong(msg->pos[i]);
+            else
+                MSG_WriteShort((int16_t)msg->pos[i]);
         }
     }
 }

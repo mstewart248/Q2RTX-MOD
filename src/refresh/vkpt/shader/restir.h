@@ -190,7 +190,9 @@ get_unshadowed_path_contrib(
 	float phong_weight,
 	vec2 rng)
 {
-	if (light_idx == RESTIR_ENV_ID) return get_unshadowed_env_path_contrib(normal, view_direction, phong_exp, phong_scale, phong_weight, rng);
+	// the sun's: less under the sky's clouds, as process_selected_light_restir shades it
+	if (light_idx == RESTIR_ENV_ID) return get_unshadowed_env_path_contrib(normal, view_direction, phong_exp, phong_scale, phong_weight, rng)
+		* q3_cloud_shadow(position);
 	LightPolygon light = get_light_polygon(light_idx);
 
 	float m = 0.0f;
@@ -232,16 +234,14 @@ get_unshadowed_path_contrib(
 // in light_lists.h applies for plain RIS, floored at 0.1 the same way. 1 when there
 // is no record. Used only to shape the fresh candidate draw (see
 // get_direct_illumination_restir), never in the target function.
+// `addr` is the drawn list entry's counts (light_stats_entry), ~0u for none.
 float
-restir_light_prior(uint light_idx, uint cluster_idx, vec3 normal)
+restir_light_prior(uint addr)
 {
-	if (global_ubo.pt_light_stats == 0
-		|| light_idx >= global_ubo.num_static_lights
-		|| cluster_idx == ~0u)
+	if (addr == ~0u)
 		return 1.0;
 
 	uint buffer_idx = (global_ubo.current_frame_idx + NUM_LIGHT_STATS_BUFFERS - 1) % NUM_LIGHT_STATS_BUFFERS;
-	uint addr = get_light_stats_addr(cluster_idx, light_idx, get_primary_direction(normal));
 
 	uint num_hits = light_stats_bufers[buffer_idx].stats[addr];
 	uint num_misses = light_stats_bufers[buffer_idx].stats[addr + 1];
@@ -328,7 +328,8 @@ process_selected_light_restir(
 			}
 			else
 			{
-				contrib_polygonal = env_map(L, true) * inv_pdfw * global_ubo.pt_env_scale;
+				// less under the clouds, as sample_lights shades it (q3_sky.glsl)
+				contrib_polygonal = env_map(L, true) * inv_pdfw * global_ubo.pt_env_scale * q3_cloud_sky_shadow(position);
 				polygonal_light_is_sky = true;
 			}
 		}
@@ -342,6 +343,8 @@ process_selected_light_restir(
 		polygonal_light_pdfw = global_ubo.sun_solid_angle;
 		pos_on_light_polygonal = position + L * 10000;
 		contrib_polygonal = env_map(L, false) * polygonal_light_pdfw * global_ubo.pt_env_scale;
+		// the sky's clouds passing between it and the sun, as get_sunlight
+		contrib_polygonal *= q3_cloud_shadow(position);
 
 		// Sun behind the geometric surface: none, as get_sunlight does (GNdotL <= 0) and
 		// as the polygon-light branch above does. Only the bump-mapped shading normal was
@@ -531,6 +534,13 @@ get_direct_illumination_restir(
 	uint list_start = light_buffer.light_list_offsets[cluster_idx];
 	uint list_end = light_buffer.light_list_offsets[cluster_idx + 1];
 
+	// the static entries' counts, for the prior (light_lists.h's THE LIGHT
+	// STATISTICS, ONE SLOT PER LIST ENTRY; the sun's place past the list has none)
+	const uint list_base = list_start;
+	const uint stats_side = get_primary_direction(normal);
+	uint stats_first, stats_count;
+	const bool stats = global_ubo.pt_light_stats != 0 && light_stats_cluster(cluster_idx, stats_first, stats_count);
+
 	rng = get_rng(RNG_NEE_LIGHT_SELECTION(bounce));
 
 
@@ -603,7 +613,9 @@ get_direct_illumination_restir(
 		if (current_light_idx == ~0u) continue;
 
 		p_hat = get_unshadowed_path_contrib(current_light_idx, position, normal, view_direction, phong_exp, phong_scale, phong_weight, rng2);
-		float p_prop = p_hat * restir_light_prior(current_light_idx, cluster_idx, normal);
+		uint stats_addr = stats && current_light_idx < global_ubo.num_static_lights
+			? light_stats_entry(stats_first, stats_count, n_idx - list_base, stats_side) : ~0u;
+		float p_prop = p_hat * restir_light_prior(stats_addr);
 		if (p_prop > 0 && update_reservoir(current_light_idx, p_prop * inv_pdf, rng2, p_prop, rng, reservoir))
 			sel_p_hat_pure = p_hat;
 	}

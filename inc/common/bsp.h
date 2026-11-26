@@ -391,6 +391,11 @@ typedef struct bsp_s {
     int             numbases;
     mbasis_t        *bases;
 
+    // Quake III maps (bsp_q3.c): each face corner's vertex alpha, 0..255,
+    // indexed as the bases (firstbasis + corner) - alphaGen vertex. NULL for
+    // the rest.
+    byte            *corner_alpha;
+
     // Quake III fog brushes (bsp_q3.c) - a box of the map's own coloured fog
     int             numfogvolumes;
     mfogvolume_t    *fogvolumes;

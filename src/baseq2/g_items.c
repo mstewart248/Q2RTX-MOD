@@ -629,6 +629,12 @@ bool Add_Ammo(edict_t *ent, gitem_t *item, int count)
         max = ent->client->pers.max_q3_lightning;
     else if (item->tag == AMMO_Q3_BFG)
         max = ent->client->pers.max_q3_bfg;
+    else if (item->tag == AMMO_Q3_NAILS)
+        max = ent->client->pers.max_q3_nails;
+    else if (item->tag == AMMO_Q3_MINES)
+        max = ent->client->pers.max_q3_mines;
+    else if (item->tag == AMMO_Q3_BELT)
+        max = ent->client->pers.max_q3_belt;
     else
         return false;
 
@@ -756,6 +762,9 @@ bool Pickup_Health(edict_t *ent, edict_t *other)
     if (!(ent->style & HEALTH_IGNORE_MAX))
         if (other->health >= other->max_health)
             return false;
+    // Team Arena's Guard: its 200 is the most, a megahealth's too
+    if (TA_HealthCap(other) && other->health >= TA_HealthCap(other))
+        return false;
 
     other->health += ent->count;
 
@@ -763,6 +772,8 @@ bool Pickup_Health(edict_t *ent, edict_t *other)
         if (other->health > other->max_health)
             other->health = other->max_health;
     }
+    if (TA_HealthCap(other) && other->health > TA_HealthCap(other))
+        other->health = TA_HealthCap(other);
 
     if (ent->style & HEALTH_TIMED) {
         ent->think = MegaHealth_think;
@@ -962,6 +973,9 @@ void Touch_Item(edict_t *ent, edict_t *other, cplane_t *plane, csurface_t *surf)
         return;     // dead people can't pickup
     if (!ent->item->pickup)
         return;     // not a grabbable item?
+    // Team Arena's persistent powerups' rules (g_ta.c): the Scout's no armor
+    if (!TA_CanPickup(ent, other))
+        return;
 
     // a bot match's guns by player model: a pickup carrying both games' guns
     // gives each player their own (g_q3weap.c). Put back below.
@@ -1500,6 +1514,12 @@ void SpawnItem(edict_t *ent, gitem_t *item)
             return;
         }
         if (item->pickup == CTFPickup_Flag) {
+            // Team Arena's games (g_ta.c): the white flag is One Flag's alone,
+            // and Overload and Harvester have no flags at all
+            if (!CTF_FlagInGame(item)) {
+                G_FreeEdict(ent);
+                return;
+            }
             ent->item = item;
             ent->nextthink = level.framenum + 2;
             ent->think = CTF_FlagSetup;
@@ -4053,6 +4073,326 @@ gitem_t itemlist[] = {
         /* precache */ "models/ammo/rocket/rocket.md3 #baseq3/sound/weapons/lightning/lg_hit.wav #baseq3/sound/weapons/lightning/lg_hit2.wav #baseq3/sound/weapons/lightning/lg_hit3.wav"
     },
 
+    //
+    // QUAKE III TEAM ARENA - placed by its maps (g_ta.c), with its data only
+    // (baseq3/missionpack, fs_quake3_ta). After everything else, so no item
+    // before them moves. Its guns are Quake III's kind (g_q3weap.c); its ammo
+    // boxes wear Quake II's models, as Quake III's do (Matt's rule) - the
+    // flechettes, prox and bullets boxes, which are what a Quake II player
+    // takes from them in a match by player model. Its icons are the images
+    // its own shaders draw (scripts/gfx.shader icons/iconw_*).
+    //
+    {
+        "weapon_q3_nailgun",
+        Pickup_Q3Weapon,
+        Use_Weapon,
+        Drop_Weapon,
+        Weapon_Q3,
+        "#baseq3/sound/misc/w_pkup.wav",
+        "models/weapons/nailgun/nailgun.md3", EF_ROTATE,
+        "models/weapons/nailgun/nailgun.md3",
+        /* icon */      "/icons/nailgun128.tga",
+        /* pickup */    "Nailgun",
+        0,
+        1,
+        "Nails",
+        IT_WEAPON | IT_Q3,
+        WEAP_Q3_NAILGUN,
+        NULL,
+        Q3W_NAILGUN,
+        /* precache */ "models/weaphits/nail.md3 #baseq3/sound/weapons/nailgun/wnalimpd.wav #baseq3/sound/weapons/nailgun/wnalimpl.wav #baseq3/sound/weapons/nailgun/wnalimpm.wav"
+    },
+    {
+        "weapon_q3_proxlauncher",
+        Pickup_Q3Weapon,
+        Use_Weapon,
+        Drop_Weapon,
+        Weapon_Q3,
+        "#baseq3/sound/misc/w_pkup.wav",
+        "models/weapons/proxmine/proxmine.md3", EF_ROTATE,
+        "models/weapons/proxmine/proxmine.md3",
+        /* icon */      "/icons/proxmine.tga",
+        /* pickup */    "Prox Launcher",
+        0,
+        1,
+        "Proximity Mines",
+        IT_WEAPON | IT_Q3,
+        WEAP_Q3_PROXLAUNCHER,
+        NULL,
+        Q3W_PROX,
+        /* precache */ "models/weaphits/proxmine.md3 #baseq3/sound/weapons/proxmine/wstbactv.wav #baseq3/sound/weapons/proxmine/wstbimpl.wav #baseq3/sound/weapons/proxmine/wstbimpm.wav #baseq3/sound/weapons/proxmine/wstbimpd.wav #baseq3/sound/weapons/proxmine/wstbtick.wav #baseq3/sound/weapons/proxmine/wstbexpl.wav"
+    },
+    {
+        "weapon_q3_chaingun",
+        Pickup_Q3Weapon,
+        Use_Weapon,
+        Drop_Weapon,
+        Weapon_Q3,
+        "#baseq3/sound/misc/w_pkup.wav",
+        "models/weapons/vulcan/vulcan.md3", EF_ROTATE,
+        "models/weapons/vulcan/vulcan.md3",
+        /* icon */      "/icons/chaingun128.tga",
+        /* pickup */    "Chaingun",
+        0,
+        1,
+        "Chaingun Belt",
+        IT_WEAPON | IT_Q3,
+        WEAP_Q3_CHAINGUN,
+        NULL,
+        Q3W_CHAINGUN,
+        /* precache */ "#baseq3/sound/weapons/vulcan/wvulimpd.wav #baseq3/sound/weapons/vulcan/wvulimpl.wav #baseq3/sound/weapons/vulcan/wvulimpm.wav"
+    },
+    {
+        "ammo_q3_nails",
+        Pickup_Ammo,
+        NULL,
+        Drop_Ammo,
+        NULL,
+        "#baseq3/sound/misc/am_pkup.wav",
+        "models/ammo/am_flechette/tris.md2", 0,
+        NULL,
+        /* icon */      "/icons/ammo_nailgun.tga",
+        /* pickup */    "Nails",
+        /* width */     3,
+        20,
+        NULL,
+        IT_AMMO | IT_Q3,
+        0,
+        NULL,
+        AMMO_Q3_NAILS,
+        /* precache */ ""
+    },
+    {
+        "ammo_q3_mines",
+        Pickup_Ammo,
+        NULL,
+        Drop_Ammo,
+        NULL,
+        "#baseq3/sound/misc/am_pkup.wav",
+        "models/ammo/am_prox/tris.md2", 0,
+        NULL,
+        /* icon */      "/icons/ammo_proxmine.tga",
+        /* pickup */    "Proximity Mines",
+        /* width */     3,
+        10,
+        NULL,
+        IT_AMMO | IT_Q3,
+        0,
+        NULL,
+        AMMO_Q3_MINES,
+        /* precache */ ""
+    },
+    {
+        "ammo_q3_belt",
+        Pickup_Ammo,
+        NULL,
+        Drop_Ammo,
+        NULL,
+        "#baseq3/sound/misc/am_pkup.wav",
+        "models/items/ammo/bullets/medium/tris.md2", 0,
+        NULL,
+        /* icon */      "/icons/ammo_chaingun.tga",
+        /* pickup */    "Chaingun Belt",
+        /* width */     3,
+        100,
+        NULL,
+        IT_AMMO | IT_Q3,
+        0,
+        NULL,
+        AMMO_Q3_BELT,
+        /* precache */ ""
+    },
+
+    // the two holdables, one held at a time with Quake III's (Pickup_Q3Holdable)
+    {
+        "item_ta_kamikaze",
+        Pickup_Q3Holdable,
+        Use_TAKamikaze,
+        NULL,
+        NULL,
+        "#baseq3/sound/items/holdable.wav",
+        "models/powerups/kamikazi.md3", EF_ROTATE,
+        NULL,
+        /* icon */      "/icons/kamikaze.tga",
+        /* pickup */    "Kamikaze",
+        /* width */     0,
+        0,
+        NULL,
+        0,
+        0,
+        NULL,
+        0,
+        /* precache */ "models/weaphits/kamboom2.md3 models/weaphits/kamwave.md3 #baseq3/sound/items/kam_explode.wav #baseq3/sound/items/kam_explode_far.wav #baseq3/sound/items/kam_implode.wav #baseq3/sound/items/kamikazerespawn.wav"
+    },
+    {
+        "item_ta_invulnerability",
+        Pickup_Q3Holdable,
+        Use_TAInvulnerability,
+        NULL,
+        NULL,
+        "#baseq3/sound/items/holdable.wav",
+        "models/powerups/holdable/invulnerability.md3", EF_ROTATE,
+        NULL,
+        /* icon */      "/icons/invulnerability.tga",
+        /* pickup */    "Invulnerability",
+        /* width */     0,
+        0,
+        NULL,
+        0,
+        0,
+        NULL,
+        0,
+        /* precache */ "#baseq3/sound/items/invul_activate.wav #baseq3/sound/items/invul_impact_01.wav #baseq3/sound/items/invul_impact_02.wav #baseq3/sound/items/invul_impact_03.wav #baseq3/sound/items/invul_juiced.wav"
+    },
+
+    // the persistent powerups: kept until death, one at a time, each map's
+    // own for one team or both (TA_PickupPersistent)
+    {
+        "item_ta_scout",
+        TA_PickupPersistent,
+        NULL,
+        NULL,
+        NULL,
+        "#baseq3/sound/items/scout.wav",
+        "models/powerups/scout.md3", EF_ROTATE,
+        NULL,
+        /* icon */      "/icons/scout.tga",
+        /* pickup */    "Scout",
+        /* width */     0,
+        0,
+        NULL,
+        0 /* not IT_POWERUP: no first-spawn delay (G_SpawnItem) */,
+        0,
+        NULL,
+        0,
+        /* precache */ "models/powerups/scout_player.md3 #baseq3/sound/items/cl_scout.wav"
+    },
+    {
+        "item_ta_guard",
+        TA_PickupPersistent,
+        NULL,
+        NULL,
+        NULL,
+        "#baseq3/sound/items/guard.wav",
+        "models/powerups/guard.md3", EF_ROTATE,
+        NULL,
+        /* icon */      "/icons/guard.tga",
+        /* pickup */    "Guard",
+        /* width */     0,
+        0,
+        NULL,
+        0 /* not IT_POWERUP: no first-spawn delay (G_SpawnItem) */,
+        0,
+        NULL,
+        0,
+        /* precache */ "models/powerups/guard_player.md3 #baseq3/sound/items/cl_guard.wav"
+    },
+    {
+        "item_ta_doubler",
+        TA_PickupPersistent,
+        NULL,
+        NULL,
+        NULL,
+        "#baseq3/sound/items/doubler.wav",
+        "models/powerups/doubler.md3", EF_ROTATE,
+        NULL,
+        /* icon */      "/icons/doubler.tga",
+        /* pickup */    "Doubler",
+        /* width */     0,
+        0,
+        NULL,
+        0 /* not IT_POWERUP: no first-spawn delay (G_SpawnItem) */,
+        0,
+        NULL,
+        0,
+        /* precache */ "models/powerups/doubler_player.md3 #baseq3/sound/items/cl_doubler.wav"
+    },
+    {
+        "item_ta_ammoregen",
+        TA_PickupPersistent,
+        NULL,
+        NULL,
+        NULL,
+        "#baseq3/sound/items/ammoregen.wav",
+        "models/powerups/ammo.md3", EF_ROTATE,
+        NULL,
+        /* icon */      "/icons/ammo_regen.tga",
+        /* pickup */    "Ammo Regen",
+        /* width */     0,
+        0,
+        NULL,
+        0 /* not IT_POWERUP: no first-spawn delay (G_SpawnItem) */,
+        0,
+        NULL,
+        0,
+        /* precache */ "models/powerups/ammo_player.md3 #baseq3/sound/items/cl_ammoregen.wav"
+    },
+
+    // One Flag CTF's white flag (g_ctf.c), on its stand in the middle
+    {
+        "item_flag_neutral",
+        CTFPickup_Flag,
+        NULL,
+        CTFDrop_Flag,
+        NULL,
+        "ctf/flagtk.wav",
+        "models/flags/n_flag.md3", 0,
+        NULL,
+        /* icon */      "/icons/iconf_neutral1.tga",
+        /* pickup */    "Neutral Flag",
+        /* width */     2,
+        0,
+        NULL,
+        IT_CTF,
+        0,
+        NULL,
+        0,
+        /* precache */ "ctf/flagcap.wav"
+    },
+
+    // Harvester's skulls, thrown out of the middle obelisk by every death
+    // (g_ta.c): a dead red's is a red skull, for blue to take to red's obelisk
+    {
+        "item_ta_redcube",
+        TA_PickupSkull,
+        NULL,
+        NULL,
+        NULL,
+        "#baseq3/sound/misc/am_pkup.wav",
+        "models/powerups/orb/r_orb.md3", EF_ROTATE,
+        NULL,
+        /* icon */      "/icons/skull_red.tga",
+        /* pickup */    "Red Cube",
+        /* width */     0,
+        0,
+        NULL,
+        IT_CTF,
+        0,
+        NULL,
+        0,
+        /* precache */ ""
+    },
+    {
+        "item_ta_bluecube",
+        TA_PickupSkull,
+        NULL,
+        NULL,
+        NULL,
+        "#baseq3/sound/misc/am_pkup.wav",
+        "models/powerups/orb/b_orb.md3", EF_ROTATE,
+        NULL,
+        /* icon */      "/icons/skull_blue.tga",
+        /* pickup */    "Blue Cube",
+        /* width */     0,
+        0,
+        NULL,
+        IT_CTF,
+        0,
+        NULL,
+        0,
+        /* precache */ ""
+    },
+
     // end of list marker
     {NULL}
 };
@@ -4171,6 +4511,10 @@ static const char *const rerelease_weapon_order[] = {
     "weapon_q3_plasmagun",
     "weapon_q3_bfg",
     "weapon_q3_grapple",
+    // Team Arena's, after Quake III's (its weapon numbers 11-13)
+    "weapon_q3_nailgun",
+    "weapon_q3_proxlauncher",
+    "weapon_q3_chaingun",
     // Quake's, in its own impulse order (g_q1weap.c)
     "weapon_q1_axe",
     "weapon_q1_shotgun",

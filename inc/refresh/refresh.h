@@ -460,13 +460,14 @@ typedef struct ref_feedback_s {
 
 	/* The geometry the crosshair is on, for the material system's per-surface
 	   instances. view_prim_instance_hash names the connected group of BSP faces
-	   under the crosshair, or - view_on_model - the placed model there by where
-	   it stands (MAT_EntityInstanceHash, view_model_origin); 0 when there is
-	   neither: a brush entity, the gun in hand or nothing at all. See
-	   `mat create_instance`. */
+	   under the crosshair - on a brush entity too, whose inline model (*N) is
+	   then view_brush_model - or - view_on_model - the placed model there by
+	   where it stands (MAT_EntityInstanceHash, view_model_origin); 0 when there
+	   is neither: the gun in hand or nothing at all. See `mat create_instance`. */
 	uint32_t    view_prim_instance_hash;
 	bool        view_on_model;
 	vec3_t      view_model_origin;
+	int         view_brush_model;   // 0 = none
 
 	vec3_t      hdr_color;
 	float       adapted_luminance;

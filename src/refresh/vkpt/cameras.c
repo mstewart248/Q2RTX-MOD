@@ -97,6 +97,7 @@ typedef struct {
 	char    targetname[64];
 	char    model[16];          // a brush entity's "*N" (Quake 1's teleporters)
 	vec3_t  origin;
+	bool    has_origin;         // Quake 1: what a teleporter can send you to
 	vec3_t  angles;
 	float   roll;
 	int     spawnflags;
@@ -163,7 +164,7 @@ static bool q3_parse_entity(const char **data, q3ent_t *e)
 		else if (!strcmp(key, "targetname"))
 			Q_strlcpy(e->targetname, tok, sizeof(e->targetname));
 		else if (!strcmp(key, "origin"))
-			sscanf(tok, "%f %f %f", &e->origin[0], &e->origin[1], &e->origin[2]);
+			e->has_origin = sscanf(tok, "%f %f %f", &e->origin[0], &e->origin[1], &e->origin[2]) == 3;
 		else if (!strcmp(key, "angles") || !strcmp(key, "mangle"))
 			sscanf(tok, "%f %f %f", &e->angles[0], &e->angles[1], &e->angles[2]);
 		else if (!strcmp(key, "model"))
@@ -362,12 +363,38 @@ void vkpt_cameras_q3_transform(const bsp_mesh_t* wm, int index, float time, floa
 
 QUAKE 1 TELEPORTERS
 
-A Quake 1 teleporter is a trigger_teleport brush, targeting an
-info_teleport_destination, with a gate of *teleport faces in or at its box -
-world faces, not the trigger's own (it has none drawn). Walk in and the game
-puts you at the destination facing its "angle" (g_q1.c). So the gate is drawn
-as a window onto there: a portal, as Quake III's are, with no texture of its
-own and no glow, and a waver over it like Quake's water.
+A Quake 1 teleporter is a trigger_teleport brush, targeting where it puts you
+(an info_teleport_destination, nearly always - Quake's find() takes any
+entity of that name), with a gate of *teleport faces (mg1's: *tele01) in or
+at its box. The gate is the world's or a drawn brush entity's - Scourge of
+Armagon and Dissolution of Eternity build most of theirs as func_walls, a few
+maps as doors or func_bobs - never the trigger's own faces, which Quake does
+not draw. Walk in and the game puts you at the destination facing its
+"angle" (g_q1.c). So the gate is drawn as a window onto there: a portal, as
+Quake III's are, with no texture of its own and no glow, and a waver over it
+like Quake's water.
+
+Which trigger a gate face is (q1_gate_owner): a trigger's box is often much
+smaller than its gate - id's prefab puts a 14-unit box at the foot of a
+96-unit gate, e2m7 a small box in front of a 144-unit window - so each
+standing gate face goes to the trigger within Q1_GATE_REACH of it that scores
+least on
+  the gap between the face's box and the trigger's,
+  + a tenth of a teleporter's diagonal (end's t63, a 2300-unit box fired once
+    to clear the level, holds the back of Shub's gate inside it),
+  + Q1_GATE_BEHIND when the trigger stands behind the face (gates back to
+    back, ctf2: each side is the trigger on that side),
+  + Q1_GATE_INHIBITED for a trigger Quake does not spawn in this mode and
+    skill: one that is spawned wins, but hipdm1's gates, all deathmatch-only,
+    still show where they go in single player.
+trigger_changelevel competes on its gap alone, so a slipgate to another map
+keeps its texture - there is nothing here to show - even with a teleporter
+beside or inside it (e2m3, e3m4: monster catchers landing a few units away;
+the player gets the level change). Only a teleporter that some face goes to
+takes one of the MAX_CAMERAS slots (the material holds it in 4 bits): handed
+out in entity order, hip2m2's 18 invisible monster-spawn teleporters took all
+16 before its two gates. No map needs more than 15 this way (all 122 Quake 1
+maps with gates, single player and deathmatch).
 
 The turn is the shader's, from the face the ray meets (reflect_refract.rgen):
 "into the gate" becomes the way the destination faces, whichever side of the
@@ -388,6 +415,117 @@ gate whose bottom edge would look out from under the destination's floor
 static cvar_t *cvar_pt_q1_teleport_portals;
 static cvar_t *cvar_pt_q1_teleport_warp;
 static cvar_t *cvar_pt_q1_teleport_clearance;
+
+#define Q1_GATE_REACH       72.0f       // the farthest a gate face stands from its trigger
+#define Q1_GATE_BEHIND      4.0f        // the trigger is behind the face: the other side's
+#define Q1_GATE_INHIBITED   1000.0f     // a trigger Quake does not spawn in this mode and skill
+
+/* The camera slot each face of the map is a teleporter's gate for, -1 none:
+   decided once per map by vkpt_cameras_load_q1, read through
+   vkpt_cameras_q1_face. */
+static signed char      *q1_face_gate;
+static const mface_t    *q1_faces;
+static int              q1_num_faces;
+
+static void q1_gates_clear(void)
+{
+	Z_Free(q1_face_gate);
+	q1_face_gate = NULL;
+	q1_faces = NULL;
+	q1_num_faces = 0;
+}
+
+typedef struct {
+	const q3ent_t   *ent;
+	const q3ent_t   *dest;          // where a teleporter puts you; NULL a changelevel, or nowhere
+	vec3_t          mins, maxs;     // its box (a unit wider all round, bsp_q1.c)
+	float           cost;           // what q1_gate_owner adds for the trigger itself
+	int             model;
+	int             slot;           // its camera, -1 none yet
+} q1_trigger_t;
+
+// Quake's spawn filter (ED_LoadFromFile; g_q1vm.c QC_LoadEntities)
+static bool q1_inhibited(int spawnflags)
+{
+	if (Cvar_VariableValue("deathmatch"))
+		return (spawnflags & 2048) != 0;
+	int skill = Cvar_VariableInteger("skill");
+	clamp(skill, 0, 3);
+	return (spawnflags & (skill == 0 ? 256 : skill == 1 ? 512 : 1024)) != 0;
+}
+
+/* Where a teleporter puts you: Quake's find(), the first entity of that name,
+   though one spawned in this mode first, then an info_teleport_destination.
+   Not an info_null, which removes itself on spawn - e4m8's window targets one
+   and never worked, so it keeps its texture. */
+static const q3ent_t *q1_dest(const q3ent_t *ents, int count, const char *target)
+{
+	const q3ent_t *best = NULL;
+	int best_rank = 4;
+
+	if (!target[0])
+		return NULL;
+	for (int i = 0; i < count; i++) {
+		if (!ents[i].has_origin || strcmp(ents[i].targetname, target) || !strcmp(ents[i].classname, "info_null"))
+			continue;
+		int rank = (q1_inhibited(ents[i].spawnflags) ? 2 : 0) + (strcmp(ents[i].classname, "info_teleport_destination") ? 1 : 0);
+		if (rank < best_rank) {
+			best = &ents[i];
+			best_rank = rank;
+		}
+	}
+	return best;
+}
+
+// a gate's face: a standing #teleport or #tele01 (a floor or ceiling of it has
+// no way through to show)
+static bool q1_gate_texture(const mface_t *surf)
+{
+	if (!surf->texinfo || !surf->plane || surf->numsurfedges < 3)
+		return false;
+	const char *base = strrchr(surf->texinfo->name, '/');
+	base = base ? base + 1 : surf->texinfo->name;
+	if (base[0] != '#' || !Q_strHas(base, "tele"))
+		return false;
+	return fabsf(surf->plane->normal[2]) <= 0.7f;
+}
+
+// the trigger a gate face is (the comment above), -1 none within reach
+static int q1_gate_owner(const mface_t *surf, const q1_trigger_t *triggers, int num_triggers)
+{
+	vec3_t  mins, maxs, center = { 0, 0, 0 }, normal;
+	int     best = -1;
+	float   best_score = 0;
+
+	ClearBounds(mins, maxs);
+	for (int i = 0; i < surf->numsurfedges; i++) {
+		const float *v = surf->firstsurfedge[i].edge->v[surf->firstsurfedge[i].vert]->point;
+		AddPointToBounds(v, mins, maxs);
+		VectorAdd(center, v, center);
+	}
+	VectorScale(center, 1.0f / surf->numsurfedges, center);
+	VectorCopy(surf->plane->normal, normal);
+	if (surf->drawflags & DSURF_PLANEBACK)
+		VectorInverse(normal);
+
+	for (int t = 0; t < num_triggers; t++) {
+		const q1_trigger_t *tr = &triggers[t];
+		vec3_t gap, to_mid;
+		for (int k = 0; k < 3; k++) {
+			gap[k] = max(0.f, max(tr->mins[k] - maxs[k], mins[k] - tr->maxs[k]));
+			to_mid[k] = 0.5f * (tr->mins[k] + tr->maxs[k]) - center[k];
+		}
+		const float sep = VectorLength(gap);
+		if (sep > Q1_GATE_REACH)
+			continue;
+		const float score = sep + tr->cost + (DotProduct(normal, to_mid) < 0 ? Q1_GATE_BEHIND : 0);
+		if (best < 0 || score < best_score) {
+			best = t;
+			best_score = score;
+		}
+	}
+	return best;
+}
 
 /* The floor under the destination: the top of the first solid going down from
    the player's origin there (the marker + 27, dest + 24) to `lowest`. False
@@ -411,19 +549,12 @@ static bool q1_dest_floor(const bsp_t* bsp, const vec3_t dest, float lowest, flo
 	return false;
 }
 
-static bool face_in_a_model(const bsp_t* bsp, const mface_t* surf)
-{
-	for (int i = 0; i < bsp->nummodels; i++)
-		if (surf >= bsp->models[i].firstface && surf < bsp->models[i].firstface + bsp->models[i].numfaces)
-			return true;
-	return false;
-}
-
 /* THE SHAPE OF EACH GATE, for the light through it (pt_portal_light): direct
    light is sampled through a gate from the point mirrored to its far side
    (direct_lighting.rgen, add_portal_light), which needs to know how big each
    gate looks from a surface, to pick one, and which cluster's lights to sample.
-   The world faces bsp_mesh.c draws as this gate (vkpt_cameras_q1_face): the way
+   The faces bsp_mesh.c draws as this gate (vkpt_cameras_q1_face), the world's
+   and a func_wall's alike: the way
    they stand is the area-weighted main axis of their normals - so a gate's
    narrow side faces do not tip it, and either way round counts the same - their
    reach along that axis from the trigger box's middle is the gate's half
@@ -443,7 +574,7 @@ static void q1_gate_shapes(bsp_mesh_t* wm, const bsp_t* bsp)
 			const mface_t *surf = bsp->faces + i;
 			vec3_t area = { 0, 0, 0 };
 
-			if (vkpt_cameras_q1_face(wm, surf) != g || face_in_a_model(bsp, surf))
+			if (vkpt_cameras_q1_face(wm, surf) != g)
 				continue;
 			const float *v0 = surf->firstsurfedge[0].edge->v[surf->firstsurfedge[0].vert]->point;
 			for (int k = 1; k + 1 < surf->numsurfedges; k++) {
@@ -475,7 +606,7 @@ static void q1_gate_shapes(bsp_mesh_t* wm, const bsp_t* bsp)
 		for (int i = 0; i < bsp->numfaces; i++) {
 			const mface_t *surf = bsp->faces + i;
 
-			if (vkpt_cameras_q1_face(wm, surf) != g || face_in_a_model(bsp, surf))
+			if (vkpt_cameras_q1_face(wm, surf) != g)
 				continue;
 			for (int k = 0; k < surf->numsurfedges; k++) {
 				const float *v = surf->firstsurfedge[k].edge->v[surf->firstsurfedge[k].vert]->point;
@@ -532,7 +663,10 @@ void vkpt_cameras_load_q1(bsp_mesh_t* wm, const bsp_t* bsp)
 	q3ent_t     e, *ents;
 	int         count = 0, max = 0;
 
+	q1_gates_clear();
 	if (!bsp->q1 || !bsp->entitystring || !cvar_pt_q1_teleport_portals || !cvar_pt_q1_teleport_portals->integer)
+		return;
+	if (bsp->numfaces <= 0)
 		return;
 
 	for (data = bsp->entitystring; *data; data++)
@@ -546,36 +680,94 @@ void vkpt_cameras_load_q1(bsp_mesh_t* wm, const bsp_t* bsp)
 	while (count < max && q3_parse_entity(&data, &e))
 		ents[count++] = e;
 
-	for (int i = 0; i < count; i++) {
-		const q3ent_t *tele = &ents[i], *dest;
-		int model;
-
-		if (strcmp(tele->classname, "trigger_teleport") || tele->model[0] != '*')
-			continue;
-		model = atoi(tele->model + 1);
-		if (model <= 0 || model >= bsp->nummodels)
-			continue;
-		dest = q3_find(ents, count, tele->target, "info_teleport_destination");
-		if (!dest)
-			continue;     // targets nothing (or is fired, mg1's): keep the texture
-		if (wm->num_cameras >= MAX_CAMERAS) {
-			Com_WPrintf("Map has too many teleporters to see through (max: %i); the rest keep their texture\n", MAX_CAMERAS);
-			break;
-		}
-
-		int n = wm->num_cameras++;
-		memset(&wm->cameras[n], 0, sizeof(wm->cameras[n]));
-		wm->cameras[n].portal = true;       // so the portal code is in (main.c)
-		wm->cameras[n].placed = true;
-		wm->cameras[n].q1_gate = true;
-		VectorCopy(bsp->models[model].mins, wm->cameras[n].gate_mins);
-		VectorCopy(bsp->models[model].maxs, wm->cameras[n].gate_maxs);
-		VectorCopy(dest->origin, wm->cameras[n].dest);
-		wm->cameras[n].dest[2] += 3.0f;
-		wm->cameras[n].dest_yaw = dest->angles[1];
-		VectorCopy(dest->origin, wm->cameras[n].pos);
+	/* Whose each face is: 0 the world's, 1 a drawn brush entity's, 2 another
+	   model's - a trigger's (Quake draws none), or one no entity uses. A model
+	   placed by its entity's "origin" is in its own space: not a gate. */
+	byte *owner = Z_Mallocz(bsp->numfaces);
+	for (int m = 1; m < bsp->nummodels; m++) {
+		const int first = (int)(bsp->models[m].firstface - bsp->faces);
+		for (int k = 0; k < bsp->models[m].numfaces; k++)
+			if (first + k >= 0 && first + k < bsp->numfaces)
+				owner[first + k] = 2;
 	}
 
+	q1_trigger_t *triggers = Z_Mallocz(sizeof(q1_trigger_t) * count);
+	int num_triggers = 0;
+	for (int i = 0; i < count; i++) {
+		const q3ent_t *ent = &ents[i];
+		if (ent->model[0] != '*')
+			continue;
+		const int model = atoi(ent->model + 1);
+		if (model <= 0 || model >= bsp->nummodels)
+			continue;
+
+		const bool teleport = !strcmp(ent->classname, "trigger_teleport");
+		if (teleport || !strcmp(ent->classname, "trigger_changelevel")) {
+			q1_trigger_t *tr = &triggers[num_triggers++];
+			tr->ent = ent;
+			tr->dest = teleport ? q1_dest(ents, count, ent->target) : NULL;
+			tr->model = model;
+			tr->slot = -1;
+			VectorCopy(bsp->models[model].mins, tr->mins);
+			VectorCopy(bsp->models[model].maxs, tr->maxs);
+			if (teleport) {
+				vec3_t size;
+				VectorSubtract(tr->maxs, tr->mins, size);
+				tr->cost = 0.1f * VectorLength(size);
+			}
+			if (q1_inhibited(ent->spawnflags))
+				tr->cost += Q1_GATE_INHIBITED;
+		} else if (strncmp(ent->classname, "trigger_", 8) && !(ent->has_origin && !VectorEmpty(ent->origin))) {
+			const int first = (int)(bsp->models[model].firstface - bsp->faces);
+			for (int k = 0; k < bsp->models[model].numfaces; k++)
+				if (first + k >= 0 && first + k < bsp->numfaces)
+					owner[first + k] = 1;
+		}
+	}
+
+	q1_face_gate = Z_Malloc(bsp->numfaces);
+	memset(q1_face_gate, -1, bsp->numfaces);
+	q1_faces = bsp->faces;
+	q1_num_faces = bsp->numfaces;
+
+	int num_gates = 0;
+	bool full = false;
+	for (int i = 0; i < bsp->numfaces; i++) {
+		const mface_t *surf = bsp->faces + i;
+		if (owner[i] == 2 || !q1_gate_texture(surf))
+			continue;
+		const int t = q1_gate_owner(surf, triggers, num_triggers);
+		if (t < 0 || !triggers[t].dest)
+			continue;     // nothing near, a slipgate to another map, or a teleporter to nowhere
+
+		q1_trigger_t *tr = &triggers[t];
+		if (tr->slot < 0) {
+			if (wm->num_cameras >= MAX_CAMERAS) {
+				if (!full)
+					Com_WPrintf("Map has too many teleporters to see through (max: %i); the rest keep their texture\n", MAX_CAMERAS);
+				full = true;
+				continue;
+			}
+
+			int n = tr->slot = wm->num_cameras++;
+			memset(&wm->cameras[n], 0, sizeof(wm->cameras[n]));
+			wm->cameras[n].portal = true;       // so the portal code is in (main.c)
+			wm->cameras[n].placed = true;
+			wm->cameras[n].q1_gate = true;
+			VectorCopy(tr->mins, wm->cameras[n].gate_mins);
+			VectorCopy(tr->maxs, wm->cameras[n].gate_maxs);
+			VectorCopy(tr->dest->origin, wm->cameras[n].dest);
+			wm->cameras[n].dest[2] += 3.0f;
+			wm->cameras[n].dest_yaw = tr->dest->angles[1];
+			VectorCopy(tr->dest->origin, wm->cameras[n].pos);
+			num_gates++;
+		}
+		q1_face_gate[i] = (signed char)tr->slot;
+	}
+	Com_DPrintf("Quake 1 teleporters: %d of %d seen through\n", num_gates, num_triggers);
+
+	Z_Free(triggers);
+	Z_Free(owner);
 	Z_Free(ents);
 
 	q1_gate_shapes(wm, bsp);
@@ -583,31 +775,10 @@ void vkpt_cameras_load_q1(bsp_mesh_t* wm, const bsp_t* bsp)
 
 int vkpt_cameras_q1_face(const bsp_mesh_t* wm, const mface_t* surf)
 {
-	const float grow = 16.0f;    // gates stand at the trigger's edge, or just past it
-	vec3_t center = { 0, 0, 0 };
-
-	if (!surf->texinfo || !surf->plane || surf->numsurfedges < 3)
+	(void)wm;
+	if (!q1_face_gate || surf < q1_faces || surf >= q1_faces + q1_num_faces)
 		return -1;
-	if (!Q_strHas(surf->texinfo->name, "teleport"))
-		return -1;
-	if (fabsf(surf->plane->normal[2]) > 0.7f)
-		return -1;    // a floor or ceiling of it: no way through to show
-
-	for (int i = 0; i < surf->numsurfedges; i++)
-		VectorAdd(center, surf->firstsurfedge[i].edge->v[surf->firstsurfedge[i].vert]->point, center);
-	VectorScale(center, 1.0f / surf->numsurfedges, center);
-
-	for (int i = 0; i < wm->num_cameras; i++) {
-		if (!wm->cameras[i].q1_gate)
-			continue;
-		int k;
-		for (k = 0; k < 3; k++)
-			if (center[k] < wm->cameras[i].gate_mins[k] - grow || center[k] > wm->cameras[i].gate_maxs[k] + grow)
-				break;
-		if (k == 3)
-			return i;
-	}
-	return -1;
+	return q1_face_gate[surf - q1_faces];
 }
 
 void vkpt_cameras_q1_gate(const bsp_mesh_t* wm, int index, float data[16])
@@ -663,5 +834,6 @@ void vkpt_cameras_init(void)
 
 void vkpt_cameras_shutdown(void)
 {
+	q1_gates_clear();
 	Cmd_RemoveCommand("camera");
 }

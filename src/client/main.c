@@ -765,6 +765,9 @@ CL_ClearState
 */
 void CL_ClearState(void)
 {
+    // 16-bit coordinates until a serverdata says otherwise (CL_ParseServerData)
+    msg_read_wide = false;
+
     S_StopAllSounds();
     CL_ClearEffects();
     CL_ClearTEnts();
