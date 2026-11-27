@@ -642,6 +642,13 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	/* env_map, the sky as light, is multiplied by it; env_map_seen, the sky   */ \
 	/* as drawn, is not. 1 1 1 for every other sky; w unused.                  */ \
 	GLOBAL_UBO_VAR_LIST_DO(vec4,            q1_sky_light_tint) \
+	/* A Quake 1 sky's FOG, as its rerelease draws it (QuakeSpasm r_skyfog):   */ \
+	/* rgb = the map fog's colour as authored (display 0..1), a = how far the  */ \
+	/* sky as DRAWN goes to it - worldspawn "_skyfog" x pt_q1_skyfog; 0 = none. */ \
+	/* q3_sky_clouds mixes it in before the sky is made linear; env_map, the   */ \
+	/* sky as light, never takes it. Right after a vec4, so nothing moves off  */ \
+	/* its std140 alignment.                                                   */ \
+	GLOBAL_UBO_VAR_LIST_DO(vec4,            q1_sky_fog) \
 	\
 	/* QUAKE III QUAD DAMAGE (q3stages.c vkpt_q3_quad_upload): powerups/quad's  */ \
 	/* stage laid out as a sky cloud layer - the tcMod transform a b c d; e f,  */ \

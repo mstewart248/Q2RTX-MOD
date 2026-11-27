@@ -743,6 +743,8 @@ textures/q1/+1_med25s:
 textures/q1/+1basebtn:
 	texture_base materialDev/textures/q1/+1basebtn.png
 	texture_roughness materialDev/remix/TextureDev/RedDiamondButton_roughness2.png
+	texture_normals materialDev/textures/q1/+0basebtn_n.png
+	texture_metallic materialDev/textures/q1/+0basebtn_metal.png
 #	Remix metallic constant 0.75 - off, Q2RTX shades a metal map only:
 #	texture_metallic materialDev/remix/solid*M1.wal + metalness_factor 0.75
 
@@ -18537,7 +18539,8 @@ progs/boss_00_00:
 #	texture_roughness materialDev/progs/boss_00_00_rough.png
 #	texture_metallic materialDev/progs/boss_00_00_metal.png
 #	texture_height materialDev/progs/boss_00_00_height.png
-	texture_emissive materialDev/progs/boss_00_00_light.png
+	texture_emissive 0
+	emissive_factor 0.01
 
 progs/boss_mdl_00_00:
 	texture_base materialDev/progs/boss_mdl_00_00.png
@@ -20249,8 +20252,8 @@ progs/v_hammer_glow_mdl_00_00:
 progs/v_hammer_mdl_00_00:
 #	texture_base materialDev/progs/v_hammer_mdl_00_00.png
 #	texture_normals materialDev/progs/v_hammer_mdl_00_00_n.png
-#	texture_roughness materialDev/progs/v_hammer_mdl_00_00_rough.png
-#	texture_metallic materialDev/progs/v_hammer_mdl_00_00_metal.png
+	texture_roughness materialDev/id1/hipnotic/progs/v_hammer_mdl_00_00_rough.png
+	texture_metallic materialDev/id1/hipnotic/progs/v_hammer_mdl_00_00_metal.png
 #	texture_height materialDev/progs/v_hammer_mdl_00_00_height.png
 
 # 2 different images by this name - texture_base would give every map the first:

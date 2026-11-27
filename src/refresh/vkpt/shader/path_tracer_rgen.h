@@ -119,11 +119,10 @@ struct Ray {
 	float t_min, t_max;
 };
 
-/* The sky in a direction, as DRAWN: the primary and reflected/refracted rays
-   that see it (they apply pt_sky_brightness). Every lighting lookup goes
-   through env_map, below. */
+/* The sky in a direction. q1_fog: a Quake 1 sky's rerelease fog (q3_sky.glsl
+   q3_sky_clouds_fogged) - the sky as drawn takes it, its light does not. */
 vec3
-env_map_seen(vec3 direction, bool remove_sun)
+env_map_sky(vec3 direction, bool remove_sun, vec4 q1_fog)
 {
 	direction = (global_ubo.environment_rotation_matrix * vec4(direction, 0)).xyz;
 
@@ -143,7 +142,7 @@ env_map_seen(vec3 direction, bool remove_sun)
 		envmap = textureLod(TEX_ENVMAP, direction.xzy, 0).rgb;
 		// a Quake III sky's cloud layers, over its far box
 		if (Q3_SHADERS && global_ubo.q3_sky_num_layers > 0)
-			envmap = q3_sky_clouds(direction, envmap);
+			envmap = q3_sky_clouds_fogged(direction, envmap, q1_fog);
 #if DESATURATE_ENVIRONMENT_MAP
 		float avg = (envmap.x + envmap.y + envmap.z) / 3.0;
 		envmap = mix(envmap, avg.xxx, 0.1) * 0.5;
@@ -152,14 +151,23 @@ env_map_seen(vec3 direction, bool remove_sun)
 	return envmap;
 }
 
+/* The sky in a direction, as DRAWN: the primary and reflected/refracted rays
+   that see it (they apply pt_sky_brightness), with a Quake 1 sky's fog. Every
+   lighting lookup goes through env_map, below. */
+vec3
+env_map_seen(vec3 direction, bool remove_sun)
+{
+	return env_map_sky(direction, remove_sun, global_ubo.q1_sky_fog);
+}
+
 /* The sky in a direction as LIGHT - sky lights, bounces, ReSTIR, SHaRC: as
-   drawn, times a Quake 1 sky's light colour (pt_q1_sky_light_r/g/b; 1 1 1
+   drawn but without its fog, times a Quake 1 sky's light colour (pt_q1_sky_light_r/g/b; 1 1 1
    otherwise), so the colour it casts can be set apart from how it looks, as
    pt_q1_sky_light is from pt_q1_sky_brightness. */
 vec3
 env_map(vec3 direction, bool remove_sun)
 {
-	return env_map_seen(direction, remove_sun) * global_ubo.q1_sky_light_tint.rgb;
+	return env_map_sky(direction, remove_sun, vec4(0.0)) * global_ubo.q1_sky_light_tint.rgb;
 }
 
 // depends on env_map

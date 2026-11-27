@@ -1834,6 +1834,61 @@ static pbr_material_t* live_material_definition(const pbr_material_t* mat)
 	return matdef;
 }
 
+/* A MATERIAL WITH NO .mat ENTRY GETS ONE WHEN IT IS SAVED. It was generated from
+   its texture and sidecars, and 'mat save' used to skip it with one console
+   line while mat author's status read "saved 2 map(s)": the painted PNGs were on
+   disk, nothing named them, and the next start drew the material without them.
+   Matt, 2026-11-26: the Team Arena nailgun painted and saved twice, gone both
+   times - quake3.mat was written from the retail paks only, so no Team Arena
+   texture has an entry.
+   The entry goes at the end of its game's main file, the way load_material_file
+   finds it: quake3.mat (baseq3) for Quake III and Team Arena, quake1.mat (id1)
+   for Quake 1 - the names images.c's Quake 1 loaders answer to - and otherwise
+   rerelease.mat, or baseq2.mat outside the rerelease. NULL when none of them is a
+   loose file, or (mat) is an instance (create_instance always writes its entry). */
+static const char* new_entry_matfile(const pbr_material_t* mat)
+{
+	static const char* const quake3[] = { "materials/quake3.mat", NULL };
+	static const char* const quake1[] = { "materials/quake1.mat", NULL };
+	static const char* const quake2[] = { "materials/rerelease.mat", "materials/baseq2.mat", NULL };
+
+	if (instance_separator(mat->name))
+		return NULL;
+
+	const char* const* list = quake2;
+	if (MAT_IsQuake3(mat))
+		list = quake3;
+	else if (!Q_strncasecmp(mat->name, "textures/q1/", 12) || !Q_strncasecmp(mat->name, "progs/", 6)
+		|| !Q_strncasecmp(mat->name, "id1/", 4))
+		list = quake1;
+
+	for (; *list; list++)
+	{
+		char path[MAX_OSPATH];
+		if (material_file_real_path(*list, path, sizeof(path)) == FS_REALPATH_DISK)
+			return *list;
+	}
+	return NULL;
+}
+
+// a new, empty entry for (name) at the end of (t): its header line, the first
+// line of its settings and the line after them, as mat_text_find_entry gives them
+static void mat_text_append_entry(mat_text_t* t, const char* name, int* header, int* first, int* end)
+{
+	if (t->count > 0 && t->lines[t->count - 1].eol[0] == 0)
+		t->lines[t->count - 1].eol = t->eol;  // the file's last line had no ending
+
+	char text[MAX_QPATH + 128];
+	mat_text_insert(t, t->count, Z_CopyString(""), 0, t->eol, true);
+	Q_snprintf(text, sizeof(text), "# %s had no entry: written by 'mat save' / mat author", name);
+	mat_text_insert(t, t->count, Z_CopyString(text), strlen(text), t->eol, true);
+	Q_snprintf(text, sizeof(text), "%s:", name);
+	mat_text_insert(t, t->count, Z_CopyString(text), strlen(text), t->eol, true);
+
+	*header = t->count - 1;
+	*first = *end = t->count;
+}
+
 // something typed in the console that 'mat save' has not written: an attribute,
 // or one of its Quake III stages' settings (q3stages.h)
 static bool material_unsaved(const pbr_material_t* mat)
@@ -1857,8 +1912,9 @@ static void material_console_field_names(const pbr_material_t* mat, char* out, s
 }
 
 // Every changed material defined in (source_matfile), written into it in one go.
-// (tried) marks the materials dealt with, saved or not.
-static int save_changes_to_file(const char* source_matfile, uint8_t* tried)
+// (tried) marks the materials dealt with, saved or not; (new_entry) the ones with
+// no entry before, which get one at the end of the file (new_entry_matfile).
+static int save_changes_to_file(const char* source_matfile, uint8_t* tried, const uint8_t* new_entry)
 {
 	char path[MAX_OSPATH];
 	int where = material_file_real_path(source_matfile, path, sizeof(path));
@@ -1920,9 +1976,15 @@ static int save_changes_to_file(const char* source_matfile, uint8_t* tried)
 		int header, first, end, group_size;
 		if (!mat_text_find_entry(&text, definition_entry_name(mat->name), mat->source_line, &header, &first, &end, &group_size))
 		{
-			Com_WPrintf("  %s: not saved - its entry is not in the file any more. 'mat save <file>' "
-				"writes it to a file of its own.\n", mat->name);
-			continue;
+			if (!new_entry[i])
+			{
+				Com_WPrintf("  %s: not saved - its entry is not in the file any more. 'mat save <file>' "
+					"writes it to a file of its own.\n", mat->name);
+				continue;
+			}
+			mat_text_append_entry(&text, mat->name, &header, &first, &end);
+			group_size = 1;
+			Com_Printf("  %s: had no entry - a new one at the end\n", mat->name);
 		}
 
 		// a new line goes after the entry's last setting, or else after the
@@ -1981,6 +2043,7 @@ static int save_changes_to_file(const char* source_matfile, uint8_t* tried)
 	}
 
 	int saved = 0;
+	uint32_t defs_added = 0;
 	if (num_pending > 0 && mat_text_write(&text, path))
 	{
 		for (int p = 0; p < num_pending; p++)
@@ -1996,6 +2059,25 @@ static int save_changes_to_file(const char* source_matfile, uint8_t* tried)
 			uint32_t line = mat->source_line;
 			if (mat_text_find_entry(&text, mat->name, mat->source_line, &header, &first, &end, &group_size))
 				line = (uint32_t)header + 1;  // lines added above it moved it down
+
+			/* A new entry: a new definition, as load_material_file would read it -
+			   a tuning-only one (no texture_base), so what it leaves unsaid still
+			   comes from the texture, its sidecars and its shader. Built past the
+			   table's end, out of the binary searches' sight, and sorted in
+			   once the file is done. */
+			if (!matdef && new_entry[pending[p]] && num_global_materials + defs_added < MAX_PBR_MATERIAL_DEFS)
+			{
+				matdef = r_global_materials + num_global_materials + defs_added++;
+				MAT_Reset(matdef);
+				Q_strlcpy(matdef->name, mat->name, sizeof(matdef->name));
+				char game_path[MAX_OSPATH];
+				matdef->image_flags = (is_game_custom()
+					&& FS_RealPath(source_matfile, FS_PATH_GAME, game_path, sizeof(game_path)) != FS_REALPATH_NONE)
+					? IF_SRC_GAME : IF_SRC_BASE;
+				matdef->registration_sequence = registration_sequence;
+				Q_strlcpy(matdef->source_matfile, source_matfile, sizeof(matdef->source_matfile));
+				matdef->source_line = line;
+			}
 
 			for (int k = 0; k < c_NumAttributes; k++)
 			{
@@ -2018,6 +2100,12 @@ static int save_changes_to_file(const char* source_matfile, uint8_t* tried)
 				matdef && matdef >= r_map_materials && matdef < r_map_materials + MAX_PBR_MATERIALS);
 			saved++;
 		}
+
+		if (defs_added)
+		{
+			num_global_materials += defs_added;
+			sort_and_deduplicate_materials(r_global_materials, &num_global_materials);
+		}
 	}
 
 	mat_text_free(&text);
@@ -2025,10 +2113,12 @@ static int save_changes_to_file(const char* source_matfile, uint8_t* tried)
 	return saved;
 }
 
-static void save_to_source_files(void)
+// The changed materials written into their .mat files; how many were not
+static int save_to_source_files(void)
 {
-	static uint8_t tried[MAX_PBR_MATERIALS];
+	static uint8_t tried[MAX_PBR_MATERIALS], new_entry[MAX_PBR_MATERIALS];
 	memset(tried, 0, sizeof(tried));
+	memset(new_entry, 0, sizeof(new_entry));
 
 	int saved = 0, changed = 0;
 	char no_entry[512] = "";
@@ -2041,6 +2131,21 @@ static void save_to_source_files(void)
 	for (int i = 0; i < MAX_PBR_MATERIALS; i++)
 		if (r_materials[i].registration_sequence && material_unsaved(r_materials + i))
 			changed++;
+
+	/* The ones with no entry are given their file first (new_entry_matfile), so
+	   each file is written once, its .bak the version from before this save. */
+	for (int i = 0; i < MAX_PBR_MATERIALS; i++)
+	{
+		pbr_material_t* mat = r_materials + i;
+		if (!mat->registration_sequence || !material_unsaved(mat) || mat->source_matfile[0])
+			continue;
+		const char* file = new_entry_matfile(mat);
+		if (!file)
+			continue;
+		Q_strlcpy(mat->source_matfile, file, sizeof(mat->source_matfile));
+		mat->source_line = 0;
+		new_entry[i] = 1;
+	}
 
 	for (int i = 0; i < MAX_PBR_MATERIALS; i++)
 	{
@@ -2061,21 +2166,34 @@ static void save_to_source_files(void)
 			continue;
 		}
 
-		saved += save_changes_to_file(mat->source_matfile, tried);
+		saved += save_changes_to_file(mat->source_matfile, tried, new_entry);
+	}
+
+	// a new entry that could not be written: no entry still, as before the save
+	for (int i = 0; i < MAX_PBR_MATERIALS; i++)
+	{
+		pbr_material_t* mat = r_materials + i;
+		if (new_entry[i] && material_unsaved(mat))
+		{
+			mat->source_matfile[0] = 0;
+			mat->source_line = 0;
+		}
 	}
 
 	if (changed == 0)
 	{
 		Com_Printf("Nothing to save: no material was changed with 'mat <attribute> <value>' since it was loaded.\n");
-		return;
+		return 0;
 	}
 
 	if (num_no_entry > 0)
-		Com_Printf("%d changed material%s with no .mat entry, not saved: %s%s - 'mat save <file>' writes those.\n",
+		Com_WPrintf("%d changed material%s with no .mat entry and no .mat file to give it one, not saved: %s%s - "
+			"'mat save <file>' writes those.\n",
 			num_no_entry, num_no_entry == 1 ? "" : "s", no_entry, num_no_entry > 6 ? ", ..." : "");
 
 	Com_Printf("Saved %d of %d changed material%s (each file's old version is kept as .bak).\n",
 		saved, changed, changed == 1 ? "" : "s");
+	return changed - saved;
 }
 
 void MAT_ChangeMap(const char* map_name)
@@ -4158,7 +4276,8 @@ void MAT_Print(pbr_material_t const * mat)
 		Com_Printf("    defined in: %s line %u\n", where, mat->source_line);
 	}
 	else
-		Com_Printf("    defined in: no .mat entry - generated from the texture and its sidecars\n");
+		Com_Printf("    defined in: no .mat entry - generated from the texture and its sidecars "
+			"('mat save' / mat author's Save gives it one)\n");
 
 	// what 'mat save' would write back
 	if (material_unsaved(mat))
@@ -5737,10 +5856,11 @@ void MAT_CommandFor(pbr_material_t* mat, const char* args)
 	mat_command_target = saved;
 }
 
-// 'mat save' with no file name: every changed material into its own .mat entry
-void MAT_SaveToSourceFiles(void)
+// 'mat save' with no file name: every changed material into its own .mat entry;
+// how many could not be written
+int MAT_SaveToSourceFiles(void)
 {
-	save_to_source_files();
+	return max(save_to_source_files(), 0);
 }
 
 // the words of a 'mat' command from (first) on: 1 for 'mat ...', 2 or 3 after

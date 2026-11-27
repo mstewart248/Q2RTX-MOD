@@ -47,8 +47,10 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 //   fog_color              65 maps   linear rgb of the plain distance fog
 //   heightfog_density is the dominant one; see fog_density below
 //   fog_density            49 maps   plain distance fog, 0.01 .. 0.05
-//   fog_sky_factor         42 maps   how much the SKY is fogged - not used here,
-//                                    the path tracer's sky is a real environment
+//   fog_sky_factor         42 maps   how much the SKY is fogged - not used for a
+//                                    Quake II sky, which is a real environment;
+//                                    a Quake 1 sky takes it ("_skyfog", vkpt
+//                                    main.c q1_sky_fog, pt_q1_skyfog)
 //
 // NOTE ON "dist": heightfog_start_dist / _end_dist are named "dist" in id's own
 // spawn documentation but they are world Z HEIGHTS, not distances, and start is
@@ -211,6 +213,10 @@ is the same plain distance fog: worldspawn "fog" "density r g b" (FitzQuake's
 key, 71 maps - every id1 map among them), or "fog_info_entity" naming an
 info_fog that holds fog_density / fog_color (dopa, mg1, mg3: 42 maps; colour
 0..255 there), with "_skyfog" for how far the sky is fogged (fog_sky_factor).
+Every id1 map writes that key "_skyfog " - with a TRAILING SPACE - so a key is
+trimmed before it is compared, as Quake's own ED_ParseEdict trims key names
+("another hack to fix keynames with trailing spaces"). Without it e1m7's 0.85,
+the rerelease's purple sky over the House of Chthon, was never read.
 The density is the same number too: KEX's density / 64 * depth, 1 - exp(-d^2),
 is the GL_EXP2 fog FitzQuake gave the "fog" key. "_fog" is the editor's copy,
 used only when nothing else is there. mg1's trigger_fog_transition, which
@@ -242,6 +248,8 @@ static bool CL_ParseWorldspawnFog(const char *data, mapfog_t *out)
             break;
 
         Q_strlcpy(key, token, sizeof(key));
+        for (size_t n = strlen(key); n > 0 && key[n - 1] == ' '; n--)
+            key[n - 1] = 0;             // "_skyfog " (see above)
 
         token = COM_Parse(&data);
         if (!data && !*token)

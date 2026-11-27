@@ -63,7 +63,12 @@ vec3 q1_sky_srgb_to_linear(vec3 c)
 	return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), greaterThan(c, vec3(0.04045)));
 }
 
-vec3 q3_sky_clouds(vec3 direction, vec3 farbox)
+/* q1_fog: a Quake 1 sky's fog as its rerelease draws it (global_ubo.h
+   q1_sky_fog) - the drawn colours go a = "_skyfog" of the way to the fog's
+   colour, in the same gamma-encoded values the layers blend in, which is
+   QuakeSpasm's r_skyfog overlay. e1m7: 0.85 of the way to its purple fog. Only
+   the sky as SEEN passes it (env_map_seen); the light paths pass vec4(0). */
+vec3 q3_sky_clouds_fogged(vec3 direction, vec3 farbox, vec4 q1_fog)
 {
 	if (!Q3_SHADERS)    // spec_q3 0 (global_ubo.h)
 		return farbox;
@@ -103,9 +108,18 @@ vec3 q3_sky_clouds(vec3 direction, vec3 farbox)
 		vec4 df = q3_blend_factor((blend >> 4) & 0xfu, src, dst);
 		dst = clamp(src * sf + dst * df, vec4(0), vec4(1));
 	}
-	if (h < 0.0)    // Quake 1: its blend made linear, at the bake's scale
+	if (h < 0.0)    // Quake 1: its blend, fogged, made linear, at the bake's scale
+	{
+		dst.rgb = mix(dst.rgb, clamp(q1_fog.rgb, vec3(0.0), vec3(1.0)), clamp(q1_fog.a, 0.0, 1.0));
 		return q1_sky_srgb_to_linear(dst.rgb) * -h;
+	}
 	return dst.rgb;
+}
+
+// the sky with no fog: its light (flow_ambient), and every non-Quake 1 sky
+vec3 q3_sky_clouds(vec3 direction, vec3 farbox)
+{
+	return q3_sky_clouds_fogged(direction, farbox, vec4(0.0));
 }
 
 /*

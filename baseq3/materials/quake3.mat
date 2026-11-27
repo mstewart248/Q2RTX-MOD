@@ -21848,3 +21848,123 @@ textures/vector:
 #	texture_metallic materialDev/textures/vector_metal.png
 #	texture_height materialDev/textures/vector_height.png
 #	texture_emissive materialDev/textures/vector_light.png
+
+# ---------------------------------------------------------------------------
+# TEAM ARENA: mat author maps saved 2026-11-26 that never reached a .mat
+# ---------------------------------------------------------------------------
+# No Team Arena texture had an entry here (this file was written from the
+# retail paks), and 'mat save' skipped a material with no entry, so these
+# maps were saved as PNGs but nothing named them. Restored by hand; 'mat save'
+# now writes a new entry itself. A painted picture that is a stage of a shader
+# (not its colour stage) is named on that stage, in every Team Arena shader
+# that draws it there.
+
+# the second painting (17:49)
+models/weapons/nailgun/nailgun:
+	texture_metallic materialDev/models/weapons/nailgun/nailgun_metal_2.png
+	texture_roughness materialDev/models/weapons/nailgun/nailgun_rough_2.png
+	# the first painting (13:55), not used - swap the paths to compare:
+	# materialDev/models/weapons/nailgun/nailgun_metal.png, materialDev/models/weapons/nailgun/nailgun_rough.png
+
+models/weapons/vulcan/vulcan:
+	texture_metallic materialDev/models/weapons/vulcan/vulcan_metal.png
+	texture_roughness materialDev/models/weapons/vulcan/vulcan_rough.png
+
+# base_e.tga is the colour stage (stage1) of the flag bases' env_* shaders
+models/mapobjects/flagbase/env_red:
+	texture_metallic materialDev/models/mapobjects/flagbase/base_e_metal.png
+	texture_roughness materialDev/models/mapobjects/flagbase/base_e_rough.png
+
+models/mapobjects/flagbase/env_blue:
+	texture_metallic materialDev/models/mapobjects/flagbase/base_e_metal.png
+	texture_roughness materialDev/models/mapobjects/flagbase/base_e_rough.png
+
+models/mapobjects/flagbase/env_ntrl:
+	texture_metallic materialDev/models/mapobjects/flagbase/base_e_metal.png
+	texture_roughness materialDev/models/mapobjects/flagbase/base_e_rough.png
+
+# base_r.tga is stage2 of the swirl_* shaders (stage0, the swirl, is their colour)
+models/mapobjects/flagbase/swirl_red:
+	stage2_texture_metallic materialDev/models/mapobjects/flagbase/base_r_metal.png
+	stage2_texture_roughness materialDev/models/mapobjects/flagbase/base_r_rough.png
+
+models/mapobjects/flagbase/swirl_blue:
+	stage2_texture_metallic materialDev/models/mapobjects/flagbase/base_r_metal.png
+	stage2_texture_roughness materialDev/models/mapobjects/flagbase/base_r_rough.png
+
+models/mapobjects/flagbase/swirl_ntrl:
+	stage2_texture_metallic materialDev/models/mapobjects/flagbase/base_r_metal.png
+	stage2_texture_roughness materialDev/models/mapobjects/flagbase/base_r_rough.png
+
+# spawn3.tga is stage1 of spawn3 and spawn3_r (stage0, spawn3_b, is their colour)
+models/mapobjects/spawn/spawn3:
+	stage1_texture_metallic materialDev/models/mapobjects/spawn/spawn3_metal.png
+	stage1_texture_roughness materialDev/models/mapobjects/spawn/spawn3_rough.png
+
+models/mapobjects/spawn/spawn3_r:
+	stage1_texture_metallic materialDev/models/mapobjects/spawn/spawn3_metal.png
+	stage1_texture_roughness materialDev/models/mapobjects/spawn/spawn3_rough.png
+
+# fan01.tga is stage1 of the jump pads (stage2 of the jumppad_*_kc ones); jumpad03.tga is stage3 of the *_jumpad3 ones
+textures/sfx2/red_jumpad:
+	stage1_texture_metallic materialDev/textures/sfx2/fan01_metal.png
+	stage1_texture_roughness materialDev/textures/sfx2/fan01_rough.png
+
+textures/sfx2/red_jumpad2:
+	stage1_texture_metallic materialDev/textures/sfx2/fan01_metal.png
+	stage1_texture_roughness materialDev/textures/sfx2/fan01_rough.png
+
+textures/sfx2/red_jumpad3:
+	stage1_texture_metallic materialDev/textures/sfx2/fan01_metal.png
+	stage1_texture_roughness materialDev/textures/sfx2/fan01_rough.png
+	stage3_texture_roughness materialDev/textures/sfx2/jumpad03_rough.png
+
+textures/sfx2/red_jumpad05:
+	stage1_texture_metallic materialDev/textures/sfx2/fan01_metal.png
+	stage1_texture_roughness materialDev/textures/sfx2/fan01_rough.png
+
+textures/sfx2/blue_jumpad:
+	stage1_texture_metallic materialDev/textures/sfx2/fan01_metal.png
+	stage1_texture_roughness materialDev/textures/sfx2/fan01_rough.png
+
+textures/sfx2/blue_jumpad2:
+	stage1_texture_metallic materialDev/textures/sfx2/fan01_metal.png
+	stage1_texture_roughness materialDev/textures/sfx2/fan01_rough.png
+
+textures/sfx2/blue_jumpad3:
+	stage1_texture_metallic materialDev/textures/sfx2/fan01_metal.png
+	stage1_texture_roughness materialDev/textures/sfx2/fan01_rough.png
+	stage3_texture_roughness materialDev/textures/sfx2/jumpad03_rough.png
+
+textures/sfx2/blue_jumpad05:
+	stage1_texture_metallic materialDev/textures/sfx2/fan01_metal.png
+	stage1_texture_roughness materialDev/textures/sfx2/fan01_rough.png
+
+textures/sfx2/ntrl_jumpad:
+	stage1_texture_metallic materialDev/textures/sfx2/fan01_metal.png
+	stage1_texture_roughness materialDev/textures/sfx2/fan01_rough.png
+
+textures/sfx2/ntrl_jumpad2:
+	stage1_texture_metallic materialDev/textures/sfx2/fan01_metal.png
+	stage1_texture_roughness materialDev/textures/sfx2/fan01_rough.png
+
+textures/sfx2/ntrl_jumpad3:
+	stage1_texture_metallic materialDev/textures/sfx2/fan01_metal.png
+	stage1_texture_roughness materialDev/textures/sfx2/fan01_rough.png
+	stage3_texture_roughness materialDev/textures/sfx2/jumpad03_rough.png
+
+textures/sfx2/jumpadx:
+	stage1_texture_metallic materialDev/textures/sfx2/fan01_metal.png
+	stage1_texture_roughness materialDev/textures/sfx2/fan01_rough.png
+
+textures/base_wall2/jumppad_red_kc:
+	stage2_texture_metallic materialDev/textures/sfx2/fan01_metal.png
+	stage2_texture_roughness materialDev/textures/sfx2/fan01_rough.png
+
+textures/base_wall2/jumppad_blue_kc:
+	stage2_texture_metallic materialDev/textures/sfx2/fan01_metal.png
+	stage2_texture_roughness materialDev/textures/sfx2/fan01_rough.png
+
+textures/base_wall2/jumppad_ntrl_kc:
+	stage2_texture_metallic materialDev/textures/sfx2/fan01_metal.png
+	stage2_texture_roughness materialDev/textures/sfx2/fan01_rough.png

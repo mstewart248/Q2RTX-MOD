@@ -164,6 +164,33 @@ static void q1_sky_light_tint(vec3_t out)
 	for (int i = 0; i < 3; i++)
 		out[i] = q1_sky_shown() ? max(cvar_pt_q1_sky_light_rgb[i]->value, 0.f) : 1.f;
 }
+
+static cvar_t *cvar_pt_q1_skyfog;
+
+/* A shown Quake 1 sky's FOG, as its rerelease draws it (QuakeSpasm r_skyfog):
+   the sky as drawn goes worldspawn "_skyfog" (mapfog.c fog_sky_factor) of the
+   way to the map fog's colour, times pt_q1_skyfog - while the map fog is on
+   (cl_fog) and has a density, QuakeSpasm's Fog_GetDensity() > 0. e1m7: 0.85 of
+   the way to (0.58, 0.27, 0.43), its purple. rgb = the colour as authored, in
+   the sky texture's own display values; a = the share; all 0 for none. The
+   sky's light (env_map) never takes it. Matt, 11-26: "It should be the purple
+   sky not the blue sky." */
+static void q1_sky_fog(float out[4])
+{
+	static cvar_t *cl_fog;
+	mapfog_kex_t kf;
+
+	Vector4Set(out, 0.f, 0.f, 0.f, 0.f);
+	if (!q1_sky_shown() || cvar_pt_q1_skyfog->value <= 0.f)
+		return;
+	if (!cl_fog)
+		cl_fog = Cvar_FindVar("cl_fog");
+	if (!cl_fog || !cl_fog->integer)
+		return;
+	if (!CL_GetMapFogKEX(&kf) || kf.sky_factor <= 0.f || (kf.density <= 0.f && kf.hf_density <= 0.f))
+		return;
+	Vector4Set(out, kf.color[0], kf.color[1], kf.color[2], min(1.f, kf.sky_factor * cvar_pt_q1_skyfog->value));
+}
 cvar_t *cvar_pt_fog_lava = NULL;
 cvar_t *cvar_pt_accumulation_rendering = NULL;
 cvar_t *cvar_pt_accumulation_rendering_framenum = NULL;
@@ -6791,6 +6818,7 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 		vec3_t tint;
 		q1_sky_light_tint(tint);    // its light's colour: env_map, not the sky as drawn
 		Vector4Set(ubo->q1_sky_light_tint, tint[0], tint[1], tint[2], 0.f);
+		q1_sky_fog(ubo->q1_sky_fog);    // the sky as drawn: the rerelease's "_skyfog"
 		if (shown) {
 			ubo->pt_sky_brightness *= max(0.f, cvar_pt_q1_sky_brightness->value) / (q1_sky_scale * q1_sky_light());
 			const float fog = max(0.f, cvar_pt_q1_sky_fog->value);
@@ -10577,6 +10605,12 @@ vkpt_init_frontend(void)
 	cvar_pt_q1_sky_brightness = Cvar_Get("pt_q1_sky_brightness", "1", CVAR_ARCHIVE);
 	cvar_pt_q1_sky_light = Cvar_Get("pt_q1_sky_light", "1", CVAR_ARCHIVE);
 	cvar_pt_q1_sky_fog = Cvar_Get("pt_q1_sky_fog", "1", CVAR_ARCHIVE);
+	/* pt_q1_skyfog: how far the sky as DRAWN goes to the map fog's colour, as a
+	   multiplier of the map's own worldspawn "_skyfog" - the rerelease's sky
+	   fog (QuakeSpasm's r_skyfog; e1m7 0.85, purple; most id1 maps 0 .. 0.25).
+	   1 = as the rerelease draws it, 0 = the sky's texture alone. Its light and
+	   its fog term (pt_q1_sky_fog, above) are untouched. q1_sky_fog(). */
+	cvar_pt_q1_skyfog = Cvar_Get("pt_q1_skyfog", "1", CVAR_ARCHIVE);
 	/* pt_q1_water_density: how murky water, slime and lava are on a Quake 1 map
 	   WHILE THE EYE IS IN THEM, as a multiplier of the "underwater murkiness"
 	   slider (pt_water_density). Seen from above the surface the liquid keeps

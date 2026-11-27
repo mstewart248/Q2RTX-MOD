@@ -520,7 +520,9 @@ guns while everyone else keeps their own.
   colours, under **sky type** → **rerelease**. On a Quake map the environment
   menu sets how bright it looks (`pt_q1_sky_brightness`), the light it casts and
   its colour (`pt_q1_sky_light`, `_r`, `_g`, `_b`), and how much it lights the
-  fog (`pt_q1_sky_fog`).
+  fog (`pt_q1_sky_fog`). A foggy map's sky is tinted toward the fog's colour as
+  much as the map's `_skyfog` asks, as the rerelease draws it: *The House of
+  Chthon*'s purple (`pt_q1_skyfog`, 0 = the sky's own colours).
 * **Sun**: the maps that ask for one with `_sunlight` (*Dimension of the Past*,
   *Dimension of the Machine*, *Dawn of the Machine*) get the path tracer's sun,
   from the direction in their `_sun_mangle` (`pt_q1_sun`, `pt_q1_sun_scale`).
@@ -2135,7 +2137,7 @@ Materials can be examined and modified at run time.
 | `mat view_weapon [N] <command>` | **(new)** any of these for the gun in your hands instead of the crosshair's material (`mat view_weapon print`). Alone, it lists the gun's materials and their N |
 | `mat create_instance` | give the surface at the crosshair its own material, so it can be tuned without affecting other uses of the same texture. Writes an empty section to `materials/<map>.mat` and reloads. On a placed model (a torch, a lamp) it gives that one model its own material, keyed on where it stands, so each torch can have its own `emissive_factor` and `light_factor` |
 | `mat reload` | **(new)** re-read every `.mat` file from disk, and any texture saved since it was loaded, re-apply per-map overrides and MD5 inheritance, re-detect sidecars, and rebuild. Auto-generated materials are left alone, and the count of each is reported |
-| `mat save` | **(new)** write what `mat <attribute> <value>` changed back into the `.mat` entries those materials came from — only those lines; the old file is kept as `.bak` |
+| `mat save` | **(new)** write what `mat <attribute> <value>` changed back into the `.mat` entries those materials came from — only those lines; the old file is kept as `.bak`. A material with no entry yet (every Team Arena texture, for one) gets a new one at the end of its game's main file: `quake3.mat`, `quake1.mat` or `rerelease.mat` |
 | `mat save <filename> [all] [force]` | write the active materials to a new file. `all` saves everything rather than only the undefined ones; `force` overwrites an existing file |
 | `mat <attribute> <value>` | set one attribute of the material at the crosshair |
 

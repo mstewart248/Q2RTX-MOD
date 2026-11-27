@@ -2829,13 +2829,20 @@ static void author_save(void)
 
 	// the .mat entries: the maps made or moved, an upscale set (everything 'mat save' would write)
 	const bool wrote_mat = au.attr_changed;
+	int mat_unsaved = 0;
 	if (au.attr_changed)
 	{
-		MAT_SaveToSourceFiles();
+		mat_unsaved = MAT_SaveToSourceFiles();
 		au.attr_changed = false;
 	}
 
-	if (failed)
+	/* A map with no .mat line naming it is lost at the next start - this used to
+	   read "saved 2 map(s)" while the entry was dropped (Matt, 2026-11-26, the
+	   Team Arena nailgun) - so the status says so first. */
+	if (mat_unsaved)
+		author_status("saved %d map(s), but %d material(s) NOT written into a .mat - the maps won't load next "
+			"time; see the console", saved, mat_unsaved);
+	else if (failed)
 		author_status("saved %d map(s), %d FAILED - see the console", saved, failed);
 	else if (saved)
 		author_status("saved %d map(s)%s", saved, repointed ? ", materials pointed at the new files" : "");

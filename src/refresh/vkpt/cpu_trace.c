@@ -229,6 +229,7 @@ static struct {
 	// on - is pt_env_scale times this; as LIGHT, pt_env_scale times the tint
 	float sky_seen_brightness;  // pt_sky_brightness, or pt_physical_sky_brightness
 	vec3_t sky_light_tint;      // a Quake 1 sky's pt_q1_sky_light_r/g/b
+	float sky_q1_fog[4];        // a Quake 1 sky's fog, as SEEN only (global_ubo.h q1_sky_fog)
 	// a Quake III sky's cloud layers, or a Quake 1 sky's two (q3_sky.glsl)
 	int sky_num_layers;
 	float sky_cloud_height;     // < 0: Quake 1's projection, its size the scale
@@ -621,8 +622,9 @@ static inline float ct_srgb_decode(float c)
 	return (c <= 0.04045f) ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f);
 }
 
-// q3_sky_clouds: the layers over the far box `rgb`, in place
-static void ct_sky_clouds(const float direction[3], float rgb[3])
+// q3_sky_clouds_fogged: the layers over the far box `rgb`, in place; q1_fog
+// (rgb, a) is a Quake 1 sky's fog, NULL for none
+static void ct_sky_clouds(const float direction[3], float rgb[3], const float *q1_fog)
 {
 	if (scene.sky_num_layers <= 0)
 		return;
@@ -665,8 +667,12 @@ static void ct_sky_clouds(const float direction[3], float rgb[3])
 	}
 
 	if (h < 0.f) {
-		for (int c = 0; c < 3; c++)
+		const float f = q1_fog ? ct_clampf(q1_fog[3], 0.f, 1.f) : 0.f;
+		for (int c = 0; c < 3; c++) {
+			if (f > 0.f)
+				dst[c] += (ct_clampf(q1_fog[c], 0.f, 1.f) - dst[c]) * f;
 			rgb[c] = ct_srgb_decode(dst[c]) * -h;
+		}
 	} else {
 		VectorCopy(dst, rgb);
 	}
@@ -720,7 +726,7 @@ static void ct_env(const float dir[3], bool remove_sun, bool seen, float out[3])
 		const byte *texel = envmap_data + (((size_t)face * envmap_height + ti) * envmap_width + si) * 4;
 		float v[3] = { (float)texel[0] / 255.f, (float)texel[1] / 255.f, (float)texel[2] / 255.f };
 		// the clouds go over the far box in the rotated direction, as on the GPU
-		ct_sky_clouds(r, v);
+		ct_sky_clouds(r, v, seen ? scene.sky_q1_fog : NULL);
 		const float avg = (v[0] + v[1] + v[2]) * (1.f / 3.f);
 		for (int k = 0; k < 3; k++)
 			out[k] = (v[k] + (avg - v[k]) * 0.1f) * 0.5f;
@@ -4159,6 +4165,8 @@ static void ct_capture_sky(const QVKUniformBuffer_t *ubo)
 		? max(0.f, ubo->pt_sky_brightness) : max(0.f, ubo->pt_physical_sky_brightness);
 	for (int k = 0; k < 3; k++)
 		scene.sky_light_tint[k] = ubo->q1_sky_light_tint[k];
+	for (int k = 0; k < 4; k++)
+		scene.sky_q1_fog[k] = ubo->q1_sky_fog[k];
 
 	scene.sky_num_layers = 0;
 	scene.sky_cloud_height = ubo->q3_sky_cloud_height;
