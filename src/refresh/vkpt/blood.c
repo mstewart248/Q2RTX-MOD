@@ -3715,6 +3715,54 @@ void vkpt_blood_prepare(
 		for (uint32_t m = 0; m < num_moves; m++)
 			written += move_list[m].count;
 	}
+	/* pt_blood_slice_stats 1 (diagnostic, Claude 2026-11-26): would building the
+	   BLAS in slices pay? Once a second: of the frames that wrote the section,
+	   how many of 16 equal slices of it each one touched, on average and at
+	   most - one whole-section build is 16 of 16 every time. */
+	{
+		static cvar_t *cvar_slices = NULL;
+		static int frames, writing, touched_sum, touched_max, last_ms;
+		if (!cvar_slices)
+			cvar_slices = Cvar_Get("pt_blood_slice_stats", "0", 0);
+		if (cvar_slices->integer && prim_count > 0)
+		{
+			uint32_t mask = 0;
+			const uint64_t slice = (prim_count + 15) / 16;
+			if (epoch_reset)
+				mask = 0xffff;
+			else
+			{
+				for (uint32_t r = 0; r < num_regions; r++)
+					for (uint64_t s = regions[r].src / slice; s <= (regions[r].src + regions[r].count - 1) / slice && s < 16; s++)
+						mask |= 1u << s;
+				for (uint32_t m = 0; m < num_moves; m++)
+				{
+					const uint64_t lo = move_list[m].first - prim_offset;
+					for (uint64_t s = lo / slice; s <= (lo + max(move_list[m].count, 1u) - 1) / slice && s < 16; s++)
+						mask |= 1u << s;
+				}
+			}
+			int n = 0;
+			for (uint32_t b = mask; b; b &= b - 1)
+				n++;
+			frames++;
+			if (n)
+			{
+				writing++;
+				touched_sum += n;
+				touched_max = max(touched_max, n);
+			}
+			const int now = (int)(Sys_Microseconds() / 1000);
+			if (now - last_ms >= 1000)
+			{
+				Com_Printf("BLOODSLICES %d frames, %d wrote: %.2f of 16 slices a writing frame, most %d; %d droplets\n",
+					frames, writing, writing ? (double)touched_sum / writing : 0., touched_max, blood.sphere_count);
+				frames = writing = touched_sum = touched_max = 0;
+				last_ms = now;
+			}
+		}
+	}
+
 	blood_blas_report(prim_offset, prim_count, epoch_reset || num_regions > 0 || num_moves > 0, written);
 	blood_why_frame_done(epoch_reset || num_regions > 0 || num_moves > 0);
 

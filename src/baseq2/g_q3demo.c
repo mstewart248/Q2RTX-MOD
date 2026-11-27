@@ -378,7 +378,7 @@ typedef struct {
     int     bits;
 } q3d_field_t;
 
-#define ESF(f, b)   { offsetof(q3d_es_t, f), b }
+#define ESF(f, b)   { q_offsetof(q3d_es_t, f), b }
 static const q3d_field_t q3d_es_fields[] = {
     ESF(eType, 8), ESF(eFlags, 19),
     ESF(pos.trType, 8), ESF(pos.trTime, 32), ESF(pos.trDuration, 32),
@@ -400,7 +400,7 @@ static const q3d_field_t q3d_es_fields[] = {
 };
 #undef ESF
 
-#define PSF(f, b)   { offsetof(q3d_ps_t, f), b }
+#define PSF(f, b)   { q_offsetof(q3d_ps_t, f), b }
 static const q3d_field_t q3d_ps_fields[] = {
     PSF(commandTime, 32), PSF(pm_type, 8), PSF(bobCycle, 8), PSF(pm_flags, 16), PSF(pm_time, -16),
     PSF(origin[0], 0), PSF(origin[1], 0), PSF(origin[2], 0),

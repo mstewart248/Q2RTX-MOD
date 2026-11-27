@@ -54,6 +54,7 @@ it is a stain on the skin, not a raised film.
 */
 
 #include "vkpt.h"
+#include "system/system.h"	// Sys_Milliseconds (implicit on gcc 14+ is an error)
 
 extern void cast_u32_to_f32_color(int color_index, const color_t* pcolor, float* color_f32, float hdr_factor);
 

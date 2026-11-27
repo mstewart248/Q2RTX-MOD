@@ -343,7 +343,7 @@ id1/id1/progs/flame2_mdl_00_00#3361c28c:
 #	metalness_factor 1
 #	specular_factor 1
 #	base_factor 1
-#	emissive_factor 1
+	emissive_factor 4
 	light_factor 4
 #	kind REGULAR
 #	is_light 1
@@ -387,7 +387,7 @@ id1/id1/progs/flame2_mdl_00_00#a9c1abc0:
 #	metalness_factor 1
 #	specular_factor 1
 #	base_factor 1
-#	emissive_factor 1
+	emissive_factor 4
 	light_factor 4
 #	kind REGULAR
 #	is_light 1
@@ -409,7 +409,7 @@ id1/id1/progs/flame2_mdl_00_00#d32970e7:
 #	metalness_factor 1
 #	specular_factor 1
 #	base_factor 1
-#	emissive_factor 1
+	emissive_factor 4
 	light_factor 4
 #	kind REGULAR
 #	is_light 1

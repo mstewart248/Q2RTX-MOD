@@ -219,10 +219,12 @@ progs/gib3_mdl_00_00:
 progs/grenade_00_00:
 	texture_base materialDev/progs/grenade_00_00.png
 #	Remix's default roughness 0.5 - off (this material did not set one):
-#	texture_roughness 0
+	texture_roughness materialDev/progs/grenade_00_00_rough.png
 #	roughness_override 0.5
 	texture_emissive materialDev/remix/TextureDev2/Grenade_emissive.png
 	emissive_factor 1.25
+	texture_metallic materialDev/progs/grenade_00_00_metal.png
+	base_factor 2
 
 # Remix mat_CEC5FBF193ABD6A5: progs/h_zombie.mdl skin 0
 progs/h_zombie_mdl_00_00:
