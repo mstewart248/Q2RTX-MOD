@@ -142,6 +142,26 @@ bool fog_layers_summed(ivec2 pos)
 	return bitCount(flags & CHECKERBOARD_FLAG_FIELD_MASK) > 1;
 }
 
+/* pt_fog_field1_skip: whether checkerboard_interleave.comp's combine can read this
+   field-1 pixel at all. It reads field 1 only where the pixel SPLITS, and pass 0 runs
+   after primary_rays.rgen and before reflect_refract.rgen, so a split is either
+   already in primary_rays' checkerboard flags (screens, cameras, translucent models)
+   or still to come from reflect_refract, which returns at once on any primary that is
+   not a reflect/refract kind. Both fields are asked; either one is enough. */
+bool fog_field1_may_split(ivec2 pos1)
+{
+	ivec2 pos0 = ivec2(pos1.x - global_ubo.pt_field_offset, pos1.y);
+
+	int flags0 = int(texelFetch(TEX_PT_VIEW_DIRECTION, pos0, 0).w);
+	int flags1 = int(texelFetch(TEX_PT_VIEW_DIRECTION, pos1, 0).w);
+	if (bitCount(flags0 & CHECKERBOARD_FLAG_FIELD_MASK) > 1 || bitCount(flags1 & CHECKERBOARD_FLAG_FIELD_MASK) > 1)
+		return true;
+
+	uint mat0 = floatBitsToUint(texelFetch(TEX_PT_SHADING_POSITION, pos0, 0).w);
+	uint mat1 = floatBitsToUint(texelFetch(TEX_PT_SHADING_POSITION, pos1, 0).w);
+	return IS_REFLECT_REFRACT_KIND(mat0) || IS_REFLECT_REFRACT_KIND(mat1);
+}
+
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 void main()
 {
@@ -197,6 +217,38 @@ void main()
 	if (sourcePixelPos.x >= global_ubo.pt_field_offset * 2 || sourcePixelPos.y >= global_ubo.height)
 		return;
 
+	/* PHOTO MODE: NO MARCH FOR A FIELD-1 PIXEL THE COMBINE NEVER READS
+	   (pt_fog_field1_skip, global_ubo.h). The dispatch covers both field halves, and
+	   on every pixel that does not split, field 1's march was thrown away - about half
+	   of this pass. Pass 0 only: pass 1 already returns where there is no leg. */
+	if (push.pass_index == 0 && fog_accum_march() && global_ubo.pt_fog_field1_skip != 0.0
+	    && global_ubo.pt_fullres_fields != 0 && sourcePixelPos.x >= global_ubo.pt_field_offset
+	    && !fog_field1_may_split(sourcePixelPos))
+	{
+		imageStore(IMG_GODRAYS_INTERMEDIATE, ivec2(gl_GlobalInvocationID.xy), vec4(0, 0, 0, 1));
+		return;
+	}
+
+	/* PHOTO MODE UNDER MAT AUTHOR'S SPARSE RATE (pt_fog_accum_sparse, global_ubo.h).
+	   The UBO's pt_sparse is on in photo mode only while mat author sets it
+	   (main.c sparse_rendering_rate). That fraction of the WORKGROUPS lights its fog
+	   this frame, weighted 1/rate; the rest march transmittance alone. Decided per
+	   workgroup so a group either marches or does not - a wave with one lit pixel in
+	   it would cost as long as that pixel. Blue noise over the groups, turned by the
+	   golden ratio each frame like sparse_pixel_active, so every group comes round
+	   evenly. */
+	bool  sparse_lit = true;
+	float sparse_weight = 1.0;
+	if (fog_accum_march() && global_ubo.pt_fog_accum_sparse != 0.0
+	    && global_ubo.pt_sparse > 0.0 && global_ubo.pt_sparse < 1.0)
+	{
+		ivec2 g = (ivec2(gl_WorkGroupID.xy) + ivec2(41, 173)) & ivec2(BLUE_NOISE_RES - 1);
+		float noise = texelFetch(TEX_BLUE_NOISE, ivec3(g, 1), 0).r;
+		float shift = float((uint(global_ubo.current_frame_idx) * 0x9E3779B9u) >> 8) * (1.0 / 16777216.0);
+		sparse_lit = fract(noise + shift) < global_ubo.pt_sparse;
+		sparse_weight = 1.0 / global_ubo.pt_sparse;
+	}
+
 	// The share of pass 0's eye-to-surface column this layer keeps.
 	float shared_column_weight = (push.pass_index != 0 && fog_layers_summed(sourcePixelPos)) ? 0.5 : 1.0;
 
@@ -229,6 +281,9 @@ void main()
 	// was marched as water. pt_fog_through_glass - see global_ubo.h.
 	if (medium == MEDIUM_GLASS && global_ubo.pt_fog_through_glass != 0.0)
 		medium = MEDIUM_NONE;
+
+	// a leg in water, slime or lava marches no Quake III fog brush (fog_q3.glsl)
+	q3_fog_leg_in_liquid = q3_fog_medium_is_liquid(medium);
 
 	vec3 direction = texelFetch(TEX_PT_VIEW_DIRECTION, sourcePixelPos.xy, 0).xyz;
 
@@ -353,7 +408,37 @@ void main()
 
 	offset += getStep(offset, density) * (rand(pixelPos.xy) - 1);
 
-	while(true)
+	/* A workgroup sparse rendering leaves unlit this frame (see sparse_lit above):
+	   the same steps, only what dims the picture behind the fog - a Quake III fog
+	   brush's extinction and the map medium's. No rays, no shadow-map lookups, and
+	   nothing scattered, so inscatter and localInscatter stay 0. */
+	if (!sparse_lit)
+	{
+		while (true)
+		{
+			float density = getDensity(currentPos);
+			float stepLength = getStep(offset, density);
+			offset += stepLength;
+			if (offset >= distance)
+				break;
+			currentPos = original_pos + direction * offset;
+
+			float q3_sigma = q3_fog_sigma(currentPos);
+			if (q3_sigma > 0.0)
+			{
+				fog_transmittance *= exp(-stepLength * q3_sigma);
+				if (fog_transmittance < 0.003)
+					break;
+			}
+			if (fog_medium)
+			{
+				fog_transmittance *= exp(-(stepLength * density) * global_ubo.pt_fog_extinction);
+				if (fog_transmittance < 0.003)
+					break;
+			}
+		}
+	}
+	else while(true)
 	{
 		float density = getDensity(currentPos);
 		float stepLength = getStep(offset, density);
@@ -557,6 +642,9 @@ void main()
 		inscatterColor += localInscatter * 0.005 * FOG_LOCAL_DENSITY;
 	}
 
+	// a lit workgroup under sparse rendering stands for 1/rate of them (0 when unlit)
+	inscatterColor *= sparse_weight;
+
 	if(medium != MEDIUM_NONE)
 	{
 		inscatterColor *= global_ubo.pt_water_density * 30;
@@ -566,6 +654,8 @@ void main()
 		// toned down - see pt_water_fog_above.
 		if(push.pass_index != 0)
 			inscatterColor *= max(global_ubo.pt_water_fog_above, 0.0);
+		else
+			inscatterColor *= max(global_ubo.pt_water_fog_below, 0.0);
 	}
 
 	vec4 prevColor;

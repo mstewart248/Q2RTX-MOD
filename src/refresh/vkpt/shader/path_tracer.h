@@ -283,6 +283,14 @@ void pt_path_launch_init()
 	uint h = PT_PATH_HDR(list);
 	uvec3 g = gl_GlobalInvocationID;
 	uint index = (((g.y >> 3) * PT_TILE_WORDS[h + 1u] + (g.x >> 3)) << 6) + ((g.y & 7u) << 3) + (g.x & 7u);
+#ifdef VKPT_D3D12
+	// SER (pt_ser) over a list: DispatchRays has no 8x8 groups, so the renderer launches
+	// rows of (word 1's groups x 64) threads, `rows` (word 2) of them, and says so here
+	// (passes.c's trace_raygen_paths; the field is unused on D3D12 otherwise). The
+	// same entries in the same order as the groups walk them.
+	if (push_constants.tile_buffer.x != 0u)
+		index = g.y * (PT_TILE_WORDS[h + 1u] << 6) + g.x;
+#endif
 	if (index >= min(PT_TILE_WORDS[h], PT_TILE_WORDS[PT_TILE_HDR_PATH_STRIDE]))
 	{
 		pt_tile_launch_id = uvec3(PT_TILE_NO_LAUNCH, PT_TILE_NO_LAUNCH, 0u);

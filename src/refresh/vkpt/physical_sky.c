@@ -267,6 +267,19 @@ static cvar_t *sky_map_sun_animate;
 // each one re-renders more often at a faster cycle rather than letting the jump
 // grow, which is what a fixed interval would do - 0.28 deg at 1x is 6 deg at 25x.
 static cvar_t *sun_animate_step;
+/* THE STEP IS WIDER WHILE THE SUN IS HIGH (sun_animate_step_day, 11-27). The step
+   exists so the sun's colour and the sky's light do not visibly jump, and how far
+   they move per degree depends on the hour: about 3% of brightness per 0.05
+   degrees in twilight, about 0.3% at midday (the SEAMS AT SUNRISE note below). But
+   a re-render costs the same at any hour - the cloud march over 6.3M texels - and
+   at the default step it ran 1.4 times a second all day: a steady 0.46 ms of every
+   frame on the Quake II sun maps (UPDATE_ENVIRONMENT, attract demos 11-26). So
+   from 10 degrees of elevation up the step grows, to this many times
+   sun_animate_step at 25 degrees and above: 3 = a midday update still moves the
+   light by under 1%, a third of what a twilight one does, and costs a third as
+   often. Below 10 degrees, and at night, nothing changes. 1 = the same step all
+   day, as before. The sun's DIRECTION - the shadows - never waited for this. */
+static cvar_t *sun_animate_step_day;
 
 /* A TIME OF DAY ON A LEVEL CHANGE: START OVER, OR CARRY ON (Matt, 2026-11-24:
    "one option to run continuously where the sun will progress through level
@@ -1912,7 +1925,11 @@ vkpt_evaluate_sun_light(sun_light_t* light, const vec3_t sky_matrix[3], float ti
 					? sun_angle_between((float)elevation, (float)azimuth,
 						rendered_sun_elevation, rendered_sun_azimuth)
 					: 360.f;
-				if (moved >= max(0.f, sun_animate_step->value))
+				float step = max(0.f, sun_animate_step->value);
+				// wider while the sun is high (sun_animate_step_day)
+				step *= 1.f + (max(1.f, sun_animate_step_day->value) - 1.f)
+					* max(0.f, min(1.f, ((float)elevation - 10.f) / 15.f));
+				if (moved >= step)
 				{
 					rendered_sun_elevation = (float)elevation;
 					rendered_sun_azimuth = (float)azimuth;
@@ -2241,6 +2258,7 @@ void InitialiseSkyCVars()
 	sky_map_sun_animate = Cvar_Get("sky_map_sun_animate", "0", 0);
 
 	sun_animate_step = Cvar_Get("sun_animate_step", "0.05", CVAR_ARCHIVE);
+	sun_animate_step_day = Cvar_Get("sun_animate_step_day", "3", 0);
 
 	// 0 = a time of day starts over at its hour on every level, 1 = the day runs
 	// on through level changes. Read at the next level load; needs no callback.

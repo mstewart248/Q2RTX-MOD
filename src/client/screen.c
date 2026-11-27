@@ -1921,7 +1921,7 @@ typedef struct {
     const char  *ammo_icon; // its ammo's pic, when iw_icons[] has none for it
 } wbslot_t;
 
-enum { WB_Q2, WB_Q3, WB_Q1 };
+enum { WB_Q2, WB_Q3, WB_Q1, WB_TA };
 
 static const wbslot_t wb_slots[] = {
     { "Blaster",          "w_blaster",       "models/weapons/v_blast/tris.md2",     NULL },
@@ -1968,6 +1968,20 @@ static const wbslot_t wb_slots[] = {
     // g_q3_grapple's hook: its item comes after Quake's (SCR_WeaponBarFindItem)
     { "Grappling Hook",   "/icons/iconw_grapple.tga",    "models/weapons2/grapple/grapple.md3",     NULL,        WB_Q3 },
 
+    /* TEAM ARENA'S GUNS (g_q3weap.c, placed by its maps - g_ta.c), after the
+       hook as Team Arena numbers them (WP_NAILGUN 11, PROX_LAUNCHER 12,
+       CHAINGUN 13). Matt, 2026-11-27: "The new team arena weapons don't show up
+       on the weapon select wheels" - they had no slot. Their items are the last
+       of all (g_items.c), and every name is taken already - Quake II's Chaingun
+       and Prox Launcher, Quake's Nailgun - so a Team Arena slot is the last item
+       of its name after the Grappling Hook (SCR_WeaponBarFindItem). The icons
+       are the images Team Arena's own icons/iconw_* and icona_* shaders draw
+       (missionpack pak0 scripts/gfx.shader); no missionpack, no icon, no slot.
+       Only while the server runs Quake III's guns, like the slots above. */
+    { "Nailgun",          "/icons/nailgun128.tga",       "models/weapons/nailgun/nailgun.md3",      "Nails",           WB_TA, "/icons/ammo_nailgun.tga" },
+    { "Prox Launcher",    "/icons/proxmine.tga",         "models/weapons/proxmine/proxmine.md3",    "Proximity Mines", WB_TA, "/icons/ammo_proxmine.tga" },
+    { "Chaingun",         "/icons/chaingun128.tga",      "models/weapons/vulcan/vulcan.md3",        "Chaingun Belt",   WB_TA, "/icons/ammo_chaingun.tga" },
+
     /* QUAKE'S GUNS - the bot match's g_q3_weapons 3 (baseq2 g_q1weap.c), in
        Quake's order, with its status bar's weapon and ammo icons (gfx.wad).
        Their items come after Quake III's, and four share a name with a Quake II
@@ -1985,8 +1999,9 @@ static const wbslot_t wb_slots[] = {
     { "Thunderbolt",      "/id1/id1/gfx/weapons/ww_light_1.lmp",    "id1/id1/progs/v_light.mdl", "Cells",   WB_Q1, "/id1/id1/gfx/sb_cells.lmp" },
 };
 
-// the Quake III slots, then Quake's, at the end of wb_slots[]
-#define WB_NUM_Q3_SLOTS     10
+// the Quake III slots (Team Arena's three among them), then Quake's, at the
+// end of wb_slots[]
+#define WB_NUM_Q3_SLOTS     13
 #define WB_NUM_Q1_SLOTS     8
 
 // The same weapons in this tree's own itemlist order, which is the order a
@@ -2038,13 +2053,24 @@ static int SCR_WeaponBarFindItem(const char *name, int set)
         return -1;
 
     if (set != WB_Q2) {
-        int end = MAX_ITEMS;
+        int begin = 0, end = MAX_ITEMS;
+        // Quake's guns end at the Grappling Hook (a name only it has), and Team
+        // Arena's start after it: Team Arena's Nailgun is the last of that name
+        // since it came in, and a Quake slot reaching it lost Quake's nailgun
+        int hook = SCR_WeaponBarFindItem("Grappling Hook", WB_Q2);
         if (set == WB_Q3) {
             int axe = SCR_WeaponBarFindItem("Axe", WB_Q2);
             if (axe >= 0)
                 end = axe;
+        } else if (set == WB_Q1) {
+            if (hook >= 0)
+                end = hook;
+        } else if (set == WB_TA) {
+            if (hook < 0)
+                return -1;
+            begin = hook + 1;
         }
-        for (i = end - 1; i >= 0; i--)
+        for (i = end - 1; i >= begin; i--)
             if (!strcmp(cl.configstrings[CS_ITEMS + i], name))
                 return i;
         // a Quake III item listed after Quake's (the grappling hook): its
@@ -2076,7 +2102,7 @@ static void SCR_WeaponBarResolve(void)
         // Quake III's or Quake's guns only while the server deals them:
         // otherwise their items exist but nobody carries one, and their icons
         // are not looked up (a missing pic is a file search every time)
-        if ((wb_slots[i].set == WB_Q3 && !cl.q3_weapons) ||
+        if (((wb_slots[i].set == WB_Q3 || wb_slots[i].set == WB_TA) && !cl.q3_weapons) ||
             (wb_slots[i].set == WB_Q1 && !cl.q1_weapons)) {
             wb.item[i] = wb.ammo[i] = -1;
             wb.pic[i] = 0;

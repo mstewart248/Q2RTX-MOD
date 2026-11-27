@@ -286,8 +286,11 @@ static struct {
     // reorder (pt_ser 2), 1 with it (pt_ser 1), 2 with it before the triangle fetch
     // (pt_ser 3)][first bounce, later], made when first asked for; their raygen records,
     // one 64-byte slot each, in an upload buffer
-    ID3D12StateObject   *ser[2][3][2];
-    bool                ser_failed[2][3];
+    ID3D12StateObject   *ser[2][4][2];
+    bool                ser_failed[2][4];
+    // pt_ser_lists: DispatchRays over the path lists (passes.c's trace_raygen_paths)
+    ID3D12CommandSignature *ray_dispatch;
+    ID3D12Resource      *ray_args;
     ID3D12Resource      *ser_table;
     uint8_t             *ser_table_map;
     ID3D12PipelineState *blit[2];       // [d3d.hdr]: film_grain.frag into the frame target's format
@@ -510,38 +513,55 @@ bool d3d12_world_set_q3_shaders(bool on)
    Read every frame; the state objects are made the first time a mode is asked for, so
    pt_ser 0 costs nothing. profiler 1 shows the indirect lighting's GPU time. */
 static cvar_t *pt_ser;
+/* pt_ser_lists (11-27), 1 = the ray generation bounces run over pt_bounce_cull's path
+   lists and pt_sparse's list as the compute passes do (passes.c's trace_raygen_paths),
+   so a pt_ser A/B compares like with like. 0 = over the whole grid, as every pt_ser
+   measurement before that date was made: with either of those two on, pt_ser then ran
+   several times the threads pt_ser 0 did, whatever the reorder was worth. */
+static cvar_t *pt_ser_lists;
 
-// w.ser's first index for a pt_ser mode (1, 2 or 3)
+#define SER_VARIANTS    4
+#define SER_RECORDS     (2 * SER_VARIANTS * 2)
+// the records, 64 bytes apart (D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT), then each
+// one's D3D12_DISPATCH_RAYS_DESC template (d3d12_raygen_template), 128 bytes apart
+#define SER_TEMPLATES   (SER_RECORDS * D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT)
+#define SER_TABLE_SIZE  (SER_TEMPLATES + SER_RECORDS * 128)
+typedef char ser_template_check[sizeof(D3D12_DISPATCH_RAYS_DESC) <= 128 ? 1 : -1];
+
+// w.ser's first index for a pt_ser mode (1 to 4)
 static int ser_variant(int mode)
 {
-    return mode == 1 ? 1 : mode == 3 ? 2 : 0;
+    return mode == 1 ? 1 : mode == 3 ? 2 : mode == 4 ? 3 : 0;
 }
 
 // its record's slot in w.ser_table: [spec_q3][variant][bounce]
 static int ser_record(int q3, int v, int k)
 {
-    return (q3 * 3 + v) * 2 + k;
+    return (q3 * SER_VARIANTS + v) * 2 + k;
 }
 
 static bool ser_ready(int mode)
 {
     // [spec_q3]: the Quake III code out (pt_q3_shaders), in
-    static const char *const suffix[2][3][2] = {
+    static const char *const suffix[2][SER_VARIANTS][2] = {
         {
             { ".spec_7_0.raygen", ".spec_0_1_7_0.raygen" },
             { ".spec_7_0.ser", ".spec_0_1_7_0.ser" },
             { ".spec_1_1_7_0.ser", ".spec_0_1_1_1_7_0.ser" },
+            { ".spec_1_2_7_0.ser", ".spec_0_1_1_2_7_0.ser" },
         },
         {
             { ".raygen", ".spec_0_1.raygen" },
             { ".ser", ".spec_0_1.ser" },
             { ".spec_1_1.ser", ".spec_0_1_1_1.ser" },
+            { ".spec_1_2.ser", ".spec_0_1_1_2.ser" },
         },
     };
-    static const char *const what[3] = {
+    static const char *const what[SER_VARIANTS] = {
         "without the reorder",
         "with MaybeReorderThread by material",
         "with MaybeReorderThread by material, before the triangle fetch",
+        "with MaybeReorderThread by the hit's cluster, before the triangle fetch",
     };
     const int v = ser_variant(mode);
     const int q3 = vkpt_spec_q3 ? 1 : 0;
@@ -557,8 +577,8 @@ static bool ser_ready(int mode)
         return false;
     }
     if (!w.ser_table) {
-        // twelve records (ser_record), 64 bytes apart (D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT)
-        w.ser_table = d3d12_create_buffer(12 * D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT, D3D12_HEAP_TYPE_UPLOAD,
+        // the records (ser_record) and their dispatch templates
+        w.ser_table = d3d12_create_buffer(SER_TABLE_SIZE, D3D12_HEAP_TYPE_UPLOAD,
                                           D3D12_RESOURCE_FLAG_NONE, "SER raygen records");
         D3D12_RANGE none = { 0, 0 };
         void *map = NULL;
@@ -587,6 +607,10 @@ static bool ser_ready(int mode)
             D3D12_RELEASE(w.ser[q3][v][0]);
             return false;
         }
+        const int rec = ser_record(q3, v, k);
+        d3d12_raygen_template(w.ser_table_map + SER_TEMPLATES + rec * 128,
+                              ID3D12Resource_GetGPUVirtualAddress(w.ser_table) +
+                                  (uint64_t)rec * D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT);
     }
     w.ser_failed[q3][v] = false;
     Com_Printf("D3D12: pt_ser %d - indirect lighting as a ray generation shader, %s\n", mode, what[v]);
@@ -597,7 +621,7 @@ static bool ser_ready(int mode)
 static void ser_select(d3d12_passes_t *p)
 {
     const int mode = pt_ser ? pt_ser->integer : 0;
-    if (mode < 1 || mode > 3 || !ser_ready(mode))
+    if (mode < 1 || mode > 4 || !ser_ready(mode))
         return;
     const int v = ser_variant(mode);
     const int q3 = vkpt_spec_q3 ? 1 : 0;
@@ -605,6 +629,12 @@ static void ser_select(d3d12_passes_t *p)
     for (int k = 0; k < 2; k++) {
         p->raygen[k] = w.ser[q3][v][k];
         p->raygen_records[k] = table + (uint64_t)ser_record(q3, v, k) * D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT;
+        p->raygen_templates[k] = SER_TEMPLATES + (uint64_t)ser_record(q3, v, k) * 128;
+    }
+    if (pt_ser_lists->integer && w.ray_dispatch && w.ray_args) {
+        p->ray_dispatch = w.ray_dispatch;
+        p->ray_args = w.ray_args;
+        p->raygen_table = w.ser_table;
     }
 }
 
@@ -1829,6 +1859,7 @@ bool d3d12_world_init(void)
 {
     memset(&w, 0, sizeof(w));
     pt_ser = Cvar_Get("pt_ser", "0", 0);
+    pt_ser_lists = Cvar_Get("pt_ser_lists", "1", 0);
     // the renderer menu's SER row: ser_ready's first test
     Cvar_FullSet("pt_ser_available", d3d.caps.shader_model >= D3D_SHADER_MODEL_6_9 ? "1" : "0", CVAR_ROM, FROM_CODE);
     w.show = Cvar_Get("d3d12_show", "TAA_OUTPUT", 0);
@@ -1955,6 +1986,13 @@ bool d3d12_world_init(void)
                                                             (void **)&w.tile_dispatch)))
             w.tile_dispatch = NULL;
         w.tile_args = d3d12_create_buffer(16, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_FLAG_NONE, "pt tile dispatch");
+        // ...and SER's over a path list (pt_ser_lists): DISPATCH_RAYS, its desc
+        arg.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_RAYS;
+        sd.ByteStride = sizeof(D3D12_DISPATCH_RAYS_DESC);
+        if (!D3D_CHECK(ID3D12Device5_CreateCommandSignature(d3d.device, &sd, NULL, &IID_ID3D12CommandSignature,
+                                                            (void **)&w.ray_dispatch)))
+            w.ray_dispatch = NULL;
+        w.ray_args = d3d12_create_buffer(128, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_FLAG_NONE, "SER list dispatch");
     }
     w.iqm_buffer = d3d12_create_buffer(sizeof(IqmMatrixBuffer), D3D12_HEAP_TYPE_DEFAULT,
                                        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, "IQM matrices");
@@ -2122,7 +2160,7 @@ void d3d12_world_shutdown(void)
 {
     // the GPU is idle here
     for (int q3 = 0; q3 < 2; q3++)
-        for (int v = 0; v < 3; v++)
+        for (int v = 0; v < SER_VARIANTS; v++)
             for (int k = 0; k < 2; k++)
                 D3D12_RELEASE(w.ser[q3][v][k]);
     D3D12_RELEASE(w.ser_table);
@@ -2178,6 +2216,8 @@ void d3d12_world_shutdown(void)
     w.tiles_failed_size = 0;
     D3D12_RELEASE(w.tile_args);
     D3D12_RELEASE(w.tile_dispatch);
+    D3D12_RELEASE(w.ray_args);
+    D3D12_RELEASE(w.ray_dispatch);
     w.blue_noise = NULL;    // textures.c's
     // w.passes only points into the sets
     for (int i = 0; i < D3D12_NUM_PASSES; i++) {

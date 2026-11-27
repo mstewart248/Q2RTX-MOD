@@ -205,6 +205,7 @@ typedef struct {
     const d3d12_passes_t    *p;
     int                     layout;     // the root signature set, -1 = none yet
     bool                    tile_args_read;     // tile_args is in INDIRECT_ARGUMENT
+    bool                    ray_args_read;      // ray_args is in INDIRECT_ARGUMENT
 } recorder_t;
 
 static void use_layout(recorder_t *r, d3d12_pipeline_layout_id_t layout)
@@ -266,7 +267,7 @@ static void trace(recorder_t *r, d3d12_pass_t pass, int bounce, uint32_t width, 
    had - whole 8x8 groups - so each invocation gets the launch ID it has there. The
    global root signature is the path tracer layout's, so nothing is bound again. */
 static void trace_raygen(recorder_t *r, ID3D12StateObject *so, D3D12_GPU_VIRTUAL_ADDRESS record, int bounce,
-                         uint32_t width, uint32_t height)
+                         uint32_t width, uint32_t height, uint32_t append_list)
 {
     ID3D12GraphicsCommandList *gl = (ID3D12GraphicsCommandList *)r->p->cmd;
     use_layout(r, D3D12_PL_PATH_TRACER);
@@ -274,6 +275,7 @@ static void trace_raygen(recorder_t *r, ID3D12StateObject *so, D3D12_GPU_VIRTUAL
     pt_push_t push = { 0 };
     push.gpu_index = -1;
     push.bounce_index = bounce;
+    push.tile_append_list = append_list;
     d3d12_compute_push_constants(gl, D3D12_PL_PATH_TRACER, &push, sizeof(push));
 
     D3D12_DISPATCH_RAYS_DESC rays;
@@ -414,6 +416,7 @@ static void caustic_photons(recorder_t *r, const d3d12_passes_frame_t *f)
 }
 
 static void trace_paths(recorder_t *r, d3d12_pass_t pass, int bounce, uint32_t list, uint32_t append);
+static void trace_raygen_paths(recorder_t *r, int k, int bounce, uint32_t list, uint32_t append);
 
 // vkpt_pt_trace_lighting (`tiles`: the view has the tile lists, so maybe path lists)
 static void trace_lighting(recorder_t *r, const d3d12_passes_frame_t *f, bool tiles)
@@ -442,11 +445,14 @@ static void trace_lighting(recorder_t *r, const d3d12_passes_frame_t *f, bool ti
     if (f->num_bounce_rays > 0) {
         const uint32_t height = f->num_bounce_rays == 0.5f ? f->render_height / 2 : f->render_height;
         const int num_bounces = (int)ceilf(f->num_bounce_rays);
-        // pt_bounce_cull's path lists (trace_paths); not under SER, whose raygen
-        // dispatch covers the grid. pt_sparse's first bounce walks the sparse list (not
-        // at half resolution, whose rows it renames), and then the later bounces have to
-        // take the lists too, as it never visits the other pixels to end their paths.
-        const bool no_ser = !r->p->raygen[0] && !r->p->raygen[1];
+        // pt_bounce_cull's path lists (trace_paths); under SER only with the indirect
+        // DispatchRays (trace_raygen_paths) - without it a raygen dispatch covers the
+        // grid. pt_sparse's first bounce walks the sparse list (not at half resolution,
+        // whose rows it renames), and then the later bounces have to take the lists
+        // too, as it never visits the other pixels to end their paths.
+        const bool ser = r->p->raygen[0] && r->p->raygen[1];
+        const bool ser_lists = ser && r->p->ray_dispatch && r->p->ray_args && r->p->raygen_table;
+        const bool no_ser = (!r->p->raygen[0] && !r->p->raygen[1]) || ser_lists;
         const bool sparse_first = sparse && no_ser && f->num_bounce_rays >= 1.f;
         const bool paths = tiles && num_bounces >= 2 && num_bounces <= PT_PATH_LISTS && no_ser &&
                            (f->paths || sparse_first);
@@ -457,14 +463,21 @@ static void trace_lighting(recorder_t *r, const d3d12_passes_frame_t *f, bool ti
             const int k = bounce ? 1 : 0;
             const d3d12_pass_t pass = bounce ? D3D12_PASS_INDIRECT_LIGHTING_SECOND : D3D12_PASS_INDIRECT_LIGHTING_FIRST;
             const uint32_t append = bounce + 1 < num_bounces ? (uint32_t)bounce + 1 : 0;
-            if (sparse_first && bounce == 0)
-                trace_paths(r, pass, 0, PT_PATH_LIST_SPARSE, paths ? append : 0);
-            else if (paths && bounce > 0)
-                trace_paths(r, pass, bounce, (uint32_t)bounce, append);
-            else if (paths)
+            if (sparse_first && bounce == 0) {
+                if (ser)
+                    trace_raygen_paths(r, k, 0, PT_PATH_LIST_SPARSE, paths ? append : 0);
+                else
+                    trace_paths(r, pass, 0, PT_PATH_LIST_SPARSE, paths ? append : 0);
+            } else if (paths && bounce > 0) {
+                if (ser)
+                    trace_raygen_paths(r, k, bounce, (uint32_t)bounce, append);
+                else
+                    trace_paths(r, pass, bounce, (uint32_t)bounce, append);
+            } else if (paths && !ser)
                 trace_grid_append(r, pass, bounce, f->field_width, height, 2, append);
             else if (r->p->raygen[k])
-                trace_raygen(r, r->p->raygen[k], r->p->raygen_records[k], bounce, f->field_width, height);
+                trace_raygen(r, r->p->raygen[k], r->p->raygen_records[k], bounce, f->field_width, height,
+                             paths ? append : 0);
             else
                 trace(r, pass, bounce, f->field_width, height);
             if (bounce == 0 || bounce == num_bounces - 1)
@@ -715,6 +728,7 @@ static bool tile_lists_reset(recorder_t *r)
                                                        D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     ID3D12GraphicsCommandList4_ResourceBarrier(p->cmd, 1, &b);
     r->tile_args_read = false;
+    r->ray_args_read = false;
     return true;
 }
 
@@ -746,6 +760,62 @@ static void execute_from_lists(recorder_t *r, d3d12_pass_t pass, const pt_push_t
     // (none of reflect_refract, direct_lighting, indirect_lighting and restir_gi reads gl_NumWorkGroups, the root
     // constant d3d12_compute_dispatch sets and a DISPATCH argument cannot)
     ID3D12GraphicsCommandList4_ExecuteIndirect(p->cmd, p->tile_dispatch, 1, p->tile_args, 0, NULL, 0);
+    d3d12_barrier_all(p->cmd, p->enhanced_barriers);
+}
+
+/* SER OVER A PATH LIST (pt_ser with pt_ser_lists). Until 11-27 a ray generation bounce
+   always covered the whole grid, so pt_ser gave up pt_bounce_cull's path lists and
+   pt_sparse's list - it was measured against a compute pass that ran a fraction of
+   its threads. DispatchRays has no groups: list `list` goes as `rows` rows of
+   PT_PATH_ROW_GROUPS x 64 threads, the same entries in the same order as the compute
+   groups take them (pt_path_launch_init's linear form, asked for with tile_buffer.x).
+   The desc is the bounce's template (d3d12_raygen_template) with the list's row count
+   copied over its Height - the count lives in the lists, a UAV, as in trace_tiles. */
+void d3d12_raygen_template(void *desc, D3D12_GPU_VIRTUAL_ADDRESS record)
+{
+    D3D12_DISPATCH_RAYS_DESC d;
+    memset(&d, 0, sizeof(d));
+    d.RayGenerationShaderRecord.StartAddress = record;
+    d.RayGenerationShaderRecord.SizeInBytes = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
+    d.Width = PT_PATH_ROW_GROUPS * 64;
+    d.Height = 0;
+    d.Depth = 1;
+    memcpy(desc, &d, sizeof(d));
+}
+
+static void trace_raygen_paths(recorder_t *r, int k, int bounce, uint32_t list, uint32_t append)
+{
+    const d3d12_passes_t *p = r->p;
+    D3D12_RESOURCE_BARRIER b[2];
+    UINT n = 0;
+    b[n++] = transition_barrier(p->tile_buffer, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                                D3D12_RESOURCE_STATE_COPY_SOURCE);
+    if (r->ray_args_read)
+        b[n++] = transition_barrier(p->ray_args, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT,
+                                    D3D12_RESOURCE_STATE_COPY_DEST);
+    ID3D12GraphicsCommandList4_ResourceBarrier(p->cmd, n, b);
+    ID3D12GraphicsCommandList4_CopyBufferRegion(p->cmd, p->ray_args, 0, p->raygen_table, p->raygen_templates[k],
+                                                sizeof(D3D12_DISPATCH_RAYS_DESC));
+    // the list's { count, row, rows, 1 }: rows
+    ID3D12GraphicsCommandList4_CopyBufferRegion(p->cmd, p->ray_args, offsetof(D3D12_DISPATCH_RAYS_DESC, Height),
+                                                p->tile_buffer, (uint64_t)(PT_PATH_HDR(list) + 2) * sizeof(uint32_t),
+                                                sizeof(uint32_t));
+    b[0] = transition_barrier(p->tile_buffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    b[1] = transition_barrier(p->ray_args, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
+    ID3D12GraphicsCommandList4_ResourceBarrier(p->cmd, 2, b);
+    r->ray_args_read = true;
+
+    ID3D12GraphicsCommandList *gl = (ID3D12GraphicsCommandList *)p->cmd;
+    use_layout(r, D3D12_PL_PATH_TRACER);
+    ID3D12GraphicsCommandList4_SetPipelineState1(p->cmd, p->raygen[k]);
+    pt_push_t push = { 0 };
+    push.gpu_index = -1;
+    push.bounce_index = bounce;
+    push.tile_read_list = list;
+    push.tile_append_list = append;
+    push.tile_buffer[0] = 1;        // the list in DispatchRays order
+    d3d12_compute_push_constants(gl, D3D12_PL_PATH_TRACER, &push, sizeof(push));
+    ID3D12GraphicsCommandList4_ExecuteIndirect(p->cmd, p->ray_dispatch, 1, p->ray_args, 0, NULL, 0);
     d3d12_barrier_all(p->cmd, p->enhanced_barriers);
 }
 

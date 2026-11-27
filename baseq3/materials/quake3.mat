@@ -4540,15 +4540,15 @@ models/weapons2/grapple/grapple01:
 	texture_base materialDev/models/weapons2/grapple/grapple01.jpg
 #	texture_normals materialDev/models/weapons2/grapple/grapple01_n.png
 #	texture_roughness materialDev/models/weapons2/grapple/grapple01_rough.png
-#	texture_metallic materialDev/models/weapons2/grapple/grapple01_metal.png
+	texture_metallic materialDev/models/weapons2/grapple/grapple01_metal.png
 #	texture_height materialDev/models/weapons2/grapple/grapple01_height.png
 #	texture_emissive materialDev/models/weapons2/grapple/grapple01_light.png
 
 models/weapons2/grapple/grapple02:
 	texture_base materialDev/models/weapons2/grapple/grapple02.jpg
 #	texture_normals materialDev/models/weapons2/grapple/grapple02_n.png
-#	texture_roughness materialDev/models/weapons2/grapple/grapple02_rough.png
-#	texture_metallic materialDev/models/weapons2/grapple/grapple02_metal.png
+	texture_roughness materialDev/models/weapons2/grapple/grapple02_rough.png
+	texture_metallic materialDev/models/weapons2/grapple/grapple02_metal.png
 #	texture_height materialDev/models/weapons2/grapple/grapple02_height.png
 #	texture_emissive materialDev/models/weapons2/grapple/grapple02_light.png
 
@@ -4571,8 +4571,8 @@ models/weapons2/grapple/grapple04:
 models/weapons2/grapple/grapple06:
 	texture_base materialDev/models/weapons2/grapple/grapple06.jpg
 #	texture_normals materialDev/models/weapons2/grapple/grapple06_n.png
-#	texture_roughness materialDev/models/weapons2/grapple/grapple06_rough.png
-#	texture_metallic materialDev/models/weapons2/grapple/grapple06_metal.png
+	texture_roughness materialDev/models/weapons2/grapple/grapple06_rough.png
+	texture_metallic materialDev/models/weapons2/grapple/grapple06_metal.png
 #	texture_height materialDev/models/weapons2/grapple/grapple06_height.png
 #	texture_emissive materialDev/models/weapons2/grapple/grapple06_light.png
 
@@ -4603,8 +4603,8 @@ models/weapons2/grapple/grapple09:
 models/weapons2/grapple/grapple10:
 	texture_base materialDev/models/weapons2/grapple/grapple10.jpg
 #	texture_normals materialDev/models/weapons2/grapple/grapple10_n.png
-#	texture_roughness materialDev/models/weapons2/grapple/grapple10_rough.png
-#	texture_metallic materialDev/models/weapons2/grapple/grapple10_metal.png
+	texture_roughness materialDev/models/weapons2/grapple/grapple10_rough.png
+	texture_metallic materialDev/models/weapons2/grapple/grapple10_metal.png
 #	texture_height materialDev/models/weapons2/grapple/grapple10_height.png
 #	texture_emissive materialDev/models/weapons2/grapple/grapple10_light.png
 
@@ -4806,8 +4806,8 @@ models/weapons2/plasma/f_plasma:
 models/weapons2/plasma/plasma:
 	texture_base materialDev/models/weapons2/plasma/plasma.jpg
 #	texture_normals materialDev/models/weapons2/plasma/plasma_n.png
-#	texture_roughness materialDev/models/weapons2/plasma/plasma_rough.png
-#	texture_metallic materialDev/models/weapons2/plasma/plasma_metal.png
+	texture_roughness materialDev/models/weapons2/plasma/plasma_rough.png
+	texture_metallic materialDev/models/weapons2/plasma/plasma_metal.png
 #	texture_height materialDev/models/weapons2/plasma/plasma_height.png
 #	texture_emissive materialDev/models/weapons2/plasma/plasma_light.png
 

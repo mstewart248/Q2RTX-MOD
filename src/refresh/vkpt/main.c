@@ -6808,6 +6808,31 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 	if (vkpt_refdef.bsp_mesh_world_loaded && vkpt_refdef.bsp_mesh_world.q1 && ubo->medium != MEDIUM_NONE)
 		ubo->pt_water_density *= max(0.f, cvar_pt_q1_water_density->value);
 
+	/* NO FOG IN QUAKE III WATER (Matt, 2026-11-27: "Do not draw the quake3 fog
+	   brushes if they are in water", and "I don't want you to change how water
+	   works on the rest of the games"). What reads as a fog volume in Team
+	   Arena's water - under it, and looking down into it - is the sun's
+	   in-scatter god_rays.comp marches through the water medium: pass 0 while
+	   the eye is submerged (pt_water_fog_below), pass 1 for the leg refracted
+	   down through the surface (pt_water_fog_above). Those maps have no fog
+	   brushes at all (their fog lumps are empty); real fog brushes are kept out
+	   of liquid legs by fog_q3.glsl's q3_fog_leg_in_liquid. pt_q3_water_fog
+	   scales both on a QUAKE III map (bsp->q3, set at map load for both
+	   renderers): 0 (default) = none, the water only absorbs and tints by its
+	   own extinction, as Quake III's clear water looks; 1 = as on the other
+	   games. A Quake II or Quake 1 map is never touched. Live. */
+	{
+		static cvar_t *cvar_pt_q3_water_fog;
+		if (!cvar_pt_q3_water_fog)
+			cvar_pt_q3_water_fog = Cvar_Get("pt_q3_water_fog", "0", CVAR_ARCHIVE);
+		if (vkpt_fog_world_is_q3())
+		{
+			const float q3_water_fog = max(0.f, cvar_pt_q3_water_fog->value);
+			ubo->pt_water_fog_below *= q3_water_fog;
+			ubo->pt_water_fog_above *= q3_water_fog;
+		}
+	}
+
 	// A Quake 1 sky's three settings. As seen: its texture's own colours times
 	// pt_q1_sky_brightness, whatever it lights the map with (the shader hands
 	// back the colours times the bake's scale times pt_q1_sky_light, so this

@@ -53,6 +53,25 @@ uint ser_hit_key(uint material)
 {
 	return ((material >> 28) << 12) | (material & MATERIAL_INDEX_MASK);
 }
+
+/* pt_ser 4 (spec_ser_early 2): the early reorder keyed by WHERE the bounce landed -
+   the hit's BSP cluster - instead of by its material. What the lanes do after the hit
+   is the same code for every material; what differs is the data: the cluster's light
+   list (get_direct_illumination walks it), the BVH around the hit that the light and
+   sun shadow rays cross, and the textures, which neighbours mostly share anyway. Lanes
+   that landed in the same cluster read the same list and trace through the same
+   nodes. The sky goes in a group of its own (top bit): it leaves early. Two loads from
+   one primitive (an instance's cluster from its record). */
+uint ser_place_key(RayPayloadGeometry rp)
+{
+	uint buffer_idx = rp.buffer_and_instance_idx & 0xffff;
+	int instance_idx = rp.buffer_and_instance_idx >> 16;
+	uint material = primitive_buffers[nonuniformEXT(buffer_idx)].primitives[rp.primitive_id].material_id;
+	int cluster = primitive_buffers[nonuniformEXT(buffer_idx)].primitives[rp.primitive_id].cluster;
+	if (instance_idx >= 0)
+		cluster = instance_buffer.model_instances[instance_idx].cluster;
+	return (is_sky(material) ? 0x8000u : 0u) | (uint(cluster) & 0x7fffu);
+}
 #endif
 
 /* WHICH BOUNCE THIS DISPATCH TRACES (0 = the first). The first-bounce pipeline is
@@ -862,7 +881,12 @@ indirect_lighting(
 
 #ifdef VKPT_D3D12
 	// SER, pt_ser 3: regroup the lanes before the triangle is fetched (see spec_ser_early)
-	if (spec_ser_early != 0)
+	if (spec_ser_early == 2)
+	{
+		// pt_ser 4: by the cluster the bounce landed in (ser_place_key)
+		d3d12_ser_reorder(ser_place_key(ray_payload_geometry), 16u);
+	}
+	else if (spec_ser_early != 0)
 	{
 		uint ser_buffer = ray_payload_geometry.buffer_and_instance_idx & 0xffff;
 		d3d12_ser_reorder(ser_hit_key(

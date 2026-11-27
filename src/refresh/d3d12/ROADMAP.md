@@ -1051,6 +1051,18 @@ found little Vulkan in it.
     The rest of the pass's live state (primary surface, throughput, ReSTIR GI candidate)
     still crosses it - reloading that from the G-buffer after the reorder is the next step
     if 3 helps but not enough.
+  - **11-27 audit: every pt_ser number above was SER without the lists.** A ray generation
+    bounce covered the whole grid, so with `pt_bounce_cull` (path lists) or `pt_sparse` (the
+    sparse list) on, `pt_ser` 1-3 ran several times the threads `pt_ser 0` did. Fixed:
+    `pt_ser_lists` (default 1; 0 = the old grid) - `trace_raygen_paths` (passes.c), an
+    ExecuteIndirect of DISPATCH_RAYS whose Height is the list's row count, rows of
+    PT_PATH_ROW_GROUPS x 64 threads, `pt_path_launch_init`'s linear form. And `pt_ser 4`:
+    the early reorder keyed by the hit's BSP cluster (one light list, one BVH
+    neighbourhood) instead of its material (`spec_ser_early` 2, `ser_place_key`).
+    `d3d12_world_test`: pt_ser 0/2/1/4 over the lists hand on the same paths and give the
+    grid's picture bit for bit. Live values across the reorder, counted in the DXIL: 94
+    (pt_ser 1), 79 (3), 81 (4) on the first bounce - handles and a RayQuery among them, so
+    about 25 real values; there is little left to trim. NOT measured in game.
 - **Clustered geometry + partitioned TLAS (Agility 1.722 preview, RTX 50 driver):**
   - This is what the wccftech "220x" story measured: acceleration structure *build* speed
     on heavily animated, dense geometry in a synthetic test, not a game's frame rate.

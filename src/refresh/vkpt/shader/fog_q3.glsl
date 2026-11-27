@@ -52,6 +52,26 @@ hard top.
 */
 #define Q3_FOG_EDGE 8.0
 
+/* NO FOG BRUSH IN THE WATER (Matt, 2026-11-27: "I just don't want q3 fog brushes
+   rendered in water"). A leg of the path that runs through water, slime or lava -
+   the eye's column while the eye is under the surface, the view down through a
+   liquid's surface, a bounce under it - sees no fog brush at all: q3_fog_at reads
+   0 and q3_fog_transmittance 1 while the caller has this set. A leg in the air
+   sees every brush as before, the part of one that hangs above a liquid included
+   ("The fog brushes should render if they are not in water"). god_rays.comp sets
+   it for its march from the leg's medium (pass 0's is the eye's, primary_rays
+   stamps it), god_rays_filter around the eye's column (global_ubo.medium) and
+   bounce 0's leg, the froxel passes for the whole grid (the eye's column),
+   reflect_refract.rgen tests its own leg's medium. A brush that IS a liquid, or
+   sits wholly under one, is left out at load (bsp_q3.c, map_q3_fog_in_liquid).
+   Nothing else about the water changes. */
+bool q3_fog_leg_in_liquid = false;
+
+bool q3_fog_medium_is_liquid(int medium)
+{
+	return medium == MEDIUM_WATER || medium == MEDIUM_SLIME || medium == MEDIUM_LAVA;
+}
+
 // fraction of a fog brush's density at depth u below its top, for a fade of depth f
 float q3_fog_fade(float u, float f)
 {
@@ -76,7 +96,7 @@ float q3_fog_at(vec3 p, out vec3 color)
 {
 	float sigma = 0.0;
 	vec3  c = vec3(0.0);
-	if (!Q3_SHADERS)    // spec_q3 0 (global_ubo.h): no fog brushes
+	if (!Q3_SHADERS || q3_fog_leg_in_liquid)    // spec_q3 0 (global_ubo.h): no fog brushes
 	{
 		color = vec3(1.0);
 		return 0.0;
@@ -148,7 +168,7 @@ float q3_fog_transmittance(vec3 origin, vec3 dir, float dist, out vec3 color)
 {
 	float optical = 0.0;
 	vec3 c = vec3(0.0);
-	if (!Q3_SHADERS)
+	if (!Q3_SHADERS || q3_fog_leg_in_liquid)
 	{
 		color = vec3(1.0);
 		return 1.0;

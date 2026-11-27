@@ -867,6 +867,10 @@ float froxel_sky_segment_visibility(ivec3 cell, vec2 tap, float t_far, int steps
 layout(local_size_x = FROXEL_GROUP_X, local_size_y = FROXEL_GROUP_Y, local_size_z = 1) in;
 void main()
 {
+	// the grid is the eye's column: in the water when the eye is, and then no
+	// Quake III fog brush (fog_q3.glsl)
+	q3_fog_leg_in_liquid = q3_fog_medium_is_liquid(global_ubo.medium);
+
 	/* ONE INVOCATION PER CELL, not one per column looping over z - see the
 	   note at the froxel dispatches in god_rays.c. The z loop below is kept
 	   as a ONE-TRIP loop so its `continue`s still mean "done with this cell". */

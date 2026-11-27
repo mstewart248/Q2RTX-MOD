@@ -862,6 +862,9 @@ IF (TARGET client)
         # pt_ser 3: the reorder before the hit's triangle is fetched (spec_ser_early)
         compile_shader_d3d12_variant(BASE_NAME indirect_lighting.rgen.query SPEC 1=1      ENTRY ser OUTPUT_FILE_LIST d3d12_dxil)
         compile_shader_d3d12_variant(BASE_NAME indirect_lighting.rgen.query SPEC 0=1 1=1  ENTRY ser OUTPUT_FILE_LIST d3d12_dxil)
+        # pt_ser 4: ...keyed by the hit's cluster instead of its material (spec_ser_early 2)
+        compile_shader_d3d12_variant(BASE_NAME indirect_lighting.rgen.query SPEC 1=2      ENTRY ser OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME indirect_lighting.rgen.query SPEC 0=1 1=2  ENTRY ser OUTPUT_FILE_LIST d3d12_dxil)
         # pt_q3_shaders: each pass with Quake III code in it again with spec_q3 (7) = 0,
         # the code compiled out (passes.c's q2_shader, world.c's pass sets; main.c's
         # update_q3_shaders) - every variant above that has any, and the bases
@@ -883,6 +886,8 @@ IF (TARGET client)
         compile_shader_d3d12_variant(BASE_NAME indirect_lighting.rgen.query SPEC 0=1 7=0     ENTRY ser    OUTPUT_FILE_LIST d3d12_dxil)
         compile_shader_d3d12_variant(BASE_NAME indirect_lighting.rgen.query SPEC 1=1 7=0     ENTRY ser    OUTPUT_FILE_LIST d3d12_dxil)
         compile_shader_d3d12_variant(BASE_NAME indirect_lighting.rgen.query SPEC 0=1 1=1 7=0 ENTRY ser    OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME indirect_lighting.rgen.query SPEC 1=2 7=0     ENTRY ser    OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME indirect_lighting.rgen.query SPEC 0=1 1=2 7=0 ENTRY ser    OUTPUT_FILE_LIST d3d12_dxil)
         compile_shader_d3d12_variant(BASE_NAME restir_gi.rgen.query         SPEC 7=0             OUTPUT_FILE_LIST d3d12_dxil)
         compile_shader_d3d12_variant(BASE_NAME sharc_update.rgen.query      SPEC 7=0             OUTPUT_FILE_LIST d3d12_dxil)
         compile_shader_d3d12_variant(BASE_NAME caustic_photons.rgen.query   SPEC 7=0             OUTPUT_FILE_LIST d3d12_dxil)

@@ -135,6 +135,15 @@ static uint32_t hash3(uint32_t a, uint32_t b, uint32_t c)
     return h;
 }
 static float rnd(uint32_t a, uint32_t b, uint32_t c) { return (hash3(a, b, c) >> 8) * (1.0f / 16777216.0f); }
+static float *g_bn;       // the game blue noise layer 0, 256x256 (noise 4, 5)
+static float bn_at(int x, int y, uint32_t f, uint32_t salt)
+{
+    float shift = (float)(((f + salt) * 0x9E3779B9u) >> 8) * (1.0f / 16777216.0f);
+    float v = g_bn[(size_t)((y + (int)salt * 37) & 255) * 256 + ((x + (int)salt * 59) & 255)] + shift;
+    return v - floorf(v);
+}
+static int g_dark;      // configs Y*: the floor's albedo a fifth as bright (its light makes up for it)
+static int g_nograin;   // set 5: smooth textures, so a fine pattern in the output is an artifact
 
 // the reflected surface: bricks with mortar, per-brick tint, fine grain; coordinates in
 // render pixels. Returns albedo; *emis gets the torch flame (not lit, so not noisy).
@@ -148,6 +157,7 @@ static void scene(float x, float y, float alb[3], float emis[3])
     bool mortar = fx < 2.0f || fy < 2.0f;
     float tint = rnd((uint32_t)(int)col + 4096, (uint32_t)(int)row + 4096, 1);
     float grain = rnd((uint32_t)(int)floorf(x / 1.5f) + 65536, (uint32_t)(int)floorf(y / 1.5f) + 65536, 2);
+    if (g_nograin) grain = 0.5f;
     float v = mortar ? 0.08f : (0.30f + 0.35f * tint) * (0.65f + 0.7f * grain);
     alb[0] = v * 1.00f; alb[1] = v * (0.55f + 0.2f * tint); alb[2] = v * 0.35f;
     float dx = x - RW * 0.5f, dy = y - RH * 0.45f;
@@ -298,6 +308,61 @@ static float box(const double *sat, int x, int y, int r)
     return (float)(v / ((double)(x1 - x0) * (y1 - y0)));
 }
 
+/* SET 5 (11-27): THE GLASS DOT LATTICE. guides 14 = the game's reflection_light_share
+   (checkerboard_interleave.comp): 25 taps, every second pixel of a 9x9, robust mean.
+   16 = the same window dense (the 11-25 try that stamped squares). 17 = the share from
+   4x4 blocks (each block's sum of sqrt luminance less its largest sample), read with a
+   tent over 2x2 blocks. 18 = 17 with the block sums carried over frames (EMA 0.15).
+   8 = the exact share. noise 2 = pt_sparse 0.5 on top (half the pixels unlit, the rest
+   doubled), 3 = that and fireflies (1 pixel in 500 at 200x). */
+static const config_t configs5[] = {
+    { "S0_exact_sparse",        0, 8,  0, 0, 0, 2, 0.15f, 0.30f, 0.0f, 1.0f },
+    { "S1_stride2_sparse",      0, 14, 0, 0, 0, 2, 0.15f, 0.30f, 0.0f, 1.0f },
+    { "S2_dense9_sparse",       0, 16, 0, 0, 0, 2, 0.15f, 0.30f, 0.0f, 1.0f },
+    { "S3_blocks_sparse",       0, 17, 0, 0, 0, 2, 0.15f, 0.30f, 0.0f, 1.0f },
+    { "S4_blocksEma_sparse",    0, 18, 0, 0, 0, 2, 0.15f, 0.30f, 0.0f, 1.0f },
+    { "T0_exact_fire",          0, 8,  0, 0, 0, 3, 0.15f, 0.30f, 0.0f, 1.0f },
+    { "T1_stride2_fire",        0, 14, 0, 0, 0, 3, 0.15f, 0.30f, 0.0f, 1.0f },
+    { "T2_dense9_fire",         0, 16, 0, 0, 0, 3, 0.15f, 0.30f, 0.0f, 1.0f },
+    { "T3_blocks_fire",         0, 17, 0, 0, 0, 3, 0.15f, 0.30f, 0.0f, 1.0f },
+    { "T4_blocksEma_fire",      0, 18, 0, 0, 0, 3, 0.15f, 0.30f, 0.0f, 1.0f },
+    { "U0_exact_ripple",        1, 8,  0, 1, 0, 3, 0.15f, 0.30f, 0.0f, 1.0f },
+    { "U1_stride2_ripple",      1, 14, 0, 1, 0, 3, 0.15f, 0.30f, 0.0f, 1.0f },
+    { "U3_blocks_ripple",       1, 17, 0, 1, 0, 3, 0.15f, 0.30f, 0.0f, 1.0f },
+    { "U4_blocksEma_ripple",    1, 18, 0, 1, 0, 3, 0.15f, 0.30f, 0.0f, 1.0f },
+    { "V1_stride2_plain",       0, 14, 0, 0, 0, 1, 0.15f, 0.30f, 0.0f, 1.0f },
+    { "V4_blocksEma_plain",     0, 18, 0, 0, 0, 1, 0.15f, 0.30f, 0.0f, 1.0f },
+    { "W0_exact_bn",            0, 8,  0, 0, 0, 4, 0.15f, 0.30f, 0.0f, 1.0f },
+    { "W1_stride2_bn",          0, 14, 0, 0, 0, 4, 0.15f, 0.30f, 0.0f, 1.0f },
+    { "W2_floor_bn",            0, 0,  0, 0, 0, 4, 0.15f, 0.30f, 0.0f, 1.0f },
+    { "X0_exact_bnSparse",      0, 8,  0, 0, 0, 5, 0.15f, 0.30f, 0.0f, 1.0f },
+    { "X1_stride2_bnSparse",    0, 14, 0, 0, 0, 5, 0.15f, 0.30f, 0.0f, 1.0f },
+    { "X2_floor_bnSparse",      0, 0,  0, 0, 0, 5, 0.15f, 0.30f, 0.0f, 1.0f },
+    { "X4_blocksEma_bnSparse",  0, 18, 0, 0, 0, 5, 0.15f, 0.30f, 0.0f, 1.0f },
+    { "Y0_exact_dark",          0, 8,  0, 0, 0, 5, 0.15f, 1.50f, 0.0f, 1.0f },
+    { "Y1_stride2_dark",        0, 14, 0, 0, 0, 5, 0.15f, 1.50f, 0.0f, 1.0f },
+    { "Y2_dense9_dark",         0, 16, 0, 0, 0, 5, 0.15f, 1.50f, 0.0f, 1.0f },
+    { "Y3_blocks_dark",         0, 17, 0, 0, 0, 5, 0.15f, 1.50f, 0.0f, 1.0f },
+    { "Y4_blocksEma_dark",      0, 18, 0, 0, 0, 5, 0.15f, 1.50f, 0.0f, 1.0f },
+    { "Y5_floor_dark",          0, 0,  0, 0, 0, 5, 0.15f, 1.50f, 0.0f, 1.0f },
+    { "Z0_exact_darkGrain",     0, 8,  0, 0, 0, 5, 0.15f, 1.50f, 0.0f, 1.0f },
+    { "Z1_stride2_darkGrain",   0, 14, 0, 0, 0, 5, 0.15f, 1.50f, 0.0f, 1.0f },
+    { "Z4_blocksEma_darkGrain", 0, 18, 0, 0, 0, 5, 0.15f, 1.50f, 0.0f, 1.0f },
+    { "Y6_stride2_darkFire",    0, 14, 0, 0, 0, 5, 0.15f, 1.50f, 0.0f, 1.0f },
+    { "Y7_dense9_darkFire",     0, 16, 0, 0, 0, 5, 0.15f, 1.50f, 0.0f, 1.0f },
+    { "Y8_blocks_darkFire",     0, 17, 0, 0, 0, 5, 0.15f, 1.50f, 0.0f, 1.0f },
+    { "Y9_blocksEma_darkFire",  0, 18, 0, 0, 0, 5, 0.15f, 1.50f, 0.0f, 1.0f },
+    { "YA_exact_darkFire",      0, 8,  0, 0, 0, 5, 0.15f, 1.50f, 0.0f, 1.0f },
+    { "YR0_exact_darkMove",     1, 8,  0, 1, 0, 5, 0.15f, 1.50f, 0.0f, 1.0f },
+    { "YR1_stride2_darkMove",   1, 14, 0, 1, 0, 5, 0.15f, 1.50f, 0.0f, 1.0f },
+    { "YR3_blocks_darkMove",    1, 17, 0, 1, 0, 5, 0.15f, 1.50f, 0.0f, 1.0f },
+    { "YR4_blocksEma_darkMove", 1, 18, 0, 1, 0, 5, 0.15f, 1.50f, 0.0f, 1.0f },
+    { "V0_floor_fire",          0, 0,  0, 0, 0, 3, 0.15f, 0.30f, 0.0f, 1.0f },
+};
+#define BW ((RW + 3) / 4)
+#define BH ((RH + 3) / 4)
+static float *blk_r, *blk_t, *blk_er, *blk_et;
+
 static const config_t configs4[] = {
     // refl_mv 4 = reflect_flow.comp's search, ported; 5 = the same, 3x3 median after
     { "A0_F15dark_wBox17_exactMV",  1, 11, 0, 1, 0, 1, 0.15f, 0.03f, 0.0f, 1.0f },
@@ -404,7 +469,9 @@ static void floor_scene(float x, float y, float alb[3])
     bool grout = fx < 1.5f || fy < 1.5f;
     float tint = rnd((uint32_t)(int)cx + 9000, (uint32_t)(int)cy + 9000, 5);
     float grain = rnd((uint32_t)(int)floorf(x / 1.5f) + 30000, (uint32_t)(int)floorf(y / 1.5f) + 30000, 6);
+    if (g_nograin) grain = 0.5f;
     float v = grout ? 0.06f : (0.25f + 0.3f * tint) * (0.65f + 0.7f * grain);
+    if (g_dark) v *= 0.2f;
     alb[0] = v * 0.55f; alb[1] = v * 0.9f; alb[2] = v * 0.8f;
 }
 
@@ -465,9 +532,14 @@ int main(int argc, char **argv)
     const int set2 = argc > 5 && atoi(argv[5]) == 2;
     const int set3 = argc > 5 && atoi(argv[5]) == 3;
     const int set4 = argc > 5 && atoi(argv[5]) == 4;
+    const int set5 = argc > 5 && atoi(argv[5]) == 5;
+    g_nograin = set5;
+    { FILE *bf = fopen("bn0.f32", "rb"); if (bf) { g_bn = malloc(65536 * sizeof(float)); if (fread(g_bn, sizeof(float), 65536, bf) != 65536) g_bn = NULL; fclose(bf); } printf("blue noise %s" "\n", g_bn ? "loaded" : "NOT loaded"); }
+    blk_r = calloc((size_t)BW * BH, sizeof(float)); blk_t = calloc((size_t)BW * BH, sizeof(float));
+    blk_er = calloc((size_t)BW * BH, sizeof(float)); blk_et = calloc((size_t)BW * BH, sizeof(float));
     pos_now = calloc((size_t)RW * RH * 2, sizeof(float)); pos_prev = calloc((size_t)RW * RH * 2, sizeof(float));
-    const config_t *table = set4 ? configs4 : set3 ? configs3 : set2 ? configs2 : configs;
-    const int ntable = set4 ? (int)(sizeof(configs4) / sizeof(configs4[0])) : set3 ? (int)(sizeof(configs3) / sizeof(configs3[0])) : set2 ? (int)(sizeof(configs2) / sizeof(configs2[0])) : (int)(sizeof(configs) / sizeof(configs[0]));
+    const config_t *table = set5 ? configs5 : set4 ? configs4 : set3 ? configs3 : set2 ? configs2 : configs;
+    const int ntable = set5 ? (int)(sizeof(configs5) / sizeof(configs5[0])) : set4 ? (int)(sizeof(configs4) / sizeof(configs4[0])) : set3 ? (int)(sizeof(configs3) / sizeof(configs3[0])) : set2 ? (int)(sizeof(configs2) / sizeof(configs2[0])) : (int)(sizeof(configs) / sizeof(configs[0]));
     sat_r = malloc(sizeof(double) * (RW + 1) * (RH + 1)); sat_t = malloc(sizeof(double) * (RW + 1) * (RH + 1));
     lum_r = malloc(sizeof(float) * RW * RH); lum_t = malloc(sizeof(float) * RW * RH);
     ema_r = malloc(sizeof(float) * RW * RH); ema_t = malloc(sizeof(float) * RW * RH);
@@ -477,6 +549,8 @@ int main(int argc, char **argv)
         if (only && !strstr(cf->name, only))
             continue;
         g_ripple = cf->ripple;
+        g_dark = cf->name[0] == 'Y' || cf->name[0] == 'Z';
+        g_nograin = set5 && cf->name[0] != 'Z';
 
         NVSDK_NGX_Handle *feature = NULL;
         {
@@ -512,15 +586,31 @@ int main(int argc, char **argv)
                     scene(sx + d[0], sy + d[1], alb, emis);
                     pos_now[i * 2] = sx + d[0]; pos_now[i * 2 + 1] = sy + d[1];
                     float L = 1.0f;
+                    float sparse_gain = 1.0f, fire = 1.0f;
                     if (cf->noise) {
                         float u = rnd((uint32_t)x, (uint32_t)y, (uint32_t)f * 7919u + 13u);
                         L = -logf(1.0f - u * 0.999f);
                     }
+                    if (cf->noise >= 4 && g_bn) {
+                        // the game: blue noise for the light sample, and (5) sparse_pixel_active's mask
+                        L = -logf(1.0f - bn_at(x, y, (uint32_t)f, 1) * 0.999f);
+                        if (cf->noise == 5)
+                            sparse_gain = bn_at(x + 97, y + 131, (uint32_t)f, 0) < 0.5f ? 2.0f : 0.0f;
+                        if (strstr(cf->name, "Fire") && rnd((uint32_t)x + 333u, (uint32_t)y + 444u, (uint32_t)f * 941u + 7u) < 0.002f)
+                            fire = 200.0f;
+                    } else
+                    if (cf->noise >= 2)
+                        sparse_gain = rnd((uint32_t)x + 111u, (uint32_t)y + 222u, (uint32_t)f * 613u + 3u) < 0.5f ? 2.0f : 0.0f;
+                    if (cf->noise >= 3 && rnd((uint32_t)x + 333u, (uint32_t)y + 444u, (uint32_t)f * 941u + 7u) < 0.002f)
+                        fire = 200.0f;
+                    L *= sparse_gain * fire;
                     float falb[3] = { 0, 0, 0 };
                     if (cf->F > 0.0f) {
                         floor_scene(sx, sy, falb);
                         float u2 = rnd((uint32_t)x + 5000u, (uint32_t)y + 7000u, (uint32_t)f * 104729u + 5u);
                         float L2 = cf->noise ? -logf(1.0f - u2 * 0.999f) : 1.0f;
+                        if (cf->noise >= 4 && g_bn) L2 = -logf(1.0f - bn_at(x, y, (uint32_t)f, 2) * 0.999f);
+                        L2 *= sparse_gain;
                         float cr[3], ct[3];
                         for (int k = 0; k < 3; k++) {
                             cr[k] = cf->F * (alb[k] * L + emis[k]);
@@ -647,11 +737,54 @@ int main(int argc, char **argv)
                         }
                 } else if (g == 10 || g == 11) {
                     build_sat(lum_r, sat_r); build_sat(lum_t, sat_t);
+                } else if (g == 17 || g == 18) {
+                    for (int by = 0; by < BH; by++)
+                        for (int bx = 0; bx < BW; bx++) {
+                            float sr = 0, st = 0, mr = 0, mt = 0;
+                            for (int oy = 0; oy < 4; oy++)
+                                for (int ox = 0; ox < 4; ox++) {
+                                    const int px = bx * 4 + ox, py = by * 4 + oy;
+                                    if (px >= RW || py >= RH) continue;
+                                    const float a = sqrtf(lum_r[(size_t)py * RW + px]), b = sqrtf(lum_t[(size_t)py * RW + px]);
+                                    sr += a; st += b;
+                                    if (a > mr) mr = a;
+                                    if (b > mt) mt = b;
+                                }
+                            sr -= mr; st -= mt;
+                            const size_t bi = (size_t)by * BW + bx;
+                            const float a = (g == 18 && f > 0) ? 0.15f : 1.0f;
+                            blk_er[bi] += (sr - blk_er[bi]) * a; blk_et[bi] += (st - blk_et[bi]) * a;
+                            blk_r[bi] = blk_er[bi]; blk_t[bi] = blk_et[bi];
+                        }
                 }
                 for (int yy = 0; yy < RH; yy++)
                     for (int xx = 0; xx < RW; xx++) {
                         const size_t i = (size_t)yy * RW + xx;
                         float r, tt;
+                        if (g == 14 || g == 16) {
+                            // reflection_light_share: the square of the summed square roots
+                            const int st = g == 14 ? 2 : 1, n = g == 14 ? 2 : 4;
+                            float sr = 0, stt = 0;
+                            for (int oy = -n; oy <= n; oy++)
+                                for (int ox = -n; ox <= n; ox++) {
+                                    const int qx = xx + ox * st, qy = yy + oy * st;
+                                    if (qx < 0 || qy < 0 || qx >= RW || qy >= RH) continue;
+                                    sr += sqrtf(lum_r[(size_t)qy * RW + qx]); stt += sqrtf(lum_t[(size_t)qy * RW + qx]);
+                                }
+                            r = sr * sr; tt = stt * stt;
+                        } else if (g == 17 || g == 18) {
+                            // a tent over the 2x2 blocks round the pixel
+                            float fx = (xx + 0.5f) / 4.0f - 0.5f, fy = (yy + 0.5f) / 4.0f - 0.5f;
+                            int x0 = (int)floorf(fx), y0 = (int)floorf(fy);
+                            float wx = fx - x0, wy = fy - y0, sr = 0, stt = 0;
+                            for (int k = 0; k < 4; k++) {
+                                int bx = x0 + (k & 1), by = y0 + (k >> 1);
+                                bx = bx < 0 ? 0 : bx >= BW ? BW - 1 : bx; by = by < 0 ? 0 : by >= BH ? BH - 1 : by;
+                                const float w2 = ((k & 1) ? wx : 1 - wx) * ((k >> 1) ? wy : 1 - wy);
+                                sr += w2 * blk_r[(size_t)by * BW + bx]; stt += w2 * blk_t[(size_t)by * BW + bx];
+                            }
+                            r = sr * sr; tt = stt * stt;
+                        } else
                         if (g == 9) { r = lum_r[i]; tt = lum_t[i]; }
                         else if (g == 10) { r = box(sat_r, xx, yy, 2); tt = box(sat_t, xx, yy, 2); }
                         else if (g == 11) { r = box(sat_r, xx, yy, 8); tt = box(sat_t, xx, yy, 8); }

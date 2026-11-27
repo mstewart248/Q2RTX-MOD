@@ -552,7 +552,7 @@ begin video_renderer
         // shader model 6.9 (the Agility SDK runtime); world.c sets pt_ser_available
         ifeq pt_ser_available 1
         pairs --status "Shader Execution Reordering: the indirect lighting as ray generation shaders, regrouped by material, or without the regrouping to see what it buys. Measured on an RTX 5070 Ti: ray generation alone costs nothing, the reorder about 1 ms. For comparing with the GPU profiler; not saved (pt_ser)" \
-            "shader execution reordering" pt_ser off 0 on 1 "ray generation only" 2 "on, before the triangle fetch" 3
+            "shader execution reordering" pt_ser off 0 on 1 "ray generation only" 2 "on, before the triangle fetch" 3 "on, by where the bounce landed" 4
         endif
         // only with Windows Developer Mode on and the preview runtime beside the exe:
         // device.c sets d3d12_agility_preview_available

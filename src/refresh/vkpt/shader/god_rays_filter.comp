@@ -426,7 +426,10 @@ void main()
 			if (raw_view_depth >= 0.0)
 			{
 				// straight from the eye: the direction and distance are the camera ray's
+				// (none of it when the eye is in a liquid - no fog brush in the water)
+				q3_fog_leg_in_liquid = q3_fog_medium_is_liquid(global_ubo.medium);
 				transmittance = q3_fog_transmittance(global_ubo.cam_pos.xyz, q3_dir, q3_leg.w, q3_color);
+				q3_fog_leg_in_liquid = false;
 				q3_glow = (1.0 - transmittance) * q3_fog_tint(q3_color) * q3_level;
 			}
 			else
@@ -447,12 +450,22 @@ void main()
 				        / vec2(float(field_width), float(global_ubo.height));
 				vec3 dir0 = normalize((global_ubo.invV * vec4(projection_screen_to_view(uv, 1.0, false), 0.0)).xyz);
 				float dist0 = texelFetch(TEX_PT_PRIMARY_DIST, i_position.xy, 0).r;
+				// the eye's column: in the water when the eye is (fog_q3.glsl)
+				q3_fog_leg_in_liquid = q3_fog_medium_is_liquid(global_ubo.medium);
 				float t0 = q3_fog_transmittance(global_ubo.cam_pos.xyz, dir0, dist0, q3_color);
+				q3_fog_leg_in_liquid = false;
 				vec3 glow0 = (1.0 - t0) * q3_fog_tint(q3_color);
 
-				vec3 hit1 = texelFetch(TEX_PT_SHADING_POSITION, i_position.xy, 0).xyz;
+				vec4 hit1_material = texelFetch(TEX_PT_SHADING_POSITION, i_position.xy, 0);
+				vec3 hit1 = hit1_material.xyz;
+				// bounce 0's leg under a liquid's surface sees no fog brush (fog_q3.glsl);
+				// its medium is in the material's light style bits, as god_rays.comp reads it
+				uint leg_material = floatBitsToUint(hit1_material.w);
+				q3_fog_leg_in_liquid = q3_fog_medium_is_liquid(
+					int((leg_material & MATERIAL_LIGHT_STYLE_MASK) >> MATERIAL_LIGHT_STYLE_SHIFT));
 				float t1 = q3_fog_transmittance(hit1 - q3_dir * q3_leg.w, q3_dir, q3_leg.w, q3_color);
-				vec3 glow1 = (1.0 - t1) * q3_fog_tint(q3_color);
+				q3_fog_leg_in_liquid = false;
+				vec3 glow1 = (t1 < 1.0) ? (1.0 - t1) * q3_fog_tint(q3_color) : vec3(0.0);
 
 				/* The eye's column is shared by both layers of a split pixel, which the
 				   combine pass SUMS - each takes half, as the grid's column does above

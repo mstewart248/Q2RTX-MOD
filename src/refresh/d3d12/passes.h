@@ -205,9 +205,22 @@ typedef struct {
     // (NULL: the compute pass, as always)
     ID3D12StateObject           *raygen[2];
     D3D12_GPU_VIRTUAL_ADDRESS   raygen_records[2];
+    // ...over the PATH LISTS too (pt_ser_lists; ray_dispatch NULL = the ray generation
+    // bounces cover the whole grid, as before 11-27): a DISPATCH_RAYS-only command
+    // signature, the D3D12_DISPATCH_RAYS_DESC it reads (COMMON between command lists),
+    // and in raygen_table (an upload buffer) at raygen_templates[k] that bounce's desc
+    // ready but for its Height - d3d12_raygen_template()
+    ID3D12CommandSignature      *ray_dispatch;
+    ID3D12Resource              *ray_args;
+    ID3D12Resource              *raygen_table;
+    uint64_t                    raygen_templates[2];
     // the profiler's timestamps (heap NULL: none)
     d3d12_timers_t              timers;
 } d3d12_passes_t;
+
+// A ray generation bounce's D3D12_DISPATCH_RAYS_DESC over a path list, all but its
+// Height (the list's rows, copied in on the GPU): `record` its raygen record
+void d3d12_raygen_template(void *desc, D3D12_GPU_VIRTUAL_ADDRESS record);
 
 // the post effects' push constants, in words: vkpt.h's vkpt_motion_blur_push_t,
 // vkpt_chromatic_aberration_push_t and vkpt_final_blit_push_t, DLSSNR.h's

@@ -432,7 +432,8 @@ void d3d12_timers_draw(void)
     const int ser = t.ser->integer;
     Q_snprintf(buf, sizeof(buf), "D3D12, pt_ser %d: %s", ser,
                ser == 1 ? "ray generation + MaybeReorderThread" : ser == 2 ? "ray generation, no reorder" :
-               ser == 3 ? "ray generation + MaybeReorderThread before the triangle fetch" : "compute");
+               ser == 3 ? "ray generation + MaybeReorderThread before the triangle fetch" :
+               ser == 4 ? "ray generation + MaybeReorderThread by cluster" : "compute");
     draw_profiler(Cvar_VariableInteger("flt_enable") != 0, buf);
 }
 

@@ -1086,13 +1086,71 @@ static void clip_world_to_leaves(q3load_t *L)
 
 #if USE_REF
 /*
+A brush as the box of its axial planes; a slanted side is left out, so the box
+can only be larger. False when the planes don't close a box.
+*/
+static bool brush_axial_box(const q3load_t *L, int bn, vec3_t mins, vec3_t maxs)
+{
+    const q3dbrush_t *brush = &L->brushes[bn];
+    int fs = LittleLong(brush->firstSide), ns = LittleLong(brush->numSides);
+
+    if (fs < 0 || ns < 0 || fs + ns > L->numbrushsides)
+        return false;
+
+    VectorSet(mins, -FLT_MAX, -FLT_MAX, -FLT_MAX);
+    VectorSet(maxs, FLT_MAX, FLT_MAX, FLT_MAX);
+    for (int k = 0; k < ns; k++) {
+        int pn = LittleLong(L->brushsides[fs + k].planeNum);
+        if (pn < 0 || pn >= L->numplanes)
+            continue;
+        const q3dplane_t *pl = &L->planes[pn];
+        float d = LittleFloat(pl->dist);
+        for (int ax = 0; ax < 3; ax++) {
+            float c = LittleFloat(pl->normal[ax]);
+            if (c > 0.9999f)
+                maxs[ax] = min(maxs[ax], d);
+            else if (c < -0.9999f)
+                mins[ax] = max(mins[ax], -d);
+        }
+    }
+    return !(mins[0] >= maxs[0] || mins[1] >= maxs[1] || mins[2] >= maxs[2] ||
+             maxs[0] == FLT_MAX || mins[0] == -FLT_MAX ||
+             maxs[1] == FLT_MAX || mins[1] == -FLT_MAX ||
+             maxs[2] == FLT_MAX || mins[2] == -FLT_MAX);
+}
+
+#define Q3_LIQUID_CONTENTS  (Q3_CONTENTS_WATER | Q3_CONTENTS_SLIME | Q3_CONTENTS_LAVA)
+
+// a brush's contents, as its shader gives them to the compiler
+static int brush_q3_contents(const q3load_t *L, int bn)
+{
+    int sn = LittleLong(L->brushes[bn].shaderNum);
+    return (sn >= 0 && sn < L->numshaders) ? LittleLong(L->shaders[sn].contentFlags) : 0;
+}
+
+/*
 Quake III's fog volumes: a brush whose shader says "fogparms ( r g b ) d".
 Every one in the retail maps is an axis-aligned box, so the box is what the
 renderer gets (vkpt fog.c turns it into a block of real fog in the volumetric
 medium). Returns how many there are; `out` NULL just counts.
+
+NO FOG UNDER WATER (Matt, 2026-11-27: "It's a fog volume under water and I
+don't want you to render the fog brush if it's under water"). Water, slime and
+lava are already a medium in the path tracer, with their own extinction, so a
+fog brush there is a second medium on the same path. A fog brush that is itself
+a liquid (a water shader with fogparms - Team Arena's liquids/ripplewater2,
+xripplewater2, lavahell2) is left out. One sitting over a liquid (q3dm7's
+fog_intel over lava, q3dm8's fog_pjdm1 over its pool) is cut off at the
+liquid's surface: the box's floor is raised to the top of every liquid brush
+that covers its whole footprint, and a box left with nothing above the liquid
+is dropped. A liquid under only part of the box can't be cut from a box, so
+that part stays here; the shaders leave it out of any leg that runs through a
+liquid (fog_q3.glsl q3_fog_leg_in_liquid), and the brush still renders in the
+air. map_q3_fog_in_liquid 1 = keep them as they were.
 */
 static int build_fog_volumes(const q3load_t *L, mfogvolume_t *out)
 {
+    cvar_t *keep_in_liquid = Cvar_Get("map_q3_fog_in_liquid", "0", 0);
     int count = 0;
 
     for (int i = 0; i < L->numfogs; i++) {
@@ -1109,34 +1167,37 @@ static int build_fog_volumes(const q3load_t *L, mfogvolume_t *out)
         if (!sh || !sh->has_fog || sh->fog_distance <= 0)
             continue;
 
-        const q3dbrush_t *brush = &L->brushes[bn];
-        int fs = LittleLong(brush->firstSide), ns = LittleLong(brush->numSides);
-        vec3_t mins = { -FLT_MAX, -FLT_MAX, -FLT_MAX }, maxs = { FLT_MAX, FLT_MAX, FLT_MAX };
-
-        if (fs < 0 || ns < 0 || fs + ns > L->numbrushsides)
+        vec3_t mins, maxs;
+        if (!brush_axial_box(L, bn, mins, maxs))
             continue;
 
-        // the box is the brush's axial planes; a slanted side (none in the
-        // retail maps) is left out, so the box can only be larger
-        for (int k = 0; k < ns; k++) {
-            int pn = LittleLong(L->brushsides[fs + k].planeNum);
-            if (pn < 0 || pn >= L->numplanes)
+        if (!keep_in_liquid->integer) {
+            // the fog brush is the water itself
+            if ((sh->content_flags | brush_q3_contents(L, bn)) & Q3_LIQUID_CONTENTS) {
+                if (out)
+                    Com_DPrintf("%s: fog '%s' is a liquid - not drawn\n", __func__, name);
                 continue;
-            const q3dplane_t *pl = &L->planes[pn];
-            float d = LittleFloat(pl->dist);
-            for (int ax = 0; ax < 3; ax++) {
-                float c = LittleFloat(pl->normal[ax]);
-                if (c > 0.9999f)
-                    maxs[ax] = min(maxs[ax], d);
-                else if (c < -0.9999f)
-                    mins[ax] = max(mins[ax], -d);
             }
+
+            // a liquid under it: the fog starts at the liquid's surface
+            for (int b = 0; b < L->numbrushes; b++) {
+                vec3_t lmins, lmaxs;
+                if (b == bn || !(brush_q3_contents(L, b) & Q3_LIQUID_CONTENTS))
+                    continue;
+                if (!brush_axial_box(L, b, lmins, lmaxs))
+                    continue;
+                if (lmins[0] > mins[0] || lmaxs[0] < maxs[0] ||
+                    lmins[1] > mins[1] || lmaxs[1] < maxs[1] ||
+                    lmins[2] >= maxs[2] || lmaxs[2] <= mins[2])
+                    continue;
+                if (out)
+                    Com_DPrintf("%s: fog '%s' cut at the liquid's surface, z %.0f -> %.0f\n",
+                                __func__, name, mins[2], lmaxs[2]);
+                mins[2] = lmaxs[2];
+            }
+            if (mins[2] >= maxs[2])
+                continue;
         }
-        if (mins[0] >= maxs[0] || mins[1] >= maxs[1] || mins[2] >= maxs[2] ||
-            maxs[0] == FLT_MAX || mins[0] == -FLT_MAX ||
-            maxs[1] == FLT_MAX || mins[1] == -FLT_MAX ||
-            maxs[2] == FLT_MAX || mins[2] == -FLT_MAX)
-            continue;
 
         if (out) {
             mfogvolume_t *v = &out[count];

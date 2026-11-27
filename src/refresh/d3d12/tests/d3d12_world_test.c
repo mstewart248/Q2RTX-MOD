@@ -2126,16 +2126,19 @@ int main(int argc, char **argv)
                    sm.HighestShaderModel & 15, system_runtime ? " (the system runtime)" : "");
         } else {
             const int errors_ser = errors;
-            // [pt_ser 2's raygen, pt_ser 1's ser][first bounce, second]; records 64 bytes apart
-            ID3D12StateObject *so[2][2] = { { NULL, NULL }, { NULL, NULL } };
-            ID3D12Resource *table = upload(NULL, 4 * D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT);
+            // [pt_ser 2's raygen, pt_ser 1's ser, pt_ser 4's][first bounce, second]; records 64
+            // bytes apart, then each one's DISPATCH_RAYS template (d3d12_raygen_template), 128
+            ID3D12StateObject *so[3][2] = { { NULL, NULL }, { NULL, NULL }, { NULL, NULL } };
+            const uint64_t templates_at = 6 * D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT;
+            ID3D12Resource *table = upload(NULL, templates_at + 6 * 128);
             uint8_t *table_map = NULL;
             ID3D12Resource_Map(table, 0, NULL, (void **)&table_map);
+            const D3D12_GPU_VIRTUAL_ADDRESS table_va = ID3D12Resource_GetGPUVirtualAddress(table);
             bool made = true;
-            for (int v = 0; v < 2; v++)
+            for (int v = 0; v < 3; v++)
                 for (int k = 0; k < 2; k++) {
-                    snprintf(path, sizeof(path), "%sbaseq2\\shader_d3d12\\indirect_lighting.rgen.query%s.%s.dxil", root,
-                             k ? ".spec_0_1" : "", v ? "ser" : "raygen");
+                    snprintf(path, sizeof(path), "%sbaseq2\\shader_d3d12\\indirect_lighting.rgen.query%s%s.%s.dxil", root,
+                             k ? ".spec_0_1" : "", v == 2 ? (k ? "_1_2" : ".spec_1_2") : "", v ? "ser" : "raygen");
                     size_t size = 0;
                     void *code = load(path, &size);
                     so[v][k] = code ? d3d12_create_raygen_object(D3D12_PL_PATH_TRACER, code, size,
@@ -2146,15 +2149,80 @@ int main(int argc, char **argv)
                         printf("  SER: no state object from %s\n", path);
                         made = false;
                     }
+                    d3d12_raygen_template(table_map + templates_at + (v * 2 + k) * 128,
+                                          table_va + (uint64_t)(v * 2 + k) * D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT);
                     free(code);
                 }
             ID3D12Resource_Unmap(table, 0, NULL);
-            const D3D12_GPU_VIRTUAL_ADDRESS table_va = ID3D12Resource_GetGPUVirtualAddress(table);
 
-            static const int modes[4] = { 0, 0, 2, 1 };
-            float *runs[4] = { NULL, NULL, NULL, NULL };
+            /* THE PATH LISTS (pt_bounce_cull's; world.c's layout through vkpt_pt_tile_layout
+               and vkpt_pt_tile_header, one region): the second bounce over the list the first
+               one fills - by the compute pass's indirect dispatch (trace_paths) and by the
+               ray generation shaders' indirect DispatchRays (trace_raygen_paths, pt_ser_lists).
+               The UBO's pt_bounce_cull stays 0, so no path ends early and a run over the
+               lists must give the picture a run over the grid does. The append uses wave
+               operations (pt_path_append), which decide only where in the list a pixel
+               goes. The buffers stay (the tiles set names them until phase 4's). */
+            const uint32_t ptx = (W / 2 + 7) / 8, pty = (H + 7) / 8, pper_field = ptx * pty;
+            const uint32_t pmax = ((W + 7) / 8) * ((H + 7) / 8) * 2, pmask_stride = (pmax + 31) / 32;
+            const uint32_t pdata = PT_TILE_HDR_WORDS + PT_TILE_LISTS * pmask_stride;
+            const uint32_t ppath = pdata + PT_TILE_LISTS * pmax;
+            const uint32_t ppath_stride = ((W + 7) / 8 + 2) * ((H + 7) / 8) * 64;
+            const uint64_t psize = (uint64_t)(ppath + ppath_stride) * sizeof(uint32_t);
+            uint32_t *preset = calloc(pdata, sizeof(uint32_t));
+            preset[PT_TILE_HDR_TILES_X] = ptx;
+            preset[PT_TILE_HDR_PER_FIELD] = pper_field;
+            preset[PT_TILE_HDR_MASK] = PT_TILE_HDR_WORDS;
+            preset[PT_TILE_HDR_MASK_STRIDE] = pmask_stride;
+            preset[PT_TILE_HDR_DATA] = pdata;
+            preset[PT_TILE_HDR_DATA_STRIDE] = pmax;
+            d3d12_tile_header(preset, 3);
+            for (int list = 0; list < PT_PATH_LISTS; list++) {
+                preset[PT_TILE_HDR_PATHS + list * 4 + 1] = PT_PATH_ROW_GROUPS;
+                preset[PT_TILE_HDR_PATHS + list * 4 + 3] = 1;
+            }
+            preset[PT_TILE_HDR_PATH_DATA] = ppath;
+            preset[PT_TILE_HDR_PATH_STRIDE] = ppath_stride;
+            preset[PT_TILE_HDR_PATH_REGIONS] = 1;
+            ID3D12Resource *path_buf = buffer(D3D12_HEAP_TYPE_DEFAULT, psize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                                              D3D12_RESOURCE_STATE_COMMON);
+            ID3D12Resource *path_reset = upload(preset, (uint64_t)pdata * sizeof(uint32_t));
+            ID3D12Resource *path_args = buffer(D3D12_HEAP_TYPE_DEFAULT, 16, D3D12_RESOURCE_FLAG_NONE,
+                                               D3D12_RESOURCE_STATE_COMMON);
+            ID3D12Resource *ray_args = buffer(D3D12_HEAP_TYPE_DEFAULT, 128, D3D12_RESOURCE_FLAG_NONE,
+                                              D3D12_RESOURCE_STATE_COMMON);
+            ID3D12CommandSignature *path_sig = NULL, *ray_sig = NULL;
+            {
+                D3D12_INDIRECT_ARGUMENT_DESC arg;
+                memset(&arg, 0, sizeof(arg));
+                arg.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
+                D3D12_COMMAND_SIGNATURE_DESC sd;
+                memset(&sd, 0, sizeof(sd));
+                sd.ByteStride = sizeof(D3D12_DISPATCH_ARGUMENTS);
+                sd.NumArgumentDescs = 1;
+                sd.pArgumentDescs = &arg;
+                bool ok = path_buf && path_reset && path_args && ray_args &&
+                          SUCCEEDED(ID3D12Device5_CreateCommandSignature(dev, &sd, NULL, &IID_ID3D12CommandSignature,
+                                                                         (void **)&path_sig));
+                arg.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_RAYS;
+                sd.ByteStride = sizeof(D3D12_DISPATCH_RAYS_DESC);
+                ok = ok && SUCCEEDED(ID3D12Device5_CreateCommandSignature(dev, &sd, NULL, &IID_ID3D12CommandSignature,
+                                                                          (void **)&ray_sig));
+                if (!ok) {
+                    printf("FAIL: the SER runs' path lists\n");
+                    return 1;
+                }
+            }
+            d3d12_set_write_buffer(&tiles_set, 0, 0, path_buf, 0, psize);
+
+            // { pt_ser, over the path lists }
+            static const int modes[8] = { 0, 0, 2, 1, 0, 2, 1, 4 };
+            static const bool lists[8] = { false, false, false, false, true, true, true, true };
+            #define SER_RUNS 8
+            float *runs[SER_RUNS] = { NULL };
+            uint32_t list_count[SER_RUNS] = { 0 };
             const int first_frame = frame;
-            for (int m = 0; m < 4 && made; m++) {
+            for (int m = 0; m < SER_RUNS && made; m++) {
                 for (int k = 0; k < 3; k++) {
                     const int fnum = first_frame + k;
                     const int odd = fnum & 1;
@@ -2187,13 +2255,25 @@ int main(int argc, char **argv)
                         .num_heaps = 2,
                     };
                     if (modes[m]) {
-                        const int v = modes[m] == 1 ? 1 : 0;
+                        const int v = modes[m] == 1 ? 1 : modes[m] == 4 ? 2 : 0;
                         for (int b = 0; b < 2; b++) {
                             sp.raygen[b] = so[v][b];
                             sp.raygen_records[b] = table_va + (uint64_t)(v * 2 + b) * D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT;
+                            sp.raygen_templates[b] = templates_at + (uint64_t)(v * 2 + b) * 128;
                         }
                     }
+                    if (lists[m]) {
+                        sp.tile_buffer = path_buf;
+                        sp.tile_reset = path_reset;
+                        sp.tile_reset_size = pdata * (uint32_t)sizeof(uint32_t);
+                        sp.tile_args = path_args;
+                        sp.tile_dispatch = path_sig;
+                        sp.ray_dispatch = ray_sig;
+                        sp.ray_args = ray_args;
+                        sp.raygen_table = table;
+                    }
                     const d3d12_passes_frame_t spf = {
+                        .paths = lists[m],
                         .field_width = W / 2, .slice_width = W, .render_width = W, .render_height = H,
                         .taa_output_width = W, .taa_output_height = H, .taa_image_width = taa_w, .taa_image_height = taa_h,
                         .enable_denoiser = false, .num_bounce_rays = 2.f,
@@ -2212,6 +2292,13 @@ int main(int argc, char **argv)
                     return 1;
                 runs[m] = malloc((size_t)W * H * 4 * sizeof(float));
                 memcpy(runs[m], pixels, (size_t)W * H * 4 * sizeof(float));
+                if (lists[m]) {
+                    // list 1's count: the paths the last frame's first bounce handed on
+                    uint32_t hdr[PT_TILE_HDR_WORDS];
+                    if (!read_buffer(cl, ca, path_buf, 0, sizeof(hdr), hdr))
+                        return 1;
+                    list_count[m] = hdr[PT_PATH_HDR(1)];
+                }
             }
             frame = first_frame + 3;
 
@@ -2220,7 +2307,7 @@ int main(int argc, char **argv)
                 lit_failed++;
             } else {
                 // each run against the reference (runs[1], compute after a compute run)
-                for (int m = 0; m < 4; m++) {
+                for (int m = 0; m < SER_RUNS; m++) {
                     if (m == 1)
                         continue;
                     const float *a = runs[m], *ref = runs[1];
@@ -2244,13 +2331,19 @@ int main(int argc, char **argv)
                     const double mean_diff = sum_ref > 0 ? fabs(sum_a - sum_ref) / sum_ref : (sum_a > 0 ? 1.0 : 0.0);
                     const bool ok = nonfinite == 0 && mean_diff < 0.01 && off * 100 <= (size_t)W * H;
                     char name[64];
-                    snprintf(name, sizeof(name), m == 0 ? "SER reference: compute, after other history"
-                                                        : "SER: pt_ser %d against compute", modes[m]);
+                    if (lists[m])
+                        snprintf(name, sizeof(name), "SER: pt_ser %d over the path lists (%u paths)", modes[m], list_count[m]);
+                    else
+                        snprintf(name, sizeof(name), m == 0 ? "SER reference: compute, after other history"
+                                                            : "SER: pt_ser %d against compute", modes[m]);
+                    // every run over the lists must hand on the same paths, and some
+                    const bool count_ok = !lists[m] || (list_count[m] > 0 && list_count[m] == list_count[4]);
                     printf("  %-56s FLAT_COLOR %.2f%% bit-identical, %zu of %d pixels off by > 1%%, mean %+.3f%%, "
-                           "%zu non-finite%s\n", name, 100.0 * same / (3.0 * W * H), off, W * H,
+                           "%zu non-finite%s%s\n", name, 100.0 * same / (3.0 * W * H), off, W * H,
                            100.0 * (sum_ref > 0 ? (sum_a - sum_ref) / sum_ref : 0.0), nonfinite,
-                           m == 0 ? " (information only)" : ok ? "" : "  <-- FAIL");
-                    if (m != 0 && !ok)
+                           count_ok ? "" : " (the path count differs or is 0)",
+                           m == 0 ? " (information only)" : ok && count_ok ? "" : "  <-- FAIL");
+                    if (m != 0 && !(ok && count_ok))
                         lit_failed++;
                 }
                 printf("  %-56s %d validation errors%s\n", "SER (pt_ser 1, 2)", errors - errors_ser,
@@ -2258,9 +2351,10 @@ int main(int argc, char **argv)
                 if (errors != errors_ser)
                     lit_failed++;
             }
-            for (int m = 0; m < 4; m++)
+            for (int m = 0; m < SER_RUNS; m++)
                 free(runs[m]);
-            for (int v = 0; v < 2; v++)
+            free(preset);
+            for (int v = 0; v < 3; v++)
                 for (int k = 0; k < 2; k++)
                     if (so[v][k])
                         ID3D12StateObject_Release(so[v][k]);

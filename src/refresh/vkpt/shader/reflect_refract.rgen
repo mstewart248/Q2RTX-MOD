@@ -1030,9 +1030,11 @@ main()
 	   stays, the fog's colour fills (1 - T) of what was left, at this leg's
 	   throughput, and everything after - this leg's effects, the sky, the surface it
 	   hits - is behind it. Only when the filter ran (fog_filter_active), or the
-	   near legs would be clear and the far ones fogged. */
+	   near legs would be clear and the far ones fogged. Not on a leg under a
+	   liquid's surface: no fog brush in the water (fog_q3.glsl). */
 	if (Q3_SHADERS && spec_bounce_index != 0 && global_ubo.fog_filter_active != 0
-	    && global_ubo.fog_enable != 0 && global_ubo.pt_fog_extinction <= 0.0 && q3_fog_present())
+	    && global_ubo.fog_enable != 0 && global_ubo.pt_fog_extinction <= 0.0 && q3_fog_present()
+	    && !q3_fog_medium_is_liquid(primary_medium))
 	{
 		vec3 q3_color;
 		float q3_t = q3_fog_transmittance(reflection_ray.origin, direction, reflection_ray.t_max, q3_color);
